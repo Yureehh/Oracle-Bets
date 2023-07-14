@@ -74,21 +74,21 @@ class PandascoreSchedule:
         return schedule
 
     def get_schedule(
-        self, leagues: Optional[str], start_datetime: str, end_datetime: str
+        self, start_datetime: str, end_datetime: str, leagues: Optional[str] = None
     ) -> pd.DataFrame:
         """
         Gets the schedule of upcoming matches.
 
         Parameters
         ----------
-        leagues : str, optional
-            An optional string containing leagues of interest.
-            Multiple leagues can be specified as a comma-separated string.
-            ex: LCK, LPL, LEC
         start_datetime : str
             The start datetime for the matches in 'YYYY-MM-DDTHH:MM:SSZ' format.
         end_datetime : str
             The end datetime for the matches in 'YYYY-MM-DDTHH:MM:SSZ' format.
+        leagues : str, optional
+            An optional string containing leagues of interest.
+            Multiple leagues can be specified as a comma-separated string.
+            ex: LCK, LPL, LEC
 
         Returns
         -------
