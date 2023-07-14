@@ -16,10 +16,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
-from sklearn.linear_model import LogisticRegression
 
-from src.model_validator import generate_validation_metrics
-from src.team import Team
+from src.legacy.model_validator import generate_validation_metrics
+from src.legacy.team import Team
 
 pd.options.display.float_format = "{:,.4f}".format
 pd.set_option("display.max_rows", None, "display.max_columns", None)

@@ -18,7 +18,7 @@ from typing import Tuple
 
 import pandas as pd
 
-import src.lol_modeling as lol
+import src.legacy.lol_modeling as lol
 import src.oracles_elixir as oe
 
 

@@ -1,28 +1,26 @@
 """
 Oracle's Elixir
 
-This script is designed to connect to Tim Sevenhuysen's Oracle's Elixir site to pull down and format data.
-It is built to empower esports enthusiasts, data scientists, or anyone to leverage pro game data
-for use in their own scripts and analytics.
+This script is designed to connect to Tim Sevenhuysen's Oracle's Elixir data.
+It is built to empower esports enthusiasts, data scientists, or anyone
+to leverage pro game data for use in their own scripts and analytics.
 
 Please visit and support www.oracleselixir.com
 Tim provides an invaluable service to the League community.
 """
-# Housekeeping
-import awswrangler as wr
-import boto3
 import datetime as dt
 from typing import Dict, Optional, Union
 
+# Housekeeping
+import awswrangler as wr
+import boto3
 import numpy as np
 import pandas as pd
 
 
 # Primary Functions
 class OraclesElixir:
-    def __init__(self,
-                 session: Optional[boto3.Session],
-                 bucket: str):
+    def __init__(self, session: Optional[boto3.Session], bucket: str):
         """
         bucket : str
             Name of the bucket containing Oracle's Elixir S3 data.
@@ -31,8 +29,9 @@ class OraclesElixir:
         self.session = session
         self.bucket = bucket
 
-    def ingest_data(self,
-                    years: Optional[Union[list, str, int]] = [dt.date.today().year]) -> pd.DataFrame:
+    def ingest_data(
+        self, years: Optional[Union[list, str, int]] = [dt.date.today().year]
+    ) -> pd.DataFrame:
         """
         Pull data from S3 based on the specified years
             and store it in the `oe_data` instance variable.
@@ -46,7 +45,10 @@ class OraclesElixir:
         if isinstance(years, (str, int)):
             years = [years]
 
-        file_paths = [f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv" for year in years]
+        file_paths = [
+            f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv"
+            for year in years
+        ]
         self.oe_data = wr.s3.read_csv(file_paths, boto3_session=self.session)
 
         return self.oe_data
@@ -55,9 +57,9 @@ class OraclesElixir:
     def get_opponent(column: pd.Series, entity: str) -> list:
         """
         Generate value for the opposing team or player.
-        This can be used for utilities such as returning the opposing player or team's name.
-        It can also be used to return opposing metrics, such as opponent's earned gold per minute, etc.
-        Be sure that the input value is sorted to have consistent order of matches/positions.
+        Used for utilities such as returning the opposing player/team's name.
+        It can also return opposing metrics, ex: opponent's earned gold per minute
+        Be sure that the input value is sorted to have consistent order in rows.
 
         Parameters
         ----------
@@ -69,7 +71,8 @@ class OraclesElixir:
         Returns
         -------
         opponent : list
-            The opponent of the entities in the column provided; can be inserted as a column back into the dataframe.
+            The opponent of the entities in the column provided;
+            can be inserted as a column back into the dataframe.
         """
         opponent = []
         flag = 0
@@ -120,7 +123,7 @@ class OraclesElixir:
     def format_ids(self) -> pd.DataFrame:
         self.oe_data = self.oe_data[
             (self.oe_data["gameid"].notna()) & (self.oe_data["position"].notna())
-            ]
+        ]
         return self.oe_data
 
     def remove_null_games(self) -> pd.DataFrame:
@@ -130,20 +133,24 @@ class OraclesElixir:
         return self.oe_data[
             (~self.oe_data["playername"].isin(["unknown player"]))
             & (~self.oe_data["teamname"].isin(["unknown team"]))
-            ]
+        ]
 
     def drop_negative_earned_gpm(self) -> pd.DataFrame:
         return self.oe_data[self.oe_data["earned gpm"] >= 0]
 
     def normalize_names(
-            self,
-            team_replacements: Dict,
-            player_replacements: Dict,
+        self,
+        team_replacements: Dict,
+        player_replacements: Dict,
     ) -> pd.DataFrame:
         if team_replacements:
-            self.oe_data["teamname"] = self.oe_data["teamname"].replace(team_replacements)
+            self.oe_data["teamname"] = self.oe_data["teamname"].replace(
+                team_replacements
+            )
         if player_replacements:
-            self.oe_data["playername"] = self.oe_data["playername"].replace(player_replacements)
+            self.oe_data["playername"] = self.oe_data["playername"].replace(
+                player_replacements
+            )
         return self.oe_data
 
     def subset_data(self, split_on: Optional[str]) -> pd.DataFrame:
@@ -224,50 +231,72 @@ class OraclesElixir:
 
     def sort_data(self, split_on: Optional[str]) -> pd.DataFrame:
         if split_on == "player":
-            return self.oe_data.sort_values(["league", "date", "gameid", "side", "position"])
+            return self.oe_data.sort_values(
+                ["league", "date", "gameid", "side", "position"]
+            )
         elif split_on == "team":
             return self.oe_data.sort_values(["league", "date", "gameid", "side"])
 
     def fill_null_team_ids(self, split_on: str) -> pd.DataFrame:
         if split_on == "player":
-            self.oe_data["teamid"] = self.oe_data["teamid"].fillna(self.oe_data["teamname"])
+            self.oe_data["teamid"] = self.oe_data["teamid"].fillna(
+                self.oe_data["teamname"]
+            )
         return self.oe_data
 
     def enrich_opponent_metrics(self, split_on: str) -> pd.DataFrame:
         if split_on == "player":
-            self.oe_data["playerid"] = self.oe_data["playerid"].fillna(self.oe_data["playername"])
-            self.oe_data["opponentteam"] = self.get_opponent(self.oe_data["teamname"].to_list(), split_on)
-            self.oe_data["opponentteamid"] = self.get_opponent(self.oe_data["teamid"].to_list(), split_on)
+            self.oe_data["playerid"] = self.oe_data["playerid"].fillna(
+                self.oe_data["playername"]
+            )
+            self.oe_data["opponentteam"] = self.get_opponent(
+                self.oe_data["teamname"].to_list(), split_on
+            )
+            self.oe_data["opponentteamid"] = self.get_opponent(
+                self.oe_data["teamid"].to_list(), split_on
+            )
 
-        self.oe_data["opponentname"] = self.get_opponent(self.oe_data["playername"].to_list(), split_on)
-        self.oe_data["opponentid"] = self.get_opponent(self.oe_data["playerid"].to_list(), split_on)
-        self.oe_data["opponent_egpm"] = self.get_opponent(self.oe_data["earned gpm"].to_list(), split_on)
+        self.oe_data["opponentname"] = self.get_opponent(
+            self.oe_data["playername"].to_list(), split_on
+        )
+        self.oe_data["opponentid"] = self.get_opponent(
+            self.oe_data["playerid"].to_list(), split_on
+        )
+        self.oe_data["opponent_egpm"] = self.get_opponent(
+            self.oe_data["earned gpm"].to_list(), split_on
+        )
 
         return self.oe_data
 
-    def clean_data(self, split_on: Optional[str], team_replacements: Optional[Dict] = None,
-                   player_replacements: Optional[Dict] = None) -> pd.DataFrame:
+    def clean_data(
+        self,
+        split_on: Optional[str],
+        team_replacements: Optional[Dict] = None,
+        player_replacements: Optional[Dict] = None,
+    ) -> pd.DataFrame:
         """
         Format and clean data from Oracle's Elixir.
-        This function is optional, and provided as a convenience to help make the data more consistent and user-friendly
+        This function makes the data more consistent and user-friendly
 
         The date column will be formatted appropriately as a datetime object.
         Any games with 'unknown team' or 'unknown player' will be dropped.
         Any games with null game ids will be dropped.
         Opponent metrics will be enriched into the dataframe.
-        This function also subsets the dataset down to relevant columns for the entity you split on (team, player).
-        Please note that this means not all columns from the initial data set are in the "cleaned" output.
+        Subsets the dataset down to relevant columns for the entity you split on.
+        NOTE: Not all data from the initial data set are in the "cleaned" output.
 
         Parameters
         ----------
         split_on : 'team', 'player' or None
             Subset data for Team data or Player data. None for all data.
         team_replacements: Optional[dict]
-            Replacement values to normalize team names in the data if a team name changes over time.
-            The format is intended to be {'oldname1': 'newname1', 'oldname2': 'newname2'}
+            Replacement values to normalize team names in the data
+            if a team name changes over time.
+            Format: {'oldname1': 'newname1', 'oldname2': 'newname2'}
         player_replacements: Optional[dict]
-            Replacement values to normalize player names in the data if a player's name changes over time.
-            The format is intended to be {'oldname1': 'newname1', 'oldname2': 'newname2'}
+            Replacement values to normalize player names in the data
+            if a player's name changes over time.
+            Format: {'oldname1': 'newname1', 'oldname2': 'newname2'}
 
         Returns
         -------

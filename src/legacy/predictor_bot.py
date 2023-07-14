@@ -16,9 +16,9 @@ import requests
 from discord.ext import commands
 from dotenv import load_dotenv
 
-import src.match_predictor as mp
-import src.model_validator as mv
-from src.team import Team
+import src.legacy.match_predictor as mp
+import src.legacy.model_validator as mv
+from src.legacy.team import Team
 
 nest_asyncio.apply()
 pd.options.display.float_format = "{:,.4f}".format
