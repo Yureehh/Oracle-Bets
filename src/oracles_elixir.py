@@ -106,9 +106,8 @@ class OraclesElixir:
 
     def format_data_types(self) -> pd.DataFrame:
         self.oe_data["date"] = pd.to_datetime(self.oe_data["date"])
-        self.oe_data[["gameid", "playerid", "teamid"]] = self.oe_data[
-            ["gameid", "playerid", "teamid"]
-        ].str.strip()
+        f_cols = ["gameid", "playerid", "teamid"]
+        self.oe_data[f_cols] = self.oe_data[f_cols].apply(lambda x: x.str.strip())
         replace_values = {"": np.nan, "nan": np.nan, "null": np.nan}
         self.oe_data = self.oe_data.replace(
             {
@@ -118,12 +117,6 @@ class OraclesElixir:
                 "position": replace_values,
             }
         )
-        return self.oe_data
-
-    def format_ids(self) -> pd.DataFrame:
-        self.oe_data = self.oe_data[
-            (self.oe_data["gameid"].notna()) & (self.oe_data["position"].notna())
-        ]
         return self.oe_data
 
     def remove_null_games(self) -> pd.DataFrame:
@@ -304,7 +297,6 @@ class OraclesElixir:
         the parameters provided above.
         """
         self.oe_data = self.format_data_types()
-        self.oe_data = self.format_ids()
         self.oe_data = self.remove_null_games()
         self.oe_data = self.drop_unknown_entities()
         self.oe_data = self.drop_negative_earned_gpm()
