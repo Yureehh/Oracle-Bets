@@ -1,9 +1,18 @@
 import datetime as dt
 import json
+import logging
 from typing import List, Optional
 
 import pandas as pd
 import requests
+
+# Initialize Logger
+date_format = "%m/%d/%Y %I:%M:%S %p"
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s", datefmt=date_format
+)
+logger = logging.getLogger(__name__)
+logger.setLevel('INFO')
 
 
 class PandascoreSchedule:
@@ -33,10 +42,13 @@ class PandascoreSchedule:
         try:
             res = requests.get(url, headers=self.headers)
             if res.status_code == 200:
+                logger.info("PandaScore status code: 200")
                 pandascore_response = json.loads(res.text)
             else:
+                logger.error(res.status_code)
                 raise ConnectionError(f"Error: {res.status_code}")
         except ConnectionError as e:
+            logger.error(e)
             raise e
 
         return pandascore_response
@@ -69,7 +81,8 @@ class PandascoreSchedule:
                 }
                 schedule.append(match_data)
             except IndexError:
-                print(match)
+                # Note - NOT an error, only a warning for an invalid formatted response.
+                logger.warning(f"Invalid Item: {match}")
 
         return schedule
 
@@ -111,6 +124,7 @@ class PandascoreSchedule:
 
         # Paginate Data Within Time Range
         while True:
+            logger.info(f"Parsing PandaScore response - page {i}")
             pandascore_response = self.fetch_data(i)
             match_data = self.process_response(pandascore_response)
             if not match_data:  # No more data to process

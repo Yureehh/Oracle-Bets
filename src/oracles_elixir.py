@@ -14,8 +14,17 @@ from typing import Dict, Optional, Union
 # Housekeeping
 import awswrangler as wr
 import boto3
+import logging
 import numpy as np
 import pandas as pd
+
+# Initialize Logger
+date_format = "%m/%d/%Y %I:%M:%S %p"
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s", datefmt=date_format
+)
+logger = logging.getLogger(__name__)
+logger.setLevel('INFO')
 
 
 # Primary Functions
@@ -49,6 +58,7 @@ class OraclesElixir:
             f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv"
             for year in years
         ]
+        logger.info(file_paths)
         self.oe_data = wr.s3.read_csv(file_paths, boto3_session=self.session)
 
         return self.oe_data
@@ -74,6 +84,7 @@ class OraclesElixir:
             The opponent of the entities in the column provided;
             can be inserted as a column back into the dataframe.
         """
+        logger.info(f"Calculating opponent values for {entity}")
         opponent = []
         flag = 0
 
