@@ -59,7 +59,7 @@ class OraclesElixir:
             for year in years
         ]
         logger.info(file_paths)
-        self.oe_data = wr.s3.read_csv(file_paths, boto3_session=self.session)
+        self.oe_data = wr.s3.read_csv(file_paths, boto3_session=self.session, low_memory=False)
 
         return self.oe_data
 
