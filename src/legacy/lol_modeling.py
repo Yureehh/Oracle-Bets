@@ -33,7 +33,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
 import src.oracles_elixir as oe
-oracle = oe.OraclesElixir()
 
 
 # Function Library
@@ -53,7 +52,9 @@ def q90(x: pd.Series) -> np.ndarray:
     return np.percentile(x, q=90)
 
 
-def elo_calculator(df: pd.DataFrame, entity_name: str, initial_elo: int = 1200, k: int = 20) -> pd.DataFrame:
+def elo_calculator(
+    df: pd.DataFrame, entity_name: str, initial_elo: int = 1200, k: int = 20
+) -> pd.DataFrame:
     """
     Calculate Elo ratings for entities in a DataFrame.
 
@@ -66,6 +67,7 @@ def elo_calculator(df: pd.DataFrame, entity_name: str, initial_elo: int = 1200, 
     Returns:
     pd.DataFrame: The DataFrame with Elo ratings added.
     """
+
     def _expected(elo_a: float, elo_b: float) -> float:
         """
         Calculate the expected outcome of a match between two entities.
@@ -94,9 +96,9 @@ def elo_calculator(df: pd.DataFrame, entity_name: str, initial_elo: int = 1200, 
         return old + k * (score - exp)
 
     # Determine the sort keys based on the entity
-    if entity_name == 'team':
+    if entity_name == "team":
         sort_keys = ["date", "league", "gameid", "result"]
-    elif entity_name == 'player':
+    elif entity_name == "player":
         sort_keys = ["date", "league", "gameid", "teamid", "position", "result"]
     else:
         raise ValueError(f"Unsupported entity name: {entity_name}")
@@ -106,17 +108,35 @@ def elo_calculator(df: pd.DataFrame, entity_name: str, initial_elo: int = 1200, 
 
     # Initialize variables
     elo_dict: Dict[str, float] = defaultdict(lambda: initial_elo)
-    opponent_entity = 'opponent' + entity_name
+    opponent_entity = "opponent" + entity_name
 
     # Calculate ELO
-    df['elo'] = df[entity_name].map(elo_dict.get)
-    df['elo_vs_opponent'] = df[opponent_entity].map(elo_dict.get)
-    df['elo_expected'] = _expected(df['elo'], df['elo_vs_opponent'])
-    df['result'] = df['result'].astype(int)
+    df["elo"] = df[entity_name].map(elo_dict.get)
+    df["elo_vs_opponent"] = df[opponent_entity].map(elo_dict.get)
+    df["elo_expected"] = _expected(df["elo"], df["elo_vs_opponent"])
+    df["result"] = df["result"].astype(int)
 
     # Update ELO ratings
-    elo_dict.update(df.groupby(entity_name).apply(lambda x: _elo(x['elo'].iloc[-1], x['elo_expected'].iloc[-1], x['result'].iloc[-1])).to_dict())
-    elo_dict.update(df.groupby(opponent_entity).apply(lambda x: _elo(x['elo_vs_opponent'].iloc[-1], 1 - x['elo_expected'].iloc[-1], 1 - x['result'].iloc[-1])).to_dict())
+    elo_dict.update(
+        df.groupby(entity_name)
+        .apply(
+            lambda x: _elo(
+                x["elo"].iloc[-1], x["elo_expected"].iloc[-1], x["result"].iloc[-1]
+            )
+        )
+        .to_dict()
+    )
+    elo_dict.update(
+        df.groupby(opponent_entity)
+        .apply(
+            lambda x: _elo(
+                x["elo_vs_opponent"].iloc[-1],
+                1 - x["elo_expected"].iloc[-1],
+                1 - x["result"].iloc[-1],
+            )
+        )
+        .to_dict()
+    )
 
     return df
 
@@ -335,9 +355,9 @@ def trueskill_model(
         Compute the TrueSkill probability of a team to win based on mu and sigma values.
         """
         delta_mu = sum(r.mu for r in team1) - sum(r.mu for r in team2)
-        sum_sigma = sum(r.sigma ** 2 for r in itertools.chain(team1, team2))
+        sum_sigma = sum(r.sigma**2 for r in itertools.chain(team1, team2))
         size = len(team1) + len(team2)
-        denominator = math.sqrt(size * (trueskill_global_env.beta ** 2) + sum_sigma)
+        denominator = math.sqrt(size * (trueskill_global_env.beta**2) + sum_sigma)
 
         return trueskill_global_env.cdf(delta_mu / denominator)
 

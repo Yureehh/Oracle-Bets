@@ -64,56 +64,6 @@ class OraclesElixir:
         return oe_data
 
     @staticmethod
-    def get_opponent(column: pd.Series, entity: str) -> list:
-        """
-        Generate value for the opposing team or player.
-        Used for utilities such as returning the opposing player/team's name.
-        It can also return opposing metrics, ex: opponent's earned gold per minute
-        Be sure that the input value is sorted to have consistent order in rows.
-
-        Parameters
-        ----------
-        column : Pandas Series
-            Pandas DataFrame column representing entity data (see entity)
-        entity : str
-            'player' or 'team', entity to calculate opponent of.
-
-        Returns
-        -------
-        opponent : list
-            The opponent of the entities in the column provided;
-            can be inserted as a column back into the dataframe.
-        """
-        logger.info(f"Calculating opponent values for {entity}")
-        opponent = []
-        flag = 0
-
-        # The gap represents how many rows separate a value from its opponent
-        # Teams are 1 (Team A, Team B)
-        # Players are 5 (ADC to opposing ADC is a 5 row gap)
-        gap_dict = {"player": 5, "team": 1}
-        gap = gap_dict.get(entity)
-        if gap is None:
-            raise ValueError("Entity must be either player or team.")
-
-        for i, obj in enumerate(column):
-            # If "Blue Side" - fetch opposing team/player below
-            if flag < gap:
-                opponent.append(column[i + gap])
-                flag += 1
-            # If "Red Side" - fetch opposing team/player above
-            elif gap <= flag < (gap * 2):
-                opponent.append(column[i - gap])
-                flag += 1
-            else:
-                raise ValueError(f"Index {i} - Out Of Bounds")
-
-            # After both sides are enumerated, reset the flag
-            if flag >= (gap * 2):
-                flag = 0
-        return opponent
-
-    @staticmethod
     def format_data_types(oe_data: pd.DataFrame) -> pd.DataFrame:
         oe_data["date"] = pd.to_datetime(oe_data["date"])
         f_cols = ["gameid", "playerid", "teamid"]
@@ -251,27 +201,22 @@ class OraclesElixir:
             oe_data["teamid"] = oe_data["teamid"].fillna(oe_data["teamname"])
         return oe_data
 
-    def enrich_opponent_metrics(
-        self, oe_data: pd.DataFrame, split_on: str
-    ) -> pd.DataFrame:
+    @staticmethod
+    def enrich_opponent_metrics(oe_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
         metrics = {
             "teamid": oe_data["teamid"].fillna(oe_data["teamname"]),
-            "opponentteam": self.get_opponent(oe_data["teamname"].to_list(), split_on),
-            "opponentteamid": self.get_opponent(oe_data["teamid"].to_list(), split_on),
-            "opponent_egpm": self.get_opponent(
-                oe_data["earned gpm"].to_list(), split_on
-            ),
+            "opponentteam": get_opponent(oe_data["teamname"].to_list(), split_on),
+            "opponentteamid": get_opponent(oe_data["teamid"].to_list(), split_on),
+            "opponent_egpm": get_opponent(oe_data["earned gpm"].to_list(), split_on),
         }
         if split_on == "player":
             metrics.update(
                 {
                     "playerid": oe_data["playerid"].fillna(oe_data["playername"]),
-                    "opponentname": self.get_opponent(
+                    "opponentname": get_opponent(
                         oe_data["playername"].to_list(), split_on
                     ),
-                    "opponentid": self.get_opponent(
-                        oe_data["playerid"].to_list(), split_on
-                    ),
+                    "opponentid": get_opponent(oe_data["playerid"].to_list(), split_on),
                 }
             )
 
@@ -328,3 +273,53 @@ class OraclesElixir:
         oe_data = self.remove_inconsistent_games(oe_data, split_on)
         oe_data = self.enrich_opponent_metrics(oe_data, split_on)
         return oe_data
+
+
+def get_opponent(column: pd.Series, entity: str) -> list:
+    """
+    Generate value for the opposing team or player.
+    Used for utilities such as returning the opposing player/team's name.
+    It can also return opposing metrics, ex: opponent's earned gold per minute
+    Be sure that the input value is sorted to have consistent order in rows.
+
+    Parameters
+    ----------
+    column : Pandas Series
+        Pandas DataFrame column representing entity data (see entity)
+    entity : str
+        'player' or 'team', entity to calculate opponent of.
+
+    Returns
+    -------
+    opponent : list
+        The opponent of the entities in the column provided;
+        can be inserted as a column back into the dataframe.
+    """
+    logger.info(f"Calculating opponent values for {entity}")
+    opponent = []
+    flag = 0
+
+    # The gap represents how many rows separate a value from its opponent
+    # Teams are 1 (Team A, Team B)
+    # Players are 5 (ADC to opposing ADC is a 5 row gap)
+    gap_dict = {"player": 5, "team": 1}
+    gap = gap_dict.get(entity)
+    if gap is None:
+        raise ValueError("Entity must be either player or team.")
+
+    for i, obj in enumerate(column):
+        # If "Blue Side" - fetch opposing team/player below
+        if flag < gap:
+            opponent.append(column[i + gap])
+            flag += 1
+        # If "Red Side" - fetch opposing team/player above
+        elif gap <= flag < (gap * 2):
+            opponent.append(column[i - gap])
+            flag += 1
+        else:
+            raise ValueError(f"Index {i} - Out Of Bounds")
+
+        # After both sides are enumerated, reset the flag
+        if flag >= (gap * 2):
+            flag = 0
+    return opponent
