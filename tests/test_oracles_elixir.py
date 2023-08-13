@@ -1,12 +1,10 @@
 from io import StringIO
 
 import boto3
-import numpy as np
 import pandas as pd
-import pytest
 from moto import mock_s3
 
-from src.oracles_elixir import OraclesElixir
+from src.data_ingest.oracles_elixir import OraclesElixir
 
 
 @mock_s3
@@ -46,19 +44,19 @@ def test_format_data_types():
     oe = OraclesElixir(session=None, bucket=None)
 
     # Create some test data
-    oe.oe_data = pd.DataFrame({
-        'date': ['2022-01-01', '2022-01-02'],
-        'gameid': [' game1 ', ' game2 '],
-        'playerid': ['test1', 'test2'],
-        'teamid': ['team_a', 'team_b'],
-        'position': [' top ', ' jungle '],
-        # Add other columns as necessary...
-    })
+    oe.oe_data = pd.DataFrame(
+        {
+            "date": ["2022-01-01", "2022-01-02"],
+            "gameid": [" game1 ", " game2 "],
+            "playerid": ["test1", "test2"],
+            "teamid": ["team_a", "team_b"],
+            "position": [" top ", " jungle "],
+            # Add other columns as necessary...
+        }
+    )
 
     # Call the method under test
     oe.format_data_types()
 
     # Check that the 'date' column has been converted to datetime
-    assert pd.api.types.is_datetime64_any_dtype(oe.oe_data['date'])
-
-
+    assert pd.api.types.is_datetime64_any_dtype(oe.oe_data["date"])

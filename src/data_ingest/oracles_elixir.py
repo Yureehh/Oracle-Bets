@@ -8,14 +8,14 @@ to leverage pro game data for use in their own scripts and analytics.
 Please visit and support www.oracleselixir.com
 Tim provides an invaluable service to the League community.
 """
-from dataclasses import dataclass
 import datetime as dt
+import logging
+from dataclasses import dataclass
 from typing import Dict, Optional, Union
 
 # Housekeeping
 import awswrangler as wr
 import boto3
-import logging
 import numpy as np
 import pandas as pd
 
@@ -65,6 +65,11 @@ class OraclesElixir:
 
     @staticmethod
     def format_data_types(oe_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Handle data type formatting.
+        Dates as dates, nulls as nulls, remove leading/trailing whitespace,
+            sets game length as minutes instead of seconds.
+        """
         oe_data["date"] = pd.to_datetime(oe_data["date"])
         f_cols = ["gameid", "playerid", "teamid"]
         oe_data[f_cols] = oe_data[f_cols].apply(lambda x: x.str.strip())
@@ -77,6 +82,7 @@ class OraclesElixir:
                 "position": replace_values,
             }
         )
+        oe_data["gamelength"] = oe_data["gamelength"] / 60
         return oe_data
 
     @staticmethod
@@ -114,13 +120,14 @@ class OraclesElixir:
                 "gameid",
                 "side",
                 "league",
+                "patch",
                 "teamname",
                 "teamid",
                 "result",
                 "kills",
                 "deaths",
                 "assists",
-                "earned gpm",
+                "egpm",
                 "gamelength",
                 "ckpm",
                 "team kpm",
@@ -141,6 +148,7 @@ class OraclesElixir:
                 "side",
                 "position",
                 "league",
+                "patch",
                 "playername",
                 "playerid",
                 "teamname",
@@ -150,10 +158,25 @@ class OraclesElixir:
                 "deaths",
                 "assists",
                 "total cs",
-                "earned gpm",
+                "egpm",
                 "earnedgoldshare",
+                "damagetochampions",
+                "dpm",
+                "damageshare",
+                "damagetakenperminute",
+                "wardsplaced",
+                "wpm",
+                "wardskilled",
+                "wcpm",
+                "controlwardsbought",
+                "visionscore",
+                "vspm",
+                "totalgold",
+                "monsterkills",
+                "minionkills",
                 "gamelength",
                 "ckpm",
+                "cspm",
                 "team kpm",
                 "goldat15",
                 "xpat15",
@@ -170,6 +193,7 @@ class OraclesElixir:
             ],
         }
         if split_on in columns:
+            oe_data = oe_data.rename(columns={"earned gpm": "egpm"})
             if split_on.lower() == "team":
                 oe_data = oe_data[oe_data["position"] == "team"]
             else:
@@ -182,9 +206,25 @@ class OraclesElixir:
     def remove_inconsistent_games(
         oe_data: pd.DataFrame, split_on: Optional[str]
     ) -> pd.DataFrame:
+        """
+        Removes entries from the input DataFrame with inconsistent game records based on gameID counts.
+
+        Inconsistencies are determined based on the `split_on` parameter. If `split_on` is "team", games
+        with counts not equal to 2 are considered inconsistent. For any other value, games with counts
+        not equal to 10 are considered inconsistent.
+
+        Args:
+            oe_data (pd.DataFrame): Input DataFrame containing game data with a 'gameid' column.
+            split_on (str, optional): Criterion for inconsistency. If "team", inconsistent games are
+                                      those with not exactly 2 records. Otherwise, games with not exactly
+                                      10 records are considered inconsistent.
+
+        Returns:
+            pd.DataFrame: A new DataFrame with inconsistent game records removed.
+        """
         counts = oe_data["gameid"].value_counts()
         inconsistent_games = counts[
-            (counts != 2) if split_on == "team" else (counts != 10)
+            (counts != 2) if split_on.lower() == "team" else (counts != 10)
         ].index
         return oe_data[~oe_data["gameid"].isin(inconsistent_games)]
 
@@ -207,7 +247,7 @@ class OraclesElixir:
             "teamid": oe_data["teamid"].fillna(oe_data["teamname"]),
             "opponentteam": get_opponent(oe_data["teamname"].to_list(), split_on),
             "opponentteamid": get_opponent(oe_data["teamid"].to_list(), split_on),
-            "opponent_egpm": get_opponent(oe_data["earned gpm"].to_list(), split_on),
+            "opponent_egpm": get_opponent(oe_data["egpm"].to_list(), split_on),
         }
         if split_on == "player":
             metrics.update(
