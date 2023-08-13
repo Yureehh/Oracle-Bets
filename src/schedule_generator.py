@@ -34,24 +34,26 @@ class PandascoreSchedule:
         pandascore_response : dict
             The response from the API as a dictionary.
         """
-        url = f"https://api.pandascore.co/lol/matches/upcoming?" \
-              f"sort=&page={page}" \
-              f"&per_page=100" \
-              f"&token={self.api_key}"
+        url = "https://api.pandascore.co/lol/matches/upcoming"
+        params = {
+            "sort": "",
+            "page": page,
+            "per_page": 100,
+            "token": self.api_key
+        }
 
         try:
-            res = requests.get(url, headers=self.headers)
+            res = requests.get(url, headers=self.headers, params=params)
             if res.status_code == 200:
                 logger.info("PandaScore status code: 200")
                 pandascore_response = json.loads(res.text)
+                return pandascore_response
             else:
                 logger.error(res.status_code)
-                raise ConnectionError(f"Error: {res.status_code}")
-        except ConnectionError as e:
+                res.raise_for_status()
+        except requests.exceptions.HTTPError as e:
             logger.error(e)
             raise e
-
-        return pandascore_response
 
     @staticmethod
     def process_response(pandascore_response: dict) -> List[dict]:
@@ -109,12 +111,12 @@ class PandascoreSchedule:
             A pandas DataFrame containing the upcoming matches.
         """
         time_format = "%Y-%m-%dT%H:%M:%SZ"
-        schedule = []
+        schedule = pd.DataFrame(columns=["league", "Blue", "Red", "Start (UTC)", "Best Of"])
         i = 1
 
         # Establish Time Range
-        start_datetime = dt.datetime.strptime(start_datetime, time_format)
-        end_datetime = dt.datetime.strptime(end_datetime, time_format)
+        start_datetime = pd.to_datetime(start_datetime)
+        end_datetime = pd.to_datetime(end_datetime)
 
         if (end_datetime - start_datetime).days > 7:
             raise ValueError(
@@ -131,7 +133,7 @@ class PandascoreSchedule:
                 break
 
             match_datetimes = [
-                dt.datetime.strptime(game["Start (UTC)"], time_format)
+                pd.to_datetime(game["Start (UTC)"], format=time_format)
                 for game in match_data
             ]
 
@@ -141,25 +143,18 @@ class PandascoreSchedule:
             ):
                 break  # Data is out of the datetime range
 
-            schedule.extend(match_data)
+            schedule = schedule.append(match_data, ignore_index=True)
             i += 1
 
         # Filter Results To Time Range
-        schedule = list(
-            filter(
-                lambda game: end_datetime
-                >= dt.datetime.strptime(game["Start (UTC)"], time_format)
-                >= start_datetime,
-                schedule,
-            )
-        )
+        schedule = schedule[
+            (schedule["Start (UTC)"] >= start_datetime) &
+            (schedule["Start (UTC)"] <= end_datetime)
+        ]
 
         # Filter Leagues of Interest
         if leagues:
             leagues = leagues.strip().split(",")
-            schedule = list(filter(lambda game: game["league"] in leagues, schedule))
-
-        # Convert to Pandas DataFrame
-        schedule = pd.DataFrame(schedule)
+            schedule = schedule[schedule["league"].isin(leagues)]
 
         return schedule
