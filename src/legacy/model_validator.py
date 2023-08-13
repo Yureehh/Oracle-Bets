@@ -9,60 +9,6 @@ from sklearn.metrics import brier_score_loss, log_loss
 
 sns.set_style("darkgrid")
 
-# Variable Definitions
-region_lookup = {
-    "KR": ["CK", "KeSPA", "LAS", "LCK", "LCKC", "LCK CL"],
-    "CN": ["DC", "DCup", "NEST", "LDL", "LPL"],
-    "EU": [
-        "BL",
-        "BM",
-        "CT",
-        "DL",
-        "EBL",
-        "EU CS",
-        "EUM",
-        "GLL",
-        "HC",
-        "HM",
-        "HS",
-        "LEC",
-        "LFL",
-        "LPLOL",
-        "NEXO",
-        "NLC",
-        "OTBLX",
-        "PGN",
-        "PRM",
-        "SL",
-        "UKLC",
-        "UL",
-    ],
-    "NA": [
-        "AOL",
-        "BIG",
-        "CU",
-        "EGL",
-        "GSG",
-        "LCS",
-        "LCSA",
-        "NA CS",
-        "NASG",
-        "NERD",
-        "RCL",
-        "UGP",
-        "UPL",
-    ],
-    "BR": ["BRCC", "CBLOL", "CBLOLA"],
-    "TR": ["TCL", "TRA"],
-    "CIS": ["LCL", "CISC"],
-    "SEA": ["GPL", "LNL", "PCS"],
-    "VIET": ["VCS"],
-    "JPN": ["LJL", "LJLA", "LJLCS"],
-    "OCE": ["LCO", "OCS", "OPL"],
-    "LATAM": ["LHE", "LLA", "LMF", "LVP DDH"],
-    "INTL": ["IEM", "IWCI", "MSC", "MSI", "Riot", "WLDs"],
-}
-
 
 def validate_team_elo(teams: pd.DataFrame, directory: Path, graph: bool):
     """
@@ -75,18 +21,19 @@ def validate_team_elo(teams: pd.DataFrame, directory: Path, graph: bool):
     directory: Path
         Filepath pointing to the reports/figures directory.
     graph: bool
-        Boolean value indicating whether or not to generate the optional 300 dpi .png graph image.
+        Boolean value indicating whether to generate the optional 300 dpi .png image.
 
     Returns
     -------
-    [OPTIONAL] A 300 dpi .png image of a graph containing model validation metrics, in the directory specified.
+    [OPTIONAL] A 300 dpi .png image of a graph containing model validation metrics,
+        in the directory specified.
 
     accuracy: float
         Variable describing the number of predictions that this model had correct.
     logloss: float
         Variable describing the log loss, as defined by sklearn.metrics, of the model.
     brier: float
-        Variable describing the Brier loss score, as defined by sklearn.metrics, of the model.
+        Variable describing the Brier loss score, per sklearn.metrics, of the model.
     """
     # Data Preparation
     teams["opp_team_elo"] = teams["team_elo_before"] - teams["team_elo_diff"]

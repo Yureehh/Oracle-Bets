@@ -18,8 +18,8 @@ from typing import Tuple
 
 import pandas as pd
 
+import src.data_ingest.oracles_elixir as oe
 import src.legacy.lol_modeling as lol
-import src.oracles_elixir as oe
 
 
 # Function Definitions

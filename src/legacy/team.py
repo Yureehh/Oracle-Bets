@@ -74,7 +74,8 @@ class Team:
         elif lower_name in ["first 5", "second 5"]:
             pass
         else:
-            self.warning += f"""\n WARNING: Team "{str(self.name)}" not found in database. No team data was used."""
+            self.warning += f"""\n WARNING: Team `{str(self.name)}`"""
+            self.warning += "not found in database. No team data was used."
             print(self.warning)
 
         if not self.bot:
@@ -118,7 +119,10 @@ class Team:
                     "red_side_ema_after": 0.4,
                 }
                 data = data.append(substitute, ignore_index=True)
-            self.warning += f"\n WARNING: {str(diff)} not found in database. Substitute values were used."
+            self.warning += (
+                f"\n WARNING: {str(diff)} not found in database. "
+                f"Substitute values were used."
+            )
         elif len(data) > 5:
             raise ValueError(
                 f"Team cannot have more than 5 player values. \n \n {data}"
