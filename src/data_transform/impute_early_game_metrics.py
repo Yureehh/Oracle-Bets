@@ -1,5 +1,5 @@
 import logging
-from typing import Tuple, Dict, Union
+from typing import Dict, Union
 
 import numpy as np
 import pandas as pd
@@ -10,7 +10,7 @@ from sklearn.neighbors import KNeighborsRegressor
 from sklearn.tree import DecisionTreeRegressor
 
 """
-This codebase is going to impute metrics for the 15m mark, like `csat15`, etc.
+Impute metrics for the 15m mark, `csat15`, `xpat15`, `goldat15`. 
 By generating an ensemble model composed of L2 Regression, k-NN, and a decision tree.
 It will try to use end game values to predict/impute values at 15m, which we need for
 other models elsewhere.
@@ -28,7 +28,7 @@ logger.setLevel("INFO")
 # Feature Engineering
 def generate_features(data: pd.DataFrame) -> pd.DataFrame:
     """
-    Generate additional features for the given data.
+    Generate required additional features for imputing the given data.
 
     Args:
     - data (pd.DataFrame): The input dataframe.
@@ -36,50 +36,47 @@ def generate_features(data: pd.DataFrame) -> pd.DataFrame:
     Returns:
     - pd.DataFrame: The dataframe with additional features.
     """
+    # Calculate teamkills before generating other features
+    teamkills = data.groupby(["gameid", "teamid"])["kills"].transform("sum")
+
     # KDA ratio
     data["KDA"] = (data["kills"] + data["assists"]) / np.where(
         data["deaths"] == 0, 1, data["deaths"]
     )
 
     # Gold Efficiency
-    data["gold_efficiency"] = data["totalgold"] / data["gamelength"]
+    data["gold_efficiency"] = np.where(
+        data["gamelength"] == 0, 0, data["totalgold"] / data["gamelength"]
+    )
 
     # XP Efficiency
-    data["xp_efficiency"] = data["total cs"] / data["gamelength"]
-
-    # Team Kills
-    data["teamkills"] = data.groupby(["gameid", "teamid"])["kills"].transform("sum")
+    data["xp_efficiency"] = np.where(
+        data["gamelength"] == 0, 0, data["total cs"] / data["gamelength"]
+    )
 
     # Kill Participation
-    data["kill_participation"] = (data["kills"] + data["assists"]) / data["teamkills"]
+    data["kill_participation"] = np.where(
+        teamkills == 0, 0, (data["kills"] + data["assists"]) / teamkills
+    )
 
-    # Volatility Metrics
+    # Sort and group the data once
     data = data.sort_values(by=["playerid", "date"], ascending=True)
+    grouped_data = data.groupby("playerid")
+
+    # Calculate volatility metrics
     data["kills_volatility"] = (
-        data.groupby("playerid")["kills"]
-        .rolling(window=5)
-        .std()
-        .reset_index(0, drop=True)
+        grouped_data["kills"].rolling(window=5).std().reset_index(0, drop=True)
     )
     data["deaths_volatility"] = (
-        data.groupby("playerid")["deaths"]
-        .rolling(window=5)
-        .std()
-        .reset_index(0, drop=True)
+        grouped_data["deaths"].rolling(window=5).std().reset_index(0, drop=True)
     )
 
-    # Growth Metrics
+    # Calculate growth metrics
     data["kills_growth"] = (
-        data.groupby("playerid")["kills"]
-        .rolling(window=5)
-        .mean()
-        .reset_index(0, drop=True)
+        grouped_data["kills"].rolling(window=5).mean().reset_index(0, drop=True)
     )
     data["deaths_growth"] = (
-        data.groupby("playerid")["deaths"]
-        .rolling(window=5)
-        .mean()
-        .reset_index(0, drop=True)
+        grouped_data["deaths"].rolling(window=5).mean().reset_index(0, drop=True)
     )
 
     return data
@@ -88,10 +85,7 @@ def generate_features(data: pd.DataFrame) -> pd.DataFrame:
 # Training Stacked Models for Imputation
 def train_stacked_model(
     train_data: pd.DataFrame, val_data: pd.DataFrame, features: list, target: str
-) -> Tuple[
-    Dict[str, Union[KNeighborsRegressor, Ridge, DecisionTreeRegressor]],
-    LinearRegression,
-]:
+) -> tuple[dict[str, KNeighborsRegressor | Ridge | DecisionTreeRegressor], object]:
     """
     Train stacked models for the given target using the specified features.
 
@@ -137,7 +131,8 @@ def impute_missing_values(
     Args:
     - data (pd.DataFrame): Data with missing values.
     - features (list): List of feature columns.
-    - stacked_models (dict): Dictionary containing trained base models and meta-model for each target.
+    - stacked_models (dict): Dictionary containing trained base models
+                                and meta-model for each target.
 
     Returns:
     - pd.DataFrame: Data with imputed values.
@@ -161,7 +156,8 @@ def process_data(
     data: pd.DataFrame, test_size: float = 0.2, random_state: int = 42
 ) -> pd.DataFrame:
     """
-    Process the data by generating features, training stacked models, and imputing missing values.
+    Process the data by generating features, training stacked models,
+        and imputing missing values.
 
     Args:
     - data (pd.DataFrame): The input dataframe.

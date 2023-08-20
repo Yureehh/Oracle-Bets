@@ -253,10 +253,12 @@ class OraclesElixir:
             metrics.update(
                 {
                     "playerid": oe_data["playerid"].fillna(oe_data["playername"]),
-                    "opponentname": get_opponent(
+                    "opponentplayername": get_opponent(
                         oe_data["playername"].to_list(), split_on
                     ),
-                    "opponentid": get_opponent(oe_data["playerid"].to_list(), split_on),
+                    "opponentplayerid": get_opponent(
+                        oe_data["playerid"].to_list(), split_on
+                    ),
                 }
             )
 
