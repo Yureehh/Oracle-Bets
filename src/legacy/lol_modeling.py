@@ -20,6 +20,7 @@ This code is intended to be imported into your analytics projects.
 import itertools
 import math
 import pickle
+
 # Housekeeping
 from collections import defaultdict
 from pathlib import Path

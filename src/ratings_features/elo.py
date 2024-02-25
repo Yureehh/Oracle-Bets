@@ -6,7 +6,11 @@ import pandas as pd
 
 
 def calculate_elo(
-    df: pd.DataFrame, entity: str, initial_elo: int = 1200, k: int = 20
+    df: pd.DataFrame,
+    entity: str,
+    initial_elo: int = 1200,
+    k: int = 20,
+    name_prefix: str = "",
 ) -> pd.DataFrame:
     """
     Calculate Elo ratings_features for entities in a DataFrame.
@@ -51,8 +55,12 @@ def calculate_elo(
         return old + k * (score - exp)
 
     if entity.lower() == "team":
+        opponent_entity = "opponentteamid"
+        entity_column = "teamid"
         sort_keys = ["date", "league", "gameid", "result"]
     elif entity.lower() == "player":
+        opponent_entity = "opponentplayerid"
+        entity_column = "playerid"
         sort_keys = ["date", "league", "gameid", "teamid", "position", "result"]
     else:
         raise ValueError(f"Unsupported entity name: {entity}")
@@ -60,14 +68,19 @@ def calculate_elo(
     df = df.sort_values(sort_keys).reset_index(drop=True)
 
     elo_dict: Dict[str, float] = defaultdict(lambda: initial_elo)
-    opponent_entity = "opponent" + entity
-    entity_column = entity + "name"
-
-    entity_elo_array, opponent_elo_array, win_likelihood_array = [], [], []
+    (
+        entity_elo_array,
+        opponent_elo_array,
+        pre_elo_array,
+        pre_opponent_elo_array,
+        win_likelihood_array,
+    ) = ([], [], [], [], [])
 
     for _, row in df.iterrows():
         entity_elo = elo_dict[row[entity_column]]
         opponent_elo = elo_dict[row[opponent_entity]]
+        pre_elo_array.append(entity_elo)
+        pre_opponent_elo_array.append(pre_opponent_elo_array)
 
         expected_outcome = _expected(entity_elo, opponent_elo)
 
@@ -81,8 +94,19 @@ def calculate_elo(
         elo_dict[row[entity_column]] = entity_new_elo
         elo_dict[row[opponent_entity]] = opponent_new_elo
 
-    df["elo"] = entity_elo_array
-    df["opponent_elo"] = opponent_elo_array
-    df["elo_win_likelihood"] = win_likelihood_array
+    if name_prefix and not name_prefix.endswith("_"):
+        name_prefix += "_"
+
+    pre_elo_colname = str(name_prefix) + "pre_match_elo"
+    pre_opponent_elo_colname = str(name_prefix) + "pre_match_opponent_elo"
+    elo_colname = str(name_prefix) + "elo"
+    opponent_elo_colname = str(name_prefix) + "opponent_elo"
+    elo_win_likelihood_colname = str(name_prefix) + "elo_win_likelihood"
+
+    df[pre_elo_colname] = pre_elo_array
+    df[pre_opponent_elo_colname] = pre_opponent_elo_array
+    df[elo_colname] = entity_elo_array
+    df[opponent_elo_colname] = opponent_elo_array
+    df[elo_win_likelihood_colname] = win_likelihood_array
 
     return df
