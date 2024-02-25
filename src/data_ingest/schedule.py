@@ -115,10 +115,10 @@ class PandascoreSchedule:
         i = 1
 
         # Establish Time Range
-        start_datetime = pd.to_datetime(start_datetime)
-        end_datetime = pd.to_datetime(end_datetime)
+        start_datetime = pd.to_datetime(start_datetime).tz_convert('UTC')
+        end_datetime = pd.to_datetime(end_datetime).tz_convert('UTC')
 
-        if (end_datetime - start_datetime).days > 7:
+        if (end_datetime - start_datetime).days > 50:
             raise ValueError(
                 "The time delta between start_datetime "
                 "and end_datetime cannot be more than 7 days."
@@ -133,7 +133,7 @@ class PandascoreSchedule:
                 break
 
             match_datetimes = [
-                pd.to_datetime(game["Start (UTC)"], format=time_format)
+                pd.to_datetime(game["Start (UTC)"], format=time_format).tz_localize('UTC')
                 for game in match_data
             ]
 
@@ -143,10 +143,11 @@ class PandascoreSchedule:
             ):
                 break  # Data is out of the datetime range
 
-            schedule = schedule.append(match_data, ignore_index=True)
+            schedule = pd.concat([schedule, pd.DataFrame(match_data)], ignore_index=True)
             i += 1
 
         # Filter Results To Time Range
+        schedule["Start (UTC)"] = pd.to_datetime(schedule["Start (UTC)"])  # Ensure the column is datetime
         schedule = schedule[
             (schedule["Start (UTC)"] >= start_datetime) &
             (schedule["Start (UTC)"] <= end_datetime)
@@ -155,6 +156,6 @@ class PandascoreSchedule:
         # Filter Leagues of Interest
         if leagues:
             leagues = leagues.strip().split(",")
-            schedule = schedule[schedule["league"].isin(leagues)]
+            schedule = schedule[schedule["league"].isin(leagues)].reset_index()
 
         return schedule

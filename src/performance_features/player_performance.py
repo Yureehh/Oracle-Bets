@@ -64,7 +64,7 @@ def calculate_performance(data: pd.DataFrame, alpha: float = 0.3) -> pd.DataFram
         )
 
     # Save processed data if needed
-    # output_path = "/mnt/data/processed_data.csv"
-    # data.to_csv(output_path, index=False)
+    output_path = "data/processed/player_performance.csv"
+    data.to_csv(output_path, index=False)
 
     return data

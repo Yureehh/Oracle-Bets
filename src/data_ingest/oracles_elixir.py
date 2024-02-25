@@ -12,12 +12,16 @@ import datetime as dt
 import logging
 from dataclasses import dataclass
 from typing import Dict, Optional, Union
+from dotenv import load_dotenv
+from os import getenv
 
 # Housekeeping
 import awswrangler as wr
 import boto3
 import numpy as np
 import pandas as pd
+
+load_dotenv()
 
 # Initialize Logger
 date_format = "%m/%d/%Y %I:%M:%S %p"
@@ -70,9 +74,14 @@ class OraclesElixir:
         Dates as dates, nulls as nulls, remove leading/trailing whitespace,
             sets game length as minutes instead of seconds.
         """
+        # Format Date Column
         oe_data["date"] = pd.to_datetime(oe_data["date"])
+
+        # Format ID columns as strings
         f_cols = ["gameid", "playerid", "teamid"]
         oe_data[f_cols] = oe_data[f_cols].apply(lambda x: x.str.strip())
+
+        # Handle Null Values
         replace_values = {"": np.nan, "nan": np.nan, "null": np.nan}
         oe_data = oe_data.replace(
             {
@@ -82,11 +91,20 @@ class OraclesElixir:
                 "position": replace_values,
             }
         )
+
+        # Convert Game Length to Minutes
         oe_data["gamelength"] = oe_data["gamelength"] / 60
+
         return oe_data
 
     @staticmethod
     def remove_null_games(oe_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        If a gameID is null, we want to make sure it is not included in the dataset.
+
+        :param oe_data:
+        :return:
+        """
         return oe_data.dropna(subset=["gameid"])
 
     @staticmethod
@@ -97,23 +115,7 @@ class OraclesElixir:
         ]
 
     @staticmethod
-    def drop_negative_earned_gpm(oe_data: pd.DataFrame) -> pd.DataFrame:
-        return oe_data[oe_data["earned gpm"] >= 0]
-
-    @staticmethod
-    def normalize_names(
-        oe_data: pd.DataFrame,
-        team_replacements: Dict = None,
-        player_replacements: Dict = None,
-    ) -> pd.DataFrame:
-        if team_replacements:
-            oe_data["teamname"] = oe_data["teamname"].replace(team_replacements)
-        if player_replacements:
-            oe_data["playername"] = oe_data["playername"].replace(player_replacements)
-        return oe_data
-
-    @staticmethod
-    def subset_data(oe_data: pd.DataFrame, split_on: Optional[str]) -> pd.DataFrame:
+    def subset_data(oe_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
         columns = {
             "team": [
                 "date",
@@ -305,10 +307,8 @@ class OraclesElixir:
         oe_data = self.format_data_types(oe_data)
         oe_data = self.remove_null_games(oe_data)
         oe_data = self.drop_unknown_entities(oe_data)
-        oe_data = self.drop_negative_earned_gpm(oe_data)
         oe_data = self.sort_data(oe_data, split_on)
         oe_data = self.fill_null_team_ids(oe_data, split_on)
-        oe_data = self.normalize_names(oe_data, team_replacements, player_replacements)
         oe_data = self.subset_data(oe_data, split_on)
         oe_data = self.remove_inconsistent_games(oe_data, split_on)
         oe_data = self.enrich_opponent_metrics(oe_data, split_on)
@@ -363,3 +363,20 @@ def get_opponent(column: pd.Series, entity: str) -> list:
         if flag >= (gap * 2):
             flag = 0
     return opponent
+
+
+if __name__ == '__main__':
+    # Download Data
+    s3_session = boto3.Session(aws_access_key_id=getenv("ACCESS_ID"),
+                               aws_secret_access_key=getenv("SECRET_ID"),
+                               )
+
+    # Process Data
+    oracle = OraclesElixir(session=s3_session,
+                           bucket='oracles-elixir')
+
+    data = oracle.ingest_data(years=[str(dt.date.today().year - 1)])
+    team_data = oracle.clean_data(data, split_on="player")
+
+    # Render Data
+    print(team_data)
