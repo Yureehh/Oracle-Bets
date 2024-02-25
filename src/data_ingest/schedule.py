@@ -159,3 +159,29 @@ class PandascoreSchedule:
             schedule = schedule[schedule["league"].isin(leagues)].reset_index()
 
         return schedule
+
+
+if __name__ == '__main__':
+    """
+    You don't need to run this, this is just some of my testing. 
+    Consider this as a recipe for how to utilize this class. 
+    """
+    from dotenv import dotenv_values
+    from pathlib import Path
+
+    filepath = Path.cwd().parent.parent
+    config = dotenv_values(filepath.joinpath(".env"))
+
+    # Define Time
+    time_format = "%Y-%m-%dT%H:%M:%SZ"
+    start = dt.datetime.now().strftime(time_format)
+    end = (dt.datetime.now() + dt.timedelta(days=3)).strftime(time_format)
+
+    # Pull Schedule
+    panda = PandascoreSchedule(api_key=config.get("PANDASCORE_KEY"))
+    game_schedule = panda.get_schedule(start_datetime=start, end_datetime=end)
+
+    # Export
+    game_schedule.to_csv(
+        filepath.joinpath("data", "interim", "schedule.csv"), index=False
+    )

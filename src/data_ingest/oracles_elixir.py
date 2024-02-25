@@ -368,6 +368,12 @@ def get_opponent(column: pd.Series, entity: str) -> list:
 
 
 if __name__ == '__main__':
+    """
+    You don't need to run this, this is just some of my testing. 
+    Consider this as a recipe for how to utilize this class. 
+    """
+    from pathlib import Path
+
     # Download Data
     s3_session = boto3.Session(aws_access_key_id=getenv("ACCESS_ID"),
                                aws_secret_access_key=getenv("SECRET_ID"),
@@ -378,7 +384,14 @@ if __name__ == '__main__':
                            bucket='oracles-elixir')
 
     data = oracle.ingest_data(years=[str(dt.date.today().year - 1)])
-    team_data = oracle.clean_data(data, split_on="player")
+    team_data = oracle.clean_data(data, split_on="team")
+    player_data = oracle.clean_data(data, split_on="player")
 
     # Render Data
-    print(team_data)
+    filepath = Path.cwd().parent.parent
+    team_data.to_csv(
+        filepath.joinpath("data", "interim", "team_data.csv"), index=False
+    )
+    player_data.to_csv(
+        filepath.joinpath("data", "interim", "player_data.csv"), index=False
+    )
