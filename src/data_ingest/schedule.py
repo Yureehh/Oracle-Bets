@@ -1,26 +1,24 @@
 import datetime as dt
-import json
-import logging
+from dataclasses import dataclass, field
+from os import getenv
 from typing import List, Optional
 
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 
-# Initialize Logger
-date_format = "%m/%d/%Y %I:%M:%S %p"
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s", datefmt=date_format
-)
-logger = logging.getLogger(__name__)
-logger.setLevel('INFO')
+from utils.logger import logger
+
+load_dotenv()
 
 
+@dataclass
 class PandascoreSchedule:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.headers = {"Accept": "application/json"}
+    api_key: str
+    headers: dict = field(default_factory=lambda: {"Accept": "application/json"})
+    base_url: str = "https://api.pandascore.co/lol/matches/upcoming"
 
-    def fetch_data(self, page: int) -> dict:
+    def fetch_data(self, page: int) -> Optional[List[dict]]:
         """
         Fetches data from the Pandascore API.
 
@@ -34,23 +32,17 @@ class PandascoreSchedule:
         pandascore_response : dict
             The response from the API as a dictionary.
         """
-        url = "https://api.pandascore.co/lol/matches/upcoming"
-        params = {
-            "sort": "",
-            "page": page,
-            "per_page": 100,
-            "token": self.api_key
-        }
+        params = {"sort": "", "page": page, "per_page": 100, "token": self.api_key}
 
         try:
-            res = requests.get(url, headers=self.headers, params=params)
-            if res.status_code == 200:
+            response = requests.get(self.base_url, headers=self.headers, params=params)
+
+            if response.status_code == 200:
                 logger.info("PandaScore status code: 200")
-                pandascore_response = json.loads(res.text)
-                return pandascore_response
+                return response.json()
             else:
-                logger.error(res.status_code)
-                res.raise_for_status()
+                logger.error(f"Failed to fetch data: {response.status_code}")
+                response.raise_for_status()
         except requests.exceptions.HTTPError as e:
             logger.error(e)
             raise e
@@ -111,14 +103,16 @@ class PandascoreSchedule:
             A pandas DataFrame containing the upcoming matches.
         """
         time_format = "%Y-%m-%dT%H:%M:%SZ"
-        schedule = pd.DataFrame(columns=["league", "Blue", "Red", "Start (UTC)", "Best Of"])
+        schedule = pd.DataFrame(
+            columns=["league", "Blue", "Red", "Start (UTC)", "Best Of"]
+        )
         i = 1
 
         # Establish Time Range
-        start_datetime = pd.to_datetime(start_datetime).tz_convert('UTC')
-        end_datetime = pd.to_datetime(end_datetime).tz_convert('UTC')
+        start_datetime = pd.to_datetime(start_datetime).tz_convert("UTC")
+        end_datetime = pd.to_datetime(end_datetime).tz_convert("UTC")
 
-        if (end_datetime - start_datetime).days > 50:
+        if (end_datetime - start_datetime).days > 7:
             raise ValueError(
                 "The time delta between start_datetime "
                 "and end_datetime cannot be more than 7 days."
@@ -133,7 +127,9 @@ class PandascoreSchedule:
                 break
 
             match_datetimes = [
-                pd.to_datetime(game["Start (UTC)"], format=time_format).tz_localize('UTC')
+                pd.to_datetime(game["Start (UTC)"], format=time_format).tz_localize(
+                    "UTC"
+                )
                 for game in match_data
             ]
 
@@ -143,14 +139,18 @@ class PandascoreSchedule:
             ):
                 break  # Data is out of the datetime range
 
-            schedule = pd.concat([schedule, pd.DataFrame(match_data)], ignore_index=True)
+            schedule = pd.concat(
+                [schedule, pd.DataFrame(match_data)], ignore_index=True
+            )
             i += 1
 
         # Filter Results To Time Range
-        schedule["Start (UTC)"] = pd.to_datetime(schedule["Start (UTC)"])  # Ensure the column is datetime
+        schedule["Start (UTC)"] = pd.to_datetime(
+            schedule["Start (UTC)"]
+        )  # Ensure the column is datetime
         schedule = schedule[
-            (schedule["Start (UTC)"] >= start_datetime) &
-            (schedule["Start (UTC)"] <= end_datetime)
+            (schedule["Start (UTC)"] >= start_datetime)
+            & (schedule["Start (UTC)"] <= end_datetime)
         ]
 
         # Filter Leagues of Interest
@@ -161,16 +161,14 @@ class PandascoreSchedule:
         return schedule
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     """
-    You don't need to run this, this is just some of my testing. 
-    Consider this as a recipe for how to utilize this class. 
+    You don't need to run this, this is just some of my testing.
+    Consider this as a recipe for how to utilize this class.
     """
-    from dotenv import dotenv_values
     from pathlib import Path
 
-    filepath = Path.cwd().parent.parent
-    config = dotenv_values(filepath.joinpath(".env"))
+    filepath = Path.cwd()
 
     # Define Time
     time_format = "%Y-%m-%dT%H:%M:%SZ"
@@ -178,10 +176,10 @@ if __name__ == '__main__':
     end = (dt.datetime.now() + dt.timedelta(days=3)).strftime(time_format)
 
     # Pull Schedule
-    panda = PandascoreSchedule(api_key=config.get("PANDASCORE_KEY"))
+    panda = PandascoreSchedule(api_key=getenv("PANDASCORE_API_KEY"))
     game_schedule = panda.get_schedule(start_datetime=start, end_datetime=end)
 
     # Export
     game_schedule.to_csv(
-        filepath.joinpath("data", "interim", "schedule.csv"), index=False
+        filepath.joinpath(filepath, "data", "interim", "schedule.csv"), index=False
     )

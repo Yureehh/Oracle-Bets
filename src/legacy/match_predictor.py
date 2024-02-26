@@ -45,7 +45,7 @@ def predict_match(blue: Team, red: Team) -> pd.DataFrame:
         sigma_value: float,
     ) -> float:
         delta_mu = blue_team_mu - red_team_mu
-        sum_sig = sum(r ** 2 for r in itertools.chain(blue_team_sigma, red_team_sigma))
+        sum_sig = sum(r**2 for r in itertools.chain(blue_team_sigma, red_team_sigma))
         denominator = math.sqrt(10 * ((sigma_value / 2) ** 2) + sum_sig)
         blue_win_perc = norm.cdf(delta_mu / denominator)
         return blue_win_perc

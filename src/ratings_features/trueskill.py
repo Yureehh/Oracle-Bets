@@ -1,10 +1,9 @@
 import itertools
 import math
-from typing import Optional, Tuple, Dict, Any
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-
 import trueskill
 
 

@@ -9,27 +9,21 @@ Please visit and support www.oracleselixir.com
 Tim provides an invaluable service to the League community.
 """
 import datetime as dt
-import logging
+import json
 from dataclasses import dataclass
-from typing import Dict, Optional, Union
-from dotenv import load_dotenv
 from os import getenv
+from typing import Optional, Union
 
 # Housekeeping
 import awswrangler as wr
 import boto3
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
+
+from utils.logger import logger
 
 load_dotenv()
-
-# Initialize Logger
-date_format = "%m/%d/%Y %I:%M:%S %p"
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s", datefmt=date_format
-)
-logger = logging.getLogger(__name__)
-logger.setLevel("INFO")
 
 
 # Primary Functions
@@ -60,7 +54,7 @@ class OraclesElixir:
             f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv"
             for year in years
         ]
-        logger.info(file_paths)
+        logger.info(f"Requested S3 files: {file_paths}")
         oe_data = wr.s3.read_csv(
             file_paths, boto3_session=self.session, low_memory=False
         )
@@ -77,7 +71,7 @@ class OraclesElixir:
         # Format Date Column
         oe_data["date"] = pd.to_datetime(oe_data["date"])
 
-        # Format ID columns as strings
+        # Format ID columns as strings and strip whitespace
         f_cols = ["gameid", "playerid", "teamid"]
         oe_data[f_cols] = oe_data[f_cols].apply(lambda x: x.str.strip())
 
@@ -109,91 +103,48 @@ class OraclesElixir:
 
     @staticmethod
     def drop_unknown_entities(oe_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Drop rows with unknown player or team names.
+        """
         return oe_data[
             (~oe_data["playername"].isin(["unknown player"]))
             & (~oe_data["teamname"].isin(["unknown team"]))
         ]
 
     @staticmethod
+    def sort_data(oe_data: pd.DataFrame, split_on: Optional[str]) -> pd.DataFrame:
+        """
+        Sort the Oracle's Elixir data based on the split_on parameter.
+        This function sorts the data by league, date, gameid, side, and optionally position for players.
+        """
+
+        if split_on == "player":
+            return oe_data.sort_values(["league", "date", "gameid", "side", "position"])
+        elif split_on == "team":
+            return oe_data.sort_values(["league", "date", "gameid", "side"])
+
+    @staticmethod
+    def fill_null_team_ids(oe_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
+        """
+        Fill null team ids with team names.
+        This function fills null team ids with team names for the team split.
+        If the split is on players, it fills null player ids with player names.
+        """
+        if split_on == "player":
+            oe_data["teamid"] = oe_data["teamid"].fillna(oe_data["teamname"])
+        return oe_data
+
+    @staticmethod
     def subset_data(oe_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
-        columns = {
-            "team": [
-                "date",
-                "gameid",
-                "side",
-                "league",
-                "patch",
-                "teamname",
-                "teamid",
-                "result",
-                "kills",
-                "deaths",
-                "assists",
-                "egpm",
-                "gamelength",
-                "ckpm",
-                "team kpm",
-                "firstblood",
-                "dragons",
-                "barons",
-                "towers",
-                "goldat15",
-                "xpat15",
-                "csat15",
-                "golddiffat15",
-                "xpdiffat15",
-                "csdiffat15",
-            ],
-            "player": [
-                "date",
-                "gameid",
-                "side",
-                "position",
-                "league",
-                "patch",
-                "playername",
-                "playerid",
-                "teamname",
-                "teamid",
-                "result",
-                "kills",
-                "deaths",
-                "assists",
-                "total cs",
-                "egpm",
-                "earnedgoldshare",
-                "damagetochampions",
-                "dpm",
-                "damageshare",
-                "damagetakenperminute",
-                "wardsplaced",
-                "wpm",
-                "wardskilled",
-                "wcpm",
-                "controlwardsbought",
-                "visionscore",
-                "vspm",
-                "totalgold",
-                "monsterkills",
-                "minionkills",
-                "gamelength",
-                "ckpm",
-                "cspm",
-                "team kpm",
-                "goldat15",
-                "xpat15",
-                "csat15",
-                "killsat15",
-                "assistsat15",
-                "deathsat15",
-                "opp_killsat15",
-                "opp_assistsat15",
-                "opp_deathsat15",
-                "golddiffat15",
-                "xpdiffat15",
-                "csdiffat15",
-            ],
-        }
+        """
+        Subsets the dataset down to relevant columns for the entity you split on.
+        It either returns the team or player columns.
+        """
+
+        # Load column configuration from a JSON file
+        with open("src/data_ingest/columns.json", "r") as file:
+            columns = json.load(file)
+
         if split_on in columns:
             oe_data = oe_data.rename(columns={"earned gpm": "egpm"})
             if split_on.lower() == "team":
@@ -231,26 +182,26 @@ class OraclesElixir:
         return oe_data[~oe_data["gameid"].isin(inconsistent_games)]
 
     @staticmethod
-    def sort_data(oe_data: pd.DataFrame, split_on: Optional[str]) -> pd.DataFrame:
-        if split_on == "player":
-            return oe_data.sort_values(["league", "date", "gameid", "side", "position"])
-        elif split_on == "team":
-            return oe_data.sort_values(["league", "date", "gameid", "side"])
-
-    @staticmethod
-    def fill_null_team_ids(oe_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
-        if split_on == "player":
-            oe_data["teamid"] = oe_data["teamid"].fillna(oe_data["teamname"])
-        return oe_data
-
-    @staticmethod
     def enrich_opponent_metrics(oe_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
+        """
+        Enrich the Oracle's Elixir data with opponent metrics.
+        This function adds opponent columns to the dataframe depending on the split_on parameter.
+
+        Parameters
+        ----------
+        oe_data : pd.DataFrame
+            Oracle's Elixir data
+        split_on : str
+            "team" or "player"
+        """
+        # Default metrics assuming split_on is "team"
         metrics = {
             "teamid": oe_data["teamid"].fillna(oe_data["teamname"]),
             "opponentteam": get_opponent(oe_data["teamname"].to_list(), split_on),
             "opponentteamid": get_opponent(oe_data["teamid"].to_list(), split_on),
             "opponent_egpm": get_opponent(oe_data["egpm"].to_list(), split_on),
         }
+        # If split_on is "player", update metrics
         if split_on == "player":
             metrics.update(
                 {
@@ -272,8 +223,6 @@ class OraclesElixir:
         self,
         oe_data: pd.DataFrame,
         split_on: Optional[str],
-        team_replacements: Optional[Dict] = None,
-        player_replacements: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """
         Format and clean data from Oracle's Elixir.
@@ -292,14 +241,6 @@ class OraclesElixir:
             Pandas DataFrame containing Oracle's Elixir data.
         split_on : 'team', 'player' or None
             Subset data for Team data or Player data. None for all data.
-        team_replacements: Optional[dict]
-            Replacement values to normalize team names in the data
-            if a team name changes over time.
-            Format: {'oldname1': 'newname1', 'oldname2': 'newname2'}
-        player_replacements: Optional[dict]
-            Replacement values to normalize player names in the data
-            if a player's name changes over time.
-            Format: {'oldname1': 'newname1', 'oldname2': 'newname2'}
 
         Returns
         -------
@@ -353,35 +294,35 @@ def get_opponent(column: pd.Series, entity: str) -> list:
         # If "Blue Side" - fetch opposing team/player below
         if flag < gap:
             opponent.append(column[i + gap])
-            flag += 1
         # If "Red Side" - fetch opposing team/player above
         elif gap <= flag < (gap * 2):
             opponent.append(column[i - gap])
-            flag += 1
         else:
             raise ValueError(f"Index {i} - Out Of Bounds")
 
-        # After both sides are enumerated, reset the flag
-        if flag >= (gap * 2):
+        flag += 1
+
+        # After both sides of a game are enumerated, reset the flag
+        if flag >= gap * 2:
             flag = 0
     return opponent
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     """
-    You don't need to run this, this is just some of my testing. 
-    Consider this as a recipe for how to utilize this class. 
+    You don't need to run this, this is just some of my testing.
+    Consider this as a recipe for how to utilize this class.
     """
     from pathlib import Path
 
     # Download Data
-    s3_session = boto3.Session(aws_access_key_id=getenv("ACCESS_ID"),
-                               aws_secret_access_key=getenv("SECRET_ID"),
-                               )
+    s3_session = boto3.Session(
+        aws_access_key_id=getenv("ACCESS_ID"),
+        aws_secret_access_key=getenv("SECRET_ID"),
+    )
 
     # Process Data
-    oracle = OraclesElixir(session=s3_session,
-                           bucket='oracles-elixir')
+    oracle = OraclesElixir(session=s3_session, bucket="oracles-elixir")
 
     data = oracle.ingest_data(years=[str(dt.date.today().year - 1)])
     team_data = oracle.clean_data(data, split_on="team")
@@ -389,9 +330,7 @@ if __name__ == '__main__':
 
     # Render Data
     filepath = Path.cwd().parent.parent
-    team_data.to_csv(
-        filepath.joinpath("data", "interim", "team_data.csv"), index=False
-    )
+    team_data.to_csv(filepath.joinpath("data", "interim", "team_data.csv"), index=False)
     player_data.to_csv(
         filepath.joinpath("data", "interim", "player_data.csv"), index=False
     )

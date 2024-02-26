@@ -12,15 +12,22 @@ import pandas as pd
 class Team:
     team_data = pd.read_csv(
         Path.cwd().parent.joinpath("data", "processed", "flattened_teams.csv"),
-        usecols=["teamname", "team_elo", "egpm_dominance"]
+        usecols=["teamname", "team_elo", "egpm_dominance"],
     )
     player_data = pd.read_csv(
         Path.cwd().parent.joinpath("data", "processed", "flattened_players.csv")
     )
 
-    def __init__(self, name: Optional[str] = None, side: Optional[str] = None, top: Optional[str] = None,
-                 jng: Optional[str] = None, mid: Optional[str] = None, bot: Optional[str] = None,
-                 sup: Optional[str] = None):
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        side: Optional[str] = None,
+        top: Optional[str] = None,
+        jng: Optional[str] = None,
+        mid: Optional[str] = None,
+        bot: Optional[str] = None,
+        sup: Optional[str] = None,
+    ):
         self.name = name
         self.side = side
         self.top = top
@@ -36,9 +43,9 @@ class Team:
 
         lower_name = str(self.name).lower()
         lower_teamname = Team.team_data.teamname.str.lower()
-        team_data = Team.team_data[
-            lower_teamname.isin([lower_name])
-        ].reset_index(drop=True)
+        team_data = Team.team_data[lower_teamname.isin([lower_name])].reset_index(
+            drop=True
+        )
         player_data = Team.player_data
 
         if len(team_data.index) > 0:
@@ -53,7 +60,7 @@ class Team:
                 f"Team `{str(self.name)}` not found in database. No team data was used."
             )
 
-        positions = ['bot', 'jng', 'mid', 'sup', 'top']
+        positions = ["bot", "jng", "mid", "sup", "top"]
         for position in positions:
             if not getattr(self, position):
                 setattr(self, position, roster[positions.index(position)])
@@ -133,7 +140,7 @@ class Team:
         )
 
     def _validate_data(self, player_data):
-        positions = ['bot', 'jng', 'mid', 'sup', 'top']
+        positions = ["bot", "jng", "mid", "sup", "top"]
         for position in positions:
             if not getattr(self, position):
                 setattr(self, position, roster[positions.index(position)])

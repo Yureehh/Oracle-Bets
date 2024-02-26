@@ -1,8 +1,9 @@
-import pandas as pd
 import json
-from itertools import product
-from typing import List, Dict, Union
 from dataclasses import dataclass
+from itertools import product
+from typing import Dict, List, Union
+
+import pandas as pd
 
 
 @dataclass

@@ -453,8 +453,10 @@ async def dfs_roster(ctx):
 @bot.command(name="code")
 async def code(ctx):
     try:
-        output = "This model is entirely open-source! I'd love to talk shop about ideas or contributions! " \
-                 "Check the link at: https://github.com/MRittinghouse/ProjektZero-LoL-Model"
+        output = (
+            "This model is entirely open-source! I'd love to talk shop about ideas or contributions! "
+            "Check the link at: https://github.com/MRittinghouse/ProjektZero-LoL-Model"
+        )
 
     except Exception as e:
         output = (
@@ -464,5 +466,6 @@ async def code(ctx):
             f"```{e}```"
         )
     await ctx.send(content=output)
+
 
 bot.run(token)

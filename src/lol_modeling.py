@@ -1,7 +1,7 @@
 # Housekeeping
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import List, Optional, Any, Dict
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from openskill.models import PlackettLuce
