@@ -12,6 +12,7 @@ import datetime as dt
 import json
 from dataclasses import dataclass
 from os import getenv
+from pathlib import Path
 from typing import Optional, Union
 
 # Housekeeping
@@ -24,6 +25,7 @@ from dotenv import load_dotenv
 from utils.logger import logger
 
 load_dotenv()
+filepath = Path.cwd().parent
 
 
 # Primary Functions
@@ -33,7 +35,7 @@ class OraclesElixir:
     bucket: str
 
     def ingest_data(
-        self, years: Optional[Union[list, str, int]] = None
+            self, years: Optional[Union[list, str, int]] = None
     ) -> pd.DataFrame:
         """
         Pull data from S3 based on the specified years
@@ -109,7 +111,7 @@ class OraclesElixir:
         return oe_data[
             (~oe_data["playername"].isin(["unknown player"]))
             & (~oe_data["teamname"].isin(["unknown team"]))
-        ]
+            ]
 
     @staticmethod
     def sort_data(oe_data: pd.DataFrame, split_on: Optional[str]) -> pd.DataFrame:
@@ -142,7 +144,7 @@ class OraclesElixir:
         """
 
         # Load column configuration from a JSON file
-        with open("src/data_ingest/columns.json", "r") as file:
+        with open(filepath.joinpath("src", "data_ingest", "columns.json"), "r") as file:
             columns = json.load(file)
 
         if split_on in columns:
@@ -157,7 +159,7 @@ class OraclesElixir:
 
     @staticmethod
     def remove_inconsistent_games(
-        oe_data: pd.DataFrame, split_on: Optional[str]
+            oe_data: pd.DataFrame, split_on: Optional[str]
     ) -> pd.DataFrame:
         """
         Removes entries from the input DataFrame with inconsistent game records based on gameID counts.
@@ -220,9 +222,9 @@ class OraclesElixir:
         return oe_data
 
     def clean_data(
-        self,
-        oe_data: pd.DataFrame,
-        split_on: Optional[str],
+            self,
+            oe_data: pd.DataFrame,
+            split_on: Optional[str],
     ) -> pd.DataFrame:
         """
         Format and clean data from Oracle's Elixir.
