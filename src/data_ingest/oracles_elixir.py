@@ -23,6 +23,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from utils.logger import logger
+from utils.paths import IMPORT_COLUMNS, INTERIM_DIR, PROCESSED_DIR
 
 load_dotenv()
 filepath = Path.cwd().parent
@@ -35,7 +36,7 @@ class OraclesElixir:
     bucket: str
 
     def ingest_data(
-            self, years: Optional[Union[list, str, int]] = None
+        self, years: Optional[Union[list, str, int]] = None
     ) -> pd.DataFrame:
         """
         Pull data from S3 based on the specified years
@@ -56,10 +57,12 @@ class OraclesElixir:
             f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv"
             for year in years
         ]
-        logger.info(f"Requested S3 files: {file_paths}")
+
+        logger.info(f"Connecting to S3 bucket")
         oe_data = wr.s3.read_csv(
             file_paths, boto3_session=self.session, low_memory=False
         )
+        logger.info(f"Requested S3 files: {file_paths}")
 
         return oe_data
 
@@ -111,7 +114,7 @@ class OraclesElixir:
         return oe_data[
             (~oe_data["playername"].isin(["unknown player"]))
             & (~oe_data["teamname"].isin(["unknown team"]))
-            ]
+        ]
 
     @staticmethod
     def sort_data(oe_data: pd.DataFrame, split_on: Optional[str]) -> pd.DataFrame:
@@ -144,7 +147,7 @@ class OraclesElixir:
         """
 
         # Load column configuration from a JSON file
-        with open(filepath.joinpath("src", "data_ingest", "columns.json"), "r") as file:
+        with open(IMPORT_COLUMNS, "r") as file:
             columns = json.load(file)
 
         if split_on in columns:
@@ -159,7 +162,7 @@ class OraclesElixir:
 
     @staticmethod
     def remove_inconsistent_games(
-            oe_data: pd.DataFrame, split_on: Optional[str]
+        oe_data: pd.DataFrame, split_on: Optional[str]
     ) -> pd.DataFrame:
         """
         Removes entries from the input DataFrame with inconsistent game records based on gameID counts.
@@ -222,9 +225,9 @@ class OraclesElixir:
         return oe_data
 
     def clean_data(
-            self,
-            oe_data: pd.DataFrame,
-            split_on: Optional[str],
+        self,
+        oe_data: pd.DataFrame,
+        split_on: Optional[str],
     ) -> pd.DataFrame:
         """
         Format and clean data from Oracle's Elixir.
@@ -249,6 +252,7 @@ class OraclesElixir:
         A Pandas dataframe of formatted, subset Oracle's Elixir data matching
         the parameters provided above.
         """
+        logger.info(f"Cleaning data for {split_on}s...")
         oe_data = self.format_data_types(oe_data)
         oe_data = self.remove_null_games(oe_data)
         oe_data = self.drop_unknown_entities(oe_data)
@@ -280,7 +284,6 @@ def get_opponent(column: pd.Series, entity: str) -> list:
         The opponent of the entities in the column provided;
         can be inserted as a column back into the dataframe.
     """
-    logger.info(f"Calculating opponent values for {entity}")
     opponent = []
     flag = 0
 
@@ -331,8 +334,5 @@ if __name__ == "__main__":
     player_data = oracle.clean_data(data, split_on="player")
 
     # Render Data
-    filepath = Path.cwd().parent.parent
-    team_data.to_csv(filepath.joinpath("data", "interim", "team_data.csv"), index=False)
-    player_data.to_csv(
-        filepath.joinpath("data", "interim", "player_data.csv"), index=False
-    )
+    team_data.to_csv(INTERIM_DIR / "team_data.csv", index=False)
+    player_data.to_csv(INTERIM_DIR / "player_data.csv", index=False)

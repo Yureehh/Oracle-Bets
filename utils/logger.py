@@ -19,7 +19,7 @@ class Logger:
         )
         self.logger = logging.getLogger(self.name)
         self.logger.setLevel(logging.INFO)
-        self.logger.info("Logger initialized.")
+        self.logger.info("Logger initialized.\n")
 
     def get_logger(self):
         return self.logger
