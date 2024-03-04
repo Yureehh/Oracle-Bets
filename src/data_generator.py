@@ -15,7 +15,6 @@ import datetime as dt
 import json
 from dataclasses import dataclass
 from os import getenv
-from pathlib import Path
 
 import boto3
 import pandas as pd
@@ -82,6 +81,7 @@ class DataGenerator:
             # Ingest Data
             data = self.oracle.ingest_data(years=years)
             data.to_csv(RAW_DIR / "raw_data.csv", index=False)
+
             logger.info("Stored ingested data from S3.\n")
 
             # Remove Buggy Games
@@ -90,12 +90,14 @@ class DataGenerator:
             # Clean Data
             team_data = self.oracle.clean_data(data, split_on="team")
             player_data = self.oracle.clean_data(data, split_on="player")
+
             logger.info("Cleaned all data.\n")
 
             # Store Interim Data
             team_data.to_csv(INTERIM_DIR / "team_data.csv", index=False)
             player_data.to_csv(INTERIM_DIR / "player_data.csv", index=False)
             logger.info("Stored interim data.\n")
+            return team_data, player_data
         except Exception as e:
             logger.error(f"Failed to ingest data from S3: {e}")
             raise
@@ -131,6 +133,7 @@ class DataGenerator:
         -------
         enriched_team_data : pd.DataFrame
         """
+
         logger.info("Enriching team data...")
         enriched_team_data = (
             team_data  # TODO: to implement the enrich_team_data function
@@ -162,6 +165,7 @@ class DataGenerator:
             team_data.to_csv(PROCESSED_DIR / "team_data.csv", index=False)
             player_data.to_csv(PROCESSED_DIR / "player_data.csv", index=False)
             logger.info("Stored enriched data.\n")
+            return team_data, player_data
         except Exception as e:
             logger.error(f"Failed to enrich dataset: {e}")
             raise
@@ -175,7 +179,6 @@ class DataGenerator:
 
 if __name__ == "__main__":
     generator = DataGenerator()
-    logger.info("Data generator initialized.")
 
     start = dt.datetime.now()
     generator.run()

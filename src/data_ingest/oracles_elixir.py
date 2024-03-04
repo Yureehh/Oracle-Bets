@@ -12,7 +12,6 @@ import datetime as dt
 import json
 from dataclasses import dataclass
 from os import getenv
-from pathlib import Path
 from typing import Optional, Union
 
 # Housekeeping
@@ -26,7 +25,6 @@ from utils.logger import logger
 from utils.paths import IMPORT_COLUMNS, INTERIM_DIR, PROCESSED_DIR
 
 load_dotenv()
-filepath = Path.cwd().parent
 
 
 # Primary Functions
@@ -140,15 +138,18 @@ class OraclesElixir:
         return oe_data
 
     @staticmethod
-    def subset_data(oe_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
+    def subset_data(
+        oe_data: pd.DataFrame, split_on: str, columns: Optional[dict] = None
+    ) -> pd.DataFrame:
         """
         Subsets the dataset down to relevant columns for the entity you split on.
         It either returns the team or player columns.
         """
 
         # Load column configuration from a JSON file
-        with open(IMPORT_COLUMNS, "r") as file:
-            columns = json.load(file)
+        if columns is None:
+            with open(IMPORT_COLUMNS, "r") as file:
+                columns = json.load(file)
 
         if split_on in columns:
             oe_data = oe_data.rename(columns={"earned gpm": "egpm"})
@@ -318,7 +319,6 @@ if __name__ == "__main__":
     You don't need to run this, this is just some of my testing.
     Consider this as a recipe for how to utilize this class.
     """
-    from pathlib import Path
 
     # Download Data
     s3_session = boto3.Session(

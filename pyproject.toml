@@ -26,6 +26,8 @@ seaborn ="^0.12.2"
 trueskill = "^0.4.5"
 openskill = "^5.0.1"
 tqdm = "^4.66.1"
+pytest-cov = "^4.1.0"
+requests-mock = "^1.11.0"
 
 [build-system]
 requires = ["poetry-core"]

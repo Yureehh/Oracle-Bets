@@ -17,10 +17,6 @@ RAW_DIR = DATA_DIR / "raw"
 INTERIM_DIR = DATA_DIR / "interim"
 PROCESSED_DIR = DATA_DIR / "processed"
 
-# Ensuring the creation of necessary directories
-INTERIM_DIR.mkdir(parents=True, exist_ok=True)
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-
 # Config file path
 CONFIG_DIR = BASE_DIR / "config"
 INVALID_GAMES = CONFIG_DIR / "invalid_games.json"
