@@ -1,652 +1,422 @@
-import itertools
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import trueskill
 
+from src.data_ingest.oracles_elixir import get_opponent
+
+
+def initialize_player_ratings(
+    player_data: pd.DataFrame,
+    initial_sigma: float = 8.333,
+    ts_env: trueskill.TrueSkill = trueskill.TrueSkill(),
+) -> Dict:
+    return {
+        player_id: ts_env.create_rating(sigma=initial_sigma)
+        for player_id in player_data["playerid"].unique()
+    }
+
+
+def preprocess_data(player_data: pd.DataFrame) -> pd.DataFrame:
+    required_columns = [
+        "gameid",
+        "date",
+        "league",
+        "playerid",
+        "side",
+        "teamname",
+        "teamid",
+        "position",
+        "result",
+        "egpm",
+        "team_kpm",
+        "ckpm",
+    ]
+
+    # Check for the existence of required columns to avoid runtime errors
+    missing_columns = [
+        col for col in required_columns if col not in player_data.columns
+    ]
+    if missing_columns:
+        raise ValueError(f"Missing required columns: {missing_columns}")
+
+    # Compute 'team_egpm' without the unnecessary copy operation
+    team_egpm = (
+        player_data.groupby(["gameid", "teamid"], as_index=False)["egpm"]
+        .sum()
+        .rename(columns={"egpm": "team_egpm"})
+    )
+
+    # Merge the calculated 'team_egpm' back into the original DataFrame
+    merged_data = player_data.merge(team_egpm, on=["gameid", "teamid"], how="left")
+
+    # Sort the DataFrame; consider inplace sorting if the original order is not needed later
+    merged_data.sort_values(by=["date", "gameid", "side", "position"], inplace=True)
+
+    # Select and return only the required columns, ensuring the DataFrame is tidy
+    required_columns.append("team_egpm")
+    return merged_data[required_columns].reset_index(drop=True)
+
+
+def generate_match_array(df: pd.DataFrame) -> List:
+    match_arrays = []
+    for _, group in df.groupby("gameid"):
+        match_details = []
+        # Basic match info
+        match_info = group.iloc[0][["gameid", "date", "league", "ckpm"]].to_list()
+        match_details.extend(match_info)
+        # Team-specific details
+        for side in ["Blue", "Red"]:
+            team_data = group[group["side"] == side]
+            team_performance = team_data.iloc[0][["team_egpm", "team_kpm"]].tolist()
+            team_ids = team_data.iloc[0][["teamname", "teamid"]].tolist()
+            player_ids = team_data["playerid"].tolist()
+            result = team_data["result"].iloc[0]
+
+            team_details = team_ids + team_performance + player_ids + [result]
+            match_details.extend(team_details)
+
+        match_arrays.append(match_details)
+
+    return match_arrays
+
+
+def compute_win_probability(
+    team1: Tuple[trueskill.Rating],
+    team2: Tuple[trueskill.Rating],
+    ts_env: trueskill.TrueSkill,
+) -> float:
+    """
+    Compute the TrueSkill probability of a team winning based on the mu and sigma values of its players.
+    """
+    delta_mu = sum(player.mu for player in team1) - sum(player.mu for player in team2)
+    sum_sigma = sum(player.sigma**2 for player in team1 + team2)
+    size = len(team1) + len(team2)
+    denominator = math.sqrt(size * (ts_env.beta**2) + sum_sigma)
+    return ts_env.cdf(delta_mu / denominator)
+
+
+def update_player_ratings(
+    match_details: pd.Series,
+    rating_dict: Dict[str, trueskill.Rating],
+    gameid_dict: Dict[str, pd.Series],
+    ts_env: trueskill.TrueSkill,
+) -> pd.Series:
+    """
+    Update player ratings based on match outcomes and compute additional metrics for analysis,
+    returning old mu and sigma values before the update, while still updating the player ratings.
+    """
+    gameid = match_details["gameid"]
+
+    # Check if game has already been processed to avoid duplicative updates
+    if gameid in gameid_dict:
+        return gameid_dict[gameid]
+
+    blue_team_result = match_details["blue_result"]
+    blue_player_ids = [
+        match_details["blue_player1"],
+        match_details["blue_player2"],
+        match_details["blue_player3"],
+        match_details["blue_player4"],
+        match_details["blue_player5"],
+    ]
+    red_player_ids = [
+        match_details["red_player1"],
+        match_details["red_player2"],
+        match_details["red_player3"],
+        match_details["red_player4"],
+        match_details["red_player5"],
+    ]
+
+    # Collect initial (old) mu and sigma values before the update
+    old_mu_sigma_values = [
+        rating_dict[player_id].mu for player_id in blue_player_ids + red_player_ids
+    ] + [rating_dict[player_id].sigma for player_id in blue_player_ids + red_player_ids]
+
+    # Create rating groups for the TrueSkill update
+    blue_players = [rating_dict[id] for id in blue_player_ids]
+    red_players = [rating_dict[id] for id in red_player_ids]
+    rating_groups = (blue_players, red_players)
+
+    # Determine ranks based on match result
+    ranks = [0, 1] if blue_team_result == 1 else [1, 0]
+
+    # Update ratings using TrueSkill's rate function
+    rated_rating_groups = ts_env.rate(rating_groups, ranks=ranks)
+
+    # Compute win probability for the blue team based on old ratings
+    blue_team_win_prob = compute_win_probability(blue_players, red_players, ts_env)
+
+    # Update the rating dictionary with new ratings after capturing old values
+    for i, player_ids in enumerate([blue_player_ids, red_player_ids]):
+        for j, player_id in enumerate(player_ids):
+            rating_dict[player_id] = rated_rating_groups[i][j]
+
+    # Prepare return values using old mu and sigma values, along with the win probability
+    ts_preview = pd.Series([blue_team_win_prob] + old_mu_sigma_values)
+    ts_preview = ts_preview.round(3)
+
+    # Record the results in gameid_dict to prevent reprocessing
+    gameid_dict[gameid] = ts_preview
+    return ts_preview
+
+
+def merge_player_stats(
+    player_data: pd.DataFrame,
+    match_df: pd.DataFrame,
+    positions: List[str] = ["top", "jng", "mid", "bot", "sup"],
+    team_colors: List[str] = ["blue", "red"],
+) -> pd.DataFrame:
+    # Initialize an empty DataFrame to store aggregated player statistics
+    aggregated_player_stats = pd.DataFrame()
+
+    for index, position in enumerate(
+        positions, start=1
+    ):  # start=1 to match player1, player2, etc.
+        for team_color in team_colors:
+            opponent_color = "red" if team_color == "blue" else "blue"
+            player_key = f"{team_color}_player{index}"
+            mu_key = f"{team_color}_player{index}_mu"
+            sigma_key = f"{team_color}_player{index}_sigma"
+            opponent_mu_key = f"{opponent_color}_player{index}_mu"
+            opponent_sigma_key = f"{opponent_color}_player{index}_sigma"
+
+            # Adjust selection of relevant columns for merging
+            relevant_columns = [
+                "gameid",
+                "date",
+                f"{team_color}_teamid",
+                player_key,
+                mu_key,
+                sigma_key,
+                opponent_mu_key,
+                opponent_sigma_key,
+            ]
+
+            # Adjust renaming for consistency with player_data
+            player_stats = match_df[relevant_columns].rename(
+                columns={
+                    f"{team_color}_teamid": "teamid",
+                    player_key: "playerid",
+                    mu_key: "trueskill_mu",
+                    sigma_key: "trueskill_sigma",
+                    opponent_mu_key: "trueskill_opponent_mu",
+                    opponent_sigma_key: "trueskill_opponent_sigma",
+                }
+            )
+
+            # Append the player statistics to the aggregated DataFrame
+            aggregated_player_stats = pd.concat(
+                [aggregated_player_stats, player_stats], ignore_index=True
+            )
+
+    # Merge player stats back into the player_data DataFrame
+    player_data = pd.merge(
+        player_data,
+        aggregated_player_stats[
+            [
+                "gameid",
+                "date",
+                "teamid",
+                "playerid",
+                "trueskill_mu",
+                "trueskill_sigma",
+                "trueskill_opponent_mu",
+                "trueskill_opponent_sigma",
+            ]
+        ],
+        on=["gameid", "date", "teamid", "playerid"],
+        how="left",
+    )
+
+    return player_data
+
+
+def calculate_and_merge_team_statistics(
+    match_df: pd.DataFrame,
+    team_data: pd.DataFrame,
+    team_colors: List[str] = ["blue", "red"],
+) -> pd.DataFrame:
+    """
+    Calculate team statistics based on TrueSkill ratings and merge them back into team data.
+
+    Parameters:
+    - match_df: DataFrame containing match and player statistics.
+    - team_data: DataFrame to merge the calculated team statistics into.
+    - team_colors: List of team colors to differentiate teams.
+    - positions: List of player positions in a team.
+
+    Returns:
+    - Updated team_data DataFrame with merged team statistics.
+    """
+    # Initialize an empty DataFrame to store aggregated team statistics
+    aggregated_team_stats = pd.DataFrame()
+
+    for team_color in team_colors:
+        opponent_color = "red" if team_color == "blue" else "blue"
+
+        player_mu_columns = [f"{team_color}_player{i}_mu" for i in range(1, 6)]
+        player_sigma_columns = [f"{team_color}_player{i}_sigma" for i in range(1, 6)]
+
+        opponent_mu_columns = [f"{opponent_color}_player{i}_mu" for i in range(1, 6)]
+        opponent_sigma_columns = [
+            f"{opponent_color}_player{i}_sigma" for i in range(1, 6)
+        ]
+
+        # Calculate sum of mu, sigma squared for the team and opponent
+        match_df[f"{team_color}_sum_mu"] = (
+            match_df[player_mu_columns].sum(axis=1).round(3)
+        )
+        match_df[f"{team_color}_sigma_squared"] = (
+            match_df[player_sigma_columns].pow(2).sum(axis=1).round(3)
+        )
+        match_df[f"{team_color}_opponent_sum_mu"] = (
+            match_df[opponent_mu_columns].sum(axis=1).round(3)
+        )
+        match_df[f"{team_color}_opponent_sigma_squared"] = (
+            match_df[opponent_sigma_columns].pow(2).sum(axis=1).round(3)
+        )
+        match_df[f"{team_color}_trueskill_diff"] = (
+            match_df[f"{team_color}_win_probability"] - 0.5
+        )
+
+        # Prepare team and opponent statistics for merging
+        team_statistics_cols = [
+            "gameid",
+            "date",
+            f"{team_color}_teamname",
+            f"{team_color}_teamid",
+            f"{team_color}_sum_mu",
+            f"{team_color}_sigma_squared",
+            f"{team_color}_opponent_sum_mu",
+            f"{team_color}_opponent_sigma_squared",
+            f"{team_color}_trueskill_diff",
+        ]
+
+        team_statistics = match_df[team_statistics_cols].rename(
+            columns={
+                f"{team_color}_teamname": "teamname",
+                f"{team_color}_teamid": "teamid",
+                f"{team_color}_sum_mu": "trueskill_sum_mu",
+                f"{team_color}_sigma_squared": "trueskill_sigma_squared",
+                f"{team_color}_opponent_sum_mu": "trueskill_opponent_sum_mu",
+                f"{team_color}_opponent_sigma_squared": "trueskill_opponent_sigma_squared",
+                f"{team_color}_trueskill_diff": "trueskill_diff",
+            }
+        )
+
+        # Append the team statistics to the aggregated DataFrame
+        aggregated_team_stats = pd.concat(
+            [aggregated_team_stats, team_statistics], ignore_index=True
+        )
+
+    team_data = pd.merge(
+        team_data,
+        aggregated_team_stats,
+        on=["gameid", "date", "teamname", "teamid"],
+        how="left",
+    ).reset_index(drop=True)
+
+    return team_data
+
 
 def trueskill_model(
     player_data: pd.DataFrame, team_data: pd.DataFrame, initial_sigma: float = 8.33
-) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict[Any, Any]]:
-    r"""
-    Calculate team ranking using Microsoft's TrueSkill 1 algorithm.
-    Reference: https://www.microsoft.com/en-us/research/project/trueskill-ranking-system/
+) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict]:
+    gameid_dict = {}
+    ts_env = trueskill.TrueSkill(draw_probability=0.0)
 
-    Parameters
-    ----------
-    player_data : DataFrame
-        Pandas DataFrame containing Oracle's Elixir player data.
-    team_data : DataFrame
-        Pandas DataFrame containing Oracle's Elixir team data.
+    # Initialize a default ratings dict for every player
+    player_ratings_dict = initialize_player_ratings(player_data, initial_sigma, ts_env)
 
-    Returns
-    -------
-    A Pandas dataframe containing the latest TrueSkill scores for the TEAMS
-        in the league specified within the leagues parameter.
-    This will be an expanded version of the team_data input.
-    """
-    # Initialize TrueSkill Player Ratings Dictionary
-    ts = trueskill.TrueSkill(draw_probability=0.0)
-    player_ratings_dict = dict()
-    for i in player_data["playerid"].unique():
-        player_ratings_dict[i] = ts.create_rating(sigma=initial_sigma)
+    # Preprocess the player data adding team_egpm and filtering columns
+    processed_player_data = preprocess_data(player_data)
 
-    def setup_match(df: pd.DataFrame) -> np.array:
-        # Prepare DataFrame
-        df = df.sort_values(["date", "gameid", "side", "position"]).reset_index()
-        df = (
-            df[
-                [
-                    "playerid",
-                    "playername",
-                    "date",
-                    "result",
-                    "teamname",
-                    "league",
-                    "ckpm",
-                    "gameid",
-                    "team_egpm",
-                    "team_kpm",
-                    "teamid",
-                ]
-            ]
-            .copy()
-            .values
-        )
-
-        # Define Initial Variables
-        matches_count = int(len(df) / 10)
-        pointer = 0
-        output_array = []
-
-        for m in range(matches_count):
-            # Define Index Position
-            if pointer == 0:
-                ind = m
-            else:
-                ind = m * 10
-
-            # If you ever have to modify these, the index values correspond to the "df" from line 53.
-            match_array = [
-                df[ind, 7],  # gameid
-                df[ind, 2],  # date
-                df[ind, 5],  # league
-                df[ind, 6],  # ckpm
-                df[ind, 8],  # blue earned gpm
-                df[ind, 9],  # blue kpm
-                df[ind, 4],  # blue team name
-                df[ind, 10],  # blue team id
-                df[ind + 4, 0],  # blue top
-                df[ind + 1, 0],  # blue jng
-                df[ind + 2, 0],  # blue mid
-                df[ind, 0],  # blue bot
-                df[ind + 3, 0],  # blue sup
-                df[ind, 3],  # blue result
-                df[ind + 5, 4],  # red team name
-                df[ind + 5, 10],  # red team id
-                df[ind + 5, 8],  # red earned gpm
-                df[ind + 5, 9],  # red kpm
-                df[ind + 9, 0],  # red top
-                df[ind + 6, 0],  # red jng
-                df[ind + 7, 0],  # red mid
-                df[ind + 5, 0],  # red bot
-                df[ind + 8, 0],
-            ]  # red sup
-            output_array.append(match_array)
-            pointer += 1
-
-        return output_array
-
-    col_names = [
+    # Generate a list with match details for each game, then convert to a DataFrame
+    match_arrays = generate_match_array(processed_player_data)
+    match_col_names = [
         "gameid",
         "date",
         "league",
         "ckpm",
-        "blue_earned_gpm",
-        "blue_kpm",
-        "blue_team",
-        "blue_team_id",
-        "blue_top_name",
-        "blue_jng_name",
-        "blue_mid_name",
-        "blue_bot_name",
-        "blue_sup_name",
-        "blue_team_result",
-        "red_team",
-        "red_team_id",
-        "red_earned_gpm",
-        "red_kpm",
-        "red_top_name",
-        "red_jng_name",
-        "red_mid_name",
-        "red_bot_name",
-        "red_sup_name",
+        "blue_teamname",
+        "blue_teamid",
+        "team_egpm",
+        "team_kpm",
+        "blue_player1",
+        "blue_player2",
+        "blue_player3",
+        "blue_player4",
+        "blue_player5",
+        "blue_result",
+        "red_teamname",
+        "red_teamid",
+        "red_team_egpm",
+        "red_team_kpm",
+        "red_player1",
+        "red_player2",
+        "red_player3",
+        "red_player4",
+        "red_player5",
+        "red_result",
     ]
+    match_df = pd.DataFrame(match_arrays, columns=match_col_names)
 
-    lcs_rating = pd.DataFrame(setup_match(input_data), columns=col_names)
-
-    analyzed_gameids = {}
-
-    def win_probability(team1: dict, team2: dict, trueskill_global_env) -> float:
-        """
-        Compute the TrueSkill probability of a team to win based on mu and sigma values.
-        """
-        delta_mu = sum(r.mu for r in team1) - sum(r.mu for r in team2)
-        sum_sigma = sum(r.sigma**2 for r in itertools.chain(team1, team2))
-        size = len(team1) + len(team2)
-        denominator = math.sqrt(size * (trueskill_global_env.beta**2) + sum_sigma)
-
-        return trueskill_global_env.cdf(delta_mu / denominator)
-
-    def update_trueskill(
-        rating_dict,
-        gameid_dict,
-        gameid,
-        blue_team_result,
-        blue_top_name,
-        blue_jng_name,
-        blue_mid_name,
-        blue_bot_name,
-        blue_sup_name,
-        red_top_name,
-        red_jng_name,
-        red_mid_name,
-        red_bot_name,
-        red_sup_name,
-    ):
-        """
-        Compute individual changes to a player's mu and sigma values as a result of a given match.
-        """
-        rating_groups = [
-            (
-                rating_dict[blue_top_name],
-                rating_dict[blue_jng_name],
-                rating_dict[blue_mid_name],
-                rating_dict[blue_bot_name],
-                rating_dict[blue_sup_name],
-            ),
-            (
-                rating_dict[red_top_name],
-                rating_dict[red_jng_name],
-                rating_dict[red_mid_name],
-                rating_dict[red_bot_name],
-                rating_dict[red_sup_name],
-            ),
-        ]
-        blue_mu = rating_groups[0][0].mu
-        blue_sigma = rating_groups[0][0].sigma
-        red_mu = rating_groups[1][0].mu
-        red_sigma = rating_groups[1][0].sigma
-        blue_team_win_prob = win_probability(rating_groups[0], rating_groups[1], ts)
-
-        # Get Mu by position
-        blue_top_mu = rating_dict[blue_top_name].mu
-        blue_jng_mu = rating_dict[blue_jng_name].mu
-        blue_mid_mu = rating_dict[blue_mid_name].mu
-        blue_bot_mu = rating_dict[blue_bot_name].mu
-        blue_sup_mu = rating_dict[blue_sup_name].mu
-        red_top_mu = rating_dict[red_top_name].mu
-        red_jng_mu = rating_dict[red_jng_name].mu
-        red_mid_mu = rating_dict[red_mid_name].mu
-        red_bot_mu = rating_dict[red_bot_name].mu
-        red_sup_mu = rating_dict[red_sup_name].mu
-
-        # Get Sigma by position
-        blue_top_sigma = rating_dict[blue_top_name].sigma
-        blue_jng_sigma = rating_dict[blue_jng_name].sigma
-        blue_mid_sigma = rating_dict[blue_mid_name].sigma
-        blue_bot_sigma = rating_dict[blue_bot_name].sigma
-        blue_sup_sigma = rating_dict[blue_sup_name].sigma
-        red_top_sigma = rating_dict[red_top_name].sigma
-        red_jng_sigma = rating_dict[red_jng_name].sigma
-        red_mid_sigma = rating_dict[red_mid_name].sigma
-        red_bot_sigma = rating_dict[red_bot_name].sigma
-        red_sup_sigma = rating_dict[red_sup_name].sigma
-
-        # Update ratings_features
-        if blue_team_result == 1:
-            # For ranks, 0 represents the winner
-            rated_rating_groups = ts.rate(rating_groups, ranks=[0, 1])
-        else:
-            rated_rating_groups = ts.rate(rating_groups, ranks=[1, 0])
-
-        # Return values for new columns
-        ts_update = pd.Series(
-            [
-                blue_team_win_prob,
-                blue_mu,
-                blue_sigma,
-                red_mu,
-                red_sigma,
-                blue_top_mu,
-                blue_top_sigma,
-                blue_jng_mu,
-                blue_jng_sigma,
-                blue_mid_mu,
-                blue_mid_sigma,
-                blue_bot_mu,
-                blue_bot_sigma,
-                blue_sup_mu,
-                blue_sup_sigma,
-                red_top_mu,
-                red_top_sigma,
-                red_jng_mu,
-                red_jng_sigma,
-                red_mid_mu,
-                red_mid_sigma,
-                red_bot_mu,
-                red_bot_sigma,
-                red_sup_mu,
-                red_sup_sigma,
-            ]
-        )
-
-        # Update the rating dictionary
-        rating_dict[blue_top_name] = rated_rating_groups[0][0]
-        rating_dict[blue_jng_name] = rated_rating_groups[0][1]
-        rating_dict[blue_mid_name] = rated_rating_groups[0][2]
-        rating_dict[blue_bot_name] = rated_rating_groups[0][3]
-        rating_dict[blue_sup_name] = rated_rating_groups[0][4]
-        rating_dict[red_top_name] = rated_rating_groups[1][0]
-        rating_dict[red_jng_name] = rated_rating_groups[1][1]
-        rating_dict[red_mid_name] = rated_rating_groups[1][2]
-        rating_dict[red_bot_name] = rated_rating_groups[1][3]
-        rating_dict[red_sup_name] = rated_rating_groups[1][4]
-
-        # Conditional handling to prevent gameIDs from duplicative updating TS ratings_features
-        if gameid in gameid_dict:
-            return gameid_dict[gameid]
-        else:
-            gameid_dict[gameid] = ts_update
-            return ts_update
-
-    lcs_rating[
-        [
-            "blue_team_win_prob",
-            "blue_mu",
-            "blue_sigma",
-            "red_mu",
-            "red_sigma",
-            "blue_top_mu",
-            "blue_top_sigma",
-            "blue_jng_mu",
-            "blue_jng_sigma",
-            "blue_mid_mu",
-            "blue_mid_sigma",
-            "blue_bot_mu",
-            "blue_bot_sigma",
-            "blue_sup_mu",
-            "blue_sup_sigma",
-            "red_top_mu",
-            "red_top_sigma",
-            "red_jng_mu",
-            "red_jng_sigma",
-            "red_mid_mu",
-            "red_mid_sigma",
-            "red_bot_mu",
-            "red_bot_sigma",
-            "red_sup_mu",
-            "red_sup_sigma",
-        ]
-    ] = lcs_rating.apply(
-        lambda row: update_trueskill(
-            player_ratings_dict,
-            analyzed_gameids,
-            row["gameid"],
-            row["blue_team_result"],
-            row["blue_top_name"],
-            row["blue_jng_name"],
-            row["blue_mid_name"],
-            row["blue_bot_name"],
-            row["blue_sup_name"],
-            row["red_top_name"],
-            row["red_jng_name"],
-            row["red_mid_name"],
-            row["red_bot_name"],
-            row["red_sup_name"],
-        ),
+    # Update player ratings and compute additional metrics
+    true_skill_col_names = [
+        "blue_win_probability",
+        "blue_player1_mu",
+        "blue_player2_mu",
+        "blue_player3_mu",
+        "blue_player4_mu",
+        "blue_player5_mu",
+        "red_player1_mu",
+        "red_player2_mu",
+        "red_player3_mu",
+        "red_player4_mu",
+        "red_player5_mu",
+        "blue_player1_sigma",
+        "blue_player2_sigma",
+        "blue_player3_sigma",
+        "blue_player4_sigma",
+        "blue_player5_sigma",
+        "red_player1_sigma",
+        "red_player2_sigma",
+        "red_player3_sigma",
+        "red_player4_sigma",
+        "red_player5_sigma",
+    ]
+    updates = match_df.apply(
+        lambda x: update_player_ratings(x, player_ratings_dict, gameid_dict, ts_env),
         axis=1,
+        result_type="expand",
     )
-    lcs_rating["blue_expected_result"] = np.where(
-        lcs_rating["blue_team_win_prob"] >= 0.5, 1, 0
+    updates.columns = true_skill_col_names
+    match_df[true_skill_col_names] = updates
+
+    match_df["red_win_probability"] = 1 - match_df["blue_win_probability"]
+    # Add the expected result column based on the win probability
+    match_df["blue_expected_result"] = np.where(
+        match_df["blue_win_probability"] > 0.5, 1, 0
     )
 
-    # Merge New Information Into Team Data
-    blue_mu = [
-        "blue_top_mu",
-        "blue_jng_mu",
-        "blue_mid_mu",
-        "blue_bot_mu",
-        "blue_sup_mu",
-    ]
-    blue_sigma = [
-        "blue_top_sigma",
-        "blue_jng_sigma",
-        "blue_mid_sigma",
-        "blue_bot_sigma",
-        "blue_sup_sigma",
-    ]
-    red_mu = ["red_top_mu", "red_jng_mu", "red_mid_mu", "red_bot_mu", "red_sup_mu"]
-    red_sigma = [
-        "red_top_sigma",
-        "red_jng_sigma",
-        "red_mid_sigma",
-        "red_bot_sigma",
-        "red_sup_sigma",
-    ]
+    team_data = calculate_and_merge_team_statistics(match_df, team_data)
 
-    blue = lcs_rating[
-        ["gameid", "date", "blue_team", "blue_team_id", "blue_team_win_prob"]
-    ].copy()
-    blue["blue_sum_mu"] = lcs_rating[blue_mu].sum(axis=1)
-    blue["blue_sigma_squared"] = lcs_rating.apply(
-        lambda row: sum([row[x] ** 2 for x in blue_sigma]), axis=1
-    )
-    blue["opponent_sum_mu"] = lcs_rating[red_mu].sum(axis=1)
-    blue["opponent_sigma_squared"] = lcs_rating.apply(
-        lambda row: sum([row[x] ** 2 for x in red_sigma]), axis=1
-    )
-    blue["trueskill_diff"] = blue["blue_team_win_prob"] - 0.50
-    blue = blue.rename(
-        columns={
-            "blue_team": "teamname",
-            "blue_team_id": "teamid",
-            "blue_sum_mu": "trueskill_sum_mu",
-            "blue_sigma_squared": "trueskill_sigma_squared",
-            "blue_team_win_prob": "trueskill_win_perc",
-        }
-    )
-
-    red = lcs_rating[["gameid", "date", "red_team", "red_team_id"]].copy()
-    red["red_team_win_prob"] = 1 - lcs_rating["blue_team_win_prob"]
-    red["red_sum_mu"] = lcs_rating[red_mu].sum(axis=1)
-    red["red_sigma_squared"] = lcs_rating.apply(
-        lambda row: sum([row[x] ** 2 for x in red_sigma]), axis=1
-    )
-    red["opponent_sum_mu"] = lcs_rating[blue_mu].sum(axis=1)
-    red["opponent_sigma_squared"] = lcs_rating.apply(
-        lambda row: sum([row[x] ** 2 for x in blue_sigma]), axis=1
-    )
-    red["trueskill_diff"] = red["red_team_win_prob"] - 0.50
-    red = red.rename(
-        columns={
-            "red_team": "teamname",
-            "red_team_id": "teamid",
-            "red_sum_mu": "trueskill_sum_mu",
-            "red_sigma_squared": "trueskill_sigma_squared",
-            "red_team_win_prob": "trueskill_win_perc",
-        }
-    )
-
-    # Merge Things Back Together
-    team_trueskill = pd.concat([blue, red], ignore_index=True)
-    team_trueskill = team_trueskill.astype({"gameid": "str"})
-
-    team_data = team_data.astype({"gameid": "str"})
-    team_data = pd.merge(
-        left=team_data,
-        right=team_trueskill,
-        how="left",
-        left_on=["gameid", "date", "teamname", "teamid"],
-        right_on=["gameid", "date", "teamname", "teamid"],
-    ).reset_index(drop=True)
+    # Sort the team_data DataFrame by date and gameid
     team_data.sort_values(by=["date", "gameid", "side"], ascending=True, inplace=True)
 
-    # Merge New Information To Player Data
-    # Blue
-    blue_top = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "blue_team_id",
-                "blue_top_name",
-                "blue_top_mu",
-                "blue_top_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "blue_team_id": "teamid",
-                "blue_top_name": "playerid",
-                "blue_top_mu": "trueskill_mu",
-                "blue_top_sigma": "trueskill_sigma",
-            }
-        )
-    )
-    blue_jng = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "blue_team_id",
-                "blue_jng_name",
-                "blue_jng_mu",
-                "blue_jng_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "blue_team_id": "teamid",
-                "blue_jng_name": "playerid",
-                "blue_jng_mu": "trueskill_mu",
-                "blue_jng_sigma": "trueskill_sigma",
-            }
-        )
-    )
-    blue_mid = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "blue_team_id",
-                "blue_mid_name",
-                "blue_mid_mu",
-                "blue_mid_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "blue_team_id": "teamid",
-                "blue_mid_name": "playerid",
-                "blue_mid_mu": "trueskill_mu",
-                "blue_mid_sigma": "trueskill_sigma",
-            }
-        )
-    )
-    blue_bot = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "blue_team_id",
-                "blue_bot_name",
-                "blue_bot_mu",
-                "blue_bot_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "blue_team_id": "teamid",
-                "blue_bot_name": "playerid",
-                "blue_bot_mu": "trueskill_mu",
-                "blue_bot_sigma": "trueskill_sigma",
-            }
-        )
-    )
-    blue_sup = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "blue_team_id",
-                "blue_sup_name",
-                "blue_sup_mu",
-                "blue_sup_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "blue_team_id": "teamid",
-                "blue_sup_name": "playerid",
-                "blue_sup_mu": "trueskill_mu",
-                "blue_sup_sigma": "trueskill_sigma",
-            }
-        )
-    )
+    # Apply the function to merge player statistics
+    player_data = merge_player_stats(player_data, match_df)
 
-    # Red
-    red_top = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "red_team_id",
-                "red_top_name",
-                "red_top_mu",
-                "red_top_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "red_team_id": "teamid",
-                "red_top_name": "playerid",
-                "red_top_mu": "trueskill_mu",
-                "red_top_sigma": "trueskill_sigma",
-            }
-        )
-    )
-    red_jng = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "red_team_id",
-                "red_jng_name",
-                "red_jng_mu",
-                "red_jng_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "red_team_id": "teamid",
-                "red_jng_name": "playerid",
-                "red_jng_mu": "trueskill_mu",
-                "red_jng_sigma": "trueskill_sigma",
-            }
-        )
-    )
-    red_mid = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "red_team_id",
-                "red_mid_name",
-                "red_mid_mu",
-                "red_mid_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "red_team_id": "teamid",
-                "red_mid_name": "playerid",
-                "red_mid_mu": "trueskill_mu",
-                "red_mid_sigma": "trueskill_sigma",
-            }
-        )
-    )
-    red_bot = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "red_team_id",
-                "red_bot_name",
-                "red_bot_mu",
-                "red_bot_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "red_team_id": "teamid",
-                "red_bot_name": "playerid",
-                "red_bot_mu": "trueskill_mu",
-                "red_bot_sigma": "trueskill_sigma",
-            }
-        )
-    )
-    red_sup = (
-        lcs_rating[
-            [
-                "gameid",
-                "date",
-                "red_team_id",
-                "red_sup_name",
-                "red_sup_mu",
-                "red_sup_sigma",
-            ]
-        ]
-        .copy()
-        .rename(
-            columns={
-                "red_team_id": "teamid",
-                "red_sup_name": "playerid",
-                "red_sup_mu": "trueskill_mu",
-                "red_sup_sigma": "trueskill_sigma",
-            }
-        )
-    )
+    # Reset index and sort player_data for consistency
+    player_data.reset_index(drop=True, inplace=True)
 
-    # Concat
-    player_trueskill = pd.concat(
-        [
-            blue_top,
-            blue_jng,
-            blue_mid,
-            blue_bot,
-            blue_sup,
-            red_top,
-            red_jng,
-            red_mid,
-            red_bot,
-            red_sup,
-        ],
-        axis=0,
-    )
-    player_trueskill.sort_values(
-        by=["gameid", "date", "teamid"], ascending=True, inplace=True
-    )
-    player_data = pd.merge(
-        left=player_data,
-        right=player_trueskill,
-        how="left",
-        left_on=["gameid", "date", "teamid", "playerid"],
-        right_on=["gameid", "date", "teamid", "playerid"],
-    ).reset_index(drop=True)
-
-    player_data["opponent_mu"] = oe.get_opponent(
-        player_data["trueskill_mu"].to_list(), "player"
-    )
-    player_data["opponent_sigma"] = oe.get_opponent(
-        player_data["trueskill_sigma"].to_list(), "player"
-    )
+    # Sort player_data by date, league, gameid, teamid, side, and position
     player_data.sort_values(
-        by=["date", "league", "gameid", "teamname", "position"],
-        ascending=True,
-        inplace=True,
+        by=["date", "league", "gameid", "side", "position"], inplace=True
     )
-    player_data.reset_index(drop=True)
 
+    player_data.reset_index(drop=True, inplace=True)
     return player_data, team_data, player_ratings_dict

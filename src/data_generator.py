@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 
 from src.data_ingest.oracles_elixir import OraclesElixir
 from src.feature_engineering.impute_early_game_metrics import EarlyGameStatsImputer
+from src.ratings_features.rating_models import Ratings
 from utils.logger import logger
 from utils.paths import INTERIM_DIR, INVALID_GAMES, PROCESSED_DIR, RAW_DIR
 
@@ -102,44 +103,36 @@ class DataGenerator:
             logger.error(f"Failed to ingest data from S3: {e}")
             raise
 
-    def _enrich_player_data(self, player_data):
+    def _enrich_data_with_ratings(self, player_data, team_data):
         """
-        Enrich the player data with all the associated ratings.
+        Enrich data with all the associated ratings.
 
         Parameters
         ----------
         player_data : pd.DataFrame
-
-        Returns
-        -------
-        enriched_player_data : pd.DataFrame
-        """
-        logger.info("Enriching player data ...")
-        enriched_player_data = (
-            player_data  # TODO: to implement the enrich_player_data function
-        )
-        logger.info("Enriched player data with ratings and performance metrics.")
-        return enriched_player_data
-
-    def _enrich_team_data(self, team_data):
-        """
-        Enrich the team data with all the associated ratings.
-
-        Parameters
-        ----------
         team_data : pd.DataFrame
 
         Returns
         -------
+        enriched_player_data : pd.DataFrame
         enriched_team_data : pd.DataFrame
         """
 
-        logger.info("Enriching team data...")
-        enriched_team_data = (
-            team_data  # TODO: to implement the enrich_team_data function
-        )
-        logger.info("Enriched team data with ratings.")
-        return enriched_team_data
+        logger.info("Enriching data with ratings...")
+
+        player_data = Ratings.compute_elo(df=player_data, entity="player")
+        team_data = Ratings.compute_elo(df=team_data, entity="team")
+        logger.info("Enriched data with elo.")
+
+        player_data = Ratings.compute_plackett_luce(df=player_data, entity="player")
+        team_data = Ratings.compute_plackett_luce(df=team_data, entity="team")
+        logger.info("Enriched data with plackett-luce.")
+
+        player_data, team_data, ts_lookup = Ratings.compute_trueskill(player_data=player_data, team_data=team_data)
+        logger.info("Enriched data with trueskill.")
+
+        logger.info("Enriched data with ratings.")
+        return player_data, team_data
 
     def enrich_datasets(self):
         """
@@ -154,12 +147,13 @@ class DataGenerator:
             team_data = pd.read_csv(INTERIM_DIR / "team_data.csv")
             player_data = pd.read_csv(INTERIM_DIR / "player_data.csv")
 
-            # Impute missing data for plaers only #TODO?: will need to do for teams as well if we use team performance metrics
+            # Impute missing data for players only
             player_data = self.imputer.process_data(player_data)
 
             # Enrich Data with Ratings
-            team_data = self._enrich_team_data(team_data)
-            player_data = self._enrich_player_data(player_data)
+            player_data, team_data = self._enrich_data_with_ratings(
+                player_data, team_data
+            )
 
             # Store Enriched Data
             team_data.to_csv(PROCESSED_DIR / "team_data.csv", index=False)

@@ -1,81 +1,115 @@
-from typing import Dict, Tuple
+from copy import deepcopy
+from typing import Dict, List, Tuple
 
 import pandas as pd
 from openskill.models import PlackettLuce
 
 
+def rate_teams_or_players(
+    model: PlackettLuce, entities_ratings: Tuple[List, List], ranks: List[int]
+) -> Tuple[List, List]:
+    """
+    Rate two entities (teams or players) and update their ratings based on the match outcome.
+    """
+    # Create a deep copy of entities_ratings to avoid modifying the original
+    old_entities_ratings = deepcopy(entities_ratings)
+
+    # Update the ratings based on the match outcome
+    updated_entities = model.rate(old_entities_ratings, ranks=ranks)
+    return updated_entities
+
+
 def calculate_plackett_luce(
-    df: pd.DataFrame, initial_mu: float = 25.0, initial_sigma: float = (25.0 / 3.0)
+    df: pd.DataFrame,
+    entity: str,
+    initial_mu: float = 25.0,
+    initial_sigma: float = 25.0 / 3.0,
 ) -> pd.DataFrame:
     """
-    Compute Plackett-Luce ratings for each player based on the provided DataFrame.
-    Reading:
-    https://janzert.com/halite/rating-report/
-    https://openskill.me/en/stable/manual.html
+    Calculate and update Plackett-Luce ratings for teams or players within a DataFrame.
 
-    Args:
-        df (pd.DataFrame): DataFrame containing game data.
-        initial_mu (float): Initial mu value to use for calculating ratings.
-        initial_sigma (float): Initial sigma value for ratings (expected: 1/3 mu).
+    Parameters:
+    - df: DataFrame containing match data.
+    - initial_mu: Initial mean rating.
+    - initial_sigma: Initial standard deviation of ratings.
+    - entity: Flag to indicate whether the calculations are for teams or individual players.
 
     Returns:
-        Dict[str, Tuple[float, float]]: A dictionary with player IDs as keys and their
-                                        (mu, sigma) ratings as values.
+    - DataFrame with updated Plackett-Luce ratings and win likelihoods.
     """
-    # Sort values for data integrity & consistency
-    sort_keys = ["date", "league", "gameid", "teamid", "position", "result"]
-    df = df.sort_values(sort_keys).reset_index(drop=True)
 
-    # Create the Plackett-Luce model
+    is_team = entity == "team"  # Check if the entity is a team or player
+
+    # Sort the DataFrame
+    sort_columns = (
+        ["date", "league", "gameid", "teamid"]
+        + (["position"] if not is_team else [])
+        + ["side", "result"]
+    )
+    df_sorted = df.sort_values(sort_columns).reset_index(drop=True)
+
+    # Initialize the Plackett-Luce model
     model = PlackettLuce(mu=initial_mu, sigma=initial_sigma)
 
-    # Dictionary to store player ratings
-    player_ratings = {player: model.rating() for player in df["playerid"].unique()}
+    # Initialize ratings
+    entity_key = "teamid" if is_team else "playerid"
+    entity_ratings = {
+        entity: model.rating(mu=initial_mu, sigma=initial_sigma)
+        for entity in df_sorted[entity_key].unique()
+    }
 
-    # Arrays for new columns
-    mus, sigmas, pre_mus, pre_sigmas, win_likelihoods = [], [], [], [], []
+    # Columns for updated ratings and pre-match info
+    df_sorted["pl_pre_match_mu"] = pd.NA
+    df_sorted["pl_pre_match_sigma"] = pd.NA
+    df_sorted["pl_win_likelihood"] = pd.NA
+    df_sorted["pl_mu"] = pd.NA
+    df_sorted["pl_sigma"] = pd.NA
 
-    unique_game_ids = df["gameid"].unique()
+    for game_id in df_sorted["gameid"].unique():
+        game_data = df_sorted[df_sorted["gameid"] == game_id]
 
-    for game_id in unique_game_ids:
-        game_data = df[df["gameid"] == game_id]
-        blue_players = game_data[game_data["side"] == "Blue"]["playerid"].tolist()
-        red_players = game_data[game_data["side"] == "Red"]["playerid"].tolist()
+        # Teams or players in the game
+        blue_entities = game_data[game_data["side"] == "Blue"]
+        red_entities = game_data[game_data["side"] == "Red"]
 
-        # Store pre-match ratings
-        for player in game_data["playerid"]:
-            pre_mus.append(player_ratings[player].mu)
-            pre_sigmas.append(player_ratings[player].sigma)
+        # Extract entity IDs and current ratings
+        blue_ratings = [entity_ratings[id_] for id_ in blue_entities[entity_key]]
+        red_ratings = [entity_ratings[id_] for id_ in red_entities[entity_key]]
 
-        team1 = [player_ratings[player] for player in blue_players]
-        team2 = [player_ratings[player] for player in red_players]
+        # Calculate win likelihood
+        win_probs = model.predict_win([blue_ratings, red_ratings])
 
-        # Calculate win likelihoods for the teams based on their pre-match ratings.
-        win_probs = model.predict_win([team1, team2])
+        # Update pre-match ratings and win likelihood with game-specific filtering
+        for side_data, ratings, win_prob in zip(
+            [blue_entities, red_entities],
+            [blue_ratings, red_ratings],
+            [win_probs[0], win_probs[1]],
+        ):
+            for index, rating in zip(side_data.index, ratings):
+                df_sorted.at[index, "pl_pre_match_mu"] = rating.mu
+                df_sorted.at[index, "pl_pre_match_sigma"] = rating.sigma
+                df_sorted.at[index, "pl_win_likelihood"] = win_prob
 
-        # Assign the win likelihoods to players
-        for player in blue_players:
-            win_likelihoods.append(win_probs[0])
-        for player in red_players:
-            win_likelihoods.append(win_probs[1])
+        # Determine the match outcome
+        blue_win = blue_entities.iloc[0]["result"] == 1
 
-        # Rate and update ratings
-        updated_teams = model.rate([team1, team2], ranks=[1, 0])
+        ranks = [0, 1] if blue_win else [1, 0]
 
-        for idx, player in enumerate(blue_players):
-            player_ratings[player] = updated_teams[0][idx]
-            mus.append(updated_teams[0][idx].mu)
-            sigmas.append(updated_teams[0][idx].sigma)
-        for idx, player in enumerate(red_players):
-            player_ratings[player] = updated_teams[1][idx]
-            mus.append(updated_teams[1][idx].mu)
-            sigmas.append(updated_teams[1][idx].sigma)
+        # Update ratings
+        updated_ratings = rate_teams_or_players(
+            model, [blue_ratings, red_ratings], ranks
+        )
 
-    # Add the collected values to the dataframe
-    df["mu"] = mus
-    df["sigma"] = sigmas
-    df["pre_match_mu"] = pre_mus
-    df["pre_match_sigma"] = pre_sigmas
-    df["pl_win_likelihood"] = win_likelihoods
+        # Assign updated ratings and calculate win likelihood
+        for side_data, new_ratings in zip(
+            [blue_entities, red_entities], updated_ratings
+        ):
+            for index, new_rating in zip(side_data.index, new_ratings):
+                player_or_team_id = side_data.loc[index, entity_key]
+                entity_ratings[player_or_team_id] = new_rating
+                df_sorted.loc[index, ["pl_mu", "pl_sigma"]] = (
+                    new_rating.mu,
+                    new_rating.sigma,
+                )
 
-    return df
+    return df_sorted

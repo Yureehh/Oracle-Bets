@@ -28,7 +28,7 @@ class TestEarlyGameStatsImputer:
             "deaths",
             "gamelength",
             "totalgold",
-            "total cs",
+            "total_cs",
             "KDA",
             "gold_efficiency",
             "xp_efficiency",

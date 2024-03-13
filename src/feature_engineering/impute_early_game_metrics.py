@@ -42,7 +42,7 @@ class EarlyGameStatsImputer:
 
         # XP Efficiency
         data["xp_efficiency"] = np.where(
-            data["gamelength"] == 0, 0, data["total cs"] / data["gamelength"]
+            data["gamelength"] == 0, 0, data["total_cs"] / data["gamelength"]
         )
 
         # Kill Participation
@@ -182,7 +182,7 @@ class EarlyGameStatsImputer:
 
     def _train_models(self, data: pd.DataFrame, features_extended: List[str]) -> Dict:
         """Train stacked models for each target."""
-        logger.info("Stacked models training started...")
+        logger.info("Stacked models training started...\n{'=' * 50}")
         # Drop rows with NaN target values for training and validation
         training_data = data.dropna(subset=["goldat15", "xpat15", "csat15"])
 

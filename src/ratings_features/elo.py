@@ -1,112 +1,101 @@
-# Imports
 from collections import defaultdict
-from typing import Dict
+from typing import List, Tuple
 
 import pandas as pd
 
 
-def calculate_elo(
-    df: pd.DataFrame,
-    entity: str,
-    initial_elo: int = 1200,
-    k: int = 20,
-    name_prefix: str = "",
-) -> pd.DataFrame:
-    """
-    Calculate Elo ratings_features for entities in a DataFrame.
+def expected_outcome(elo_a: float, elo_b: float) -> float:
+    """Calculate the expected match outcome between two Elo ratings."""
+    return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
 
-    Args:
-    df (pd.DataFrame): The DataFrame containing match results.
-    entity (str): The name of the entity for which to calculate Elo ratings_features.
-    initial_elo (int, optional): The initial Elo rating for entities. Defaults to 1200.
-    k (int, optional): The K-factor used in Elo rating updates. Defaults to 20.
 
-    Returns:
-    pd.DataFrame: The DataFrame with Elo ratings_features added.
-    """
+def update_elo_rating(
+    old_elo: float, expected: float, actual_result: float, k_factor: int
+) -> float:
+    """Update Elo rating based on match result."""
+    return old_elo + k_factor * (actual_result - expected)
 
-    def _expected(elo_a: float, elo_b: float) -> float:
-        """
-        Calculate the expected outcome of a match between two entities.
 
-        Args:
-        elo_a (float): The Elo rating of the first entity.
-        elo_b (float): The Elo rating of the second entity.
-
-        Returns:
-        float: The expected outcome of the match for the first entity.
-        """
-        return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
-
-    def _elo(old: float, exp: float, score: float) -> float:
-        """
-        Update an Elo rating based on the outcome of a match.
-
-        Args:
-        old (float): The old Elo rating.
-        exp (float): The expected outcome of the match.
-        score (float): The actual outcome of the match.
-
-        Returns:
-        float: The updated Elo rating.
-        """
-        if old is None:
-            old = initial_elo
-        return old + k * (score - exp)
-
-    if entity.lower() == "team":
-        opponent_entity = "opponentteamid"
-        entity_column = "teamid"
-        sort_keys = ["date", "league", "gameid", "result"]
-    elif entity.lower() == "player":
-        opponent_entity = "opponentplayerid"
-        entity_column = "playerid"
-        sort_keys = ["date", "league", "gameid", "teamid", "position", "result"]
+def validate_entity(entity: str) -> Tuple[str, str, List[str]]:
+    """Validate the entity and return configuration for entity and opponent."""
+    entity = entity.lower()
+    if entity == "team":
+        return (
+            "teamid",
+            "opponentteamid",
+            ["date", "league", "gameid", "side", "result"],
+        )
+    elif entity == "player":
+        return (
+            "playerid",
+            "opponentplayerid",
+            ["date", "league", "gameid", "teamid", "side", "position", "result"],
+        )
     else:
         raise ValueError(f"Unsupported entity name: {entity}")
 
-    df = df.sort_values(sort_keys).reset_index(drop=True)
 
-    elo_dict: Dict[str, float] = defaultdict(lambda: initial_elo)
-    (
-        entity_elo_array,
-        opponent_elo_array,
-        pre_elo_array,
-        pre_opponent_elo_array,
-        win_likelihood_array,
-    ) = ([], [], [], [], [])
+def determine_primary_perspective(side: str) -> bool:
+    """Determine whether the current row is the primary perspective."""
+    return side == "Blue"
 
-    for _, row in df.iterrows():
-        entity_elo = elo_dict[row[entity_column]]
-        opponent_elo = elo_dict[row[opponent_entity]]
-        pre_elo_array.append(entity_elo)
-        pre_opponent_elo_array.append(pre_opponent_elo_array)
 
-        expected_outcome = _expected(entity_elo, opponent_elo)
+def calculate_elo(
+    df: pd.DataFrame, entity: str, initial_elo: int = 1000, k: int = 32
+) -> pd.DataFrame:
+    entity_column, opponent_entity, sort_keys = validate_entity(entity)
+    df_sorted = df.sort_values(by=sort_keys).reset_index(drop=True)
 
-        entity_new_elo = _elo(entity_elo, expected_outcome, row["result"])
-        opponent_new_elo = _elo(opponent_elo, 1 - expected_outcome, 1 - row["result"])
+    elo_ratings = defaultdict(lambda: initial_elo)
+    processed_games = set()
 
-        entity_elo_array.append(entity_new_elo)
-        opponent_elo_array.append(opponent_new_elo)
-        win_likelihood_array.append(expected_outcome)
+    # New dictionaries for storing pre-match and updated Elo ratings by game ID (and position)
+    game_elos = defaultdict(lambda: defaultdict(lambda: (0, 0)))
 
-        elo_dict[row[entity_column]] = entity_new_elo
-        elo_dict[row[opponent_entity]] = opponent_new_elo
+    for index, row in df_sorted.iterrows():
+        game_id = row["gameid"]
+        side = row["side"]
 
-    if name_prefix and not name_prefix.endswith("_"):
-        name_prefix += "_"
+        if side == "Red":
+            continue
 
-    pre_elo_colname = str(name_prefix) + "pre_match_elo"
-    pre_opponent_elo_colname = str(name_prefix) + "pre_match_opponent_elo"
-    elo_colname = str(name_prefix) + "elo"
-    opponent_elo_colname = str(name_prefix) + "opponent_elo"
-    elo_win_likelihood_colname = str(name_prefix) + "elo_win_likelihood"
+        processed_games.add(game_id)
 
-    df[pre_elo_colname] = pre_elo_array
-    df[pre_opponent_elo_colname] = pre_opponent_elo_array
-    df[elo_colname] = entity_elo_array
-    df[opponent_elo_colname] = opponent_elo_array
-    df[elo_win_likelihood_colname] = win_likelihood_array
+        entity_elo = elo_ratings[row[entity_column]]
+        opponent_elo = elo_ratings[row[opponent_entity]]
 
-    return df
+        expected_win_chance = expected_outcome(entity_elo, opponent_elo)
+        new_entity_elo = update_elo_rating(
+            entity_elo, expected_win_chance, row["result"], k
+        )
+        new_opponent_elo = update_elo_rating(
+            opponent_elo, 1 - expected_win_chance, 1 - row["result"], k
+        )
+
+        # Update Elo ratings in the dictionary
+        elo_ratings[row[entity_column]] = new_entity_elo
+        elo_ratings[row[opponent_entity]] = new_opponent_elo
+
+        # Store pre-match and updated Elo ratings
+        game_elos[game_id][row[entity_column]] = (entity_elo, new_entity_elo)
+        game_elos[game_id][row[opponent_entity]] = (opponent_elo, new_opponent_elo)
+
+    # Apply Elo ratings to the DataFrame, adjusting for perspective
+    for index, row in df_sorted.iterrows():
+        game_id = row["gameid"]
+        entity_id = row[entity_column]
+        opponent_id = row[opponent_entity]
+
+        if game_id in game_elos:
+            # We need to check whether the current row is the primary perspective or the opponent perspective
+            pre_entity_elo, post_entity_elo = game_elos[game_id][entity_id]
+            pre_opponent_elo, post_opponent_elo = game_elos[game_id][opponent_id]
+
+            df_sorted.at[index, "elo_pre_match"] = pre_entity_elo
+            df_sorted.at[index, "elo_pre_match_opponent"] = pre_opponent_elo
+            df_sorted.at[index, "elo_win_likelihood"] = expected_outcome(
+                pre_entity_elo, pre_opponent_elo
+            )
+            df_sorted.at[index, "elo"] = post_entity_elo
+            df_sorted.at[index, "elo_opponent"] = post_opponent_elo
+    return df_sorted

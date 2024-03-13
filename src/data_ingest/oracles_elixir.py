@@ -22,7 +22,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from utils.logger import logger
-from utils.paths import IMPORT_COLUMNS, INTERIM_DIR, PROCESSED_DIR
+from utils.paths import IMPORT_COLUMNS, INTERIM_DIR
 
 load_dotenv()
 
@@ -152,7 +152,13 @@ class OraclesElixir:
                 columns = json.load(file)
 
         if split_on in columns:
-            oe_data = oe_data.rename(columns={"earned gpm": "egpm"})
+            oe_data = oe_data.rename(
+                columns={
+                    "earned gpm": "egpm",
+                    "team kpm": "team_kpm",
+                    "total cs": "total_cs",
+                },
+            )
             if split_on.lower() == "team":
                 oe_data = oe_data[oe_data["position"] == "team"]
             else:

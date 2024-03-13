@@ -129,9 +129,9 @@ class LoLModeling:
             elo_dict[row[entity_column]] = entity_new_elo
             elo_dict[row[opponent_entity]] = opponent_new_elo
 
-        df["elo"] = elos
-        df["opponent_elo"] = opponent_elos
         df["elo_win_likelihood"] = elo_expected_values
+        df["elo"] = elos
+        df["elo_opponent"] = opponent_elos
 
         return df
 
@@ -141,21 +141,6 @@ class LoLModeling:
         initial_mu: float = 25.0,
         initial_sigma: float = 8.333333333333334,
     ) -> pd.DataFrame:
-        """
-        Calculate Plackett-Luce ratings_features for players in a DataFrame.
-        Why: https://janzert.com/halite/rating-report/
-
-        Args:
-        df (pd.DataFrame): The DataFrame containing match results.
-        entity: :Entity to split the data on (team or player).
-        initial_mu (float, optional): The initial rating for teams. Defaults to 25.0.
-        initial_sigma (float, optional): The initial uncertainty
-                                         about the rating for teams. Defaults to 8.3333.
-
-        Returns:
-        pd.DataFrame: The DataFrame with Plackett-Luce ratings_features added.
-        """
-
         model = PlackettLuce()
 
         ratings_dict = {}
@@ -183,8 +168,6 @@ class LoLModeling:
             return row
 
         df = df.apply(update_ratings, axis=1)
-
-        return df
 
         return df
 

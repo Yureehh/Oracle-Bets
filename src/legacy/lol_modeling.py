@@ -229,7 +229,7 @@ def trueskill_model(
             "result",
             "earned gpm",
             "ckpm",
-            "team kpm",
+            "team_kpm",
         ]
     ].copy()
 
@@ -243,7 +243,7 @@ def trueskill_model(
     input_data = pd.merge(
         input_data, earned_gold, how="left", on=["league", "gameid", "date", "teamid"]
     )
-    input_data = input_data.rename(columns={"team kpm": "team_kpm"})
+    input_data = input_data.rename(columns={"team_kpm": "team_kpm"})
     input_data[["team_egpm", "team_kpm", "ckpm"]] = input_data[
         ["team_egpm", "team_kpm", "ckpm"]
     ].fillna(0)
@@ -1071,7 +1071,7 @@ def dk_enrich(oe_data: pd.DataFrame, entity: str):
             (3 * oe_data["kills"])
             + (2 * oe_data["assists"])
             + (-1 * oe_data["deaths"])
-            + (0.02 * oe_data["total cs"])
+            + (0.02 * oe_data["total_cs"])
             + (np.where((oe_data["kills"] > 10) | (oe_data["assists"] > 10), 2, 0))
         )
     else:
@@ -1109,7 +1109,7 @@ def enrich_ema_statistics(oe_data: pd.DataFrame, entity: str):
             "kills",
             "deaths",
             "assists",
-            "total cs",
+            "total_cs",
             "earned gpm",
             "earnedgoldshare",
             "gamelength",

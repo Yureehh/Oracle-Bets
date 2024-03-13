@@ -156,9 +156,8 @@ class TestPandascoreSchedule:
     @pytest.fixture
     def mock_full_schedule(self):
         schedule_data = """league,Blue,Red,Start (UTC),Best Of
-        CBLOL,INTZ e-Sports,LOS,2024-03-02 16:00:00+00:00,1
-        LVP SL 2nd Division,Xoldiers,Stormbringers,2024-03-02 17:00:00+00:00,1
-        """
+CBLOL,INTZ e-Sports,LOS,2024-03-02 16:00:00+00:00,1
+LVP SL 2nd Division,Xoldiers,Stormbringers,2024-03-02 17:00:00+00:00,1"""
         return pd.read_csv(StringIO(schedule_data))
 
     # Test _fetch_matches with mocked API response
