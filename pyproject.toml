@@ -2,7 +2,7 @@
 name = "leaguepredictor"
 version = "0.1.0"
 description = "League of Legends esports analytics suite"
-authors = ["Matthew Rittinghouse <rittinghousemt@g.cofc.edu>"]
+authors = ["Matthew Rittinghouse <matthew.rittinghouse@gmail.com>"]
 readme = "README.md"
 packages = [
     { include = "**/*" }

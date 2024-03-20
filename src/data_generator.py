@@ -13,7 +13,7 @@ Tim provides an invaluable service to the League community.
 # Housekeeping
 import datetime as dt
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from os import getenv
 
 import boto3
@@ -33,6 +33,10 @@ load_dotenv()
 
 @dataclass
 class DataGenerator:
+    team_data: pd.DataFrame = field(default_factory=pd.DataFrame)
+    player_data: pd.DataFrame = field(default_factory=pd.DataFrame)
+    ts_lookup: dict = field(default_factory=dict)
+
     def __post_init__(self):
         self.s3_session = self.create_s3_session()
         self.oracle = OraclesElixir(
@@ -40,7 +44,8 @@ class DataGenerator:
         )
         self.imputer = EarlyGameStatsImputer()
 
-    def create_s3_session(self):
+    @staticmethod
+    def create_s3_session():
         """
         Create a boto3 session to access the S3 bucket.
         """
@@ -49,7 +54,8 @@ class DataGenerator:
             aws_secret_access_key=getenv("SECRET_ID"),
         )
 
-    def _get_years_to_process(self):
+    @staticmethod
+    def _get_years_to_process():
         """
         Get the years to process for the data ingestion.
         Those are the current year and the two previous years.
@@ -57,11 +63,11 @@ class DataGenerator:
         current_year = dt.date.today().year
         return [str(year) for year in range(current_year, current_year - 3, -1)]
 
-    def _remove_buggy_games(self, data):
+    @staticmethod
+    def _remove_buggy_games(data):
         """
         Remove games that have been identified as buggy.
         """
-
         with open(INVALID_GAMES, "r") as file:
             invalid_config = json.load(file)
 
@@ -73,9 +79,6 @@ class DataGenerator:
     def ingest_data_from_s3(self):
         """
         Ingest data from S3 bucket and store it in the interim directory.
-
-        - The function doesn't have parameters, but it reads the data from the S3 bucket
-        - The function doesn't return anything, but it stores the data in the INTERIM_DIR
         """
         try:
             # Define time frame for analytics
@@ -91,117 +94,182 @@ class DataGenerator:
             data = self._remove_buggy_games(data)
 
             # Clean Data
-            team_data = self.oracle.clean_data(data, split_on="team")
-            player_data = self.oracle.clean_data(data, split_on="player")
+            self.team_data = self.oracle.clean_data(data, split_on="team")
+            self.player_data = self.oracle.clean_data(data, split_on="player")
 
             logger.info("Cleaned all data.\n")
 
             # Store Interim Data
-            team_data.to_csv(INTERIM_DIR / "team_data.csv", index=False)
-            player_data.to_csv(INTERIM_DIR / "player_data.csv", index=False)
+            self.team_data.to_csv(INTERIM_DIR / "team_data.csv", index=False)
+            self.player_data.to_csv(INTERIM_DIR / "player_data.csv", index=False)
             logger.info("Stored interim data.\n")
-            return team_data, player_data
         except Exception as e:
             logger.error(f"Failed to ingest data from S3: {e}")
             raise
 
-    def _enrich_data_with_ratings(self, player_data, team_data):
+    def _enrich_data_with_ratings(self):
         """
         Enrich data with all the associated ratings.
-
-        Parameters
-        ----------
-        player_data : pd.DataFrame
-        team_data : pd.DataFrame
-
-        Returns
-        -------
-        enriched_player_data : pd.DataFrame
-        enriched_team_data : pd.DataFrame
         """
-
         logger.info("Enriching data with ratings...")
 
-        player_data = Ratings.compute_elo(df=player_data, entity="player")
-        team_data = Ratings.compute_elo(df=team_data, entity="team")
+        self.player_data = Ratings.compute_elo(df=self.player_data, entity="player")
+        self.team_data = Ratings.compute_elo(df=self.team_data, entity="team")
         logger.info("Enriched data with elo.")
 
-        player_data = Ratings.compute_plackett_luce(df=player_data, entity="player")
-        team_data = Ratings.compute_plackett_luce(df=team_data, entity="team")
+        self.player_data = Ratings.compute_plackett_luce(df=self.player_data,
+                                                         entity="player")
+        self.team_data = Ratings.compute_plackett_luce(df=self.team_data,
+                                                       entity="team")
         logger.info("Enriched data with plackett-luce.")
 
-        player_data, team_data, ts_lookup = Ratings.compute_trueskill(
-            player_data=player_data, team_data=team_data
+        self.player_data, self.team_data, self.ts_lookup = Ratings.compute_trueskill(
+            player_data=self.player_data, team_data=self.team_data
         )
         logger.info("Enriched data with trueskill.")
 
         logger.info("Enriched data with ratings\n")
-        return player_data, team_data, ts_lookup
 
-    def _enrich_data_with_performance_metrics(self, player_data, team_data):
-        logger.info("Enriching data with performance metrics...")
-
-        player_data = PerformanceMetrics.add_egpm_model(player_data, entity="player")
-        team_data = PerformanceMetrics.add_egpm_model(team_data, entity="team")
+    def _enrich_data_with_performance_metrics(self):
+        self.player_data = PerformanceMetrics.add_egpm_model(self.player_data,
+                                                             entity="player")
+        self.team_data = PerformanceMetrics.add_egpm_model(self.team_data,
+                                                           entity="team")
         logger.info("Enriched data with EGPM.")
 
-        player_data = PerformanceMetrics.add_entity_ema_statistics(
-            player_data, entity="player"
+        self.player_data = PerformanceMetrics.add_entity_ema_statistics(
+            self.player_data, entity="player"
         )
-        team_data = PerformanceMetrics.add_entity_ema_statistics(
-            team_data, entity="team"
+        self.team_data = PerformanceMetrics.add_entity_ema_statistics(
+            self.team_data, entity="team"
         )
         logger.info("Enriched data with EMA statistics.")
 
-        player_data = PerformanceMetrics.add_side_win_rate_ewm(
-            player_data, entity="player"
+        self.player_data = PerformanceMetrics.add_side_win_rate_ewm(
+            self.player_data, entity="player"
         )
-        team_data = PerformanceMetrics.add_side_win_rate_ewm(team_data, entity="team")
+        self.team_data = PerformanceMetrics.add_side_win_rate_ewm(self.team_data,
+                                                                  entity="team")
         logger.info("Enriched data with side win rate.")
 
         logger.info("Enriched player and team data with performance metrics.")
 
-        return player_data, team_data
-
     def enrich_datasets(self):
         """
         Compute all enrichment for team and player-based analytics and predictions.
-        This includes Team and Player-based elo, TrueSkill, and EGPM dominance.
-
-        - The function doesn't have parameters, but it reads the data from the INTERIM_DIR
-        - The function doesn't return anything, but it stores the enriched data in the PROCESSED_DIR
         """
         try:
             # Load Data
-            team_data = pd.read_csv(INTERIM_DIR / "team_data.csv")
-            player_data = pd.read_csv(INTERIM_DIR / "player_data.csv")
+            self.team_data = pd.read_csv(INTERIM_DIR / "team_data.csv")
+            self.player_data = pd.read_csv(INTERIM_DIR / "player_data.csv")
 
             # Impute missing data for players only
-            player_data = self.imputer.process_data(player_data)
+            self.player_data = self.imputer.process_data(self.player_data)
 
             # Enrich Data with Ratings
-            player_data, team_data, ts_lookup = self._enrich_data_with_ratings(
-                player_data, team_data
-            )
+            self._enrich_data_with_ratings()
 
             # Enrich Data with player performance metrics
-            player_data, team_data = self._enrich_data_with_performance_metrics(
-                player_data, team_data
-            )
+            self._enrich_data_with_performance_metrics()
 
             # Sort dfs before storing them
-            player_data.sort_values(get_sorting_keys("player"), inplace=True)
-            team_data.sort_values(get_sorting_keys("team"), inplace=True)
+            self.player_data.sort_values(get_sorting_keys("player"), inplace=True)
+            self.team_data.sort_values(get_sorting_keys("team"), inplace=True)
 
             # Store Enriched Data
-            team_data.to_csv(PROCESSED_DIR / "team_data.csv", index=False)
-            player_data.to_csv(PROCESSED_DIR / "player_data.csv", index=False)
+            self.team_data.to_csv(PROCESSED_DIR / "team_data.csv", index=False)
+            self.player_data.to_csv(PROCESSED_DIR / "player_data.csv", index=False)
             logger.info("Stored enriched data.\n")
-
-            return team_data, player_data
         except Exception as e:
             logger.error(f"Failed to enrich dataset: {e}")
             raise
+
+    def flatten_team_data(self):
+        """
+        Flatten the team_data dataframe to get the most recent record per team.
+        """
+        flattened_teams = (
+            self.team_data.sort_values(["teamid", "date"])
+            .groupby("teamid")
+            .tail(1)
+            .reset_index(drop=True)
+        )
+        flattened_teams = flattened_teams[
+            [
+                "date",
+                "league",
+                "teamname",
+                "team_elo_after",
+                "trueskill_sum_mu",
+                "trueskill_sigma_squared",
+                "egpm_dominance_ema_after",
+                "blue_side_ema_after",
+                "red_side_ema_after",
+                "kda_ema_after",
+                "golddiffat15_ema_after",
+                "csdiffat15_ema_after",
+                "dkpoints_ema_after",
+            ]
+        ]
+        flattened_teams = flattened_teams.rename(
+            columns={
+                "team_elo_after": "team_elo",
+                "egpm_dominance_ema_after": "egpm_dominance",
+                "kda_ema_after": "kda",
+                "golddiffat15_ema_after": "golddiffat15",
+                "csdiffat15_ema_after": "csdiffat15",
+                "dkpoints_ema_after": "dkpoints",
+            }
+        )
+        flattened_teams.to_csv(PROCESSED_DIR / "flattened_teams.csv", index=False)
+
+    def flatten_player_data(self):
+        """
+        Flatten the player_data dataframe to get the most recent record per player per team.
+        """
+        flattened_players = (
+            self.player_data.sort_values(["playerid", "date"])
+            .groupby(["playerid", "teamid"])
+            .tail(1)
+            .reset_index(drop=True)
+        )
+        flattened_players = flattened_players[
+            [
+                "date",
+                "league",
+                "teamname",
+                "position",
+                "playername",
+                "playerid",
+                "player_elo_after",
+                "egpm_dominance_ema_after",
+                "blue_side_ema_after",
+                "red_side_ema_after",
+                "kda_ema_after",
+                "golddiffat15_ema_after",
+                "csdiffat15_ema_after",
+                "dkpoints_ema_after",
+            ]
+        ]
+        flattened_players = flattened_players.rename(
+            columns={
+                "player_elo_after": "player_elo",
+                "egpm_dominance_ema_after": "egpm_dominance",
+                "kda_ema_after": "kda",
+                "golddiffat15_ema_after": "golddiffat15",
+                "csdiffat15_ema_after": "csdiffat15",
+                "dkpoints_ema_after": "dkpoints",
+            }
+        )
+        flattened_players[
+            ["trueskill_mu", "trueskill_sigma"]] = flattened_players.apply(
+            lambda row: [self.ts_lookup[row["playerid"]].mu,
+                         self.ts_lookup[row["playerid"]].sigma]
+            if row["playerid"] in self.ts_lookup else [None, None],
+            axis=1,
+            result_type="expand",
+        )
+        flattened_players.to_csv(PROCESSED_DIR / "flattened_players.csv", index=False)
 
     def run(self):
         logger.info("Starting data generation.\n")
