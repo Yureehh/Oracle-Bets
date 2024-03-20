@@ -9,7 +9,7 @@ import requests
 from dotenv import load_dotenv
 
 from utils.logger import logger
-from utils.paths import INTERIM_DIR, RAW_DIR
+from utils.paths import PROCESSED_DIR, RAW_DIR
 
 load_dotenv()
 
@@ -59,12 +59,13 @@ class PandaScoreSchedule:
                 logger.warning(f"Invalid match format: {match}")
         return parsed_matches
 
-    def filter_by_league(self, schedule: pd.DataFrame, leagues: str) -> pd.DataFrame:
+    @staticmethod
+    def filter_by_league(schedule: pd.DataFrame, leagues: str) -> pd.DataFrame:
         """Filter the schedule by leagues."""
         return schedule[schedule["league"].isin(leagues)].reset_index(drop=True)
 
     def get_schedule(
-        self, start_datetime: str, end_datetime: str, leagues: Optional[str] = None
+            self, start_datetime: str, end_datetime: str, leagues: Optional[str] = None
     ) -> pd.DataFrame:
         """
         Gets the schedule of upcoming matches.
@@ -123,10 +124,10 @@ class PandaScoreSchedule:
             within_range_df = page_matches_df[
                 (page_matches_df["Start (UTC)"] >= start_datetime)
                 & (page_matches_df["Start (UTC)"] <= end_datetime)
-            ]
+                ]
             if (
-                within_range_df.empty
-                and page_matches_df["Start (UTC)"].min() > end_datetime
+                    within_range_df.empty
+                    and page_matches_df["Start (UTC)"].min() > end_datetime
             ):
                 break  # All future data will be out of range
             schedule_df = pd.concat([schedule_df, within_range_df], ignore_index=True)
@@ -148,4 +149,4 @@ if __name__ == "__main__":
     schedule = panda_schedule.get_schedule(start_datetime=start, end_datetime=end)
 
     # Export
-    schedule.to_csv(INTERIM_DIR / "schedule.csv", index=False)
+    schedule.to_csv(PROCESSED_DIR / "schedule.csv", index=False)

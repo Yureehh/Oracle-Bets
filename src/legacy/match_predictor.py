@@ -24,7 +24,7 @@ pd.options.display.float_format = "{:,.4f}".format
 pd.set_option("display.max_rows", None, "display.max_columns", None)
 
 # Load EGPM Dominance Model
-filepath = Path.cwd().parent.joinpath("models", "egpm_dom_logistic_regression.csv")
+filepath = Path.cwd().joinpath("models", "egpm_dom_logistic_regression.csv")
 egpm_model = pickle.load(open(filepath, "rb"))
 
 
@@ -38,20 +38,20 @@ def predict_match(blue: Team, red: Team) -> pd.DataFrame:
         return blue_win_perc
 
     def trueskill_prediction(
-        blue_team_mu: float,
-        blue_team_sigma: list,
-        red_team_mu: float,
-        red_team_sigma: list,
-        sigma_value: float,
+            blue_team_mu: float,
+            blue_team_sigma: list,
+            red_team_mu: float,
+            red_team_sigma: list,
+            sigma_value: float,
     ) -> float:
         delta_mu = blue_team_mu - red_team_mu
-        sum_sig = sum(r**2 for r in itertools.chain(blue_team_sigma, red_team_sigma))
+        sum_sig = sum(r ** 2 for r in itertools.chain(blue_team_sigma, red_team_sigma))
         denominator = math.sqrt(10 * ((sigma_value / 2) ** 2) + sum_sig)
         blue_win_perc = norm.cdf(delta_mu / denominator)
         return blue_win_perc
 
     def egpm_dom_prediction(
-        blue_team_egpm_dom: float, red_team_egpm_dom: float
+            blue_team_egpm_dom: float, red_team_egpm_dom: float
     ) -> float:
         X = np.array([blue_team_egpm_dom, red_team_egpm_dom]).reshape(1, -1)
         blue_win_perc = egpm_model.predict_proba(X)[:, 1]
@@ -86,26 +86,28 @@ def predict_match(blue: Team, red: Team) -> pd.DataFrame:
     if blue.team_exists and red.team_exists and blue.name.lower() != "first 5":
         match["team_elo"] = elo_prediction(blue.team_elo, red.team_elo)
         sum_accuracy = (
-            weights["team_accuracy"]
-            + weights["player_accuracy"]
-            + weights["trueskill_accuracy"]
-            + weights["egpm_dom_accuracy"]
-            + weights["side_ema_accuracy"]
+                weights["team_accuracy"]
+                + weights["player_accuracy"]
+                + weights["trueskill_accuracy"]
+                + weights["egpm_dom_accuracy"]
+                + weights["side_ema_accuracy"]
         )
 
         match["blue_win_chance"] = float(
             (
-                (match["team_elo"] * (weights["team_accuracy"] / sum_accuracy))
-                + (match["player_elo"] * (weights["player_accuracy"] / sum_accuracy))
-                + (
-                    match["player_trueskill"]
-                    * (weights["trueskill_accuracy"] / sum_accuracy)
-                )
-                + (
-                    match["team_egpm_dom"]
-                    * (weights["egpm_dom_accuracy"] / sum_accuracy)
-                )
-                + (match["side_win"] * (weights["side_ema_accuracy"] / sum_accuracy))
+                    (match["team_elo"] * (weights["team_accuracy"] / sum_accuracy))
+                    + (match["player_elo"] * (
+                        weights["player_accuracy"] / sum_accuracy))
+                    + (
+                            match["player_trueskill"]
+                            * (weights["trueskill_accuracy"] / sum_accuracy)
+                    )
+                    + (
+                            match["team_egpm_dom"]
+                            * (weights["egpm_dom_accuracy"] / sum_accuracy)
+                    )
+                    + (match["side_win"] * (
+                        weights["side_ema_accuracy"] / sum_accuracy))
             )
         )
 
@@ -115,19 +117,20 @@ def predict_match(blue: Team, red: Team) -> pd.DataFrame:
         match.drop(["player_egpm_dom"], axis=1, inplace=True)
     else:
         sum_accuracy = (
-            weights["player_accuracy"]
-            + weights["trueskill_accuracy"]
-            + weights["egpm_dom_accuracy"]
-            + weights["side_ema_accuracy"]
+                weights["player_accuracy"]
+                + weights["trueskill_accuracy"]
+                + weights["egpm_dom_accuracy"]
+                + weights["side_ema_accuracy"]
         )
         match["blue_win_chance"] = (
-            (match["player_elo"] * (weights["player_accuracy"] / sum_accuracy))
-            + (
-                match["player_trueskill"]
-                * (weights["trueskill_accuracy"] / sum_accuracy)
-            )
-            + (match["player_egpm_dom"] * (weights["egpm_dom_accuracy"] / sum_accuracy))
-            + (match["side_win"] * (weights["side_ema_accuracy"] / sum_accuracy))
+                (match["player_elo"] * (weights["player_accuracy"] / sum_accuracy))
+                + (
+                        match["player_trueskill"]
+                        * (weights["trueskill_accuracy"] / sum_accuracy)
+                )
+                + (match["player_egpm_dom"] * (
+                    weights["egpm_dom_accuracy"] / sum_accuracy))
+                + (match["side_win"] * (weights["side_ema_accuracy"] / sum_accuracy))
         )
         match["deviation"] = match[
             ["player_elo", "player_trueskill", "player_egpm_dom", "side_win"]
@@ -212,19 +215,19 @@ def best_of_five(t1name, t1odds, t2name, t2odds):
 
     # Team 1 3/1
     t1_31 = (
-        (t1odds * t1odds * t2odds * t1odds)
-        + (t2odds * t1odds * t1odds * t1odds)
-        + (t1odds * t2odds * t1odds * t1odds)
+            (t1odds * t1odds * t2odds * t1odds)
+            + (t2odds * t1odds * t1odds * t1odds)
+            + (t1odds * t2odds * t1odds * t1odds)
     )
 
     # Team 1 3/2
     t1_32 = (
-        (t2odds * t2odds * t1odds * t1odds * t1odds)
-        + (t2odds * t1odds * t1odds * t2odds * t1odds)
-        + (t2odds * t1odds * t2odds * t1odds * t1odds)
-        + (t1odds * t2odds * t2odds * t1odds * t1odds)
-        + (t1odds * t1odds * t2odds * t2odds * t1odds)
-        + (t1odds * t2odds * t1odds * t2odds * t1odds)
+            (t2odds * t2odds * t1odds * t1odds * t1odds)
+            + (t2odds * t1odds * t1odds * t2odds * t1odds)
+            + (t2odds * t1odds * t2odds * t1odds * t1odds)
+            + (t1odds * t2odds * t2odds * t1odds * t1odds)
+            + (t1odds * t1odds * t2odds * t2odds * t1odds)
+            + (t1odds * t2odds * t1odds * t2odds * t1odds)
     )
 
     # Team 2 3/0
@@ -232,19 +235,19 @@ def best_of_five(t1name, t1odds, t2name, t2odds):
 
     # Team 2 3/1
     t2_31 = (
-        (t2odds * t2odds * t1odds * t2odds)
-        + (t1odds * t2odds * t2odds * t2odds)
-        + (t2odds * t1odds * t2odds * t2odds)
+            (t2odds * t2odds * t1odds * t2odds)
+            + (t1odds * t2odds * t2odds * t2odds)
+            + (t2odds * t1odds * t2odds * t2odds)
     )
 
     # Team 2 3/2
     t2_32 = (
-        (t1odds * t1odds * t2odds * t2odds * t2odds)
-        + (t1odds * t2odds * t2odds * t1odds * t2odds)
-        + (t1odds * t2odds * t1odds * t2odds * t2odds)
-        + (t2odds * t1odds * t1odds * t2odds * t2odds)
-        + (t2odds * t2odds * t1odds * t1odds * t2odds)
-        + (t2odds * t1odds * t2odds * t1odds * t2odds)
+            (t1odds * t1odds * t2odds * t2odds * t2odds)
+            + (t1odds * t2odds * t2odds * t1odds * t2odds)
+            + (t1odds * t2odds * t1odds * t2odds * t2odds)
+            + (t2odds * t1odds * t1odds * t2odds * t2odds)
+            + (t2odds * t2odds * t1odds * t1odds * t2odds)
+            + (t2odds * t1odds * t2odds * t1odds * t2odds)
     )
 
     # Final Outputs
@@ -267,19 +270,19 @@ def best_of_five(t1name, t1odds, t2name, t2odds):
 
 
 def predict(
-    blue_team: str,
-    blue1: str,
-    blue2: str,
-    blue3: str,
-    blue4: str,
-    blue5: str,
-    red_team: str,
-    red1: str,
-    red2: str,
-    red3: str,
-    red4: str,
-    red5: str,
-    verbose: bool = False,
+        blue_team: str,
+        blue1: str,
+        blue2: str,
+        blue3: str,
+        blue4: str,
+        blue5: str,
+        red_team: str,
+        red1: str,
+        red2: str,
+        red3: str,
+        red4: str,
+        red5: str,
+        verbose: bool = False,
 ):
     output = pd.DataFrame()
 
@@ -335,16 +338,16 @@ def predict(
 
 
 def mock_draft(
-    blue1: str,
-    blue2: str,
-    blue3: str,
-    blue4: str,
-    blue5: str,
-    red1: str,
-    red2: str,
-    red3: str,
-    red4: str,
-    red5: str,
+        blue1: str,
+        blue2: str,
+        blue3: str,
+        blue4: str,
+        blue5: str,
+        red1: str,
+        red2: str,
+        red3: str,
+        red4: str,
+        red5: str,
 ):
     output = pd.DataFrame()
 
@@ -373,13 +376,13 @@ def mock_draft(
     )
 
     if (
-        blue.warning
-        != '\n WARNING: Team "First 5" not found in database. No team data was used.'
+            blue.warning
+            != '\n WARNING: Team "First 5" not found in database. No team data was used.'
     ):
         output += f"\n{blue.warning}"
     if (
-        red.warning
-        != '\n WARNING: Team "Second 5" not found in database. No team data was used.'
+            red.warning
+            != '\n WARNING: Team "Second 5" not found in database. No team data was used.'
     ):
         output += f"\n{red.warning}"
 

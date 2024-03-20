@@ -39,7 +39,8 @@ bot = commands.Bot(command_prefix="!")
 async def schedule(ctx, league):
     try:
         output = pd.read_csv(
-            Path.cwd().parent.joinpath("data", "processed", "schedule.csv")
+            Path.cwd().joinpath("data", "processed",
+                                "schedule.csv")
         )
         lower_league = league.lower()
         output = (
@@ -67,11 +68,14 @@ async def schedule(ctx, league):
 @bot.command(name="profile")
 async def profile(ctx, entity):
     try:
+        print(os.getcwd())
         players = pd.read_csv(
-            Path.cwd().parent.joinpath("data", "processed", "flattened_players.csv")
+            Path.cwd().joinpath("esports-analytics", "data", "processed",
+                                "flattened_players.csv")
         )
         teams = pd.read_csv(
-            Path.cwd().parent.joinpath("data", "processed", "flattened_teams.csv")
+            Path.cwd().joinpath("esports-analytics", "data", "processed",
+                                "flattened_teams.csv")
         )
 
         players_list = [
@@ -129,19 +133,19 @@ async def profile(ctx, entity):
 
 @bot.command(name="predict")
 async def predict(
-    ctx,
-    blue_team,
-    blue1,
-    blue2,
-    blue3,
-    blue4,
-    blue5,
-    red_team,
-    red1,
-    red2,
-    red3,
-    red4,
-    red5,
+        ctx,
+        blue_team,
+        blue1,
+        blue2,
+        blue3,
+        blue4,
+        blue5,
+        red_team,
+        red1,
+        red2,
+        red3,
+        red4,
+        red5,
 ):
     prelim = "```Calculating...```"
     message = await ctx.send(content=prelim)
@@ -174,19 +178,19 @@ async def predict(
 
 @bot.command(name="predict_verbose")
 async def predict_verbose(
-    ctx,
-    blue_team,
-    blue1,
-    blue2,
-    blue3,
-    blue4,
-    blue5,
-    red_team,
-    red1,
-    red2,
-    red3,
-    red4,
-    red5,
+        ctx,
+        blue_team,
+        blue1,
+        blue2,
+        blue3,
+        blue4,
+        blue5,
+        red_team,
+        red1,
+        red2,
+        red3,
+        red4,
+        red5,
 ):
     prelim = "```Calculating...```"
     message = await ctx.send(content=prelim)
@@ -254,7 +258,7 @@ async def predict_team(ctx, blue_team, red_team):
 
 @bot.command(name="mock_draft")
 async def mock_draft(
-    ctx, blue1, blue2, blue3, blue4, blue5, red1, red2, red3, red4, red5
+        ctx, blue1, blue2, blue3, blue4, blue5, red1, red2, red3, red4, red5
 ):
     prelim = "```Calculating...```"
     message = await ctx.send(content=prelim)
@@ -342,10 +346,10 @@ async def validate(ctx, method, graph):
             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
             if str(graph) in true_vals:
                 with open(
-                    Path.cwd().parent.joinpath(
-                        "reports", "figures", "TeamElo_Validation.png"
-                    ),
-                    "rb",
+                        Path.cwd().parent.joinpath(
+                            "reports", "figures", "TeamElo_Validation.png"
+                        ),
+                        "rb",
                 ) as f:
                     image = discord.File(f)
 
@@ -356,10 +360,10 @@ async def validate(ctx, method, graph):
             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
             if str(graph) in true_vals:
                 with open(
-                    Path.cwd().parent.joinpath(
-                        "reports", "figures", "PlayerElo_Validation.png"
-                    ),
-                    "rb",
+                        Path.cwd().parent.joinpath(
+                            "reports", "figures", "PlayerElo_Validation.png"
+                        ),
+                        "rb",
                 ) as f:
                     image = discord.File(f)
 
@@ -370,10 +374,10 @@ async def validate(ctx, method, graph):
             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
             if str(graph) in true_vals:
                 with open(
-                    Path.cwd().parent.joinpath(
-                        "reports", "figures", "TrueSkill_Validation.png"
-                    ),
-                    "rb",
+                        Path.cwd().parent.joinpath(
+                            "reports", "figures", "TrueSkill_Validation.png"
+                        ),
+                        "rb",
                 ) as f:
                     image = discord.File(f)
 
@@ -384,10 +388,10 @@ async def validate(ctx, method, graph):
             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
             if str(graph) in true_vals:
                 with open(
-                    Path.cwd().parent.joinpath(
-                        "reports", "figures", "SideEMA_Validation.png"
-                    ),
-                    "rb",
+                        Path.cwd().parent.joinpath(
+                            "reports", "figures", "SideEMA_Validation.png"
+                        ),
+                        "rb",
                 ) as f:
                     image = discord.File(f)
 
@@ -398,10 +402,10 @@ async def validate(ctx, method, graph):
             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
             if str(graph) in true_vals:
                 with open(
-                    Path.cwd().parent.joinpath(
-                        "reports", "figures", "EGPMDom_Validation.png"
-                    ),
-                    "rb",
+                        Path.cwd().parent.joinpath(
+                            "reports", "figures", "EGPMDom_Validation.png"
+                        ),
+                        "rb",
                 ) as f:
                     image = discord.File(f)
 
@@ -412,10 +416,10 @@ async def validate(ctx, method, graph):
             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
             if str(graph) in true_vals:
                 with open(
-                    Path.cwd().parent.joinpath(
-                        "reports", "figures", "EnsembleModel_Validation.png"
-                    ),
-                    "rb",
+                        Path.cwd().parent.joinpath(
+                            "reports", "figures", "EnsembleModel_Validation.png"
+                        ),
+                        "rb",
                 ) as f:
                     image = discord.File(f)
 
