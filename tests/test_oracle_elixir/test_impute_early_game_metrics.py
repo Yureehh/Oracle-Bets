@@ -3,7 +3,6 @@ from io import StringIO
 
 import pandas as pd
 import pytest
-import requests_mock
 
 from src.feature_engineering.impute_early_game_metrics import EarlyGameStatsImputer
 from utils.paths import INTERIM_DIR
@@ -47,13 +46,13 @@ class TestEarlyGameStatsImputer:
             assert col in result.columns
 
     def test_train_stacked_model(self):
-        pass  # TODO: too complex to test, will include in integration tests
+        pass  #  Too complex to test, will include in integration tests
 
     def test_impute_missing_values(self):
-        pass  # TODO: too complex to test, will include in integration tests
+        pass  #  Too complex to test, will include in integration tests
 
     def test_log_performance_metrics(self):
-        pass  # TODO: too complex to test, will include in integration tests
+        pass  #  Too complex to test, will include in integration tests
 
     def test_prepare_data_for_modeling(self, imputer, data):
         # Expected columns after encoding
@@ -73,7 +72,7 @@ class TestEarlyGameStatsImputer:
             assert col in prepared_data.columns
 
     def test_train_models(self):
-        pass  # TODO: too complex to test, will include in integration tests
+        pass  #  Too complex to test, will include in integration tests
 
     def test_process_data(self, imputer, data):
         data = imputer.process_data(data)

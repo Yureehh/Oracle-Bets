@@ -3,6 +3,8 @@ from typing import List, Tuple
 
 import pandas as pd
 
+from utils.utils import get_sorting_keys
+
 
 def expected_outcome(elo_a: float, elo_b: float) -> float:
     """Calculate the expected match outcome between two Elo ratings."""
@@ -20,17 +22,9 @@ def validate_entity(entity: str) -> Tuple[str, str, List[str]]:
     """Validate the entity and return configuration for entity and opponent."""
     entity = entity.lower()
     if entity == "team":
-        return (
-            "teamid",
-            "opponentteamid",
-            ["date", "league", "gameid", "side", "result"],
-        )
+        return ("teamid", "opponentteamid", get_sorting_keys("team"))
     elif entity == "player":
-        return (
-            "playerid",
-            "opponentplayerid",
-            ["date", "league", "gameid", "teamid", "side", "position", "result"],
-        )
+        return ("playerid", "opponentplayerid", get_sorting_keys("player"))
     else:
         raise ValueError(f"Unsupported entity name: {entity}")
 

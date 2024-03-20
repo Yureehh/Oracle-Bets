@@ -13,6 +13,7 @@ from src.ratings_features.trueskill import (
     trueskill_model,
     update_player_ratings,
 )
+from utils.utils import get_sorting_keys
 
 
 class TestEloRating:
@@ -362,10 +363,10 @@ class TestEloRating:
             "team_egpm" in processed_data.columns
         ), "'team_egpm' should be calculated and included in the processed data."
 
-        # Check processed-data is sorted by=["date", "gameid", "side", "position"]
-        assert processed_data.sort_values(
-            by=["date", "gameid", "side", "position"]
-        ).equals(processed_data)
+        # Check processed-data is sorted
+        assert processed_data.sort_values(by=get_sorting_keys("team")).equals(
+            processed_data
+        )
 
     def test_generate_match_array(self):
         match_array = generate_match_array(preprocess_data(self.sample_player_data))
@@ -464,7 +465,21 @@ class TestEloRating:
         ), "The returned Series should contain 21 elements (1 win probability + 10 mu + 10 sigma values)."
         assert gameid_dict, "The gameid_dict should be updated with the processed game."
 
-        # TODO: testare su piu game assieme con apply
+        full_ts = match_df.apply(
+            lambda x: update_player_ratings(x, rating_dict, gameid_dict, self.ts_env),
+            axis=1,
+            result_type="expand",
+        )
+
+        assert len(full_ts) == len(
+            match_df
+        ), "The returned DataFrame should have the same number of rows as the input match_df."
+
+        # Asser full_ts has the shape of match_df with the TrueSkill columns
+        assert full_ts.shape == (
+            len(match_df),
+            21,
+        ), "The returned DataFrame should have the same shape as the input match_df with the TrueSkill columns."
 
     def test_calculate_and_merge_team_statistics(self):
         gameid_dict = {}
@@ -541,7 +556,12 @@ class TestEloRating:
         player_data_after = merge_player_stats(player_data_before, match_df)
 
         # Verify new columns for TrueSkill ratings are added to player_data DataFrame
-        expected_columns = ["trueskill_mu", "trueskill_sigma", "trueskill_opponent_mu", "trueskill_opponent_sigma"]
+        expected_columns = [
+            "trueskill_mu",
+            "trueskill_sigma",
+            "trueskill_opponent_mu",
+            "trueskill_opponent_sigma",
+        ]
         for col in expected_columns:
             assert (
                 col in player_data_after.columns

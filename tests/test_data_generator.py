@@ -38,11 +38,11 @@ class TestDataGenerator:
         assert team_data is not None
         assert player_data is not None
 
-    def test_enrich_data_with_ratings(self, data_generator):
-        team_data, player_data = data_generator.ingest_data_from_s3()
-        team_data, player_data = data_generator.enrich_data_with_ratings(
-            team_data, player_data
-        )
+    def test_enrich_datasets(self, data_generator):
+        team_data, player_data = data_generator.enrich_datasets()
+        assert team_data is not None
+        assert player_data is not None
+
         assert team_data is not None
         assert player_data is not None
 
@@ -50,8 +50,8 @@ class TestDataGenerator:
         expected_player_trueskill_columns = [
             "trueskill_mu",
             "trueskill_sigma",
-            "opponent_mu",
-            "opponent_sigma",
+            "trueskill_opponent_mu",
+            "trueskill_opponent_sigma",
         ]
         expected_team_trueskill_columns = [
             "trueskill_sum_mu",
@@ -81,11 +81,6 @@ class TestDataGenerator:
         assert all(col in player_data.columns for col in expected_plackett_luce_columns)
         assert all(col in player_data.columns for col in expexted_elo_columns)
         assert all(col in team_data.columns for col in expexted_elo_columns)
-
-    def test_enrich_datasets(self, data_generator):
-        team_data, player_data = data_generator.enrich_datasets()
-        assert team_data is not None
-        assert player_data is not None
 
     def test_run(self, data_generator):
         data_generator.run()

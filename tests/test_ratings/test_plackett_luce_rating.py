@@ -10,6 +10,22 @@ from src.ratings_features.plackett_luce import (
 )
 
 
+@pytest.fixture
+def sample_df():
+    """
+    Provides a sample DataFrame for testing.
+    """
+    return pd.DataFrame(
+        {
+            "side": ["Red", "Blue", "Red", "Blue", "Red"],
+            "result": [1, 0, 1, 0, 1],
+            "playerid": [1, 1, 2, 2, 3],
+            "teamid": [1, 1, 2, 2, 3],
+            "date": pd.date_range(start="2021-01-01", periods=5, freq="D"),
+        }
+    )
+
+
 class Test_Plackett_Luce:
     @pytest.fixture
     def plackett_luce_model(self):
@@ -135,30 +151,30 @@ class Test_Plackett_Luce:
 
         # Check every line where teamid is 1 the mu is higher than the pre_match_mu column
         assert all(
-            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 1]["mu"]
+            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 1]["pl_mu"]
             > plackett_luce_df_team[plackett_luce_df_team["teamid"] == 1][
-                "pre_match_mu"
+                "pl_pre_match_mu"
             ]
         ), "Team 1's mu should increase."
         # Check every line where teamid is 1 the sigma is lower than the pre_match_sigma column
         assert all(
-            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 1]["sigma"]
+            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 1]["pl_sigma"]
             < plackett_luce_df_team[plackett_luce_df_team["teamid"] == 1][
-                "pre_match_sigma"
+                "pl_pre_match_sigma"
             ]
         ), "Team 1's sigma should decrease."
         # Check every line where teamid is 2 the mu is lower than the pre_match_mu column
         assert all(
-            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 2]["mu"]
+            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 2]["pl_mu"]
             < plackett_luce_df_team[plackett_luce_df_team["teamid"] == 2][
-                "pre_match_mu"
+                "pl_pre_match_mu"
             ]
         ), "Team 2's mu should decrease."
         # Check every line where teamid is 2 the sigma is lower than the pre_match_sigma column
         assert all(
-            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 2]["sigma"]
+            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 2]["pl_sigma"]
             < plackett_luce_df_team[plackett_luce_df_team["teamid"] == 2][
-                "pre_match_sigma"
+                "pl_pre_match_sigma"
             ]
         ), "Team 2's sigma should decrease."
         # Check that team3 and team4 have been added to the ratings
@@ -170,10 +186,12 @@ class Test_Plackett_Luce:
         ), "Team 4 should be in the ratings."
         # Check that team3 mu is higher than team4 mu
         assert (
-            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 3]["mu"].values[0]
-            > plackett_luce_df_team[plackett_luce_df_team["teamid"] == 4]["mu"].values[
+            plackett_luce_df_team[plackett_luce_df_team["teamid"] == 3]["pl_mu"].values[
                 0
             ]
+            > plackett_luce_df_team[plackett_luce_df_team["teamid"] == 4][
+                "pl_mu"
+            ].values[0]
         ), "Team 3's mu should be higher than team 4's mu."
 
     def test_calculate_plackett_luce_for_player(self, plackett_luce_df_player):
@@ -186,30 +204,34 @@ class Test_Plackett_Luce:
 
         # Check every line where playerid is 1 the mu is higher than the pre_match_mu column
         assert all(
-            plackett_luce_df_player[plackett_luce_df_player["playerid"] == 1]["mu"]
+            plackett_luce_df_player[plackett_luce_df_player["playerid"] == 1]["pl_mu"]
             > plackett_luce_df_player[plackett_luce_df_player["playerid"] == 1][
-                "pre_match_mu"
+                "pl_pre_match_mu"
             ]
         ), "Team 1's mu should increase."
         # Check every line where playerid is 1 the sigma is lower than the pre_match_sigma column
         assert all(
-            plackett_luce_df_player[plackett_luce_df_player["playerid"] == 1]["sigma"]
+            plackett_luce_df_player[plackett_luce_df_player["playerid"] == 1][
+                "pl_sigma"
+            ]
             < plackett_luce_df_player[plackett_luce_df_player["playerid"] == 1][
-                "pre_match_sigma"
+                "pl_pre_match_sigma"
             ]
         ), "Team 1's sigma should decrease."
         # Check every line where playerid is 2 the mu is lower than the pre_match_mu column
         assert all(
-            plackett_luce_df_player[plackett_luce_df_player["playerid"] == 2]["mu"]
+            plackett_luce_df_player[plackett_luce_df_player["playerid"] == 2]["pl_mu"]
             < plackett_luce_df_player[plackett_luce_df_player["playerid"] == 2][
-                "pre_match_mu"
+                "pl_pre_match_mu"
             ]
         ), "Team 2's mu should decrease."
         # Check every line where playerid is 2 the sigma is lower than the pre_match_sigma column
         assert all(
-            plackett_luce_df_player[plackett_luce_df_player["playerid"] == 2]["sigma"]
+            plackett_luce_df_player[plackett_luce_df_player["playerid"] == 2][
+                "pl_sigma"
+            ]
             < plackett_luce_df_player[plackett_luce_df_player["playerid"] == 2][
-                "pre_match_sigma"
+                "pl_pre_match_sigma"
             ]
         ), "Team 2's sigma should decrease."
         # Check that team3 and team4 have been added to the ratings

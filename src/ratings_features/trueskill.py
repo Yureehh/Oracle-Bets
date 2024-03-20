@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import trueskill
 
-from src.data_ingest.oracles_elixir import get_opponent
+from utils.utils import get_sorting_keys
 
 
 def initialize_player_ratings(
@@ -53,7 +53,7 @@ def preprocess_data(player_data: pd.DataFrame) -> pd.DataFrame:
     merged_data = player_data.merge(team_egpm, on=["gameid", "teamid"], how="left")
 
     # Sort the DataFrame; consider inplace sorting if the original order is not needed later
-    merged_data.sort_values(by=["date", "gameid", "side", "position"], inplace=True)
+    merged_data.sort_values(by=get_sorting_keys("team"), inplace=True)
 
     # Select and return only the required columns, ensuring the DataFrame is tidy
     required_columns.append("team_egpm")
@@ -405,7 +405,7 @@ def trueskill_model(
     team_data = calculate_and_merge_team_statistics(match_df, team_data)
 
     # Sort the team_data DataFrame by date and gameid
-    team_data.sort_values(by=["date", "gameid", "side"], ascending=True, inplace=True)
+    team_data.sort_values(by=get_sorting_keys("team"), ascending=True, inplace=True)
 
     # Apply the function to merge player statistics
     player_data = merge_player_stats(player_data, match_df)
@@ -414,9 +414,7 @@ def trueskill_model(
     player_data.reset_index(drop=True, inplace=True)
 
     # Sort player_data by date, league, gameid, teamid, side, and position
-    player_data.sort_values(
-        by=["date", "league", "gameid", "side", "position"], inplace=True
-    )
+    player_data.sort_values(by=get_sorting_keys("player"), inplace=True)
 
     player_data.reset_index(drop=True, inplace=True)
     return player_data, team_data, player_ratings_dict

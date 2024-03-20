@@ -22,9 +22,11 @@ from dotenv import load_dotenv
 
 from src.data_ingest.oracles_elixir import OraclesElixir
 from src.feature_engineering.impute_early_game_metrics import EarlyGameStatsImputer
+from src.performance_features.performance_metrics import PerformanceMetrics
 from src.ratings_features.rating_models import Ratings
 from utils.logger import logger
 from utils.paths import INTERIM_DIR, INVALID_GAMES, PROCESSED_DIR, RAW_DIR
+from utils.utils import get_sorting_keys
 
 load_dotenv()
 
@@ -128,10 +130,37 @@ class DataGenerator:
         team_data = Ratings.compute_plackett_luce(df=team_data, entity="team")
         logger.info("Enriched data with plackett-luce.")
 
-        player_data, team_data, ts_lookup = Ratings.compute_trueskill(player_data=player_data, team_data=team_data)
+        player_data, team_data, ts_lookup = Ratings.compute_trueskill(
+            player_data=player_data, team_data=team_data
+        )
         logger.info("Enriched data with trueskill.")
 
-        logger.info("Enriched data with ratings.")
+        logger.info("Enriched data with ratings\n")
+        return player_data, team_data, ts_lookup
+
+    def _enrich_data_with_performance_metrics(self, player_data, team_data):
+        logger.info("Enriching data with performance metrics...")
+
+        player_data = PerformanceMetrics.add_egpm_model(player_data, entity="player")
+        team_data = PerformanceMetrics.add_egpm_model(team_data, entity="team")
+        logger.info("Enriched data with EGPM.")
+
+        player_data = PerformanceMetrics.add_entity_ema_statistics(
+            player_data, entity="player"
+        )
+        team_data = PerformanceMetrics.add_entity_ema_statistics(
+            team_data, entity="team"
+        )
+        logger.info("Enriched data with EMA statistics.")
+
+        player_data = PerformanceMetrics.add_side_win_rate_ewm(
+            player_data, entity="player"
+        )
+        team_data = PerformanceMetrics.add_side_win_rate_ewm(team_data, entity="team")
+        logger.info("Enriched data with side win rate.")
+
+        logger.info("Enriched player and team data with performance metrics.")
+
         return player_data, team_data
 
     def enrich_datasets(self):
@@ -151,14 +180,24 @@ class DataGenerator:
             player_data = self.imputer.process_data(player_data)
 
             # Enrich Data with Ratings
-            player_data, team_data = self._enrich_data_with_ratings(
+            player_data, team_data, ts_lookup = self._enrich_data_with_ratings(
                 player_data, team_data
             )
+
+            # Enrich Data with player performance metrics
+            player_data, team_data = self._enrich_data_with_performance_metrics(
+                player_data, team_data
+            )
+
+            # Sort dfs before storing them
+            player_data.sort_values(get_sorting_keys("player"), inplace=True)
+            team_data.sort_values(get_sorting_keys("team"), inplace=True)
 
             # Store Enriched Data
             team_data.to_csv(PROCESSED_DIR / "team_data.csv", index=False)
             player_data.to_csv(PROCESSED_DIR / "player_data.csv", index=False)
             logger.info("Stored enriched data.\n")
+
             return team_data, player_data
         except Exception as e:
             logger.error(f"Failed to enrich dataset: {e}")

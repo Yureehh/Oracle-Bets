@@ -51,7 +51,9 @@ class EarlyGameStatsImputer:
         )
 
         # Sort and group the data once
-        data = data.sort_values(by=["playerid", "date"], ascending=True)
+        data = data.sort_values(by=["playerid", "date"], ascending=True).reset_index(
+            drop=True
+        )
         grouped_data = data.groupby("playerid")
 
         # Calculate volatility metrics, can return NaNs
@@ -156,7 +158,7 @@ class EarlyGameStatsImputer:
         ensemble_predictions = meta_model.predict(val_predictions_df)
         mae = mean_absolute_error(val_data[target], ensemble_predictions)
         r2 = r2_score(val_data[target], ensemble_predictions)
-        logger.info(f"Ensemble - MAE: {mae:.2f}, R2: {r2:.2f}\n{'=' * 50}")
+        logger.info(f"Ensemble - MAE: {mae:.2f}, R2: {r2:.2f}\n{'=' * 60}")
 
     def _prepare_data_for_modeling(self, data: pd.DataFrame) -> tuple:
         """Prepare data for modeling by encoding categorical variables and filtering."""
@@ -182,7 +184,7 @@ class EarlyGameStatsImputer:
 
     def _train_models(self, data: pd.DataFrame, features_extended: List[str]) -> Dict:
         """Train stacked models for each target."""
-        logger.info("Stacked models training started...\n{'=' * 50}")
+        logger.info(f"Stacked models training started...\n{'=' * 60}")
         # Drop rows with NaN target values for training and validation
         training_data = data.dropna(subset=["goldat15", "xpat15", "csat15"])
 

@@ -1,8 +1,10 @@
 from copy import deepcopy
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import pandas as pd
 from openskill.models import PlackettLuce
+
+from utils.utils import get_sorting_keys
 
 
 def rate_teams_or_players(
@@ -38,21 +40,14 @@ def calculate_plackett_luce(
     - DataFrame with updated Plackett-Luce ratings and win likelihoods.
     """
 
-    is_team = entity == "team"  # Check if the entity is a team or player
-
     # Sort the DataFrame
-    sort_columns = (
-        ["date", "league", "gameid", "teamid"]
-        + (["position"] if not is_team else [])
-        + ["side", "result"]
-    )
-    df_sorted = df.sort_values(sort_columns).reset_index(drop=True)
+    df_sorted = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
 
     # Initialize the Plackett-Luce model
     model = PlackettLuce(mu=initial_mu, sigma=initial_sigma)
 
     # Initialize ratings
-    entity_key = "teamid" if is_team else "playerid"
+    entity_key = "teamid" if entity == "team" else "playerid"
     entity_ratings = {
         entity: model.rating(mu=initial_mu, sigma=initial_sigma)
         for entity in df_sorted[entity_key].unique()

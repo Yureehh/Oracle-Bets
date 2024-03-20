@@ -7,7 +7,11 @@ import pytest
 from moto import mock_s3
 
 from src.data_ingest.oracles_elixir import OraclesElixir, get_opponent
-from tests.s3_utils import create_s3_bucket, get_s3_session, upload_data_to_s3
+from tests.test_oracle_elixir.s3_utils import (
+    create_s3_bucket,
+    get_s3_session,
+    upload_data_to_s3,
+)
 
 REGION_NAME = "us-east-1"
 BUCKET_NAME = "test_bucket"
@@ -112,6 +116,12 @@ ESPORTSTMNT03_3091672,complete,,PGN,2023,Spring,0,2023-01-26 18:03:49,1,13.01,20
             "league": ["L3", "L1", "L2", "L2"],
             "date": ["2023-01-01", "2023-02-01", "2023-01-15", "2023-01-15"],
             "gameid": ["game2", "game3", "game2", "game1"],
+            "teamid": [
+                "team1",
+                "team1",
+                "team1",
+                "team1",
+            ],  # "team" is a subset of "player
             "side": ["Blue", "Red", "Blue", "Blue"],
             "position": ["mid", "top", "bot", "mid"],
         }
@@ -123,18 +133,20 @@ ESPORTSTMNT03_3091672,complete,,PGN,2023,Spring,0,2023-01-26 18:03:49,1,13.01,20
 
         # Assertion: Check that the resulting DataFrame is sorted by league, date, gameid, side, and position
         expected_data_player = {
-            "league": ["L1", "L2", "L2", "L3"],
-            "date": ["2023-02-01", "2023-01-15", "2023-01-15", "2023-01-01"],
-            "gameid": ["game3", "game1", "game2", "game2"],
-            "side": ["Red", "Blue", "Blue", "Blue"],
-            "position": ["top", "mid", "bot", "mid"],
+            "league": ["L3", "L2", "L2", "L1"],
+            "date": ["2023-01-01", "2023-01-15", "2023-01-15", "2023-02-01"],
+            "gameid": ["game2", "game1", "game2", "game3"],
+            "teamid": ["team1", "team1", "team1", "team1"],
+            "side": ["Blue", "Blue", "Blue", "Red"],
+            "position": ["mid", "mid", "bot", "top"],
         }
         expected_data_team = {
-            "league": ["L1", "L2", "L2", "L3"],
-            "date": ["2023-02-01", "2023-01-15", "2023-01-15", "2023-01-01"],
-            "gameid": ["game3", "game1", "game2", "game2"],
-            "side": ["Red", "Blue", "Blue", "Blue"],
-            "position": ["top", "mid", "bot", "mid"],
+            "league": ["L3", "L2", "L2", "L1"],
+            "date": ["2023-01-01", "2023-01-15", "2023-01-15", "2023-02-01"],
+            "gameid": ["game2", "game1", "game2", "game3"],
+            "teamid": ["team1", "team1", "team1", "team1"],
+            "side": ["Blue", "Blue", "Blue", "Red"],
+            "position": ["mid", "mid", "bot", "top"],
         }
         expected_df_player = pd.DataFrame(expected_data_player)
         expected_df_team = pd.DataFrame(expected_data_team)

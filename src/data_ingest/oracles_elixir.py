@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 from utils.logger import logger
 from utils.paths import IMPORT_COLUMNS, INTERIM_DIR
+from utils.utils import get_sorting_keys
 
 load_dotenv()
 
@@ -122,9 +123,9 @@ class OraclesElixir:
         """
 
         if split_on == "player":
-            return oe_data.sort_values(["league", "date", "gameid", "side", "position"])
+            return oe_data.sort_values(get_sorting_keys("player"))
         elif split_on == "team":
-            return oe_data.sort_values(["league", "date", "gameid", "side"])
+            return oe_data.sort_values(get_sorting_keys("team"))
 
     @staticmethod
     def fill_null_team_ids(oe_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
@@ -302,7 +303,7 @@ def get_opponent(column: pd.Series, entity: str) -> list:
     if gap is None:
         raise ValueError("Entity must be either player or team.")
 
-    for i, obj in enumerate(column):
+    for i, _ in enumerate(column):
         # If "Blue Side" - fetch opposing team/player below
         if flag < gap:
             opponent.append(column[i + gap])

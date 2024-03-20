@@ -21,3 +21,7 @@ PROCESSED_DIR = DATA_DIR / "processed"
 CONFIG_DIR = BASE_DIR / "config"
 INVALID_GAMES = CONFIG_DIR / "invalid_games.json"
 IMPORT_COLUMNS = CONFIG_DIR / "import_columns.json"
+DEFAULT_PARAMETERS = CONFIG_DIR / "default_parameters.json"
+
+# Models storage
+MODELS_DIR = BASE_DIR / "models"
