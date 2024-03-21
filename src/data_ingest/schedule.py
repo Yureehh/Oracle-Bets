@@ -65,7 +65,7 @@ class PandaScoreSchedule:
         return schedule[schedule["league"].isin(leagues)].reset_index(drop=True)
 
     def get_schedule(
-            self, start_datetime: str, end_datetime: str, leagues: Optional[str] = None
+        self, start_datetime: str, end_datetime: str, leagues: Optional[str] = None
     ) -> pd.DataFrame:
         """
         Gets the schedule of upcoming matches.
@@ -124,10 +124,10 @@ class PandaScoreSchedule:
             within_range_df = page_matches_df[
                 (page_matches_df["Start (UTC)"] >= start_datetime)
                 & (page_matches_df["Start (UTC)"] <= end_datetime)
-                ]
+            ]
             if (
-                    within_range_df.empty
-                    and page_matches_df["Start (UTC)"].min() > end_datetime
+                within_range_df.empty
+                and page_matches_df["Start (UTC)"].min() > end_datetime
             ):
                 break  # All future data will be out of range
             schedule_df = pd.concat([schedule_df, within_range_df], ignore_index=True)

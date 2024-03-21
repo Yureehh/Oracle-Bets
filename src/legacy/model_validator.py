@@ -61,8 +61,10 @@ def validate_team_elo(teams: pd.DataFrame, directory: Path, graph: bool):
 
         grf.ax_joint.text(
             teams["elo_pre_match"].mean(),
-            (teams["elo_pre_match_opponent"].max() - (
-                        teams["elo_pre_match_opponent"].max() * 0.02)),
+            (
+                teams["elo_pre_match_opponent"].max()
+                - (teams["elo_pre_match_opponent"].max() * 0.02)
+            ),
             f"Acc.: {correct:.4f} \nLog Loss: {logloss:.4f} \nBrier: {brier: .4f}",
             bbox=dict(facecolor="grey", edgecolor="black", boxstyle="round"),
         )
@@ -215,8 +217,8 @@ def validate_trueskill(teams: pd.DataFrame, directory: Path, graph: bool):
 
         grf.ax_joint.text(
             (
-                    teams["trueskill_sum_mu"].mean()
-                    - (teams["trueskill_sum_mu"].mean() * 0.125)
+                teams["trueskill_sum_mu"].mean()
+                - (teams["trueskill_sum_mu"].mean() * 0.125)
             ),
             (teams["opponent_sum_mu"].max() - (teams["opponent_sum_mu"].max() * 0.01)),
             f"Acc.: {correct:.4f} \nLog Loss: {logloss:.4f} \nBrier: {brier: .4f}",
@@ -300,12 +302,12 @@ def validate_egpm_dominance(teams: pd.DataFrame, directory: Path, graph: bool):
 
         grf.ax_joint.text(
             (
-                    teams["egpm_dominance_ema_before"].min()
-                    + (teams["egpm_dominance_ema_before"].mean() * 0.25)
+                teams["egpm_dominance_ema_before"].min()
+                + (teams["egpm_dominance_ema_before"].mean() * 0.25)
             ),
             (
-                    teams["opp_egpm_dominance_ema_before"].max()
-                    - (teams["opp_egpm_dominance_ema_before"].max() * 0.04)
+                teams["opp_egpm_dominance_ema_before"].max()
+                - (teams["opp_egpm_dominance_ema_before"].max() * 0.04)
             ),
             f"Acc.: {correct:.4f} \nLog Loss: {logloss:.4f} \nBrier: {brier: .4f}",
             bbox=dict(facecolor="grey", edgecolor="black", boxstyle="round"),
@@ -382,8 +384,8 @@ def validate_side_ema(teams: pd.DataFrame, directory: Path, graph: bool):
         grf.ax_joint.text(
             teams["side_ema_before"].mean(),
             (
-                    teams["opp_side_ema_before"].max()
-                    - (teams["opp_side_ema_before"].max() * 0.01)
+                teams["opp_side_ema_before"].max()
+                - (teams["opp_side_ema_before"].max() * 0.01)
             ),
             f"Acc.: {correct:.4f} \nLog Loss: {logloss:.4f} \nBrier: {brier: .4f}",
             bbox=dict(facecolor="grey", edgecolor="black", boxstyle="round"),
@@ -410,14 +412,14 @@ def validate_side_ema(teams: pd.DataFrame, directory: Path, graph: bool):
 
 
 def validate_ensemble_accuracy(
-        teams: pd.DataFrame,
-        team_accuracy: float,
-        player_accuracy: float,
-        trueskill_accuracy: float,
-        egpm_dom_accuracy: float,
-        side_ema_accuracy: float,
-        directory: Path,
-        graph: bool,
+    teams: pd.DataFrame,
+    team_accuracy: float,
+    player_accuracy: float,
+    trueskill_accuracy: float,
+    egpm_dom_accuracy: float,
+    side_ema_accuracy: float,
+    directory: Path,
+    graph: bool,
 ):
     """
     Weights each of the individual models into an ensemble based on their accuracy.
@@ -457,18 +459,18 @@ def validate_ensemble_accuracy(
     # Data Preparation
     teams["result"] = teams.result.astype("int32")
     sum_accuracy = (
-            team_accuracy
-            + player_accuracy
-            + egpm_dom_accuracy
-            + side_ema_accuracy
-            + trueskill_accuracy
+        team_accuracy
+        + player_accuracy
+        + egpm_dom_accuracy
+        + side_ema_accuracy
+        + trueskill_accuracy
     )
     teams["ensemble_win_perc"] = (
-            (teams["team_elo_win_perc"] * (team_accuracy / sum_accuracy))
-            + (teams["player_elo_win_perc"] * (player_accuracy / sum_accuracy))
-            + (teams["trueskill_win_perc"] * (trueskill_accuracy / sum_accuracy))
-            + (teams["egpm_dom_logistic_win_perc"] * (egpm_dom_accuracy / sum_accuracy))
-            + (teams["side_ema_win_perc"] * (side_ema_accuracy / sum_accuracy))
+        (teams["team_elo_win_perc"] * (team_accuracy / sum_accuracy))
+        + (teams["player_elo_win_perc"] * (player_accuracy / sum_accuracy))
+        + (teams["trueskill_win_perc"] * (trueskill_accuracy / sum_accuracy))
+        + (teams["egpm_dom_logistic_win_perc"] * (egpm_dom_accuracy / sum_accuracy))
+        + (teams["side_ema_win_perc"] * (side_ema_accuracy / sum_accuracy))
     )
     teams["opp_ensemble_win_perc"] = 1 - teams["ensemble_win_perc"]
     teams["ensemble_expected_result"] = np.where(
@@ -542,9 +544,7 @@ def generate_validation_metrics(graph: bool):
         Dictionary object containing accuracy and log loss metrics for each model.
     """
     # Data Imports
-    team_data = pd.read_csv(
-        Path.cwd().joinpath("data", "processed", "team_data.csv")
-    )
+    team_data = pd.read_csv(Path.cwd().joinpath("data", "processed", "team_data.csv"))
     directory = Path.cwd().joinpath("reports", "figures")
 
     # Validation Individual Core Models
@@ -591,9 +591,7 @@ def historical_performance_graph(algorithm: str, league: str, weeks: int):
 # Main
 def main():
     # Data Imports
-    team_data = pd.read_csv(
-        Path.cwd().joinpath("data", "processed", "team_data.csv")
-    )
+    team_data = pd.read_csv(Path.cwd().joinpath("data", "processed", "team_data.csv"))
     directory = Path.cwd().joinpath("reports", "figures")
 
     # Validation Individual Core Models
