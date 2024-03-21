@@ -47,6 +47,7 @@ def select_columns_for_entity(entity):
         "xpdiffat15",
         "csdiffat15",
         "egpm",
+        "ckpm",
     ]
 
     team_extra_columns = ["firstblood", "dragons", "barons", "towers"]
@@ -61,7 +62,6 @@ def select_columns_for_entity(entity):
         "wpm",
         "wcpm",
         "vspm",
-        "ckpm",
         "cspm",
         "gold_efficiency",
         "xp_efficiency",

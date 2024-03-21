@@ -225,7 +225,7 @@ class DataGenerator:
 
         flattened_players = (
             self.player_data.sort_values(["playerid", "date"])
-            .groupby(["playerid", "teamid"])  # TODO: why teamid?
+            .groupby("playerid")
             .tail(1)
             .reset_index(drop=True)
         )
@@ -259,7 +259,7 @@ class DataGenerator:
 
 if __name__ == "__main__":
     generator = DataGenerator()
-    logger.warning("Make sure to close any open CSV files!")
+    logger.warning("Make sure to close any open CSV files!\n")
 
     start = dt.datetime.now()
     generator.run()

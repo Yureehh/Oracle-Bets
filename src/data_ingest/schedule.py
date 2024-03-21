@@ -99,7 +99,6 @@ class PandaScoreSchedule:
 
         # Paginate Data Within Time Range
         while True:
-            logger.info(f"Fetching matches - Page {page}")
             matches = self._fetch_matches(page)
             if not matches:
                 break  # No more data to fetch
