@@ -24,6 +24,7 @@ IMPORT_COLUMNS = CONFIG_DIR / "import_columns.json"
 DEFAULT_PARAMETERS = CONFIG_DIR / "default_parameters.json"
 FLATTENED_TEAM_CONFIG = CONFIG_DIR / "flattened_team_config.json"
 FLATTENED_PLAYER_CONFIG = CONFIG_DIR / "flattened_player_config.json"
+DISPLAY_COLS = CONFIG_DIR / "display_cols.json"
 
 # Models storage
 MODELS_DIR = BASE_DIR / "models"

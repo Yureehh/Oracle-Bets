@@ -121,8 +121,8 @@
     "ema_firstblood_after": "firstblood",
     "ema_firstblood_std_after": "firstblood_std",
     "ema_firstblood_growth_after": "firstblood_growth",
-    "ema_red_side_after": "red_side",
-    "ema_blue_side_after": "blue_side",
+    "ema_red_side_after": "red_side_wr",
+    "ema_blue_side_after": "blue_side_wr",
     "ema_side_win_perc": "side_win_perc"
   }
 }

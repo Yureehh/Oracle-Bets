@@ -8,6 +8,7 @@ to leverage pro game data for use in their own scripts and analytics.
 Please visit and support www.oracleselixir.com
 Tim provides an invaluable service to the League community.
 """
+
 import datetime as dt
 import json
 from dataclasses import dataclass

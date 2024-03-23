@@ -1,0 +1,28 @@
+{
+  "team_display_cols": [
+    "team_elo",
+    "team_pl_mu",
+    "team_pl_sigma",
+    "team_trueskill_sum_mu",
+    "team_trueskill_sigma_squared",
+    "egpm_std",
+    "egpm_growth",
+    "egpm_dominance_ratio",
+    "blue_side",
+    "red_side",
+    "side_win_perc"
+  ],
+  "player_display_cols": [
+    "player_elo",
+    "player_pl_mu",
+    "player_pl_sigma",
+    "player_trueskill_mu",
+    "player_trueskill_sigma",
+    "egpm_std",
+    "egpm_growth",
+    "egpm_dominance_ratio",
+    "red_side",
+    "blue_side",
+    "side_win_perc"
+  ]
+}

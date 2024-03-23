@@ -10,6 +10,7 @@ The enriched data is then stored in the processed directory.
 Please visit and support www.oracleselixir.com
 Tim provides an invaluable service to the League community.
 """
+
 # Housekeeping
 import datetime as dt
 import json
@@ -232,18 +233,6 @@ class DataGenerator:
         flattened_players = flattened_players[flattened_player_config["flattened_cols"]]
         flattened_players = flattened_players.rename(
             columns=flattened_player_config["cols_renaming"]
-        )
-        flattened_players[
-            ["trueskill_mu", "trueskill_sigma"]
-        ] = flattened_players.apply(
-            lambda row: [
-                self.ts_lookup[row["playerid"]].mu,
-                self.ts_lookup[row["playerid"]].sigma,
-            ]
-            if row["playerid"] in self.ts_lookup
-            else [None, None],
-            axis=1,
-            result_type="expand",
         )
         flattened_players.to_csv(PROCESSED_DIR / "flattened_players.csv", index=False)
         logger.info("Stored flattened players data.")
