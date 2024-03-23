@@ -124,7 +124,9 @@ class Team:
         if self.player_stats is not None:
             for col in display_cols["player_display_cols"]:
                 if col in self.player_stats.columns:
-                    logger.info(f"    {col.title()}: {np.mean(self.player_stats[col]).round(2)}")
+                    logger.info(
+                        f"    {col.title()}: {np.mean(self.player_stats[col]).round(2)}"
+                    )
                 else:
                     logger.info(f"    {col.title()}: N/A")
 
