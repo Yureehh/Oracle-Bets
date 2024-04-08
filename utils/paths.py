@@ -25,6 +25,20 @@ DEFAULT_PARAMETERS = CONFIG_DIR / "default_parameters.json"
 FLATTENED_TEAM_CONFIG = CONFIG_DIR / "flattened_team_config.json"
 FLATTENED_PLAYER_CONFIG = CONFIG_DIR / "flattened_player_config.json"
 DISPLAY_COLS = CONFIG_DIR / "display_cols.json"
+CONSIDERED_LEAGUES = CONFIG_DIR / "considered_leagues.json"
 
 # Models storage
 MODELS_DIR = BASE_DIR / "models"
+EGPM_DOM_LOGISTIC = MODELS_DIR / "egpm_dom_logistic_regression.pkl"
+MIXED_VALIDATOR_WEIGHTS = MODELS_DIR / "mixed_validator_weights.pkl"
+
+# Reports storage
+REPORTS_DIR = BASE_DIR / "reports"
+
+# Figures storage
+FIGURES_DIR = REPORTS_DIR / "figures"
+
+# Logs storage
+LOGS_DIR = REPORTS_DIR / "logs"
+EARLY_GAME_INPUTING_LOGS = LOGS_DIR / "early_game_inputing.log"
+MODELS_LOGS = LOGS_DIR / "models_ensemble.log"

@@ -7,7 +7,6 @@ Here is an attempt at leveraging TPOT to create a more optimized machine learnin
 
 from pathlib import Path
 
-# Housekeeping
 import pandas as pd
 from sklearn import preprocessing
 from sklearn.model_selection import train_test_split

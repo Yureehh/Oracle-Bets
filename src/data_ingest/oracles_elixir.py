@@ -7,6 +7,7 @@ to leverage pro game data for use in their own scripts and analytics.
 
 Please visit and support www.oracleselixir.com
 Tim provides an invaluable service to the League community.
+
 """
 
 import datetime as dt
@@ -15,7 +16,6 @@ from dataclasses import dataclass
 from os import getenv
 from typing import Optional, Union
 
-# Housekeeping
 import awswrangler as wr
 import boto3
 import numpy as np
@@ -35,9 +35,7 @@ class OraclesElixir:
     session: Optional[boto3.Session]
     bucket: str
 
-    def ingest_data(
-        self, years: Optional[Union[list, str, int]] = None
-    ) -> pd.DataFrame:
+    def ingest_data(self, years: Optional[Union[list, str, int]] = None) -> pd.DataFrame:
         """
         Pull data from S3 based on the specified years
             and store it in the `oe_data` instance variable.
@@ -53,15 +51,10 @@ class OraclesElixir:
         if isinstance(years, (str, int)):
             years = [years]
 
-        file_paths = [
-            f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv"
-            for year in years
-        ]
+        file_paths = [f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv" for year in years]
 
-        logger.info(f"Connecting to S3 bucket")
-        oe_data = wr.s3.read_csv(
-            file_paths, boto3_session=self.session, low_memory=False
-        )
+        logger.info("Connecting to S3 bucket")
+        oe_data = wr.s3.read_csv(file_paths, boto3_session=self.session, low_memory=False)
         logger.info(f"Requested S3 files: {file_paths}")
 
         return oe_data
@@ -112,8 +105,7 @@ class OraclesElixir:
         Drop rows with unknown player or team names.
         """
         return oe_data[
-            (~oe_data["playername"].isin(["unknown player"]))
-            & (~oe_data["teamname"].isin(["unknown team"]))
+            (~oe_data["playername"].isin(["unknown player"])) & (~oe_data["teamname"].isin(["unknown team"]))
         ]
 
     @staticmethod
@@ -140,9 +132,7 @@ class OraclesElixir:
         return oe_data
 
     @staticmethod
-    def subset_data(
-        oe_data: pd.DataFrame, split_on: str, columns: Optional[dict] = None
-    ) -> pd.DataFrame:
+    def subset_data(oe_data: pd.DataFrame, split_on: str, columns: Optional[dict] = None) -> pd.DataFrame:
         """
         Subsets the dataset down to relevant columns for the entity you split on.
         It either returns the team or player columns.
@@ -150,7 +140,7 @@ class OraclesElixir:
 
         # Load column configuration from a JSON file
         if columns is None:
-            with open(IMPORT_COLUMNS, "r") as file:
+            with open(IMPORT_COLUMNS) as file:
                 columns = json.load(file)
 
         if split_on in columns:
@@ -170,9 +160,7 @@ class OraclesElixir:
             raise ValueError("Must split on either player or team.")
 
     @staticmethod
-    def remove_inconsistent_games(
-        oe_data: pd.DataFrame, split_on: Optional[str]
-    ) -> pd.DataFrame:
+    def remove_inconsistent_games(oe_data: pd.DataFrame, split_on: Optional[str]) -> pd.DataFrame:
         """
         Removes entries from the input DataFrame with inconsistent game records based on gameID counts.
 
@@ -190,9 +178,7 @@ class OraclesElixir:
             pd.DataFrame: A new DataFrame with inconsistent game records removed.
         """
         counts = oe_data["gameid"].value_counts()
-        inconsistent_games = counts[
-            (counts != 2) if split_on.lower() == "team" else (counts != 10)
-        ].index
+        inconsistent_games = counts[(counts != 2) if split_on.lower() == "team" else (counts != 10)].index
         return oe_data[~oe_data["gameid"].isin(inconsistent_games)]
 
     @staticmethod
@@ -220,12 +206,8 @@ class OraclesElixir:
             metrics.update(
                 {
                     "playerid": oe_data["playerid"].fillna(oe_data["playername"]),
-                    "opponentplayername": get_opponent(
-                        oe_data["playername"].to_list(), split_on
-                    ),
-                    "opponentplayerid": get_opponent(
-                        oe_data["playerid"].to_list(), split_on
-                    ),
+                    "opponentplayername": get_opponent(oe_data["playername"].to_list(), split_on),
+                    "opponentplayerid": get_opponent(oe_data["playerid"].to_list(), split_on),
                 }
             )
 
@@ -323,11 +305,6 @@ def get_opponent(column: pd.Series, entity: str) -> list:
 
 
 if __name__ == "__main__":
-    """
-    You don't need to run this, this is just some of my testing.
-    Consider this as a recipe for how to utilize this class.
-    """
-
     # Download Data
     s3_session = boto3.Session(
         aws_access_key_id=getenv("ACCESS_ID"),

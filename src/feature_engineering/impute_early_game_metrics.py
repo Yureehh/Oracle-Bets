@@ -1,6 +1,9 @@
 """
+Early Game Stats Imputer
+
 Consists of the following classes:
-- EarlyGameStatsImputer: Impute metrics for the 15m mark, `csat15`, `xpat15`, `goldat15` given end game values using an ensemble model composed of L2 Regression, k-NN, and a decision tree.
+- EarlyGameStatsImputer: Impute metrics for the 15m mark, `csat15`, `xpat15`, `goldat15` given end game values using an
+    ensemble model composed of L2 Regression, k-NN, and a decision tree.
 - FutureGamesStatsImputer: Impute future game stats using the same ensemble model as EarlyGameStatsImputer.
 """
 
@@ -15,12 +18,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.tree import DecisionTreeRegressor
 
-from utils.logger import logger
+from utils.logger import early_game_metrics_imputer_logger, logger
 
 
 @dataclass
 class EarlyGameStatsImputer:
-    test_size: float = 0.2
+    test_size: float = 0.15
     random_state: int = 42
 
     def _generate_features(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -31,46 +34,28 @@ class EarlyGameStatsImputer:
         teamkills = data.groupby(["gameid", "teamid"])["kills"].transform("sum")
 
         # KDA ratio
-        data["KDA"] = (data["kills"] + data["assists"]) / np.where(
-            data["deaths"] == 0, 1, data["deaths"]
-        )
+        data["KDA"] = (data["kills"] + data["assists"]) / np.where(data["deaths"] == 0, 1, data["deaths"])
 
         # Gold Efficiency
-        data["gold_efficiency"] = np.where(
-            data["gamelength"] == 0, 0, data["totalgold"] / data["gamelength"]
-        )
+        data["gold_efficiency"] = np.where(data["gamelength"] == 0, 0, data["totalgold"] / data["gamelength"])
 
         # XP Efficiency
-        data["xp_efficiency"] = np.where(
-            data["gamelength"] == 0, 0, data["total_cs"] / data["gamelength"]
-        )
+        data["xp_efficiency"] = np.where(data["gamelength"] == 0, 0, data["total_cs"] / data["gamelength"])
 
         # Kill Participation
-        data["kill_participation"] = np.where(
-            teamkills == 0, 0, (data["kills"] + data["assists"]) / teamkills
-        )
+        data["kill_participation"] = np.where(teamkills == 0, 0, (data["kills"] + data["assists"]) / teamkills)
 
         # Sort and group the data once
-        data = data.sort_values(by=["playerid", "date"], ascending=True).reset_index(
-            drop=True
-        )
+        data = data.sort_values(by=["playerid", "date"], ascending=True).reset_index(drop=True)
         grouped_data = data.groupby("playerid")
 
         # Calculate volatility metrics, can return NaNs
-        data["kills_volatility"] = grouped_data["kills"].transform(
-            lambda x: x.rolling(window=5).std()
-        )
-        data["deaths_volatility"] = grouped_data["deaths"].transform(
-            lambda x: x.rolling(window=5).std()
-        )
+        data["kills_volatility"] = grouped_data["kills"].transform(lambda x: x.rolling(window=5).std())
+        data["deaths_volatility"] = grouped_data["deaths"].transform(lambda x: x.rolling(window=5).std())
 
         # Calculate growth metrics, can return NaNs
-        data["kills_growth"] = grouped_data["kills"].transform(
-            lambda x: x.rolling(window=5).mean()
-        )
-        data["deaths_growth"] = grouped_data["deaths"].transform(
-            lambda x: x.rolling(window=5).mean()
-        )
+        data["kills_growth"] = grouped_data["kills"].transform(lambda x: x.rolling(window=5).mean())
+        data["deaths_growth"] = grouped_data["deaths"].transform(lambda x: x.rolling(window=5).mean())
 
         return data
 
@@ -84,18 +69,14 @@ class EarlyGameStatsImputer:
         """
         Train stacked models for the given target using the specified features.
         """
-        # TODO: Store logs in a file
         knn = KNeighborsRegressor(n_neighbors=5)
         ridge = Ridge(alpha=1.0)
-        tree = DecisionTreeRegressor(max_depth=5)
+        tree = DecisionTreeRegressor(max_depth=10)
         base_models = {"KNN": knn, "Ridge": ridge, "Decision Tree": tree}
 
         for model in base_models.values():
             model.fit(train_data[features], train_data[target])
-        val_predictions_base = {
-            name: model.predict(val_data[features])
-            for name, model in base_models.items()
-        }
+        val_predictions_base = {name: model.predict(val_data[features]) for name, model in base_models.items()}
         val_predictions_df = pd.DataFrame(val_predictions_base)
         meta_model = LinearRegression().fit(val_predictions_df, val_data[target])
 
@@ -109,25 +90,18 @@ class EarlyGameStatsImputer:
             str,
             Dict[
                 str,
-                Union[
-                    KNeighborsRegressor, Ridge, DecisionTreeRegressor, LinearRegression
-                ],
+                Union[KNeighborsRegressor, Ridge, DecisionTreeRegressor, LinearRegression],
             ],
         ],
     ) -> pd.DataFrame:
         """
         Impute missing values using the trained stacked models.
         """
-        missing_data = data[
-            data["goldat15"].isnull()
-            | data["xpat15"].isnull()
-            | data["csat15"].isnull()
-        ]
+        missing_data = data[data["goldat15"].isnull() | data["xpat15"].isnull() | data["csat15"].isnull()]
 
         for target, models in stacked_models.items():
             base_predictions = {
-                name: model.predict(missing_data[features])
-                for name, model in models["base_models"].items()
+                name: model.predict(missing_data[features]) for name, model in models["base_models"].items()
             }
             base_predictions_df = pd.DataFrame(base_predictions)
             final_predictions = models["meta_model"].predict(base_predictions_df)
@@ -142,23 +116,21 @@ class EarlyGameStatsImputer:
         target: str,
         base_models: dict,
         meta_model: LinearRegression,
+        logs: List[str],
     ):
         """Log performance metrics for each model."""
         for model_name, model in base_models.items():
             predictions = model.predict(val_data[features_extended])
             mae = mean_absolute_error(val_data[target], predictions)
             r2 = r2_score(val_data[target], predictions)
-            logger.info(f"{model_name} - MAE: {mae:.2f}, R2: {r2:.2f}")
+            early_game_metrics_imputer_logger.info(f"{model_name} - MAE: {mae:.2f}, R2: {r2:.2f}")
 
-        val_predictions_base = {
-            name: model.predict(val_data[features_extended])
-            for name, model in base_models.items()
-        }
+        val_predictions_base = {name: model.predict(val_data[features_extended]) for name, model in base_models.items()}
         val_predictions_df = pd.DataFrame(val_predictions_base)
         ensemble_predictions = meta_model.predict(val_predictions_df)
         mae = mean_absolute_error(val_data[target], ensemble_predictions)
         r2 = r2_score(val_data[target], ensemble_predictions)
-        logger.info(f"Ensemble - MAE: {mae:.2f}, R2: {r2:.2f}\n{'=' * 60}")
+        early_game_metrics_imputer_logger.info(f"Ensemble - MAE: {mae:.2f}, R2: {r2:.2f}\n{'=' * 60}\n")
 
     def _prepare_data_for_modeling(self, data: pd.DataFrame) -> tuple:
         """Prepare data for modeling by encoding categorical variables and filtering."""
@@ -184,29 +156,24 @@ class EarlyGameStatsImputer:
 
     def _train_models(self, data: pd.DataFrame, features_extended: List[str]) -> Dict:
         """Train stacked models for each target."""
-        logger.info(f"Stacked models training started...\n{'=' * 60}")
+        logger.info("Stacked models training started...")
         # Drop rows with NaN target values for training and validation
         training_data = data.dropna(subset=["goldat15", "xpat15", "csat15"])
 
         # Split the data into training and validation sets
-        train_data, val_data = train_test_split(
-            training_data, test_size=self.test_size, random_state=self.random_state
-        )
+        train_data, val_data = train_test_split(training_data, test_size=self.test_size, random_state=self.random_state)
 
-        # Check in train data the columns with NaN values
         # Train stacked models
         stacked_models = {}
+        logs = []
         for target in ["goldat15", "xpat15", "csat15"]:
-            base_models, meta_model = self._train_stacked_model(
-                train_data, val_data, features_extended, target
-            )
-            self._log_performance_metrics(
-                val_data, features_extended, target, base_models, meta_model
-            )
+            base_models, meta_model = self._train_stacked_model(train_data, val_data, features_extended, target)
+            self._log_performance_metrics(val_data, features_extended, target, base_models, meta_model, logs)
             stacked_models[target] = {
                 "base_models": base_models,
                 "meta_model": meta_model,
             }
+
         logger.info("Stacked models trained successfully.\n")
         return stacked_models
 

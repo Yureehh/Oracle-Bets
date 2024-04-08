@@ -16,11 +16,12 @@ from src.ratings_features.trueskill import (
 from utils.utils import get_sorting_keys
 
 
-class TestEloRating:
+class TestTrueSkillRating:
     @pytest.fixture(autouse=True)
     def setup_method(self):
         """Setup common test variables"""
         self.ts_env = trueskill.TrueSkill()
+        self.initial_mu = 25
         self.default_sigma = 8.333
         self.initial_sigma = 42
         self.match_col_names = [
@@ -342,7 +343,7 @@ class TestEloRating:
         """Test initializing player ratings with default and custom TrueSkill environments"""
         default_ratings = initialize_player_ratings(self.sample_player_data)
         custom_ratings = initialize_player_ratings(
-            self.sample_player_data, self.initial_sigma, self.ts_env
+            self.sample_player_data, self.initial_mu, self.initial_sigma, self.ts_env
         )
 
         # Assert that ratings are initialized and have the correct sigma
@@ -351,9 +352,7 @@ class TestEloRating:
 
         for rating in custom_ratings.values():
             assert rating.sigma == self.initial_sigma
-            assert isinstance(
-                rating, trueskill.Rating
-            ), "Rating should be an instance of trueskill.Rating"
+            assert isinstance(rating, trueskill.Rating), "Rating should be an instance of trueskill.Rating"
 
     def test_preprocess_data_creates_team_egpm(self):
         """Test that the preprocess_data function correctly calculates and includes 'team_egpm'"""
@@ -364,29 +363,20 @@ class TestEloRating:
         ), "'team_egpm' should be calculated and included in the processed data."
 
         # Check processed-data is sorted
-        assert processed_data.sort_values(by=get_sorting_keys("team")).equals(
-            processed_data
-        )
+        assert processed_data.sort_values(by=get_sorting_keys("team")).equals(processed_data)
 
     def test_generate_match_array(self):
         match_array = generate_match_array(preprocess_data(self.sample_player_data))
         expected_length = 2  # Based on the unique game IDs in the sample data
-        assert (
-            len(match_array) == expected_length
-        ), "The match array length should match the number of unique games."
-        assert all(
-            isinstance(item, list) for item in match_array
-        ), "All items in the match array should be lists."
+        assert len(match_array) == expected_length, "The match array length should match the number of unique games."
+        assert all(isinstance(item, list) for item in match_array), "All items in the match array should be lists."
         # This should be 24 elements long, 12 for each team, but I just inserted 2 players per team and not 5
-        assert all(
-            len(item) == 18 for item in match_array
-        ), "Each item in the match array should contain 24 elements."
+        assert all(len(item) == 18 for item in match_array), "Each item in the match array should contain 24 elements."
 
         # Flatten the match_array to a single list to check for player IDs
         flattened_match_array = [item for sublist in match_array for item in sublist]
         assert all(
-            player in flattened_match_array
-            for player in self.sample_player_data["playerid"].unique()
+            player in flattened_match_array for player in self.sample_player_data["playerid"].unique()
         ), "All playerids in the player_data should be included in the match_array."
 
     def test_compute_win_probability(self):
@@ -422,9 +412,7 @@ class TestEloRating:
             self.ts_env.create_rating(mu=1),
         ]
         win_prob_team3_team4 = compute_win_probability(team3, team4, self.ts_env)
-        assert (
-            win_prob_team3_team4 > 0.9
-        ), "Team3 should have a higher win probability than Team4."
+        assert win_prob_team3_team4 > 0.9, "Team3 should have a higher win probability than Team4."
 
         team3 = [
             self.ts_env.create_rating(),
@@ -441,24 +429,18 @@ class TestEloRating:
             self.ts_env.create_rating(mu=50),
         ]
         win_prob_team3_team4 = compute_win_probability(team3, team4, self.ts_env)
-        assert (
-            win_prob_team3_team4 < 0.1
-        ), "Team4 should have a higher win probability than Team3."
+        assert win_prob_team3_team4 < 0.1, "Team4 should have a higher win probability than Team3."
 
     def test_update_player_ratings(self):
         gameid_dict = {}
-        match_array = generate_match_array(
-            preprocess_data(self.extended_sample_player_data)
-        )
+        match_array = generate_match_array(preprocess_data(self.extended_sample_player_data))
         match_df = pd.DataFrame(match_array, columns=self.match_col_names)
 
         first_match = match_df.iloc[0]
         rating_dict = initialize_player_ratings(
-            self.extended_sample_player_data, self.default_sigma, self.ts_env
+            self.extended_sample_player_data, self.initial_mu, self.default_sigma, self.ts_env
         )
-        ts_preview = update_player_ratings(
-            first_match, rating_dict, gameid_dict, self.ts_env
-        )
+        ts_preview = update_player_ratings(first_match, rating_dict, gameid_dict, self.ts_env)
 
         assert (
             len(ts_preview) == 21
@@ -484,7 +466,7 @@ class TestEloRating:
     def test_calculate_and_merge_team_statistics(self):
         gameid_dict = {}
         rating_dict = initialize_player_ratings(
-            self.extended_sample_player_data, self.default_sigma, self.ts_env
+            self.extended_sample_player_data, self.initial_mu, self.default_sigma, self.ts_env
         )
         match_df = pd.DataFrame(
             generate_match_array(preprocess_data(self.extended_sample_player_data)),
@@ -501,14 +483,10 @@ class TestEloRating:
 
         match_df["red_win_probability"] = 1 - match_df["blue_win_probability"]
         # Add the expected result column based on the win probability
-        match_df["blue_expected_result"] = np.where(
-            match_df["blue_win_probability"] > 0.5, 1, 0
-        )
+        match_df["blue_expected_result"] = np.where(match_df["blue_win_probability"] > 0.5, 1, 0)
 
         team_data_before = self.sample_team_data
-        team_data_after = calculate_and_merge_team_statistics(
-            match_df, team_data_before
-        )
+        team_data_after = calculate_and_merge_team_statistics(match_df, team_data_before)
 
         # Verify the team_data DataFrame has been updated with additional columns for TrueSkill statistics
         expected_columns = [
@@ -537,7 +515,7 @@ class TestEloRating:
         # Prepare the match and player data
         gameid_dict = {}
         rating_dict = initialize_player_ratings(
-            self.extended_sample_player_data, self.default_sigma, self.ts_env
+            self.extended_sample_player_data, self.initial_mu, self.default_sigma, self.ts_env
         )
         match_df = pd.DataFrame(
             generate_match_array(preprocess_data(self.extended_sample_player_data)),
@@ -569,9 +547,7 @@ class TestEloRating:
 
         # Verify that the TrueSkill ratings are non-null and correctly merged for at least one player
         sample_player_id = self.extended_sample_player_data["playerid"].iloc[0]
-        sample_player_data = player_data_after[
-            player_data_after["playerid"] == sample_player_id
-        ]
+        sample_player_data = player_data_after[player_data_after["playerid"] == sample_player_id]
         for col in expected_columns:
             assert (
                 not sample_player_data[col].isnull().any()
@@ -603,9 +579,7 @@ class TestEloRating:
             "trueskill_diff",
         ]
         for col in expected_team_columns:
-            assert (
-                col in team_data.columns
-            ), f"'{col}' should be in the columns of the returned team_data DataFrame."
+            assert col in team_data.columns, f"'{col}' should be in the columns of the returned team_data DataFrame."
 
         # Verify that player_ratings_dict is updated with new TrueSkill ratings
         sample_player_id = list(player_ratings_dict.keys())[0]
@@ -614,6 +588,5 @@ class TestEloRating:
             sample_rating, trueskill.Rating
         ), "The player_ratings_dict should contain updated trueskill.Rating instances."
         assert (
-            sample_rating.mu != self.ts_env.mu
-            or sample_rating.sigma != self.default_sigma
+            sample_rating.mu != self.ts_env.mu or sample_rating.sigma != self.default_sigma
         ), "The sample player's rating should be updated from the default values."

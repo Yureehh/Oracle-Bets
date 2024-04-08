@@ -1,5 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+Tests for the schedule class
+"""
+import datetime as dt
 import json
 from io import StringIO
+from os import getenv
 
 import pandas as pd
 import pytest
@@ -205,10 +211,21 @@ LVP SL 2nd Division,Xoldiers,Stormbringers,2024-03-02 17:00:00+00:00,1"""
         Test the filter_by_league method.
         """
         # Filter the schedule by the LEC and LCS leagues
-        filtered_schedule = panda_schedule.filter_by_league(
-            mock_full_schedule, ["CBLOL"]
-        )
+        filtered_schedule = panda_schedule.filter_by_league(mock_full_schedule, ["CBLOL"])
         assert filtered_schedule["league"].unique() == ["CBLOL"]
 
     def test_get_schedule(self):
-        pass  # TODO: I don't know how to test this method
+        """
+        Test the get_schedule method.
+        """
+        TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+        start = dt.datetime.now().strftime(TIME_FORMAT)
+        end = (dt.datetime.now() + dt.timedelta(days=3)).strftime(TIME_FORMAT)
+
+        # Fetch
+        panda_schedule = PandaScoreSchedule(api_key=getenv("PANDASCORE_API_KEY"))
+        schedule = panda_schedule.get_schedule(start_datetime=start, end_datetime=end)
+
+        assert schedule is not None
+        assert isinstance(schedule, pd.DataFrame)
+        assert not schedule.empty

@@ -1,0 +1,2 @@
+1. Auctually check docs generation (can look at my template)
+2. Fix the CI tests

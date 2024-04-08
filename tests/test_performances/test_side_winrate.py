@@ -1,10 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.performance_features.side_win_rate import (
-    compute_ema_side,
-    side_win_rate_ewm_performance,
-)
+from src.performance_features.side_win_rate import compute_ema_side, side_win_rate_ewm_performance
 
 
 class TestGamePerformances:
@@ -254,19 +251,11 @@ class TestGamePerformances:
 
         # Basic checks
         assert not red_side_df.empty, "The DataFrame should not be empty."
-        assert (
-            "ema_red_side_before" in red_side_df.columns
-        ), "EMA before column missing for Red side."
-        assert (
-            "ema_red_side_after" in red_side_df.columns
-        ), "EMA after column missing for Red side."
+        assert "ema_red_side_before" in red_side_df.columns, "EMA before column missing for Red side."
+        assert "ema_red_side_after" in red_side_df.columns, "EMA after column missing for Red side."
         assert not blue_side_df.empty, "The DataFrame should not be empty."
-        assert (
-            "ema_blue_side_before" in blue_side_df.columns
-        ), "EMA before column missing for Red side."
-        assert (
-            "ema_blue_side_after" in blue_side_df.columns
-        ), "EMA after column missing for Red side."
+        assert "ema_blue_side_before" in blue_side_df.columns, "EMA before column missing for Red side."
+        assert "ema_blue_side_after" in blue_side_df.columns, "EMA after column missing for Red side."
 
     def test_side_win_rate_ewm_performance(self):
         """
@@ -286,10 +275,6 @@ class TestGamePerformances:
 
         # Basic checks
         assert not team_ewm.empty, "The DataFrame should not be empty."
-        assert all(
-            column in team_ewm.columns for column in ewm_columns
-        ), "EWM columns missing in the output."
+        assert all(column in team_ewm.columns for column in ewm_columns), "EWM columns missing in the output."
         assert not player_ewm.empty, "The DataFrame should not be empty."
-        assert all(
-            column in player_ewm.columns for column in ewm_columns
-        ), "EWM columns missing in the output."
+        assert all(column in player_ewm.columns for column in ewm_columns), "EWM columns missing in the output."

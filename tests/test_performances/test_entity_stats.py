@@ -5,11 +5,10 @@ import pandas as pd
 import pytest
 
 from src.performance_features.entity_stats import (
-    apply_entity_ema_std_and_growth,
+    apply_entity_ema_std,
     calculate_entity_kda,
     calculate_kill_participation,
     elaborate_stats,
-    enrich_entity_ema_statistics,
     select_columns_for_entity,
 )
 
@@ -76,9 +75,7 @@ class TestEntityStats:
         # Calculate expected kill participation values for player data
         expected_kill_participation = (
             self.sample_player_data["kills"] + self.sample_player_data["assists"]
-        ) / self.sample_player_data.groupby(["gameid", "teamid"])["kills"].transform(
-            "sum"
-        )
+        ) / self.sample_player_data.groupby(["gameid", "teamid"])["kills"].transform("sum")
 
         # Assert calculated kill participation is equal to expected values
         assert np.allclose(
@@ -112,6 +109,12 @@ class TestEntityStats:
             "deaths",
             "assists",
             "kda",
+            "goldat10",
+            "xpat10",
+            "csat10",
+            "golddiffat10",
+            "xpdiffat10",
+            "csdiffat10",
             "goldat15",
             "xpat15",
             "csat15",
@@ -119,10 +122,19 @@ class TestEntityStats:
             "xpdiffat15",
             "csdiffat15",
             "egpm",
+            "ckpm",
             "firstblood",
             "dragons",
+            "void_grubs",
+            "heralds",
             "barons",
+            "elders",
             "towers",
+            "turretplates",
+            "teamkills",
+            "teamdeaths",
+            "gspd",
+            "team_kpm",
         ]
 
         true_player_columns = [
@@ -131,54 +143,56 @@ class TestEntityStats:
             "deaths",
             "assists",
             "kda",
+            "goldat10",
+            "xpat10",
+            "csat10",
+            "golddiffat10",
+            "xpdiffat10",
+            "csdiffat10",
             "goldat15",
             "xpat15",
             "csat15",
-            "assistsat15",
-            "deathsat15",
             "golddiffat15",
             "xpdiffat15",
             "csdiffat15",
-            "dpm",
-            "wpm",
-            "wcpm",
-            "vspm",
-            "ckpm",
-            "cspm",
             "egpm",
-            "gold_efficiency",
-            "xp_efficiency",
+            "ckpm",
             "damageshare",
             "kill_participation",
             "total_cs",
             "earnedgoldshare",
+            "damagetochampions",
+            "damagetakenperminute",
+            "damagemitigatedperminute",
+            "controlwardsbought",
+            "visionscore",
+            "totalgold",
+            "gpr",
+            "killsat15",
+            "assistsat15",
+            "deathsat15",
+            "dpm",
+            "wpm",
+            "wcpm",
+            "vspm",
+            "cspm",
+            "gold_efficiency",
+            "xp_efficiency",
         ]
 
         assert set(player_columns) == set(true_player_columns)
         assert set(team_columns) == set(true_team_columns)
 
-    def test_apply_entity_ema_std_and_growth(self):
-        player_data = apply_entity_ema_std_and_growth(
-            self.sample_player_data, "playerid", ["kills", "deaths"], 5
-        )
-        team_data = apply_entity_ema_std_and_growth(
-            self.sample_team_data, "teamid", ["kills", "deaths"], 5
-        )
+    def test_apply_entity_ema_std(self):
+        player_data = apply_entity_ema_std(self.sample_player_data, "playerid", ["kills", "deaths"], 5)
+        team_data = apply_entity_ema_std(self.sample_team_data, "teamid", ["kills", "deaths"], 5)
 
         assert "ema_kills_before" in player_data.columns
         assert "ema_kills_after" in player_data.columns
         assert "ema_deaths_before" in player_data.columns
         assert "ema_deaths_after" in player_data.columns
-        assert "ema_kills_growth_before" in player_data.columns
-        assert "ema_kills_growth_after" in player_data.columns
-        assert "ema_deaths_growth_before" in player_data.columns
-        assert "ema_deaths_growth_after" in player_data.columns
 
         assert "ema_kills_before" in team_data.columns
         assert "ema_kills_after" in team_data.columns
         assert "ema_deaths_before" in team_data.columns
         assert "ema_deaths_after" in team_data.columns
-        assert "ema_kills_growth_before" in team_data.columns
-        assert "ema_kills_growth_after" in team_data.columns
-        assert "ema_deaths_growth_before" in team_data.columns
-        assert "ema_deaths_growth_after" in team_data.columns

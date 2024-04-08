@@ -5,11 +5,7 @@ import pandas as pd
 import pytest
 from sklearn.linear_model import LogisticRegression
 
-from src.performance_features.egpm import (
-    calculate_dominance_metrics,
-    calculate_egpm_dominance_ratios,
-    egpm_model,
-)
+from src.performance_features.egpm import calculate_dominance_metrics, calculate_egpm_dominance_ratios, egpm_model
 
 team_data = """date,gameid,side,league,patch,teamname,teamid,result,kills,deaths,assists,egpm,gamelength,ckpm,team_kpm,firstblood,dragons,barons,towers,goldat15,xpat15,csat15,golddiffat15,xpdiffat15,csdiffat15,opponentteam,opponentteamid,opponent_egpm,elo_pre_match,elo_pre_match_opponent,elo_win_likelihood,elo,elo_opponent,pl_pre_match_mu,pl_pre_match_sigma,pl_win_likelihood,pl_mu,pl_sigma,trueskill_sum_mu,trueskill_sigma_squared,trueskill_opponent_sum_mu,trueskill_opponent_sigma_squared,trueskill_diff
 2024-01-25 18:05:49,LOLTMNT03_34547,Blue,LIT,14.01,Macko Esports,oe:team:a2e63aee03585f0b37ff4cad936e349,1,19,7,47,1259.5975,29.816666666666663,0.872,0.6372,0.0,3.0,2.0,8.0,26226.0,31140.0,498.0,2484.0,2171.0,-15.0,aNc Outplayed,oe:team:cd6b4265231d4ba346274357681c335,920.5925,1382.428368971944,1006.5206918682358,0.8969604185340606,1385.7256355788543,1003.2234252613257,41.21685425670362,2.3244201356251195,0.9791261268150178,41.308831055129744,2.3211406824661105,133.647,46.301,134.651,53.855,-0.02400000000000002

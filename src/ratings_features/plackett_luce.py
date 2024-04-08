@@ -1,10 +1,23 @@
+# -*- coding: utf-8 -*-
+"""
+Plackett-Luce rating model
+
+This module provides functionality to rate teams or players using the Plackett-Luce model.
+"""
 from copy import deepcopy
 from typing import List, Tuple
 
 import pandas as pd
 from openskill.models import PlackettLuce
 
-from utils.utils import get_sorting_keys
+from utils.paths import DEFAULT_PARAMETERS
+from utils.utils import get_sorting_keys, json_loader
+
+config = json_loader(DEFAULT_PARAMETERS)
+
+# Default parameters for Elo rating system
+DEFAULT_MU = config["plackett_luce"]["mu"]
+DEFAULT_SIGMA = config["plackett_luce"]["sigma"]
 
 
 def rate_teams_or_players(
@@ -24,8 +37,8 @@ def rate_teams_or_players(
 def calculate_plackett_luce(
     df: pd.DataFrame,
     entity: str,
-    initial_mu: float = 25.0,
-    initial_sigma: float = 25.0 / 3.0,
+    initial_mu: float = DEFAULT_MU,
+    initial_sigma: float = DEFAULT_SIGMA,
 ) -> pd.DataFrame:
     """
     Calculate and update Plackett-Luce ratings for teams or players within a DataFrame.
@@ -49,8 +62,7 @@ def calculate_plackett_luce(
     # Initialize ratings
     entity_key = "teamid" if entity == "team" else "playerid"
     entity_ratings = {
-        entity: model.rating(mu=initial_mu, sigma=initial_sigma)
-        for entity in df_sorted[entity_key].unique()
+        entity: model.rating(mu=initial_mu, sigma=initial_sigma) for entity in df_sorted[entity_key].unique()
     }
 
     # Columns for updated ratings and pre-match info
@@ -59,6 +71,7 @@ def calculate_plackett_luce(
     df_sorted["pl_win_likelihood"] = pd.NA
     df_sorted["pl_mu"] = pd.NA
     df_sorted["pl_sigma"] = pd.NA
+    df_sorted["pl_pre_match_mu_opponent"] = pd.NA
 
     for game_id in df_sorted["gameid"].unique():
         game_data = df_sorted[df_sorted["gameid"] == game_id]
@@ -84,6 +97,9 @@ def calculate_plackett_luce(
                 df_sorted.at[index, "pl_pre_match_mu"] = rating.mu
                 df_sorted.at[index, "pl_pre_match_sigma"] = rating.sigma
                 df_sorted.at[index, "pl_win_likelihood"] = win_prob
+                df_sorted.at[index, "pl_pre_match_mu_opponent"] = (
+                    red_ratings[0].mu if side_data.iloc[0]["side"] == "Blue" else blue_ratings[0].mu
+                )
 
         # Determine the match outcome
         blue_win = blue_entities.iloc[0]["result"] == 1
@@ -91,14 +107,10 @@ def calculate_plackett_luce(
         ranks = [0, 1] if blue_win else [1, 0]
 
         # Update ratings
-        updated_ratings = rate_teams_or_players(
-            model, [blue_ratings, red_ratings], ranks
-        )
+        updated_ratings = rate_teams_or_players(model, [blue_ratings, red_ratings], ranks)
 
         # Assign updated ratings and calculate win likelihood
-        for side_data, new_ratings in zip(
-            [blue_entities, red_entities], updated_ratings
-        ):
+        for side_data, new_ratings in zip([blue_entities, red_entities], updated_ratings):
             for index, new_rating in zip(side_data.index, new_ratings):
                 player_or_team_id = side_data.loc[index, entity_key]
                 entity_ratings[player_or_team_id] = new_rating

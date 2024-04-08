@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+Schedule Data Ingestion
+
+This script fetches the schedule of upcoming matches from the PandaScore API.
+
+Please visit and support www.pandascore.com
+"""
 import datetime as dt
 import json
 from dataclasses import dataclass, field
@@ -64,9 +72,7 @@ class PandaScoreSchedule:
         """Filter the schedule by leagues."""
         return schedule[schedule["league"].isin(leagues)].reset_index(drop=True)
 
-    def get_schedule(
-        self, start_datetime: str, end_datetime: str, leagues: Optional[str] = None
-    ) -> pd.DataFrame:
+    def get_schedule(self, start_datetime: str, end_datetime: str, leagues: Optional[str] = None) -> pd.DataFrame:
         """
         Gets the schedule of upcoming matches.
 
@@ -90,9 +96,7 @@ class PandaScoreSchedule:
         start_datetime = pd.to_datetime(start_datetime).tz_convert("UTC")
         end_datetime = pd.to_datetime(end_datetime).tz_convert("UTC")
         if (end_datetime - start_datetime).days > MAX_DAYS_RANGE:
-            raise ValueError(
-                f"Time range exceeds the maximum allowed {MAX_DAYS_RANGE} days."
-            )
+            raise ValueError(f"Time range exceeds the maximum allowed {MAX_DAYS_RANGE} days.")
 
         schedule_df = pd.DataFrame()
         page = 1
@@ -104,30 +108,22 @@ class PandaScoreSchedule:
                 break  # No more data to fetch
 
             # Store matches in RAW_DIR
-            with open(RAW_DIR / f"raw_schedule.json", "w") as file:
+            with open(RAW_DIR / "raw_schedule.json", "w") as file:
                 json.dump(matches, file)
 
             parsed_matches = self._parse_matches_response(matches)
             page_matches_df = pd.DataFrame(parsed_matches)
-            page_matches_df["Start (UTC)"] = pd.to_datetime(
-                page_matches_df["Start (UTC)"], format=TIME_FORMAT
-            )
+            page_matches_df["Start (UTC)"] = pd.to_datetime(page_matches_df["Start (UTC)"], format=TIME_FORMAT)
 
             # Check if 'Start (UTC)' is timezone-naive and localize if necessary
             if page_matches_df["Start (UTC)"].dt.tz is None:
-                page_matches_df["Start (UTC)"] = page_matches_df[
-                    "Start (UTC)"
-                ].dt.tz_localize("UTC")
+                page_matches_df["Start (UTC)"] = page_matches_df["Start (UTC)"].dt.tz_localize("UTC")
 
             # Filter matches by datetime range
             within_range_df = page_matches_df[
-                (page_matches_df["Start (UTC)"] >= start_datetime)
-                & (page_matches_df["Start (UTC)"] <= end_datetime)
+                (page_matches_df["Start (UTC)"] >= start_datetime) & (page_matches_df["Start (UTC)"] <= end_datetime)
             ]
-            if (
-                within_range_df.empty
-                and page_matches_df["Start (UTC)"].min() > end_datetime
-            ):
+            if within_range_df.empty and page_matches_df["Start (UTC)"].min() > end_datetime:
                 break  # All future data will be out of range
             schedule_df = pd.concat([schedule_df, within_range_df], ignore_index=True)
             page += 1

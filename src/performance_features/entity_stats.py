@@ -1,13 +1,16 @@
-# Assuming the necessary imports are done from your utility modules
-import warnings
+# -*- coding: utf-8 -*-
+"""
+Entity statistics
+
+This script contains functions to calculate entity-specific statistics, such as KDA, kill participation and so on.
+It uses EMA (Exponential Moving Average) to calculate the statistics for 'before' and 'after' periods.
+"""
+import pandas as pd
 
 from utils.paths import DEFAULT_PARAMETERS
 from utils.utils import get_identity, get_sorting_keys, json_loader
 
 HALF_LIFE = json_loader(DEFAULT_PARAMETERS)["half_life"]
-
-# TODO: improve and remove the warnings
-warnings.filterwarnings("ignore")
 
 
 def calculate_entity_kda(df):
@@ -31,7 +34,6 @@ def elaborate_stats(df, entity):
     return df
 
 
-#! TODO: double check for new potential columns, also try to include as many columns as possible in both ones
 def select_columns_for_entity(entity):
     """Select relevant columns for EMA statistics based on the entity type."""
     base_columns = [
@@ -40,6 +42,12 @@ def select_columns_for_entity(entity):
         "deaths",
         "assists",
         "kda",
+        "goldat10",
+        "xpat10",
+        "csat10",
+        "golddiffat10",
+        "xpdiffat10",
+        "csdiffat10",
         "goldat15",
         "xpat15",
         "csat15",
@@ -50,12 +58,33 @@ def select_columns_for_entity(entity):
         "ckpm",
     ]
 
-    team_extra_columns = ["firstblood", "dragons", "barons", "towers"]
+    team_extra_columns = [
+        "firstblood",
+        "dragons",
+        "void_grubs",
+        "heralds",
+        "barons",
+        "elders",
+        "towers",
+        "turretplates",
+        "teamkills",
+        "teamdeaths",
+        "gspd",
+        "team_kpm",
+    ]
     player_extra_columns = [
         "damageshare",
         "kill_participation",
         "total_cs",
         "earnedgoldshare",
+        "damagetochampions",
+        "damagetakenperminute",
+        "damagemitigatedperminute",
+        "controlwardsbought",
+        "visionscore",
+        "totalgold",
+        "gpr",
+        "killsat15",
         "assistsat15",
         "deathsat15",
         "dpm",
@@ -75,32 +104,40 @@ def select_columns_for_entity(entity):
         raise ValueError("Entity must be either team or player.")
 
 
-def apply_entity_ema_std_and_growth(df, identity, columns, half_life):
-    """Apply EMA calculations, standard deviation, and growth to selected columns for entities,
-    maintaining distinctions between 'before' and 'after' periods."""
+def apply_entity_ema_std(df, identity, columns, half_life):
+    """Apply EMA calculations, standard deviation to selected columns for entities,
+    maintaining distinctions between 'before' and 'after' periods in an optimized manner to avoid DF fragmentation.
+    """
+
+    # Containers for new columns
+    new_cols_before, new_cols_after = {}, {}
 
     for col in columns:
+        # Grouping by identity for each column
         group = df.groupby(identity)[col]
 
-        # EMA calculations for 'before' and 'after' using respective halflives
-        df[f"ema_{col}_before"] = group.transform(
-            lambda x: x.ewm(halflife=half_life, ignore_na=True).mean().shift().bfill()
-        )
-        df[f"ema_{col}_after"] = group.transform(
-            lambda x: x.ewm(halflife=half_life, ignore_na=True).mean()
-        )
+        # Calculate EMA, Standard Deviation and Growth for 'before'
+        ema_before = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).mean().shift().bfill())
+        std_before = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).std().shift().bfill())
 
-        # Standard Deviation calculations for 'before' and 'after'
-        df[f"ema_{col}_std_before"] = group.transform(
-            lambda x: x.ewm(halflife=half_life, ignore_na=True).std().shift().bfill()
-        )
-        df[f"ema_{col}_std_after"] = group.transform(
-            lambda x: x.ewm(halflife=half_life, ignore_na=True).std()
-        )
+        # Store calculations in containers
+        new_cols_before[f"ema_{col}_before"] = ema_before
+        new_cols_before[f"ema_{col}_std_before"] = std_before
 
-        # Growth calculations as the difference between the actual metric and its EMA for 'before' and 'after'
-        df[f"ema_{col}_growth_before"] = df[col] - df[f"ema_{col}_before"]
-        df[f"ema_{col}_growth_after"] = df[col] - df[f"ema_{col}_after"]
+        # Calculate EMA, Standard Deviation and Growth for 'after'
+        ema_after = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).mean())
+        std_after = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).std())
+
+        # Store calculations in containers
+        new_cols_after[f"ema_{col}_after"] = ema_after
+        new_cols_after[f"ema_{col}_std_after"] = std_after
+
+    # Convert dictionaries to DataFrames
+    new_cols_before_df = pd.DataFrame(new_cols_before)
+    new_cols_after_df = pd.DataFrame(new_cols_after)
+
+    # Concatenate the new columns with the original DataFrame to avoid fragmentation
+    df = pd.concat([df, new_cols_before_df, new_cols_after_df], axis=1)
 
     return df
 
@@ -113,5 +150,5 @@ def enrich_entity_ema_statistics(df, entity):
     identity = get_identity(entity)
     columns = select_columns_for_entity(entity)
 
-    df = apply_entity_ema_std_and_growth(df, identity, columns, HALF_LIFE)
+    df = apply_entity_ema_std(df, identity, columns, HALF_LIFE)
     return df

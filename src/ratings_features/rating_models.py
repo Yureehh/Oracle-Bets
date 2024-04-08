@@ -1,3 +1,7 @@
+"""
+Wrapper class for rating models
+"""
+
 from dataclasses import dataclass
 
 from src.ratings_features.elo import calculate_elo
@@ -7,6 +11,10 @@ from src.ratings_features.trueskill import trueskill_model
 
 @dataclass
 class Ratings:
+    """
+    Wrapper class for rating models
+    """
+
     @staticmethod
     def compute_elo(df, entity, initial_elo=None, k=None):
         args = {"df": df, "entity": entity}

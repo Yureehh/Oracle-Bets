@@ -1,3 +1,15 @@
 {
-  "half_life": 5
+  "half_life": 16,
+  "elo": {
+    "k_factor": 32,
+    "initial": 1500
+  },
+  "plackett_luce": {
+    "mu": 25,
+    "sigma": 8.333
+  },
+  "trueskill": {
+    "mu": 25,
+    "sigma": 8.333
+  }
 }

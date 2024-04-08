@@ -29,23 +29,15 @@ exported_pipeline = make_pipeline(
         StackingEstimator(
             estimator=make_pipeline(
                 StackingEstimator(estimator=BernoulliNB(alpha=10.0, fit_prior=False)),
-                LinearSVC(
-                    C=20.0, dual=False, loss="squared_hinge", penalty="l2", tol=0.0001
-                ),
+                LinearSVC(C=20.0, dual=False, loss="squared_hinge", penalty="l2", tol=0.0001),
             )
         ),
         make_pipeline(
-            StackingEstimator(
-                estimator=LinearSVC(
-                    C=0.0001, dual=False, loss="squared_hinge", penalty="l1", tol=0.001
-                )
-            ),
+            StackingEstimator(estimator=LinearSVC(C=0.0001, dual=False, loss="squared_hinge", penalty="l1", tol=0.001)),
             VarianceThreshold(threshold=0.05),
             MinMaxScaler(),
             SelectFromModel(
-                estimator=ExtraTreesClassifier(
-                    criterion="entropy", max_features=0.5, n_estimators=100
-                ),
+                estimator=ExtraTreesClassifier(criterion="entropy", max_features=0.5, n_estimators=100),
                 threshold=0.0,
             ),
         ),

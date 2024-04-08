@@ -24,9 +24,7 @@ class TestEloRating:
             (1000, 0.5, 1, 10, 1005),
         ],
     )
-    def test_update_elo_rating(
-        self, old_elo, expected, actual_result, k_factor, expected_new_elo
-    ):
+    def test_update_elo_rating(self, old_elo, expected, actual_result, k_factor, expected_new_elo):
         new_elo = update_elo_rating(old_elo, expected, actual_result, k_factor)
         assert round(new_elo, 1) == expected_new_elo
 

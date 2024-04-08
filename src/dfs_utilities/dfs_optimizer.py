@@ -71,15 +71,10 @@ class RosterOptimizer:
             dict: Dictionary of dataframes for each position.
         """
         positions = ["Top", "Jng", "Mid", "ADC", "Sup", "Team"]
-        rosters = {
-            pos.lower(): self.dk[self.dk["Position"] == pos].reset_index(drop=True)
-            for pos in positions
-        }
+        rosters = {pos.lower(): self.dk[self.dk["Position"] == pos].reset_index(drop=True) for pos in positions}
         return rosters
 
-    def generate_individual_roster(
-        self, rosters: Dict[str, pd.DataFrame]
-    ) -> Dict[str, Union[str, int]]:
+    def generate_individual_roster(self, rosters: Dict[str, pd.DataFrame]) -> Dict[str, Union[str, int]]:
         """
         Generate an individual roster based on constraints.
 
@@ -116,25 +111,11 @@ class RosterOptimizer:
             _, sup = sup
             _, team = team
 
-            ind_cost = (
-                top["Cost"]
-                + jng["Cost"]
-                + mid["Cost"]
-                + adc["Cost"]
-                + sup["Cost"]
-                + team["Cost"]
-            )
+            ind_cost = top["Cost"] + jng["Cost"] + mid["Cost"] + adc["Cost"] + sup["Cost"] + team["Cost"]
             if ind_cost > self.salary_cap:
                 continue
 
-            ind_score = (
-                top["Pts"]
-                + jng["Pts"]
-                + mid["Pts"]
-                + adc["Pts"]
-                + sup["Pts"]
-                + team["Pts"]
-            )
+            ind_score = top["Pts"] + jng["Pts"] + mid["Pts"] + adc["Pts"] + sup["Pts"] + team["Pts"]
             if ind_score <= best_roster["Score"]:
                 continue
 

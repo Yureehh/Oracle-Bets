@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+"""
+Tests for the data generator class
+"""
+
 import pandas as pd
 import pytest
 
@@ -20,7 +25,6 @@ class TestDataGenerator:
         assert years == [
             str(current_year),
             str(current_year - 1),
-            str(current_year - 2),
         ]
 
     def test_remove_buggy_games(self, data_generator):
@@ -30,7 +34,7 @@ class TestDataGenerator:
                 "team": ["A", "B", "C", "D", "E", "F", "G"],
             }
         )
-        data = data_generator._remove_buggy_games(data)
+        data = data_generator._remove_buggy_games(data, detect_buggy_games=False)
         assert data.shape[0] == 5
 
     def test_ingest_data_from_s3(self, data_generator):
@@ -66,6 +70,7 @@ class TestDataGenerator:
             "pl_win_likelihood",
             "pl_mu",
             "pl_sigma",
+            "pl_pre_match_mu_opponent",
         ]
         expexted_elo_columns = [
             "elo_pre_match",
@@ -74,9 +79,7 @@ class TestDataGenerator:
             "elo_opponent",
             "elo_win_likelihood",
         ]
-        assert all(
-            col in player_data.columns for col in expected_player_trueskill_columns
-        )
+        assert all(col in player_data.columns for col in expected_player_trueskill_columns)
         assert all(col in team_data.columns for col in expected_team_trueskill_columns)
         assert all(col in player_data.columns for col in expected_plackett_luce_columns)
         assert all(col in player_data.columns for col in expexted_elo_columns)

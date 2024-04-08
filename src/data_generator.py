@@ -11,7 +11,6 @@ Please visit and support www.oracleselixir.com
 Tim provides an invaluable service to the League community.
 """
 
-# Housekeeping
 import datetime as dt
 import json
 from dataclasses import dataclass, field
@@ -47,9 +46,7 @@ class DataGenerator:
 
     def __post_init__(self):
         self.s3_session = self.create_s3_session()
-        self.oracle = OraclesElixir(
-            session=self.s3_session, bucket=getenv("BUCKET_NAME")
-        )
+        self.oracle = OraclesElixir(session=self.s3_session, bucket=getenv("BUCKET_NAME"))
         self.imputer = EarlyGameStatsImputer()
 
     @staticmethod
@@ -65,22 +62,54 @@ class DataGenerator:
     @staticmethod
     def _get_years_to_process():
         """
-        Get the years to process for the data ingestion.
-        Those are the current year and the two previous years.
+        Get the years to process for the data ingestion: current the previous two years.
         """
         current_year = dt.date.today().year
-        return [str(year) for year in range(current_year, current_year - 3, -1)]
+        return [str(year) for year in range(current_year, current_year - 2, -1)]
 
     @staticmethod
     def _remove_buggy_games(data):
         """
         Remove games that have been identified as buggy.
         """
-        with open(INVALID_GAMES, "r") as file:
+
+        def _detect_buggy_games(data):
+            """
+            Identifies buggy games based on criteria:
+            - Incorrect number of rows (not equal to 12)
+            - Incorrect number of unique teams (not equal to 2) or unknown team name
+            - Incorrect number of unique players (not equal to 10) or unknown player name
+            """
+            # Detect games with incorrect number of rows
+            incorrect_rows = set(data.groupby("gameid").filter(lambda x: len(x) != 12)["gameid"].unique())
+
+            # Detect games with incorrect number of teams or unknown team names
+            incorrect_teams = set(
+                data.groupby("gameid")
+                .filter(lambda x: x["teamid"].nunique() != 2 or "unknown team" in x["teamname"].values)["gameid"]
+                .unique()
+            )
+
+            # Detect games with incorrect number of players or unknown player names
+            incorrect_players = set(
+                data.groupby("gameid")
+                .filter(lambda x: x["playerid"].nunique() != 10 or "unknown player" in x["playername"].values)["gameid"]
+                .unique()
+            )
+
+            # Combine all sets of buggy game IDs
+            buggy_games = incorrect_rows.union(incorrect_teams, incorrect_players)
+
+            return buggy_games
+
+        with open(INVALID_GAMES) as file:
             invalid_config = json.load(file)
 
+        logger.info("Removing buggy games...\n")
         invalid_games = invalid_config["invalid_games"]
-        data = data[~data.gameid.isin(invalid_games)].copy()
+        other_invalid_games = _detect_buggy_games(data)
+        data = data[~data["gameid"].isin(set(invalid_games).union(other_invalid_games))]
+
         logger.info("Removed buggy games.\n")
         return data
 
@@ -95,7 +124,6 @@ class DataGenerator:
             # Ingest Data
             data = self.oracle.ingest_data(years=years)
             data.to_csv(RAW_DIR / "raw_data.csv", index=False)
-
             logger.info("Stored ingested data from S3.\n")
 
             # Remove Buggy Games
@@ -105,12 +133,14 @@ class DataGenerator:
             self.team_data = self.oracle.clean_data(data, split_on="team")
             self.player_data = self.oracle.clean_data(data, split_on="player")
 
-            logger.info("Cleaned all data.\n")
+            logger.info("Data cleaning completed.\n")
 
             # Store Interim Data
             self.team_data.to_csv(INTERIM_DIR / "team_data.csv", index=False)
             self.player_data.to_csv(INTERIM_DIR / "player_data.csv", index=False)
             logger.info("Stored interim data.\n")
+
+            return self.team_data, self.player_data
         except Exception as e:
             logger.error(f"Failed to ingest data from S3: {e}")
             raise
@@ -125,9 +155,7 @@ class DataGenerator:
         self.team_data = Ratings.compute_elo(df=self.team_data, entity="team")
         logger.info("Enriched data with elo.")
 
-        self.player_data = Ratings.compute_plackett_luce(
-            df=self.player_data, entity="player"
-        )
+        self.player_data = Ratings.compute_plackett_luce(df=self.player_data, entity="player")
         self.team_data = Ratings.compute_plackett_luce(df=self.team_data, entity="team")
         logger.info("Enriched data with plackett-luce.")
 
@@ -141,28 +169,16 @@ class DataGenerator:
     def _enrich_data_with_performance_metrics(self):
         logger.info("Enriching data with performance metrics...")
 
-        self.player_data = PerformanceMetrics.add_egpm_model(
-            self.player_data, entity="player"
-        )
-        self.team_data = PerformanceMetrics.add_egpm_model(
-            self.team_data, entity="team"
-        )
+        self.player_data = PerformanceMetrics.add_egpm_model(self.player_data, entity="player")
+        self.team_data = PerformanceMetrics.add_egpm_model(self.team_data, entity="team")
         logger.info("Enriched data with EGPM.")
 
-        self.player_data = PerformanceMetrics.add_entity_ema_statistics(
-            self.player_data, entity="player"
-        )
-        self.team_data = PerformanceMetrics.add_entity_ema_statistics(
-            self.team_data, entity="team"
-        )
+        self.player_data = PerformanceMetrics.add_entity_ema_statistics(self.player_data, entity="player")
+        self.team_data = PerformanceMetrics.add_entity_ema_statistics(self.team_data, entity="team")
         logger.info("Enriched data with EMA statistics.")
 
-        self.player_data = PerformanceMetrics.add_side_win_rate_ewm(
-            self.player_data, entity="player"
-        )
-        self.team_data = PerformanceMetrics.add_side_win_rate_ewm(
-            self.team_data, entity="team"
-        )
+        self.player_data = PerformanceMetrics.add_side_win_rate_ewm(self.player_data, entity="player")
+        self.team_data = PerformanceMetrics.add_side_win_rate_ewm(self.team_data, entity="team")
         logger.info("Enriched data with side win rate.")
 
         logger.info("Enriched player and team data with performance metrics.")
@@ -193,6 +209,7 @@ class DataGenerator:
             self.team_data.to_csv(PROCESSED_DIR / "team_data.csv", index=False)
             self.player_data.to_csv(PROCESSED_DIR / "player_data.csv", index=False)
             logger.info("Stored enriched data.\n")
+            return self.team_data, self.player_data
         except Exception as e:
             logger.error(f"Failed to enrich dataset: {e}")
             raise
@@ -205,15 +222,10 @@ class DataGenerator:
         flattened_team_config = json_loader(FLATTENED_TEAM_CONFIG)
 
         flattened_teams = (
-            self.team_data.sort_values(["teamid", "date"])
-            .groupby("teamid")
-            .tail(1)
-            .reset_index(drop=True)
+            self.team_data.sort_values(["teamid", "date"]).groupby("teamid").tail(1).reset_index(drop=True)
         )
         flattened_teams = flattened_teams[flattened_team_config["flattened_cols"]]
-        flattened_teams = flattened_teams.rename(
-            columns=flattened_team_config["cols_renaming"]
-        )
+        flattened_teams = flattened_teams.rename(columns=flattened_team_config["cols_renaming"])
         flattened_teams.to_csv(PROCESSED_DIR / "flattened_teams.csv", index=False)
         logger.info("Stored flattened teams data.")
 
@@ -225,15 +237,10 @@ class DataGenerator:
         flattened_player_config = json_loader(FLATTENED_PLAYER_CONFIG)
 
         flattened_players = (
-            self.player_data.sort_values(["playerid", "date"])
-            .groupby("playerid")
-            .tail(1)
-            .reset_index(drop=True)
+            self.player_data.sort_values(["playerid", "date"]).groupby("playerid").tail(1).reset_index(drop=True)
         )
         flattened_players = flattened_players[flattened_player_config["flattened_cols"]]
-        flattened_players = flattened_players.rename(
-            columns=flattened_player_config["cols_renaming"]
-        )
+        flattened_players = flattened_players.rename(columns=flattened_player_config["cols_renaming"])
         flattened_players.to_csv(PROCESSED_DIR / "flattened_players.csv", index=False)
         logger.info("Stored flattened players data.")
 
@@ -248,7 +255,7 @@ class DataGenerator:
 
 if __name__ == "__main__":
     generator = DataGenerator()
-    logger.warning("Make sure to close any open CSV files!\n")
+    logger.warning("Make sure to close any open CSV file!\n")
 
     start = dt.datetime.now()
     generator.run()

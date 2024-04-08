@@ -1,3 +1,9 @@
+"""
+TrueSkill rating model
+
+This module provides functionality to rate players using the TrueSkill model.
+"""
+
 import math
 from typing import Dict, List, Optional, Tuple
 
@@ -5,21 +11,35 @@ import numpy as np
 import pandas as pd
 import trueskill
 
-from utils.utils import get_sorting_keys
+from utils.paths import DEFAULT_PARAMETERS
+from utils.utils import get_sorting_keys, json_loader
+
+config = json_loader(DEFAULT_PARAMETERS)
+
+# Default parameters for Elo rating system
+DEFAULT_MU = config["trueskill"]["mu"]
+DEFAULT_SIGMA = config["trueskill"]["sigma"]
 
 
 def initialize_player_ratings(
     player_data: pd.DataFrame,
-    initial_sigma: float = 8.333,
+    initial_mu: float = DEFAULT_MU,
+    initial_sigma: float = DEFAULT_SIGMA,
     ts_env: trueskill.TrueSkill = trueskill.TrueSkill(),
 ) -> Dict:
+    """
+    Initialize player ratings using the TrueSkill model.
+    """
     return {
-        player_id: ts_env.create_rating(sigma=initial_sigma)
+        player_id: ts_env.create_rating(mu=initial_mu, sigma=initial_sigma)
         for player_id in player_data["playerid"].unique()
     }
 
 
 def preprocess_data(player_data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Preprocess player data by computing 'team_egpm' and sorting the DataFrame.
+    """
     required_columns = [
         "gameid",
         "date",
@@ -36,17 +56,13 @@ def preprocess_data(player_data: pd.DataFrame) -> pd.DataFrame:
     ]
 
     # Check for the existence of required columns to avoid runtime errors
-    missing_columns = [
-        col for col in required_columns if col not in player_data.columns
-    ]
+    missing_columns = [col for col in required_columns if col not in player_data.columns]
     if missing_columns:
         raise ValueError(f"Missing required columns: {missing_columns}")
 
     # Compute 'team_egpm' without the unnecessary copy operation
     team_egpm = (
-        player_data.groupby(["gameid", "teamid"], as_index=False)["egpm"]
-        .sum()
-        .rename(columns={"egpm": "team_egpm"})
+        player_data.groupby(["gameid", "teamid"], as_index=False)["egpm"].sum().rename(columns={"egpm": "team_egpm"})
     )
 
     # Merge the calculated 'team_egpm' back into the original DataFrame
@@ -61,6 +77,9 @@ def preprocess_data(player_data: pd.DataFrame) -> pd.DataFrame:
 
 
 def generate_match_array(df: pd.DataFrame) -> List:
+    """
+    Generate a list of match details for each game in the DataFrame.
+    """
     match_arrays = []
     for _, group in df.groupby("gameid"):
         match_details = []
@@ -131,9 +150,9 @@ def update_player_ratings(
     ]
 
     # Collect initial (old) mu and sigma values before the update
-    old_mu_sigma_values = [
-        rating_dict[player_id].mu for player_id in blue_player_ids + red_player_ids
-    ] + [rating_dict[player_id].sigma for player_id in blue_player_ids + red_player_ids]
+    old_mu_sigma_values = [rating_dict[player_id].mu for player_id in blue_player_ids + red_player_ids] + [
+        rating_dict[player_id].sigma for player_id in blue_player_ids + red_player_ids
+    ]
 
     # Create rating groups for the TrueSkill update
     blue_players = [rating_dict[id] for id in blue_player_ids]
@@ -169,12 +188,13 @@ def merge_player_stats(
     positions: List[str] = ["top", "jng", "mid", "bot", "sup"],
     team_colors: List[str] = ["blue", "red"],
 ) -> pd.DataFrame:
+    """
+    Merge player statistics back into the player data DataFrame.
+    """
     # Initialize an empty DataFrame to store aggregated player statistics
     aggregated_player_stats = pd.DataFrame()
 
-    for index, position in enumerate(
-        positions, start=1
-    ):  # start=1 to match player1, player2, etc.
+    for index, position in enumerate(positions, start=1):  # start=1 to match player1, player2, etc.
         for team_color in team_colors:
             opponent_color = "red" if team_color == "blue" else "blue"
             player_key = f"{team_color}_player{index}"
@@ -208,9 +228,7 @@ def merge_player_stats(
             )
 
             # Append the player statistics to the aggregated DataFrame
-            aggregated_player_stats = pd.concat(
-                [aggregated_player_stats, player_stats], ignore_index=True
-            )
+            aggregated_player_stats = pd.concat([aggregated_player_stats, player_stats], ignore_index=True)
 
     # Merge player stats back into the player_data DataFrame
     player_data = pd.merge(
@@ -261,26 +279,14 @@ def calculate_and_merge_team_statistics(
         player_sigma_columns = [f"{team_color}_player{i}_sigma" for i in range(1, 6)]
 
         opponent_mu_columns = [f"{opponent_color}_player{i}_mu" for i in range(1, 6)]
-        opponent_sigma_columns = [
-            f"{opponent_color}_player{i}_sigma" for i in range(1, 6)
-        ]
+        opponent_sigma_columns = [f"{opponent_color}_player{i}_sigma" for i in range(1, 6)]
 
         # Calculate sum of mu, sigma squared for the team and opponent
-        match_df[f"{team_color}_sum_mu"] = (
-            match_df[player_mu_columns].sum(axis=1).round(3)
-        )
-        match_df[f"{team_color}_sigma_squared"] = (
-            match_df[player_sigma_columns].pow(2).sum(axis=1).round(3)
-        )
-        match_df[f"{team_color}_opponent_sum_mu"] = (
-            match_df[opponent_mu_columns].sum(axis=1).round(3)
-        )
-        match_df[f"{team_color}_opponent_sigma_squared"] = (
-            match_df[opponent_sigma_columns].pow(2).sum(axis=1).round(3)
-        )
-        match_df[f"{team_color}_trueskill_diff"] = (
-            match_df[f"{team_color}_win_probability"] - 0.5
-        )
+        match_df[f"{team_color}_sum_mu"] = match_df[player_mu_columns].sum(axis=1).round(3)
+        match_df[f"{team_color}_sigma_squared"] = match_df[player_sigma_columns].pow(2).sum(axis=1).round(3)
+        match_df[f"{team_color}_opponent_sum_mu"] = match_df[opponent_mu_columns].sum(axis=1).round(3)
+        match_df[f"{team_color}_opponent_sigma_squared"] = match_df[opponent_sigma_columns].pow(2).sum(axis=1).round(3)
+        match_df[f"{team_color}_trueskill_diff"] = match_df[f"{team_color}_win_probability"] - 0.5
 
         # Prepare team and opponent statistics for merging
         team_statistics_cols = [
@@ -308,9 +314,7 @@ def calculate_and_merge_team_statistics(
         )
 
         # Append the team statistics to the aggregated DataFrame
-        aggregated_team_stats = pd.concat(
-            [aggregated_team_stats, team_statistics], ignore_index=True
-        )
+        aggregated_team_stats = pd.concat([aggregated_team_stats, team_statistics], ignore_index=True)
 
     team_data = pd.merge(
         team_data,
@@ -323,13 +327,19 @@ def calculate_and_merge_team_statistics(
 
 
 def trueskill_model(
-    player_data: pd.DataFrame, team_data: pd.DataFrame, initial_sigma: float = 8.33
+    player_data: pd.DataFrame,
+    team_data: pd.DataFrame,
+    initial_mu: float = DEFAULT_MU,
+    initial_sigma: float = DEFAULT_SIGMA,
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict]:
+    """
+    Calculate TrueSkill ratings for players and teams based on match results.
+    """
     gameid_dict = {}
     ts_env = trueskill.TrueSkill(draw_probability=0.0)
 
     # Initialize a default ratings dict for every player
-    player_ratings_dict = initialize_player_ratings(player_data, initial_sigma, ts_env)
+    player_ratings_dict = initialize_player_ratings(player_data, initial_mu, initial_sigma, ts_env)
 
     # Preprocess the player data adding team_egpm and filtering columns
     processed_player_data = preprocess_data(player_data)
@@ -398,9 +408,7 @@ def trueskill_model(
 
     match_df["red_win_probability"] = 1 - match_df["blue_win_probability"]
     # Add the expected result column based on the win probability
-    match_df["blue_expected_result"] = np.where(
-        match_df["blue_win_probability"] > 0.5, 1, 0
-    )
+    match_df["blue_expected_result"] = np.where(match_df["blue_win_probability"] > 0.5, 1, 0)
 
     team_data = calculate_and_merge_team_statistics(match_df, team_data)
 

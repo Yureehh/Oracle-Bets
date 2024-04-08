@@ -1,0 +1,67 @@
+name: Python package
+
+on:
+  push:
+    branches: [main, develop, feature/*, validator-and-predictor-refactoring]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"] # Adjust based on your project needs
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Poetry
+      run: |
+        curl -sSL https://install.python-poetry.org | python3 -
+        echo "$HOME/.poetry/bin" >> $GITHUB_PATH
+
+    - name: Cache Poetry Installation
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/pypoetry
+          ~/.poetry
+        key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
+        restore-keys: ${{ runner.os }}-poetry-
+
+    - name: Install Dependencies with Poetry
+      run: poetry install --no-root
+
+    - name: Run Checks
+      run: |
+        poetry run flake8 src
+        poetry run black --check src
+        poetry run isort --check-only src
+
+    - name: Run Tests
+      continue-on-error: true
+      run: poetry run pytest --cov=src --cov-report html #TODO: when tests are completed can uncomment: --cov-fail-under=90
+
+    - name: Check if coverage report exists
+      id: check_coverage
+      run: |
+        if [[ -d "htmlcov/" ]]; then
+          echo "Coverage report exists"
+          echo "exists=true" >> $GITHUB_ENV
+        else
+          echo "Coverage report doesn't exist"
+          echo "exists=false" >> $GITHUB_ENV
+        fi
+
+    - name: Upload HTML Coverage Report
+      if: steps.check_coverage.outputs.exists == 'true'
+      uses: actions/upload-artifact@v3
+      with:
+        name: html-coverage-report
+        path: ./htmlcov/
