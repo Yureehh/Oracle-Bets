@@ -7,10 +7,72 @@ It uses EMA (Exponential Moving Average) to calculate the statistics for 'before
 """
 import pandas as pd
 
+from src.data_ingest.oracles_elixir import get_opponent
 from utils.paths import DEFAULT_PARAMETERS
 from utils.utils import get_identity, get_sorting_keys, json_loader
 
 HALF_LIFE = json_loader(DEFAULT_PARAMETERS)["half_life"]
+
+BASE_COLUMNS = [
+    "gamelength",
+    "kills",
+    "deaths",
+    "assists",
+    "kda",
+    "goldat10",
+    "xpat10",
+    "csat10",
+    "golddiffat10",
+    "xpdiffat10",
+    "csdiffat10",
+    "goldat15",
+    "xpat15",
+    "csat15",
+    "golddiffat15",
+    "xpdiffat15",
+    "csdiffat15",
+    "egpm",
+    "ckpm",
+]
+
+TEAM_EXTRA_COLUMNS = [
+    "firstblood",
+    "dragons",
+    "void_grubs",
+    "heralds",
+    "barons",
+    "elders",
+    "towers",
+    "turretplates",
+    "teamkills",
+    "teamdeaths",
+    "gspd",
+    "team_kpm",
+]
+
+PLAYER_EXTRA_COLUMNS = [
+    "damageshare",
+    "kill_participation",
+    "total_cs",
+    "earnedgoldshare",
+    "damagetochampions",
+    "damagetakenperminute",
+    "damagemitigatedperminute",
+    "controlwardsbought",
+    "visionscore",
+    "totalgold",
+    "gpr",
+    "killsat15",
+    "assistsat15",
+    "deathsat15",
+    "dpm",
+    "wpm",
+    "wcpm",
+    "vspm",
+    "cspm",
+    "gold_efficiency",
+    "xp_efficiency",
+]
 
 
 def calculate_entity_kda(df):
@@ -36,70 +98,10 @@ def elaborate_stats(df, entity):
 
 def select_columns_for_entity(entity):
     """Select relevant columns for EMA statistics based on the entity type."""
-    base_columns = [
-        "gamelength",
-        "kills",
-        "deaths",
-        "assists",
-        "kda",
-        "goldat10",
-        "xpat10",
-        "csat10",
-        "golddiffat10",
-        "xpdiffat10",
-        "csdiffat10",
-        "goldat15",
-        "xpat15",
-        "csat15",
-        "golddiffat15",
-        "xpdiffat15",
-        "csdiffat15",
-        "egpm",
-        "ckpm",
-    ]
-
-    team_extra_columns = [
-        "firstblood",
-        "dragons",
-        "void_grubs",
-        "heralds",
-        "barons",
-        "elders",
-        "towers",
-        "turretplates",
-        "teamkills",
-        "teamdeaths",
-        "gspd",
-        "team_kpm",
-    ]
-    player_extra_columns = [
-        "damageshare",
-        "kill_participation",
-        "total_cs",
-        "earnedgoldshare",
-        "damagetochampions",
-        "damagetakenperminute",
-        "damagemitigatedperminute",
-        "controlwardsbought",
-        "visionscore",
-        "totalgold",
-        "gpr",
-        "killsat15",
-        "assistsat15",
-        "deathsat15",
-        "dpm",
-        "wpm",
-        "wcpm",
-        "vspm",
-        "cspm",
-        "gold_efficiency",
-        "xp_efficiency",
-    ]
-
     if entity == "team":
-        return base_columns + list(set(team_extra_columns) - set(base_columns))
+        return BASE_COLUMNS + list(set(TEAM_EXTRA_COLUMNS) - set(BASE_COLUMNS))
     elif entity == "player":
-        return base_columns + list(set(player_extra_columns) - set(base_columns))
+        return BASE_COLUMNS + list(set(PLAYER_EXTRA_COLUMNS) - set(BASE_COLUMNS))
     else:
         raise ValueError("Entity must be either team or player.")
 
@@ -139,6 +141,21 @@ def apply_entity_ema_std(df, identity, columns, half_life):
     # Concatenate the new columns with the original DataFrame to avoid fragmentation
     df = pd.concat([df, new_cols_before_df, new_cols_after_df], axis=1)
 
+    # Generate opponent before columns
+
+    return df
+
+
+def apply_entity_opp_stats(df, entity, columns):
+    """Get the opponent entity's values for the EMA statistics calculated previously."""
+    mean_before_cols = [f"ema_{col}_before" for col in columns]
+    std_before_cols = [f"ema_{col}_std_before" for col in columns]
+
+    ema_cols = mean_before_cols + std_before_cols
+
+    for col in ema_cols:
+        df[f"opp_{col}"] = get_opponent(df[col], entity=entity)
+
     return df
 
 
@@ -151,4 +168,6 @@ def enrich_entity_ema_statistics(df, entity):
     columns = select_columns_for_entity(entity)
 
     df = apply_entity_ema_std(df, identity, columns, HALF_LIFE)
+    df = apply_entity_opp_stats(df, identity, columns)
+
     return df
