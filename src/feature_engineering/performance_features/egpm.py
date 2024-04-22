@@ -69,13 +69,12 @@ def calculate_dominance_metrics(data, identity):
 
 def train_logistic_regression_model(data):
     features = [
-        "egpm_dominance_ratio_ema_before",
-        "egpm_opp_dominance_ratio_ema_before",
+        "egpm_dominance_diff",
     ]
     X = data[features]
     y = data["result"]
 
-    clf = LogisticRegression()
+    clf = LogisticRegression(fit_intercept=False)
     clf.fit(X, y)
 
     # Store the win probabilities in the dataframe

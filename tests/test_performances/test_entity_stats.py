@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.performance_features.entity_stats import (
+from src.feature_engineering.performance_features.entity_stats import (
     apply_entity_ema_std,
     calculate_entity_kda,
     calculate_kill_participation,

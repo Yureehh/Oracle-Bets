@@ -6,6 +6,7 @@ The classes are designed to calculate the accuracy, log loss, and Brier score of
 
 """
 
+import json
 import pickle
 import warnings
 from abc import ABC, abstractmethod
@@ -20,7 +21,7 @@ import seaborn as sns
 from sklearn.metrics import brier_score_loss, log_loss
 
 from utils.logger import logger, models_logger
-from utils.paths import CONSIDERED_LEAGUES, FIGURES_DIR, MIXED_VALIDATOR_WEIGHTS, PROCESSED_DIR
+from utils.paths import CONSIDERED_LEAGUES, FIGURES_DIR, METRICS_DIR, MIXED_VALIDATOR_WEIGHTS, PROCESSED_DIR
 from utils.utils import json_loader
 
 sns.set_style("darkgrid")
@@ -164,6 +165,11 @@ class ModelValidator(ABC):
         # Logging the formatted metrics
         models_logger.info(metrics_format)
 
+        # Store metrics in a json file
+        metrics_file = METRICS_DIR / f"{model_name.strip()}_metrics.json"
+        with open(metrics_file, "w") as f:
+            json.dump(self.metrics, f, indent=4)
+
 
 @dataclass
 class TeamEloValidator(ModelValidator):
@@ -187,7 +193,7 @@ class TeamEloValidator(ModelValidator):
             title="Team Elo Validation",
             filename="Team_Elo_Validation.png",
         )
-        self.log_metrics(model_name="Team Elo")
+        self.log_metrics(model_name="Team_Elo")
         self.plot_historical_accuracy("Team_Elo", self.teams)
         return self.metrics["accuracy"], self.metrics["logloss"], self.metrics["brier"]
 
@@ -221,7 +227,7 @@ class PlayerEloValidator(ModelValidator):
             title="Player Elo Validation",
             filename="Player_Elo_Validation.png",
         )
-        self.log_metrics(model_name="Player Elo")
+        self.log_metrics(model_name="Player_Elo")
         self.plot_historical_accuracy("Player_Elo", self.players)
         return self.metrics["accuracy"], self.metrics["logloss"], self.metrics["brier"]
 
@@ -281,7 +287,7 @@ class TeamPlackettLuceValidator(ModelValidator):
             title="Team Plackett-Luce Validation",
             filename="Team_PlackettLuce_Validation.png",
         )
-        self.log_metrics(model_name="Team PL ")
+        self.log_metrics(model_name="Team_PL ")
         self.plot_historical_accuracy("Team_PlackettLuce", self.teams)
         return self.metrics["accuracy"], self.metrics["logloss"], self.metrics["brier"]
 
@@ -315,7 +321,7 @@ class PlayerPlackettLuceValidator(ModelValidator):
             title="Player Plackett-Luce Validation",
             filename="Player_PlackettLuce_Validation.png",
         )
-        self.log_metrics(model_name="Player PL")
+        self.log_metrics(model_name="Player_PL")
         self.plot_historical_accuracy("Player_PlackettLuce", self.players)
         return self.metrics["accuracy"], self.metrics["logloss"], self.metrics["brier"]
 
@@ -347,7 +353,7 @@ class TeamEgpmDominanceValidator(ModelValidator):
             title="Team EGPM Validation",
             filename="Team_EGPM_Validation.png",
         )
-        self.log_metrics(model_name="Team EGPM")
+        self.log_metrics(model_name="Team_EGPM")
         self.plot_historical_accuracy("Team_EGPM", self.teams)
         return self.metrics["accuracy"], self.metrics["logloss"], self.metrics["brier"]
 
@@ -383,7 +389,7 @@ class PlayerEgpmDominanceValidator(ModelValidator):
             title="Player EGPM Validation",
             filename="Player_EGPM_Validation.png",
         )
-        self.log_metrics(model_name="Player EGPM")
+        self.log_metrics(model_name="Player_EGPM")
         self.plot_historical_accuracy("Player_EGPM", self.players)
         return self.metrics["accuracy"], self.metrics["logloss"], self.metrics["brier"]
 
@@ -410,7 +416,7 @@ class TeamSideEmaValidator(ModelValidator):
             title="Team Side EMA Validation",
             filename="Team_Side_EMA_Validation.png",
         )
-        self.log_metrics(model_name="Team Side EMA")
+        self.log_metrics(model_name="Team_Side_EMA")
         self.plot_historical_accuracy("Team_Side_EMA", self.teams)
         return self.metrics["accuracy"], self.metrics["logloss"], self.metrics["brier"]
 
@@ -439,7 +445,7 @@ class PlayerSideEmaValidator(ModelValidator):
             title="Player Side EMA Validation",
             filename="Player_Side_EMA_Validation.png",
         )
-        self.log_metrics(model_name="Player Side EMA")
+        self.log_metrics(model_name="Player_Side_EMA")
         self.plot_historical_accuracy("Player_Side_EMA", self.players)
         return self.metrics["accuracy"], self.metrics["logloss"], self.metrics["brier"]
 
@@ -494,7 +500,7 @@ class TeamEnsembleValidator(ModelValidator):
             title="Team Ensemble Validation",
             filename="Team_Ensemble_Validation.png",
         )
-        self.log_metrics(model_name="Team Ensemble")
+        self.log_metrics(model_name="Team_Ensemble")
         self.plot_historical_accuracy("Team_Ensemble", self.teams)
         ensemble_metrics = [
             self.metrics["accuracy"],
@@ -567,7 +573,7 @@ class PlayerEnsembleValidator(ModelValidator):
             title="Player Ensemble Validation",
             filename="Player_Ensemble_Validation.png",
         )
-        self.log_metrics(model_name="Player Ensemble")
+        self.log_metrics(model_name="Player_Ensemble")
         self.plot_historical_accuracy("Player_Ensemble", self.players)
         ensemble_metrics = [
             self.metrics["accuracy"],
@@ -583,7 +589,7 @@ class PlayerEnsembleValidator(ModelValidator):
             title="Player Majority Voting Validation",
             filename="Player_Majority_Voting_Validation.png",
         )
-        self.log_metrics(model_name="Player MVoting")
+        self.log_metrics(model_name="Player_MVoting")
         self.plot_historical_accuracy("Player_Majority_Voting", self.players)
         majority_voting_metrics = [
             self.metrics["accuracy"],
@@ -711,7 +717,7 @@ class MixedValidator(ModelValidator):
             title="Mixed Ensemble Validation",
             filename="Mixed_Ensemble_Validation.png",
         )
-        self.log_metrics(model_name="Mixed Ensemble")
+        self.log_metrics(model_name="Mixed_Ensemble")
         self.plot_historical_accuracy("Mixed_Ensemble", self.teams)
         ensemble_metrics = [
             self.metrics["accuracy"],
@@ -728,7 +734,7 @@ class MixedValidator(ModelValidator):
             title="Mixed Majority Voting Validation",
             filename="Mixed_Majority_Voting_Validation.png",
         )
-        self.log_metrics(model_name="Mixed MVoting")
+        self.log_metrics(model_name="Mixed_MVoting")
         self.plot_historical_accuracy("Mixed_Majority_Voting", self.teams)
         models_logger.info("\n")
         majority_voting_metrics = [
@@ -764,6 +770,8 @@ if __name__ == "__main__":
         directory=FIGURES_DIR,
         graph=True,
     ).validate()
+
+    logger.info("Validation complete.")
     print()
 
     logger.info("Validating Mixed Ensemble and Majority Voting models...")

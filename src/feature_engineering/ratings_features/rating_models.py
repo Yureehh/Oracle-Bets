@@ -4,9 +4,9 @@ Wrapper class for rating models
 
 from dataclasses import dataclass
 
-from src.ratings_features.elo import calculate_elo
-from src.ratings_features.plackett_luce import calculate_plackett_luce
-from src.ratings_features.trueskill import trueskill_model
+from src.feature_engineering.ratings_features.elo import calculate_elo
+from src.feature_engineering.ratings_features.plackett_luce import calculate_plackett_luce
+from src.feature_engineering.ratings_features.trueskill import trueskill_model
 
 
 @dataclass

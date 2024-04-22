@@ -22,8 +22,8 @@ from dotenv import load_dotenv
 
 from src.data_ingest.oracles_elixir import OraclesElixir
 from src.feature_engineering.impute_early_game_metrics import EarlyGameStatsImputer
-from src.performance_features.performance_metrics import PerformanceMetrics
-from src.ratings_features.rating_models import Ratings
+from src.feature_engineering.performance_features.performance_metrics import PerformanceMetrics
+from src.feature_engineering.ratings_features.rating_models import Ratings
 from utils.logger import logger
 from utils.paths import (
     FLATTENED_PLAYER_CONFIG,

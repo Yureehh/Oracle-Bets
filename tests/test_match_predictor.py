@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.match_predictor import MatchPredictor
+from src.discord.match_predictor import MatchPredictor
 from utils.paths import EGPM_DOM_LOGISTIC
 from utils.utils import load_model
 
@@ -31,8 +31,8 @@ def test_generate_validation_metrics(match_predictor, monkeypatch):
 
 
 def test_is_iterable(match_predictor):
-    assert match_predictor.is_iterable([1, 2, 3]) == True
-    assert match_predictor.is_iterable(123) == False
+    assert match_predictor.is_iterable([1, 2, 3]) is True
+    assert match_predictor.is_iterable(123) is False
 
 
 def test_side_wr_prediction(match_predictor):
@@ -88,6 +88,7 @@ class MockTeam:
         self.side = side
         self.team_stats = team_stats
         self.player_stats = player_stats
+        self.roster = None
 
 
 class MockTeamStats:

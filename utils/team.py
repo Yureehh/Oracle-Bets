@@ -9,15 +9,12 @@ This also allows for substitution of players in the roster.
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-import numpy as np
 import pandas as pd
 
 from utils.logger import logger
-from utils.paths import DISPLAY_COLS, PROCESSED_DIR
-from utils.utils import json_loader
+from utils.paths import PROCESSED_DIR
 
 # Load display columns and data once to avoid repeated disk I/O
-display_cols = json_loader(DISPLAY_COLS)
 team_data = pd.read_csv(PROCESSED_DIR / "flattened_teams.csv")
 player_data = pd.read_csv(PROCESSED_DIR / "flattened_players.csv")
 
@@ -42,7 +39,6 @@ class Team:
         if not self.name:
             raise ValueError("Team name must be provided.")
 
-        # Get team stats from the team data
         self.team_stats = self._get_team_stats()
         self.update_roster(self.roster if all(self.roster.values()) else self._get_last_roster())
 
@@ -55,7 +51,7 @@ class Team:
         )
         if filtered_team_data.empty:
             logger.warning(f"Team `{self.name}` not found in database. No team data was used.")
-            return None
+            raise ValueError(f"Team `{self.name}` not found in database.")
         return filtered_team_data.iloc[0]
 
     def _get_last_roster(self) -> Dict[str, str]:
@@ -115,29 +111,18 @@ class Team:
 
         return filtered_player_data
 
-    def display_team_info(self):
-        logger.info(f"Team: {self.name}")
-        logger.info(f"Side: {self.side}")
-        logger.info("Roster:")
-        for position, player in self.roster.items():
-            logger.info(f"    {position.title()}: {player}")
-        self._display_stats()
+    def get_team_info(self):
+        # Basic team info
+        team_info = {"Role": ["Team"], "Name": [self.name]}
 
-    def _display_stats(self):
-        if self.team_stats is not None:
-            print()
-            logger.info("Team Stats:")
-            for col in display_cols["team_display_cols"]:
-                logger.info(f"    {col.title()}: {self.team_stats.get(col, 'N/A')}")
-        if self.player_stats is not None:
-            print()
-            logger.info("Player Stats:")
-            for col in display_cols["player_display_cols"]:
-                if col in self.player_stats:
-                    mean_value = np.mean(self.player_stats[col]).round(2)
-                    logger.info(f"    {col.title()}: {mean_value}")
-                else:
-                    logger.info(f"    {col.title()}: N/A")
+        # Adding roster info
+        for position, player in self.roster.items():
+            team_info["Role"].append(position.title())
+            team_info["Name"].append(player)
+
+        team_info_df = pd.DataFrame(team_info)
+
+        return team_info_df
 
 
 # Example of how to use this refactored Team dataclass
@@ -152,4 +137,4 @@ if __name__ == "__main__":
             "sup": "Mikyx",
         },
     )
-    team.display_team_info()
+    logger.info(team.get_team_info())

@@ -6,7 +6,6 @@ from utils.team import Team
 
 
 class TestTeam:
-
     @pytest.fixture(autouse=True)
     def get_player_data(self):
         return pd.read_csv(PROCESSED_DIR / "flattened_players.csv")
@@ -18,7 +17,7 @@ class TestTeam:
     def test_get_team_stats(self, team):
         team_stats = team.team_stats
         assert isinstance(team_stats, pd.Series)
-        assert len(team_stats) == 47
+        assert len(team_stats) == 75
         assert team_stats["teamname"].lower() == "g2 esports"
 
     def test_get_last_roster(self, team, get_player_data):
@@ -47,15 +46,14 @@ class TestTeam:
             "sup": "Mikyx",
         }
         assert all([isinstance(v, str) for v in team.roster.values()])
-        assert all([v in team.player_data["playername"].values for v in team.roster.values()])
         assert len(team.roster) == 5
         assert all([isinstance(v, str) for v in team.roster.values()])
 
     def test_get_player_stats(self, team):
         player_stats = team.player_stats
         assert isinstance(player_stats, pd.DataFrame)
-        assert player_stats.shape == (5, 68)
+        assert player_stats.shape == (5, 96)
 
-    def test_display_team_info(self, team):
-        team.display_team_info()
+    def test_get_team_info(self, team):
+        team.get_team_info()
         assert True

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Tests for the data generator class
 """
@@ -31,11 +30,12 @@ class TestDataGenerator:
         data = pd.DataFrame(
             {
                 "gameid": [1, 2, 3, 4, 5, "8479-8479_game_1", "ESPORTSTMNT02/1890835"],
-                "team": ["A", "B", "C", "D", "E", "F", "G"],
+                "teamid": ["A", "B", "C", "D", "E", "F", "G"],
+                "playerid": ["A1", "B1", "C1", "D1", "E1", "F1", "G1"],
             }
         )
-        data = data_generator._remove_buggy_games(data, detect_buggy_games=False)
-        assert data.shape[0] == 5
+        data = data_generator._remove_buggy_games(data)
+        assert data.shape[0] == 0
 
     def test_ingest_data_from_s3(self, data_generator):
         team_data, player_data = data_generator.ingest_data_from_s3()

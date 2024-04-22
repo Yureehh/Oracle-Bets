@@ -31,7 +31,7 @@ src.lol\_modeling module
 src.match\_predictor module
 ---------------------------
 
-.. automodule:: src.match_predictor
+.. automodule:: src.discord.match_predictor
    :members:
    :undoc-members:
    :show-inheritance:

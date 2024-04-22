@@ -1,432 +1,266 @@
-# """
-# This bot is a wrapper for my League of Legends esports prediction model.
-# It is intended to allow users to call down predictions.
-# """
+"""
+This bot is a wrapper for a League of Legends esports prediction model.
+It allows users to call down predictions and view various information.
+"""
 
-# from io import StringIO
-# from os import getenv
-# from pathlib import Path
+import os
 
-# # Housekeeping
-# import discord
-# import nest_asyncio
-# import pandas as pd
-# import requests
-# from discord.ext import commands
-# from dotenv import load_dotenv
+import pandas as pd
+from dotenv import load_dotenv
 
-# import src.legacy.match_predictor as mp
-# import src.legacy.model_validator as mv
-# from src.legacy.team import Team
+import discord
+from discord.ext import commands
+from src.data_ingest.schedule import PandaScoreSchedule
+from src.discord.discord import (
+    convert_to_discord_markdown,
+    format_prediction_message,
+    format_schedule_message,
+    get_allowed_models,
+    get_empty_roster,
+    get_formatted_player_profile,
+    get_formatted_team_profile,
+    get_match_prediction,
+    get_validation_metrics,
+    handle_command_error,
+    predict_and_format_result,
+    process_roster,
+    send_validation_result,
+)
+from utils.logger import logger
+from utils.paths import PROCESSED_DIR
+from utils.team import Team
+from utils.utils import setup_pandas
 
-# nest_asyncio.apply()
-# pd.options.display.float_format = "{:,.4f}".format
-# pd.set_option("display.max_rows", None, "display.max_columns", None)
+load_dotenv()
 
-# # Variable Definitions
-# load_dotenv()
-# token = getenv("DISCORD_TOKEN")
-
-# client = discord.Client()
-# helper = """This is ProjektZero's bot. Ask him about it. Eventually I'll put a real readme here."""
-
-# bot = commands.Bot(command_prefix="!")
-
-
-# # Party Time
-# @bot.command(name="schedule")
-# async def schedule(ctx, league):
-#     try:
-#         output = pd.read_csv(Path.cwd().joinpath("data", "processed", "schedule.csv"))
-#         lower_league = league.lower()
-#         output = output[output["league"].str.lower() == lower_league].drop(["league"], axis=1).reset_index(drop=True)
-#         output = (
-#             f"Upcoming {league} Games (Next 10 Matches Within 5 Days): \n \n"
-#             f"`{output.head(10).to_markdown()}` \n \n"
-#             "`NOTE: Predictions use the last fielded roster. Try !predict if you need substitutions.`\n"
-#             "`NOTE: Win percentages are for Bo1 format. Use the !best_of to get Bo3/Bo5 odds if needed.`"
-#         )
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-
-#     await ctx.send(content=output)
+bot = commands.Bot(
+    command_prefix="!",
+    description="A League of Legends esports prediction bot.",
+    intents=discord.Intents.all(),
+)
 
 
-# @bot.command(name="profile")
-# async def profile(ctx, entity):
-#     try:
-#         players = pd.read_csv(Path.cwd().joinpath("esports-analytics", "data", "processed", "flattened_players.csv"))
-#         teams = pd.read_csv(Path.cwd().joinpath("esports-analytics", "data", "processed", "flattened_teams.csv"))
-
-#         players_list = [p.lower() if isinstance(p, str) else p for p in players.playername.unique()]
-#         teams_list = [t.lower() if isinstance(t, str) else t for t in teams.teamname.unique()]
-#         lower_entity = str(entity).lower()
-
-#         if lower_entity in players_list:
-#             data = players[players.playername.str.lower() == lower_entity].to_dict(orient="records")[-1]
-#             output = (
-#                 f"{entity} Profile: \n \n"
-#                 f"`Position: {data['position']} \n"
-#                 f"Elo: {data['player_elo']:.2f} \n"
-#                 f"TrueSkill Mu: {data['trueskill_mu']:.2f} \n"
-#                 f"EGPM Dominance: {data['egpm_dominance']:.2f} \n"
-#                 f"K/D/A Ratio: {data['kda']:.2f} \n"
-#                 f"Gold Diff At 15: {data['golddiffat15']:.2f} \n"
-#                 f"CS Diff At 15: {data['csdiffat15']:.2f} \n"
-#                 f"DK Points: {data['dkpoints']:.2f}`"
-#             )
-#         elif lower_entity in teams_list:
-#             data = teams[teams.teamname.str.lower() == lower_entity].to_dict(orient="records")[-1]
-#             output = (
-#                 f"{entity} Profile: \n \n"
-#                 f"`Elo: {data['team_elo']:.2f} \n"
-#                 f"TrueSkill Mu: {data['trueskill_sum_mu']:.2f} \n"
-#                 f"EGPM Dominance: {data['egpm_dominance']:.2f} \n"
-#                 f"K/D/A Ratio: {data['kda']:.2f} \n"
-#                 f"Gold Diff At 15: {data['golddiffat15']:.2f} \n"
-#                 f"CS Diff At 15: {data['csdiffat15']:.2f} \n"
-#                 f"DK Points: {data['dkpoints']:.2f}`"
-#             )
-#         else:
-#             output = (
-#                 f"Data for {entity} not found in database. \n"
-#                 "Make sure that your spelling perfectly matches the Oracle's Elixir data."
-#             )
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-
-#     await ctx.send(content=output)
+@bot.event
+async def on_ready():
+    """Event handler for when the bot is ready."""
+    logger.info(f"{bot.user} has connected to Discord!")
 
 
-# @bot.command(name="predict")
-# async def predict(
-#     ctx,
-#     blue_team,
-#     blue1,
-#     blue2,
-#     blue3,
-#     blue4,
-#     blue5,
-#     red_team,
-#     red1,
-#     red2,
-#     red3,
-#     red4,
-#     red5,
-# ):
-#     prelim = "```Calculating...```"
-#     message = await ctx.send(content=prelim)
-
-#     try:
-#         output = mp.predict(
-#             blue_team,
-#             blue1,
-#             blue2,
-#             blue3,
-#             blue4,
-#             blue5,
-#             red_team,
-#             red1,
-#             red2,
-#             red3,
-#             red4,
-#             red5,
-#             False,
-#         )
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-#     await message.edit(content=output)
+@bot.command(name="code", aliases=["github"])
+async def code(ctx):
+    """Sends a message with the GitHub repository link."""
+    try:
+        response = (
+            "This model is entirely open-source!\nWe'd love to talk about ideas or contributions!\n"
+            "Check the link at: https://github.com/MRittinghouse/esports-analytics"
+        )
+    except Exception as e:
+        response = handle_command_error(e, additional_info="Could not retrieve code information.")
+    await ctx.send(response)
 
 
-# @bot.command(name="predict_verbose")
-# async def predict_verbose(
-#     ctx,
-#     blue_team,
-#     blue1,
-#     blue2,
-#     blue3,
-#     blue4,
-#     blue5,
-#     red_team,
-#     red1,
-#     red2,
-#     red3,
-#     red4,
-#     red5,
-# ):
-#     prelim = "```Calculating...```"
-#     message = await ctx.send(content=prelim)
-
-#     try:
-#         output = mp.predict(
-#             blue_team,
-#             blue1,
-#             blue2,
-#             blue3,
-#             blue4,
-#             blue5,
-#             red_team,
-#             red1,
-#             red2,
-#             red3,
-#             red4,
-#             red5,
-#             True,
-#         )
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-#     await message.edit(content=output)
+@bot.command(name="schedule")
+async def schedule(ctx, leagues: str = None):
+    """Displays the upcoming schedule for the specified leagues."""
+    try:
+        schedule_df = PandaScoreSchedule.load_schedule(PROCESSED_DIR / "schedule.csv", leagues)
+        response = format_schedule_message(schedule_df)
+    except Exception as e:
+        response = handle_command_error(e, additional_info="Could not retrieve schedule.")
+    await ctx.send(response)
 
 
-# @bot.command(name="predict_team")
-# async def predict_team(ctx, blue_team, red_team):
-#     prelim = "```Calculating...```"
-#     message = await ctx.send(content=prelim)
-
-#     try:
-#         blue = Team(name=blue_team)
-#         red = Team(name=red_team)
-
-#         output = mp.predict_match(blue, red)
-#         output = "```ProjektZero Model Predictions: \n \n" f"{output.copy().to_markdown()}"
-
-#         if blue.warning:
-#             output += f"\n{blue.warning}"
-#         if red.warning:
-#             output += f"\n{red.warning}"
-
-#         output += (
-#             "\n \nNOTE: Predictions use the last fielded roster. Try !predict if you need substitutions."
-#             "\nNOTE: Win percentages are for Bo1 format. Use the !best_of to get Bo3/Bo5 odds if needed."
-#             "\nPlease consider supporting my obsessive coding habit at:"
-#             "\n \thttps://www.buymeacoffee.com/projektzero``` "
-#         )
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-#     await message.edit(content=output)
+@bot.command(name="team_roster", aliases=["roster"])
+async def roster(ctx, team=None):
+    """Displays the roster for the specified team."""
+    if not team:
+        await ctx.send("Please provide a team name.")
+        return
+    message = await ctx.send(content="```Extracting...```")
+    try:
+        team_data = Team(name=team)
+        output = convert_to_discord_markdown(team_data.get_team_info())
+    except Exception as e:
+        output = handle_command_error(e, additional_info="Could not extract roster information.")
+    await message.edit(content=output)
 
 
-# @bot.command(name="mock_draft")
-# async def mock_draft(ctx, blue1, blue2, blue3, blue4, blue5, red1, red2, red3, red4, red5):
-#     prelim = "```Calculating...```"
-#     message = await ctx.send(content=prelim)
-
-#     try:
-#         output = mp.mock_draft(blue1, blue2, blue3, blue4, blue5, red1, red2, red3, red4, red5)
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-#     await message.edit(content=output)
+@bot.command(name="team_profile", aliases=["team"])
+async def team_profile(ctx, entity: str = None, verbose: bool = False):
+    """Displays the profile for the specified team."""
+    if not entity:
+        await ctx.send("Please provide a team name.")
+        return
+    if not isinstance(verbose, bool):
+        verbose = verbose.lower() in ["true", "1", "t", "y", "yes"]
+    profile, error = await get_formatted_team_profile(entity, verbose)
+    if profile:
+        await ctx.send(profile)
+    else:
+        await ctx.send(error)
 
 
-# @bot.command(name="roster")
-# async def roster(ctx, team):
-#     prelim = "```Calculating...```"
-#     message = await ctx.send(content=prelim)
-
-#     try:
-#         team_data = Team(name=team)
-#         players = [
-#             team_data.top,
-#             team_data.jng,
-#             team_data.mid,
-#             team_data.bot,
-#             team_data.sup,
-#         ]
-#         output = (
-#             f"```{team} Last Fielded Roster: \n \n"
-#             f"{players} \n"
-#             "NOTE: This model does NOT track substitutions/roster swaps for upcoming games!```"
-#         )
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-#     await message.edit(content=output)
+@bot.command(name="player_profile", aliases=["player"])
+async def player_profile(ctx, entity: str = None, verbose: bool = False):
+    """Displays the profile for the specified player."""
+    if not entity:
+        await ctx.send("Please provide a player name.")
+        return
+    if not isinstance(verbose, bool):
+        verbose = verbose.lower() in ["true", "1", "t", "y", "yes"]
+    profile, error = await get_formatted_player_profile(entity, verbose)
+    if profile:
+        await ctx.send(profile)
+    else:
+        await ctx.send(error)
 
 
-# @bot.command(name="best_of")
-# async def best_of(ctx, count, team1, team1_odds, team2):
-#     prelim = "```Calculating...```"
-#     message = await ctx.send(content=prelim)
-
-#     try:
-#         int_count = int(count)
-#         odds = float(team1_odds)
-#         opp_odds = 1 - float(team1_odds)
-
-#         if int_count == 3:
-#             output = mp.best_of_three(team1, odds, team2, opp_odds)
-#         elif int_count == 5:
-#             output = mp.best_of_five(team1, odds, team2, opp_odds)
-#         else:
-#             raise ValueError("Series count must be 3 or 5.")
-
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-#     await message.edit(content=output)
+@bot.command(name="validate", aliases=["validation"])
+async def validate(ctx, method=None, graph=False):
+    """Validates the specified model and displays the metrics."""
+    if not method:
+        output = "Please provide a method to validate."
+        await ctx.send(content=output)
+        return
+    allowed_models = get_allowed_models()
+    if method not in allowed_models:
+        output = "Method must be one of:\n" + ", ".join(allowed_models) + "."
+        await ctx.send(content=output)
+        return
+    try:
+        metrics, images = get_validation_metrics(method, graph)
+        await send_validation_result(ctx, metrics, images if images else None)
+    except ValueError as ve:
+        output = handle_command_error(ve, additional_info="Could not validate the model.")
+        await ctx.send(content=output)
+    except Exception as e:
+        output = handle_command_error(e, additional_info="Could not validate the model.")
+        await ctx.send(content=output)
 
 
-# @bot.command(name="validate")
-# async def validate(ctx, method, graph):
-#     try:
-#         vld = mv.generate_validation_metrics(graph=False)
-#         true_vals = ["Yes", "yes", "True", "true", "1", "Graph", "graph"]
+@bot.command(name="predict", aliases=["prediction"])
+async def predict(
+    ctx,
+    blue_team_name: str = None,
+    red_team_name: str = None,
+    verbose: bool = False,
+    blue_roster_str: str = None,
+    red_roster_str: str = None,
+):
+    """Predicts the outcome of a match between two teams."""
+    if not blue_team_name or not red_team_name:
+        await ctx.send("Please provide both a blue and red team name.")
+        return
+    message = await ctx.send("```Calculating prediction...```")
+    try:
+        blue_roster = (
+            process_roster(blue_roster_str)
+            if blue_roster_str and blue_roster_str != "{}" and blue_roster_str != get_empty_roster()
+            else get_empty_roster()
+        )
+        red_roster = (
+            process_roster(red_roster_str)
+            if red_roster_str and red_roster_str != "{}" and red_roster_str != get_empty_roster()
+            else get_empty_roster()
+        )
 
-#         if method.lower() == "team elo":
-#             acc = vld["team_accuracy"]
-#             lls = vld["team_logloss"]
-#             brier = vld["team_brier"]
-#             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
-#             if str(graph) in true_vals:
-#                 with open(
-#                     Path.cwd().parent.joinpath("reports", "figures", "TeamElo_Validation.png"),
-#                     "rb",
-#                 ) as f:
-#                     image = discord.File(f)
+        blue_team = Team(name=blue_team_name, side="Blue", roster=blue_roster)
+        red_team = Team(name=red_team_name, side="Red", roster=red_roster)
 
-#         elif method.lower() == "player elo":
-#             acc = vld["player_accuracy"]
-#             lls = vld["player_logloss"]
-#             brier = vld["player_brier"]
-#             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
-#             if str(graph) in true_vals:
-#                 with open(
-#                     Path.cwd().parent.joinpath("reports", "figures", "PlayerElo_Validation.png"),
-#                     "rb",
-#                 ) as f:
-#                     image = discord.File(f)
+        prediction = get_match_prediction(blue_team, red_team)
+        blue_profile, _ = await get_formatted_team_profile(blue_team_name, True) if verbose else None, None
+        red_profile, _ = await get_formatted_team_profile(red_team_name, True) if verbose else None, None
+        output = format_prediction_message(prediction, blue_profile, red_profile)
+    except Exception as e:
+        output = handle_command_error(e, additional_info="Could not complete the prediction.")
 
-#         elif method.lower() == "trueskill":
-#             acc = vld["trueskill_accuracy"]
-#             lls = vld["trueskill_logloss"]
-#             brier = vld["trueskill_brier"]
-#             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
-#             if str(graph) in true_vals:
-#                 with open(
-#                     Path.cwd().parent.joinpath("reports", "figures", "TrueSkill_Validation.png"),
-#                     "rb",
-#                 ) as f:
-#                     image = discord.File(f)
-
-#         elif method.lower() == "side ema":
-#             acc = vld["side_ema_accuracy"]
-#             lls = vld["side_ema_logloss"]
-#             brier = vld["side_ema_brier"]
-#             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
-#             if str(graph) in true_vals:
-#                 with open(
-#                     Path.cwd().parent.joinpath("reports", "figures", "SideEMA_Validation.png"),
-#                     "rb",
-#                 ) as f:
-#                     image = discord.File(f)
-
-#         elif method.lower() == "egpm dom":
-#             acc = vld["egpm_dom_accuracy"]
-#             lls = vld["egpm_dom_logloss"]
-#             brier = vld["egpm_dom_brier"]
-#             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
-#             if str(graph) in true_vals:
-#                 with open(
-#                     Path.cwd().parent.joinpath("reports", "figures", "EGPMDom_Validation.png"),
-#                     "rb",
-#                 ) as f:
-#                     image = discord.File(f)
-
-#         elif method.lower() == "ensemble":
-#             acc = vld["ensemble_accuracy"]
-#             lls = vld["ensemble_logloss"]
-#             brier = vld["ensemble_brier"]
-#             metrics = f"`{method} Accuracy: {acc:.5f}, Log Loss: {lls:.5f}, Brier Score: {brier:.5f}`"
-#             if str(graph) in true_vals:
-#                 with open(
-#                     Path.cwd().parent.joinpath("reports", "figures", "EnsembleModel_Validation.png"),
-#                     "rb",
-#                 ) as f:
-#                     image = discord.File(f)
-
-#         else:
-#             raise ValueError("Method must be either team elo, player elo, trueskill, side ema, egpm dom, or ensemble.")
-
-#         if str(graph) in true_vals:
-#             await ctx.send(content=metrics, file=image)
-#         else:
-#             await ctx.send(content=metrics)
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-#         await ctx.send(content=output)
+    await message.edit(content=output)
 
 
-# @bot.command(name="dfs_roster")
-# async def dfs_roster(ctx):
-#     attachment_url = ctx.message.attachments[0].url
-#     # content = attachment_url
-#     file_request = requests.get(attachment_url)
-#     data = file_request.content.decode("utf8")
-#     data = pd.read_csv(StringIO(data), low_memory=False)
-#     output = str(len(data))
+@bot.command(name="odds", aliases=["prob_to_odds", "win_probability_to_odds"])
+async def convert_win_probability_to_odds(ctx, win_probability: str = None, to_decimal: bool = True):
+    """Converts a win probability to odds."""
+    if not win_probability:
+        await ctx.send("Please provide a win probability.")
+        return
 
-#     await ctx.send(content=output)
+    win_probability = str(win_probability)
+
+    try:
+        if win_probability.endswith("%"):
+            win_probability = float(win_probability.strip("%")) / 100
+        else:
+            win_probability = float(win_probability)
+    except ValueError:
+        await ctx.send("Invalid win probability format. Please provide a numeric value or a percentage.")
+        return
+
+    if win_probability < 0 or win_probability > 1:
+        await ctx.send("Win probability must be between 0 and 1 or between 0% and 100%.")
+        return
+
+    if to_decimal:
+        odds = round((1 / win_probability), 2)
+        await ctx.send(f"The decimal odds for a win probability of {win_probability * 100}% are {odds}.")
+    else:
+        odds = round((win_probability / (1 - win_probability)), 2)
+        await ctx.send(f"The fractional odds for a win probability of {win_probability * 100}% are {odds}.")
 
 
-# @bot.command(name="code")
-# async def code(ctx):
-#     try:
-#         output = (
-#             "This model is entirely open-source! I'd love to talk shop about ideas or contributions! "
-#             "Check the link at: https://github.com/MRittinghouse/ProjektZero-LoL-Model"
-#         )
+@bot.command(name="bo3", aliases=["best_of_3"])
+async def best_of_3(
+    ctx,
+    blue_team_name: str = None,
+    red_team_name: str = None,
+    blue_roster_str: str = None,
+    red_roster_str: str = None,
+):
+    """Predicts the outcome of a best-of-three match between two teams."""
+    if not blue_team_name or not red_team_name:
+        await ctx.send("Please provide both a blue and red team name.")
+        return
+    if blue_team_name == red_team_name:
+        await ctx.send("Please provide two different team names.")
+        return
+    await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo3")
 
-#     except Exception as e:
-#         output = (
-#             f"Something went wrong, sorry about that. \n"
-#             "If this is still breaking, ping ProjektZero for support. \n"
-#             "Error: \n"
-#             f"```{e}```"
-#         )
-#     await ctx.send(content=output)
+
+@bot.command(name="bo5", aliases=["best_of_5"])
+async def best_of_5(
+    ctx,
+    blue_team_name: str = None,
+    red_team_name: str = None,
+    blue_roster_str: str = None,
+    red_roster_str: str = None,
+):
+    """Predicts the outcome of a best-of-five match between two teams."""
+    if not blue_team_name or not red_team_name:
+        await ctx.send("Please provide both a blue and red team name.")
+        return
+    if blue_team_name == red_team_name:
+        await ctx.send("Please provide two different team names.")
+        return
+    await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo5")
 
 
-# bot.run(token)
+@bot.command(name="kill", aliases=["stop"])
+@commands.is_owner()
+async def kill(ctx):
+    """Kills the bot. Only the bot owner can use this command."""
+    logger.info("Killing bot...")
+    if not await bot.is_owner(ctx.author):
+        await ctx.send("You are not authorized to kill the bot.")
+        return
+
+    # TODO: fix the unclosed connection error
+    await bot.close()
+
+
+def run_bot():
+    """Runs the Discord bot."""
+    bot.run(os.getenv("DISCORD_TOKEN"))
+
+
+if __name__ == "__main__":
+    setup_pandas(pd)
+    run_bot()

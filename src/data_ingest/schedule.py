@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Schedule Data Ingestion
 
@@ -6,8 +5,8 @@ This script fetches the schedule of upcoming matches from the PandaScore API.
 
 Please visit and support www.pandascore.com
 """
+
 import datetime as dt
-import json
 from dataclasses import dataclass, field
 from os import getenv
 from typing import List, Optional
@@ -17,7 +16,7 @@ import requests
 from dotenv import load_dotenv
 
 from utils.logger import logger
-from utils.paths import PROCESSED_DIR, RAW_DIR
+from utils.paths import PROCESSED_DIR
 
 load_dotenv()
 
@@ -40,7 +39,7 @@ class PandaScoreSchedule:
         try:
             response = requests.get(self.base_url, headers=self.headers, params=params)
             response.raise_for_status()  # Will raise HTTPError for bad requests
-            logger.info("Successful PandaScore API request.")
+            logger.info("Successful PandaScore API request for page: %s", page)
             return response.json()
         except requests.exceptions.HTTPError as e:
             logger.error(f"HTTPError during API request: {e}")
@@ -57,8 +56,8 @@ class PandaScoreSchedule:
             try:
                 match_data = {
                     "league": match["league"]["name"],
-                    "Blue": match["opponents"][0]["opponent"]["name"],
-                    "Red": match["opponents"][1]["opponent"]["name"],
+                    "Blue": match["opponents"][0]["opponent"]["name"] if len(match["opponents"]) > 0 else "N/A",
+                    "Red": match["opponents"][1]["opponent"]["name"] if len(match["opponents"]) > 1 else "N/A",
                     "Start (UTC)": match["scheduled_at"],
                     "Best Of": match["number_of_games"],
                 }
@@ -71,6 +70,13 @@ class PandaScoreSchedule:
     def filter_by_league(schedule: pd.DataFrame, leagues: str) -> pd.DataFrame:
         """Filter the schedule by leagues."""
         return schedule[schedule["league"].isin(leagues)].reset_index(drop=True)
+
+    @staticmethod
+    def load_schedule(schedule_path, leagues):
+        schedule_df = pd.read_csv(schedule_path)
+        if leagues:
+            return schedule_df[schedule_df["league"].isin(leagues.split(","))]
+        return schedule_df
 
     def get_schedule(self, start_datetime: str, end_datetime: str, leagues: Optional[str] = None) -> pd.DataFrame:
         """
@@ -107,10 +113,6 @@ class PandaScoreSchedule:
             if not matches:
                 break  # No more data to fetch
 
-            # Store matches in RAW_DIR
-            with open(RAW_DIR / "raw_schedule.json", "w") as file:
-                json.dump(matches, file)
-
             parsed_matches = self._parse_matches_response(matches)
             page_matches_df = pd.DataFrame(parsed_matches)
             page_matches_df["Start (UTC)"] = pd.to_datetime(page_matches_df["Start (UTC)"], format=TIME_FORMAT)
@@ -137,7 +139,7 @@ class PandaScoreSchedule:
 
 if __name__ == "__main__":
     start = dt.datetime.now().strftime(TIME_FORMAT)
-    end = (dt.datetime.now() + dt.timedelta(days=3)).strftime(TIME_FORMAT)
+    end = (dt.datetime.now() + dt.timedelta(days=7)).strftime(TIME_FORMAT)
 
     # Fetch
     panda_schedule = PandaScoreSchedule(api_key=getenv("PANDASCORE_API_KEY"))

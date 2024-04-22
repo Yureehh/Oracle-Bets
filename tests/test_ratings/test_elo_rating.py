@@ -4,7 +4,7 @@ from io import StringIO
 import pandas as pd
 import pytest
 
-from src.ratings_features.elo import calculate_elo, expected_outcome, update_elo_rating
+from src.feature_engineering.ratings_features.elo import calculate_elo, expected_outcome, update_elo_rating
 
 
 class TestEloRating:

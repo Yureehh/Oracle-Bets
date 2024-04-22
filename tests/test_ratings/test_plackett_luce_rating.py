@@ -1,10 +1,8 @@
-from unittest.mock import MagicMock, patch
-
 import pandas as pd
 import pytest
 from openskill.models import PlackettLuce
 
-from src.ratings_features.plackett_luce import calculate_plackett_luce, rate_teams_or_players
+from src.feature_engineering.ratings_features.plackett_luce import calculate_plackett_luce, rate_teams_or_players
 
 
 @pytest.fixture

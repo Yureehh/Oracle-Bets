@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 import trueskill
 
-from src.ratings_features.trueskill import (
+from src.feature_engineering.ratings_features.trueskill import (
     calculate_and_merge_team_statistics,
     compute_win_probability,
     generate_match_array,

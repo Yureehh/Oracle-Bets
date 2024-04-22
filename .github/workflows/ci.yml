@@ -46,7 +46,7 @@ jobs:
 
     - name: Run Tests
       continue-on-error: true
-      run: poetry run pytest --cov=src --cov-report html #TODO: when tests are completed can uncomment: --cov-fail-under=90
+      run: poetry run pytest --cov=src --cov-report html
 
     - name: Check if coverage report exists
       id: check_coverage

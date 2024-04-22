@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """
 Entity statistics
 
 This script contains functions to calculate entity-specific statistics, such as KDA, kill participation and so on.
 It uses EMA (Exponential Moving Average) to calculate the statistics for 'before' and 'after' periods.
 """
+
 import pandas as pd
 
 from src.data_ingest.oracles_elixir import get_opponent
@@ -168,6 +168,6 @@ def enrich_entity_ema_statistics(df, entity):
     columns = select_columns_for_entity(entity)
 
     df = apply_entity_ema_std(df, identity, columns, HALF_LIFE)
-    df = apply_entity_opp_stats(df, identity, columns)
+    df = apply_entity_opp_stats(df, entity, columns)
 
     return df

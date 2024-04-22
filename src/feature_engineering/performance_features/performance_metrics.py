@@ -4,9 +4,9 @@ Wrapper class for performance models
 
 from dataclasses import dataclass
 
-from src.performance_features.egpm import egpm_model
-from src.performance_features.entity_stats import enrich_entity_ema_statistics
-from src.performance_features.side_win_rate import side_win_rate_ewm_performance
+from src.feature_engineering.performance_features.egpm import egpm_model
+from src.feature_engineering.performance_features.entity_stats import enrich_entity_ema_statistics
+from src.feature_engineering.performance_features.side_win_rate import side_win_rate_ewm_performance
 
 
 @dataclass

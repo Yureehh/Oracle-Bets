@@ -1,9 +1,9 @@
-# -*- coding: utf-8 -*-
 """
 Plackett-Luce rating model
 
 This module provides functionality to rate teams or players using the Plackett-Luce model.
 """
+
 from copy import deepcopy
 from typing import List, Tuple
 

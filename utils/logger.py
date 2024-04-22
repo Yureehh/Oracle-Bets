@@ -16,7 +16,7 @@ from utils.paths import EARLY_GAME_INPUTING_LOGS, MODELS_LOGS
 load_dotenv()
 
 
-def initialize_basic_logger(name: str, date_format: str = "%m/%d/%Y %I:%M:%S %p") -> logging.Logger:
+def initialize_basic_logger(name: str, date_format: str = "%Y-%m-%d %H:%M:%S") -> logging.Logger:
     """
     Initialize a basic logger with global settings.
     """
@@ -48,7 +48,7 @@ class Logger:
     """
 
     name: str = os.getenv("LOGGER_NAME", __name__)
-    date_format: str = "%m/%d/%Y %I:%M:%S %p"
+    date_format: str = "%Y-%m-%d %H:%M:%S"
 
     def __post_init__(self):
         self.logger = initialize_basic_logger(self.name, self.date_format)

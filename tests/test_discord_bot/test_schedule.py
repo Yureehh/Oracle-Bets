@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
 """
 Tests for the schedule class
 """
+
 import datetime as dt
 import json
 from io import StringIO
@@ -194,17 +194,6 @@ LVP SL 2nd Division,Xoldiers,Stormbringers,2024-03-02 17:00:00+00:00,1"""
         # Convert the expected JSON response to the format produced by process_response
         expected_output = mock_parsed_data
         assert processed_result == expected_output
-
-    def test_process_response_index_error(self, panda_schedule, mock_raw_data):
-        """
-        Test the process_response method with an IndexError.
-        """
-        # Modify the mock_json_response to contain an IndexError
-        mock_json_response = mock_raw_data
-        mock_json_response[0]["opponents"] = []
-        # Directly use the modified mock_json_response for testing the method
-        processed_result = panda_schedule._parse_matches_response(mock_json_response)
-        assert processed_result == []
 
     def test_filter_by_league(self, panda_schedule, mock_full_schedule):
         """

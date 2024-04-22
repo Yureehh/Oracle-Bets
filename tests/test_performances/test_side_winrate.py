@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.performance_features.side_win_rate import compute_ema_side, side_win_rate_ewm_performance
+from src.feature_engineering.performance_features.side_win_rate import compute_ema_side, side_win_rate_ewm_performance
 
 
 class TestGamePerformances:
