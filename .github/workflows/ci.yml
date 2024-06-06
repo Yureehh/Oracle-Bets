@@ -41,6 +41,7 @@ jobs:
     - name: Run Checks
       run: |
         poetry run flake8 src
+        # args: ['--ignore=E501,W503,I101,D', '--exclude=tests']
         poetry run black --check src
         poetry run isort --check-only src
 
