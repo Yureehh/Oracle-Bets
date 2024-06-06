@@ -88,7 +88,7 @@ The "dfs_optimizer" module contains a series of tools designed to take the outpu
 
 "match_predictor" is the function built to predict future matches based on the outputs of the data_generator.
 
-"predictor_bot" is the Discord adaptation of the match_predictor, and enables Discord users to call down the match_predictor for custom combinations of players/teams.
+"prediction_bot" is the Discord adaptation of the match_predictor, and enables Discord users to call down the match_predictor for custom combinations of players/teams.
 
 "team" contains a Dataclass definition for the components of teams.
 

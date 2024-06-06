@@ -1,54 +1,22 @@
 {
   "MODEL_FILES": {
-    "team_elo": [
-      "Team_Elo_metrics.json",
-      "Team_Elo_Validation.png",
-      "Team_Elo_Historical_Accuracy.png"
+    "lightgbm": [
+      "LightGBM_metrics.json",
+      "LightGBM_Confusion_Matrix.png",
+      "LightGBM_Historical_Accuracy.png",
+      "LightGBM_Accuracy_Over_Time.png"
     ],
-    "player_elo": [
-      "Player_Elo_metrics.json",
-      "Player_Elo_Validation.png",
-      "Player_Elo_Historical_Accuracy.png"
+    "xgboost": [
+      "XGBoost_metrics.json",
+      "XGBoost_Confusion_Matrix.png",
+      "XGBoost_Historical_Accuracy.png",
+      "XGBoost_Accuracy_Over_Time.png"
     ],
-    "trueskill": [
-      "TrueSkill_metrics.json",
-      "TrueSkill_Validation.png",
-      "TrueSkill_Historical_Accuracy.png"
-    ],
-    "team_pl": [
-      "Team_PL_metrics.json",
-      "Team_PlackettLuce_Validation.png",
-      "Team_PlackettLuce_Historical_Accuracy.png"
-    ],
-    "player_pl": [
-      "Player_PL_metrics.json",
-      "Player_PlackettLuce_Validation.png",
-      "Player_PlackettLuce_Historical_Accuracy.png"
-    ],
-    "team_egpm_dom": [
-      "Team_EGPM_metrics.json",
-      "Team_EGPM_Validation.png",
-      "Team_EGPM_Historical_Accuracy.png"
-    ],
-    "player_egpm_dom": [
-      "Player_EGPM_metrics.json",
-      "Player_EGPM_Validation.png",
-      "Player_EGPM_Historical_Accuracy.png"
-    ],
-    "team_side_win": [
-      "Team_Side_EMA_metrics.json",
-      "Team_Side_EMA_Validation.png",
-      "Team_Side_EMA_Historical_Accuracy.png"
-    ],
-    "player_side_win": [
-      "Player_Side_EMA_metrics.json",
-      "Player_Side_EMA_Validation.png",
-      "Player_Side_EMA_Historical_Accuracy.png"
-    ],
-    "ensemble": [
-      "Mixed_Ensemble_metrics.json",
-      "Mixed_Ensemble_Validation.png",
-      "Mixed_Ensemble_Historical_Accuracy.png"
+    "catboost": [
+      "CatBoost_metrics.json",
+      "CatBoost_Confusion_Matrix.png",
+      "CatBoost_Historical_Accuracy.png",
+      "CatBoost_Accuracy_Over_Time.png"
     ]
   },
   "EMPTY_ROSTER": {

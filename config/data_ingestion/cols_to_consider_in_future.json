@@ -1,0 +1,17 @@
+{
+  "cols": [
+    "duration (add wins length and loss length)",
+    "champion",
+    "ban1",
+    "ban2",
+    "ban3",
+    "ban4",
+    "ban5",
+    "pick1",
+    "pick2",
+    "pick3",
+    "pick4",
+    "pick5"
+  ],
+  "bets_to_add": ["total kills", "map duration", "total towers"]
+}

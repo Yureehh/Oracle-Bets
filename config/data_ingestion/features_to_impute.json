@@ -1,0 +1,11 @@
+{
+  "features": ["kills", "deaths", "assists", "egpm", "gamelength", "ckpm"],
+  "cant_add_or_china_rows_get_dropped": [
+    "xpat10",
+    "csat10",
+    "goldat10",
+    "xpat15",
+    "csat15",
+    "goldat15"
+  ]
+}

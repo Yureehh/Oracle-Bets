@@ -1,173 +1,127 @@
 """
 Entity statistics
 
-This script contains functions to calculate entity-specific statistics, such as KDA, kill participation and so on.
+This script contains functions to calculate entity-specific statistics, such as KDA, kill participation, and more.
 It uses EMA (Exponential Moving Average) to calculate the statistics for 'before' and 'after' periods.
 """
 
-import pandas as pd
+from typing import Dict, List
 
-from src.data_ingest.oracles_elixir import get_opponent
-from utils.paths import DEFAULT_PARAMETERS
+import pandas as pd
+from tqdm import tqdm
+
+from src.ingestion.oracles_elixir import get_opponent
+from utils.paths import DEFAULT_MODELS_PARAMETERS, FLATTENED_PLAYER_CONFIG, FLATTENED_TEAM_CONFIG
 from utils.utils import get_identity, get_sorting_keys, json_loader
 
-HALF_LIFE = json_loader(DEFAULT_PARAMETERS)["half_life"]
-
-BASE_COLUMNS = [
-    "gamelength",
-    "kills",
-    "deaths",
-    "assists",
-    "kda",
-    "goldat10",
-    "xpat10",
-    "csat10",
-    "golddiffat10",
-    "xpdiffat10",
-    "csdiffat10",
-    "goldat15",
-    "xpat15",
-    "csat15",
-    "golddiffat15",
-    "xpdiffat15",
-    "csdiffat15",
-    "egpm",
-    "ckpm",
-]
-
-TEAM_EXTRA_COLUMNS = [
-    "firstblood",
-    "dragons",
-    "void_grubs",
-    "heralds",
-    "barons",
-    "elders",
-    "towers",
-    "turretplates",
-    "teamkills",
-    "teamdeaths",
-    "gspd",
-    "team_kpm",
-]
-
-PLAYER_EXTRA_COLUMNS = [
-    "damageshare",
-    "kill_participation",
-    "total_cs",
-    "earnedgoldshare",
-    "damagetochampions",
-    "damagetakenperminute",
-    "damagemitigatedperminute",
-    "controlwardsbought",
-    "visionscore",
-    "totalgold",
-    "gpr",
-    "killsat15",
-    "assistsat15",
-    "deathsat15",
-    "dpm",
-    "wpm",
-    "wcpm",
-    "vspm",
-    "cspm",
-    "gold_efficiency",
-    "xp_efficiency",
-]
+# Load configuration parameters
+config_params = json_loader(DEFAULT_MODELS_PARAMETERS)
+HALF_LIFE = config_params["half_life"]
+EPSILON = 1e-8  # Small constant to prevent division by zero
 
 
-def calculate_entity_kda(df):
-    """Calculate the Kill-Death-Assist ratio for entities."""
-    df["kda"] = (df["kills"] + df["assists"]) / df["deaths"].replace(0, 1)
-    return df
-
-
-def calculate_kill_participation(df):
-    """Calculate the kill participation for entities."""
-    team_kills = df.groupby(["gameid", "teamid"])["kills"].transform("sum")
-    df["kill_participation"] = (df["kills"] + df["assists"]) / team_kills
-    return df
-
-
-def elaborate_stats(df, entity):
-    """Elaborate the DataFrame with entity-specific statistics."""
-    df = calculate_entity_kda(df)
-    if entity == "player":
-        df = calculate_kill_participation(df)
-    return df
-
-
-def select_columns_for_entity(entity):
-    """Select relevant columns for EMA statistics based on the entity type."""
-    if entity == "team":
-        return BASE_COLUMNS + list(set(TEAM_EXTRA_COLUMNS) - set(BASE_COLUMNS))
-    elif entity == "player":
-        return BASE_COLUMNS + list(set(PLAYER_EXTRA_COLUMNS) - set(BASE_COLUMNS))
-    else:
-        raise ValueError("Entity must be either team or player.")
-
-
-def apply_entity_ema_std(df, identity, columns, half_life):
-    """Apply EMA calculations, standard deviation to selected columns for entities,
-    maintaining distinctions between 'before' and 'after' periods in an optimized manner to avoid DF fragmentation.
+def select_columns_for_entity(entity: str) -> List[str]:
     """
+    Select relevant columns for EMA statistics based on the entity type.
 
+    Parameters:
+        entity (str): The type of entity ('team' or 'player').
+
+    Returns:
+        List[str]: List of selected columns for EMA calculations.
+
+    Raises:
+        ValueError: If the entity type is neither 'team' nor 'player'.
+    """
+    config = FLATTENED_TEAM_CONFIG if entity == "team" else FLATTENED_PLAYER_CONFIG if entity == "player" else None
+    if not config:
+        raise ValueError("Entity must be either 'team' or 'player'.")
+
+    # Extract relevant columns for the entity
+    entity_cols = json_loader(config)["flattened_cols"]
+    avoid_cols = [
+        "ema_red_side_after",
+        "ema_blue_side_after",
+        "ema_patch_win_rate_after",
+        "ema_season_win_rate_after",
+    ]
+
+    return [
+        col.replace("ema_", "").replace("_after", "")
+        for col in entity_cols
+        if "ema" in col and "after" in col and "_std" not in col and col not in avoid_cols
+    ]
+
+
+def apply_ema_and_std(df: pd.DataFrame, identity: str, columns: List[str], half_life: float) -> pd.DataFrame:
+    """
+    Apply EMA calculations and standard deviation to selected columns for entities,
+    maintaining distinctions between 'before' and 'after' periods.
+    """
     # Containers for new columns
     new_cols_before, new_cols_after = {}, {}
 
-    for col in columns:
-        # Grouping by identity for each column
+    for col in tqdm(columns):
         group = df.groupby(identity)[col]
 
-        # Calculate EMA, Standard Deviation and Growth for 'before'
+        # Calculate EMA and Standard Deviation for 'before'
         ema_before = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).mean().shift().bfill())
         std_before = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).std().shift().bfill())
-
-        # Store calculations in containers
         new_cols_before[f"ema_{col}_before"] = ema_before
         new_cols_before[f"ema_{col}_std_before"] = std_before
 
-        # Calculate EMA, Standard Deviation and Growth for 'after'
+        # Calculate EMA and Standard Deviation for 'after'
         ema_after = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).mean())
         std_after = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).std())
-
-        # Store calculations in containers
         new_cols_after[f"ema_{col}_after"] = ema_after
         new_cols_after[f"ema_{col}_std_after"] = std_after
 
-    # Convert dictionaries to DataFrames
-    new_cols_before_df = pd.DataFrame(new_cols_before)
-    new_cols_after_df = pd.DataFrame(new_cols_after)
-
-    # Concatenate the new columns with the original DataFrame to avoid fragmentation
-    df = pd.concat([df, new_cols_before_df, new_cols_after_df], axis=1)
-
-    # Generate opponent before columns
-
+    # Concatenate the new columns with the original DataFrame
+    df = pd.concat([df, pd.DataFrame(new_cols_before), pd.DataFrame(new_cols_after)], axis=1)
     return df
 
 
-def apply_entity_opp_stats(df, entity, columns):
-    """Get the opponent entity's values for the EMA statistics calculated previously."""
-    mean_before_cols = [f"ema_{col}_before" for col in columns]
-    std_before_cols = [f"ema_{col}_std_before" for col in columns]
+def apply_opponent_stats(df: pd.DataFrame, entity: str, columns: List[str]) -> pd.DataFrame:
+    """
+    Get the opponent entity's values for the EMA statistics calculated previously.
 
-    ema_cols = mean_before_cols + std_before_cols
+    Parameters:
+        df (pd.DataFrame): DataFrame containing the entity data.
+        entity (str): The type of entity ('team' or 'player').
+        columns (List[str]): List of columns to apply opponent stats.
 
-    for col in ema_cols:
-        df[f"opp_{col}"] = get_opponent(df[col], entity=entity)
+    Returns:
+        pd.DataFrame: DataFrame with new opponent statistics columns added.
+    """
+    ema_cols = [item for col in columns for item in (f"ema_{col}_before", f"ema_{col}_std_before")]
+    new_cols: Dict[str, pd.Series] = {f"opp_{col}": get_opponent(df[col], entity=entity) for col in tqdm(ema_cols)}
 
+    df = pd.concat([df, pd.DataFrame(new_cols)], axis=1)
     return df
 
 
-def enrich_entity_ema_statistics(df, entity):
-    """Enrich the DataFrame with entity-specific EMA statistics and their standard deviations."""
+def enrich_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:
+    """
+    Enrich the DataFrame with entity-specific EMA statistics and their standard deviations.
+
+    Parameters:
+        df (pd.DataFrame): DataFrame containing the entity data.
+        entity (str): The type of entity ('team' or 'player').
+
+    Returns:
+        pd.DataFrame: DataFrame with enriched EMA statistics.
+
+    Raises:
+        ValueError: If the entity type is neither 'team' nor 'player'.
+    """
+    if entity not in ["team", "player"]:
+        raise ValueError("Entity must be either 'team' or 'player'.")
+
     df.sort_values(get_sorting_keys(entity), inplace=True)
-    df = elaborate_stats(df, entity)
-
     identity = get_identity(entity)
     columns = select_columns_for_entity(entity)
 
-    df = apply_entity_ema_std(df, identity, columns, HALF_LIFE)
-    df = apply_entity_opp_stats(df, entity, columns)
+    df = apply_ema_and_std(df, identity, columns, HALF_LIFE)
+    df = apply_opponent_stats(df, entity, columns)
 
     return df

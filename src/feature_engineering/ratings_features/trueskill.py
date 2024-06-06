@@ -1,428 +1,296 @@
 """
-TrueSkill rating model
+Trueskill rating model.
 
-This module provides functionality to rate players using the TrueSkill model.
+This module provides functionality to rate teams or players using the TrueSkill model.
 """
 
+import itertools
 import math
-from typing import Dict, List, Optional, Tuple
+from copy import deepcopy
+from typing import Dict, List, Tuple
 
-import numpy as np
 import pandas as pd
 import trueskill
+from tqdm import tqdm
+from trueskill import Rating, TrueSkill
 
-from utils.paths import DEFAULT_PARAMETERS
+from utils.paths import DEFAULT_MODELS_PARAMETERS
 from utils.utils import get_sorting_keys, json_loader
 
-config = json_loader(DEFAULT_PARAMETERS)
-
-# Default parameters for Elo rating system
+# Load configuration
+config = json_loader(DEFAULT_MODELS_PARAMETERS)
 DEFAULT_MU = config["trueskill"]["mu"]
 DEFAULT_SIGMA = config["trueskill"]["sigma"]
+DEFAULT_BETA = DEFAULT_SIGMA / 2  # Define a constant for beta
 
 
-def initialize_player_ratings(
-    player_data: pd.DataFrame,
-    initial_mu: float = DEFAULT_MU,
-    initial_sigma: float = DEFAULT_SIGMA,
-    ts_env: trueskill.TrueSkill = trueskill.TrueSkill(),
-) -> Dict:
+def initialize_ratings(df: pd.DataFrame, entity_key: str, model: TrueSkill) -> Dict[str, Dict[str, Rating]]:
     """
-    Initialize player ratings using the TrueSkill model.
+    Initialize ratings for all entities identified by unique IDs in the DataFrame.
+
+    Parameters:
+        df (pd.DataFrame): DataFrame containing the match data.
+        entity_key (str): Key to identify entities (e.g., 'teamid' or 'playerid').
+        model (TrueSkill): TrueSkill model instance.
+
+    Returns:
+        Dict[str, Dict[str, Rating]]: Initialized ratings for each entity.
     """
+    unique_entities = df[entity_key].unique()
+    initial_mu = model.mu
+    initial_sigma = model.sigma
     return {
-        player_id: ts_env.create_rating(mu=initial_mu, sigma=initial_sigma)
-        for player_id in player_data["playerid"].unique()
+        entity: {
+            "rating": model.create_rating(mu=initial_mu, sigma=initial_sigma),
+            "season": df["season"].min(),
+            "league": None,
+        }
+        for entity in unique_entities
     }
 
 
-def preprocess_data(player_data: pd.DataFrame) -> pd.DataFrame:
+def update_ratings(
+    model: TrueSkill, entities_ratings: Tuple[List[Rating], List[Rating]], ranks: List[int]
+) -> List[List[Rating]]:
     """
-    Preprocess player data by computing 'team_egpm' and sorting the DataFrame.
-    """
-    required_columns = [
-        "gameid",
-        "date",
-        "league",
-        "playerid",
-        "side",
-        "teamname",
-        "teamid",
-        "position",
-        "result",
-        "egpm",
-        "team_kpm",
-        "ckpm",
-    ]
-
-    # Check for the existence of required columns to avoid runtime errors
-    missing_columns = [col for col in required_columns if col not in player_data.columns]
-    if missing_columns:
-        raise ValueError(f"Missing required columns: {missing_columns}")
-
-    # Compute 'team_egpm' without the unnecessary copy operation
-    team_egpm = (
-        player_data.groupby(["gameid", "teamid"], as_index=False)["egpm"].sum().rename(columns={"egpm": "team_egpm"})
-    )
-
-    # Merge the calculated 'team_egpm' back into the original DataFrame
-    merged_data = player_data.merge(team_egpm, on=["gameid", "teamid"], how="left")
-
-    # Sort the DataFrame; consider inplace sorting if the original order is not needed later
-    merged_data.sort_values(by=get_sorting_keys("team"), inplace=True)
-
-    # Select and return only the required columns, ensuring the DataFrame is tidy
-    required_columns.append("team_egpm")
-    return merged_data[required_columns].reset_index(drop=True)
-
-
-def generate_match_array(df: pd.DataFrame) -> List:
-    """
-    Generate a list of match details for each game in the DataFrame.
-    """
-    match_arrays = []
-    for _, group in df.groupby("gameid"):
-        match_details = []
-        # Basic match info
-        match_info = group.iloc[0][["gameid", "date", "league", "ckpm"]].to_list()
-        match_details.extend(match_info)
-        # Team-specific details
-        for side in ["Blue", "Red"]:
-            team_data = group[group["side"] == side]
-            team_performance = team_data.iloc[0][["team_egpm", "team_kpm"]].tolist()
-            team_ids = team_data.iloc[0][["teamname", "teamid"]].tolist()
-            player_ids = team_data["playerid"].tolist()
-            result = team_data["result"].iloc[0]
-
-            team_details = team_ids + team_performance + player_ids + [result]
-            match_details.extend(team_details)
-
-        match_arrays.append(match_details)
-
-    return match_arrays
-
-
-def compute_win_probability(
-    team1: Tuple[trueskill.Rating],
-    team2: Tuple[trueskill.Rating],
-    ts_env: trueskill.TrueSkill,
-) -> float:
-    """
-    Compute the TrueSkill probability of a team winning based on the mu and sigma values of its players.
-    """
-    delta_mu = sum(player.mu for player in team1) - sum(player.mu for player in team2)
-    sum_sigma = sum(player.sigma**2 for player in team1 + team2)
-    size = len(team1) + len(team2)
-    denominator = math.sqrt(size * (ts_env.beta**2) + sum_sigma)
-    return ts_env.cdf(delta_mu / denominator)
-
-
-def update_player_ratings(
-    match_details: pd.Series,
-    rating_dict: Dict[str, trueskill.Rating],
-    gameid_dict: Dict[str, pd.Series],
-    ts_env: trueskill.TrueSkill,
-) -> pd.Series:
-    """
-    Update player ratings based on match outcomes and compute additional metrics for analysis,
-    returning old mu and sigma values before the update, while still updating the player ratings.
-    """
-    gameid = match_details["gameid"]
-
-    # Check if game has already been processed to avoid duplicative updates
-    if gameid in gameid_dict:
-        return gameid_dict[gameid]
-
-    blue_team_result = match_details["blue_result"]
-    blue_player_ids = [
-        match_details["blue_player1"],
-        match_details["blue_player2"],
-        match_details["blue_player3"],
-        match_details["blue_player4"],
-        match_details["blue_player5"],
-    ]
-    red_player_ids = [
-        match_details["red_player1"],
-        match_details["red_player2"],
-        match_details["red_player3"],
-        match_details["red_player4"],
-        match_details["red_player5"],
-    ]
-
-    # Collect initial (old) mu and sigma values before the update
-    old_mu_sigma_values = [rating_dict[player_id].mu for player_id in blue_player_ids + red_player_ids] + [
-        rating_dict[player_id].sigma for player_id in blue_player_ids + red_player_ids
-    ]
-
-    # Create rating groups for the TrueSkill update
-    blue_players = [rating_dict[id] for id in blue_player_ids]
-    red_players = [rating_dict[id] for id in red_player_ids]
-    rating_groups = (blue_players, red_players)
-
-    # Determine ranks based on match result
-    ranks = [0, 1] if blue_team_result == 1 else [1, 0]
-
-    # Update ratings using TrueSkill's rate function
-    rated_rating_groups = ts_env.rate(rating_groups, ranks=ranks)
-
-    # Compute win probability for the blue team based on old ratings
-    blue_team_win_prob = compute_win_probability(blue_players, red_players, ts_env)
-
-    # Update the rating dictionary with new ratings after capturing old values
-    for i, player_ids in enumerate([blue_player_ids, red_player_ids]):
-        for j, player_id in enumerate(player_ids):
-            rating_dict[player_id] = rated_rating_groups[i][j]
-
-    # Prepare return values using old mu and sigma values, along with the win probability
-    ts_preview = pd.Series([blue_team_win_prob] + old_mu_sigma_values)
-    ts_preview = ts_preview.round(3)
-
-    # Record the results in gameid_dict to prevent reprocessing
-    gameid_dict[gameid] = ts_preview
-    return ts_preview
-
-
-def merge_player_stats(
-    player_data: pd.DataFrame,
-    match_df: pd.DataFrame,
-    positions: List[str] = ["top", "jng", "mid", "bot", "sup"],
-    team_colors: List[str] = ["blue", "red"],
-) -> pd.DataFrame:
-    """
-    Merge player statistics back into the player data DataFrame.
-    """
-    # Initialize an empty DataFrame to store aggregated player statistics
-    aggregated_player_stats = pd.DataFrame()
-
-    for index, position in enumerate(positions, start=1):  # start=1 to match player1, player2, etc.
-        for team_color in team_colors:
-            opponent_color = "red" if team_color == "blue" else "blue"
-            player_key = f"{team_color}_player{index}"
-            mu_key = f"{team_color}_player{index}_mu"
-            sigma_key = f"{team_color}_player{index}_sigma"
-            opponent_mu_key = f"{opponent_color}_player{index}_mu"
-            opponent_sigma_key = f"{opponent_color}_player{index}_sigma"
-
-            # Adjust selection of relevant columns for merging
-            relevant_columns = [
-                "gameid",
-                "date",
-                f"{team_color}_teamid",
-                player_key,
-                mu_key,
-                sigma_key,
-                opponent_mu_key,
-                opponent_sigma_key,
-            ]
-
-            # Adjust renaming for consistency with player_data
-            player_stats = match_df[relevant_columns].rename(
-                columns={
-                    f"{team_color}_teamid": "teamid",
-                    player_key: "playerid",
-                    mu_key: "trueskill_mu",
-                    sigma_key: "trueskill_sigma",
-                    opponent_mu_key: "trueskill_opponent_mu",
-                    opponent_sigma_key: "trueskill_opponent_sigma",
-                }
-            )
-
-            # Append the player statistics to the aggregated DataFrame
-            aggregated_player_stats = pd.concat([aggregated_player_stats, player_stats], ignore_index=True)
-
-    # Merge player stats back into the player_data DataFrame
-    player_data = pd.merge(
-        player_data,
-        aggregated_player_stats[
-            [
-                "gameid",
-                "date",
-                "teamid",
-                "playerid",
-                "trueskill_mu",
-                "trueskill_sigma",
-                "trueskill_opponent_mu",
-                "trueskill_opponent_sigma",
-            ]
-        ],
-        on=["gameid", "date", "teamid", "playerid"],
-        how="left",
-    )
-
-    return player_data
-
-
-def calculate_and_merge_team_statistics(
-    match_df: pd.DataFrame,
-    team_data: pd.DataFrame,
-    team_colors: List[str] = ["blue", "red"],
-) -> pd.DataFrame:
-    """
-    Calculate team statistics based on TrueSkill ratings and merge them back into team data.
+    Rate entities based on match outcomes and update their ratings.
 
     Parameters:
-    - match_df: DataFrame containing match and player statistics.
-    - team_data: DataFrame to merge the calculated team statistics into.
-    - team_colors: List of team colors to differentiate teams.
-    - positions: List of player positions in a team.
+        model (TrueSkill): TrueSkill model instance.
+        entities_ratings (Tuple[List[Rating], List[Rating]]): Current ratings of the entities.
+        ranks (List[int]): Ranks based on match results.
 
     Returns:
-    - Updated team_data DataFrame with merged team statistics.
+        List[List[Rating]]: Updated ratings for the entities.
     """
-    # Initialize an empty DataFrame to store aggregated team statistics
-    aggregated_team_stats = pd.DataFrame()
+    return model.rate(deepcopy(entities_ratings), ranks=ranks)
 
-    for team_color in team_colors:
-        opponent_color = "red" if team_color == "blue" else "blue"
 
-        player_mu_columns = [f"{team_color}_player{i}_mu" for i in range(1, 6)]
-        player_sigma_columns = [f"{team_color}_player{i}_sigma" for i in range(1, 6)]
+def win_probability(team1: List[Rating], team2: List[Rating], beta: float = DEFAULT_BETA) -> float:
+    """
+    Calculate the win probability of team1 against team2 based on their ratings.
 
-        opponent_mu_columns = [f"{opponent_color}_player{i}_mu" for i in range(1, 6)]
-        opponent_sigma_columns = [f"{opponent_color}_player{i}_sigma" for i in range(1, 6)]
+    Parameters:
+        team1 (List[Rating]): Ratings of the first team.
+        team2 (List[Rating]): Ratings of the second team.
+        beta (float): Skill variance parameter.
 
-        # Calculate sum of mu, sigma squared for the team and opponent
-        match_df[f"{team_color}_sum_mu"] = match_df[player_mu_columns].sum(axis=1).round(3)
-        match_df[f"{team_color}_sigma_squared"] = match_df[player_sigma_columns].pow(2).sum(axis=1).round(3)
-        match_df[f"{team_color}_opponent_sum_mu"] = match_df[opponent_mu_columns].sum(axis=1).round(3)
-        match_df[f"{team_color}_opponent_sigma_squared"] = match_df[opponent_sigma_columns].pow(2).sum(axis=1).round(3)
-        match_df[f"{team_color}_trueskill_diff"] = match_df[f"{team_color}_win_probability"] - 0.5
+    Returns:
+        float: Win probability of team1 against team2.
+    """
+    delta_mu = sum(r.mu for r in team1) - sum(r.mu for r in team2)
+    sum_sigma = sum(r.sigma**2 for r in itertools.chain(team1, team2))
+    size = len(team1) + len(team2)
+    denom = math.sqrt(size * (beta**2) + sum_sigma)
+    return trueskill.global_env().cdf(delta_mu / denom)
 
-        # Prepare team and opponent statistics for merging
-        team_statistics_cols = [
-            "gameid",
-            "date",
-            f"{team_color}_teamname",
-            f"{team_color}_teamid",
-            f"{team_color}_sum_mu",
-            f"{team_color}_sigma_squared",
-            f"{team_color}_opponent_sum_mu",
-            f"{team_color}_opponent_sigma_squared",
-            f"{team_color}_trueskill_diff",
+
+def split_teams_by_side(game_group: pd.DataFrame, entity_key: str, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split game data into separate teams based on the side ('Blue' or 'Red') and sort by position if entity type is 'player'.
+
+    Parameters:
+        game_group (pd.DataFrame): DataFrame containing the match data for a game.
+        entity_key (str): Key to identify entities (e.g., 'teamid' or 'playerid').
+        entity (str): Type of entity, 'team' or 'player'.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: DataFrames for the Blue and Red teams.
+    """
+    blue_team = (
+        game_group[game_group["side"] == "Blue"].sort_values(by="position")
+        if entity == "player"
+        else game_group[game_group["side"] == "Blue"]
+    )
+    red_team = (
+        game_group[game_group["side"] == "Red"].sort_values(by="position")
+        if entity == "player"
+        else game_group[game_group["side"] == "Red"]
+    )
+    return blue_team, red_team
+
+
+def extract_ratings(
+    blue_team: pd.DataFrame, red_team: pd.DataFrame, ratings: Dict[str, Dict[str, Rating]], entity_key: str
+) -> Tuple[List[Rating], List[Rating]]:
+    """
+    Extract ratings for players or teams from the ratings dictionary.
+
+    Parameters:
+        blue_team (pd.DataFrame): DataFrame for the Blue team.
+        red_team (pd.DataFrame): DataFrame for the Red team.
+        ratings (Dict[str, Dict[str, Rating]]): Current ratings for all entities.
+        entity_key (str): Key to identify entities (e.g., 'teamid' or 'playerid').
+
+    Returns:
+        Tuple[List[Rating], List[Rating]]: Ratings for the Blue and Red teams.
+    """
+    blue_ratings = [ratings[player]["rating"] for player in blue_team[entity_key]]
+    red_ratings = [ratings[player]["rating"] for player in red_team[entity_key]]
+    return blue_ratings, red_ratings
+
+
+def determine_game_result(team_data: pd.DataFrame) -> List[int]:
+    """
+    Determine game results based on the 'result' column where a value of 1 indicates a win for the team.
+
+    Parameters:
+        team_data (pd.DataFrame): DataFrame containing the match data for a team.
+
+    Returns:
+        List[int]: List indicating the rank positions based on the match result.
+    """
+    return [0, 1] if team_data.iloc[0]["result"] == 1 else [1, 0]
+
+
+def dynamic_percentage_reset_trueskill(
+    ratings: Dict[str, Dict[str, Rating]], baseline_mu: float, baseline_sigma: float, current_season: int
+):
+    """
+    Apply dynamic percentage reset to TrueSkill ratings at the beginning of a new season.
+
+    Parameters:
+        ratings (Dict[str, Dict[str, Rating]]): Current ratings for all entities.
+        baseline_mu (float): Baseline value for the rating mean.
+        baseline_sigma (float): Baseline value for the rating deviation.
+        current_season (int): Current season number.
+    """
+    for entity, data in ratings.items():
+        if data["season"] < current_season:
+            rating = data["rating"]
+            delta_mu = abs(rating.mu - baseline_mu)
+            delta_sigma = abs(rating.sigma - baseline_sigma)
+            reset_factor_mu = 1 / (math.log2(delta_mu + 1) + 1)
+            reset_factor_sigma = 1 / (math.log2(delta_sigma + 1) + 1)
+            new_mu = baseline_mu + (rating.mu - baseline_mu) * reset_factor_mu
+            new_sigma = baseline_sigma + (rating.sigma - baseline_sigma) * reset_factor_sigma
+            ratings[entity]["rating"] = trueskill.Rating(mu=new_mu, sigma=new_sigma)
+            ratings[entity]["season"] = current_season
+
+
+def handle_player_swap(
+    player_id: str, new_league: str, ratings: Dict[str, Dict[str, Rating]], baseline_mu: float, baseline_sigma: float
+):
+    """
+    Handle the rating reset for players who swap leagues.
+
+    Parameters:
+        player_id (str): The ID of the player.
+        new_league (str): The new league of the player.
+        ratings (Dict[str, Dict[str, Rating]]): Current ratings for all entities.
+        baseline_mu (float): Baseline value for the rating mean.
+        baseline_sigma (float): Baseline value for the rating deviation.
+    """
+    ratings[player_id]["rating"] = trueskill.Rating(mu=baseline_mu, sigma=baseline_sigma)
+    ratings[player_id]["league"] = new_league
+
+
+def process_game(
+    df_sorted: pd.DataFrame,
+    game_group: pd.DataFrame,
+    ratings: Dict[str, Dict[str, Rating]],
+    model: TrueSkill,
+    entity: str,
+    entity_key: str,
+    baseline_mu: float,
+    baseline_sigma: float,
+):
+    """
+    Process each game and update TrueSkill ratings for both sides.
+
+    Parameters:
+        df_sorted (pd.DataFrame): Sorted DataFrame containing the match data.
+        game_group (pd.DataFrame): DataFrame for a specific game group.
+        ratings (Dict[str, Dict[str, Rating]]): Current ratings for all entities.
+        model (TrueSkill): TrueSkill model instance.
+        entity (str): Type of entity, 'team' or 'player'.
+        entity_key (str): Key to identify entities (e.g., 'teamid' or 'playerid').
+        baseline_mu (float): Baseline value for the rating mean.
+        baseline_sigma (float): Baseline value for the rating deviation.
+    """
+    current_season = game_group.iloc[0]["season"]
+    dynamic_percentage_reset_trueskill(ratings, baseline_mu, baseline_sigma, current_season)
+
+    # Get the player IDs involved in the current game group
+    player_ids = game_group[entity_key].unique()
+
+    # Handle player swaps before processing game ratings
+    for player_id in player_ids:
+        player_data = ratings[player_id]
+        new_league = game_group[game_group[entity_key] == player_id]["league"].iloc[0]
+        if player_data["league"] != new_league:
+            handle_player_swap(player_id, new_league, ratings, baseline_mu, baseline_sigma)
+
+    blue_team, red_team = split_teams_by_side(game_group, entity_key, entity)
+    blue_ratings, red_ratings = extract_ratings(blue_team, red_team, ratings, entity_key)
+    ranks = determine_game_result(blue_team)
+    win_probs = win_probability(blue_ratings, red_ratings, beta=model.beta)  # Use model.beta for consistency
+    updated_ratings = update_ratings(model, (blue_ratings, red_ratings), ranks)
+
+    for i, player in enumerate(blue_team.itertuples()):
+        ratings[getattr(player, entity_key)]["rating"] = updated_ratings[0][i]
+        df_sorted.loc[
+            player.Index,
+            [
+                "trueskill_mu_before",
+                "trueskill_sigma_before",
+                "trueskill_win_likelihood",
+                "trueskill_mu_after",
+                "trueskill_sigma_after",
+                "opp_trueskill_mu_before",
+                "opp_trueskill_sigma_before",
+            ],
+        ] = [
+            blue_ratings[i].mu,
+            blue_ratings[i].sigma,
+            win_probs,
+            updated_ratings[0][i].mu,
+            updated_ratings[0][i].sigma,
+            red_ratings[i].mu,
+            red_ratings[i].sigma,
         ]
 
-        team_statistics = match_df[team_statistics_cols].rename(
-            columns={
-                f"{team_color}_teamname": "teamname",
-                f"{team_color}_teamid": "teamid",
-                f"{team_color}_sum_mu": "trueskill_sum_mu",
-                f"{team_color}_sigma_squared": "trueskill_sigma_squared",
-                f"{team_color}_opponent_sum_mu": "trueskill_opponent_sum_mu",
-                f"{team_color}_opponent_sigma_squared": "trueskill_opponent_sigma_squared",
-                f"{team_color}_trueskill_diff": "trueskill_diff",
-            }
-        )
+    for i, player in enumerate(red_team.itertuples()):
+        ratings[getattr(player, entity_key)]["rating"] = updated_ratings[1][i]
+        df_sorted.loc[
+            player.Index,
+            [
+                "trueskill_mu_before",
+                "trueskill_sigma_before",
+                "trueskill_win_likelihood",
+                "trueskill_mu_after",
+                "trueskill_sigma_after",
+                "opp_trueskill_mu_before",
+                "opp_trueskill_sigma_before",
+            ],
+        ] = [
+            red_ratings[i].mu,
+            red_ratings[i].sigma,
+            1 - win_probs,
+            updated_ratings[1][i].mu,
+            updated_ratings[1][i].sigma,
+            blue_ratings[i].mu,
+            blue_ratings[i].sigma,
+        ]
 
-        # Append the team statistics to the aggregated DataFrame
-        aggregated_team_stats = pd.concat([aggregated_team_stats, team_statistics], ignore_index=True)
 
-    team_data = pd.merge(
-        team_data,
-        aggregated_team_stats,
-        on=["gameid", "date", "teamname", "teamid"],
-        how="left",
-    ).reset_index(drop=True)
-
-    return team_data
-
-
-def trueskill_model(
-    player_data: pd.DataFrame,
-    team_data: pd.DataFrame,
-    initial_mu: float = DEFAULT_MU,
-    initial_sigma: float = DEFAULT_SIGMA,
-) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict]:
+def calculate_trueskill(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
-    Calculate TrueSkill ratings for players and teams based on match results.
+    Calculate and update TrueSkill ratings for entities within a DataFrame.
+
+    Parameters:
+        df (pd.DataFrame): DataFrame containing the match data.
+        entity (str): Type of entity, 'team' or 'player'.
+
+    Returns:
+        pd.DataFrame: DataFrame with updated TrueSkill ratings.
     """
-    gameid_dict = {}
-    ts_env = trueskill.TrueSkill(draw_probability=0.0)
+    entity_key = "teamid" if entity.lower() == "team" else "playerid"
+    df_sorted = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
+    model = TrueSkill(mu=DEFAULT_MU, sigma=DEFAULT_SIGMA, draw_probability=0.0, beta=DEFAULT_BETA)  # Add beta to model
+    ratings = initialize_ratings(df_sorted, entity_key, model)
 
-    # Initialize a default ratings dict for every player
-    player_ratings_dict = initialize_player_ratings(player_data, initial_mu, initial_sigma, ts_env)
+    for _, game_group in tqdm(df_sorted.groupby(["date", "gameid"])):
+        process_game(df_sorted, game_group, ratings, model, entity, entity_key, DEFAULT_MU, DEFAULT_SIGMA)
 
-    # Preprocess the player data adding team_egpm and filtering columns
-    processed_player_data = preprocess_data(player_data)
-
-    # Generate a list with match details for each game, then convert to a DataFrame
-    match_arrays = generate_match_array(processed_player_data)
-    match_col_names = [
-        "gameid",
-        "date",
-        "league",
-        "ckpm",
-        "blue_teamname",
-        "blue_teamid",
-        "team_egpm",
-        "team_kpm",
-        "blue_player1",
-        "blue_player2",
-        "blue_player3",
-        "blue_player4",
-        "blue_player5",
-        "blue_result",
-        "red_teamname",
-        "red_teamid",
-        "red_team_egpm",
-        "red_team_kpm",
-        "red_player1",
-        "red_player2",
-        "red_player3",
-        "red_player4",
-        "red_player5",
-        "red_result",
-    ]
-    match_df = pd.DataFrame(match_arrays, columns=match_col_names)
-
-    # Update player ratings and compute additional metrics
-    true_skill_col_names = [
-        "blue_win_probability",
-        "blue_player1_mu",
-        "blue_player2_mu",
-        "blue_player3_mu",
-        "blue_player4_mu",
-        "blue_player5_mu",
-        "red_player1_mu",
-        "red_player2_mu",
-        "red_player3_mu",
-        "red_player4_mu",
-        "red_player5_mu",
-        "blue_player1_sigma",
-        "blue_player2_sigma",
-        "blue_player3_sigma",
-        "blue_player4_sigma",
-        "blue_player5_sigma",
-        "red_player1_sigma",
-        "red_player2_sigma",
-        "red_player3_sigma",
-        "red_player4_sigma",
-        "red_player5_sigma",
-    ]
-    updates = match_df.apply(
-        lambda x: update_player_ratings(x, player_ratings_dict, gameid_dict, ts_env),
-        axis=1,
-        result_type="expand",
-    )
-    updates.columns = true_skill_col_names
-    match_df[true_skill_col_names] = updates
-
-    match_df["red_win_probability"] = 1 - match_df["blue_win_probability"]
-    # Add the expected result column based on the win probability
-    match_df["blue_expected_result"] = np.where(match_df["blue_win_probability"] > 0.5, 1, 0)
-
-    team_data = calculate_and_merge_team_statistics(match_df, team_data)
-
-    # Sort the team_data DataFrame by date and gameid
-    team_data.sort_values(by=get_sorting_keys("team"), ascending=True, inplace=True)
-
-    # Apply the function to merge player statistics
-    player_data = merge_player_stats(player_data, match_df)
-
-    # Reset index and sort player_data for consistency
-    player_data.reset_index(drop=True, inplace=True)
-
-    # Sort player_data by date, league, gameid, teamid, side, and position
-    player_data.sort_values(by=get_sorting_keys("player"), inplace=True)
-
-    player_data.reset_index(drop=True, inplace=True)
-    return player_data, team_data, player_ratings_dict
+    return df_sorted

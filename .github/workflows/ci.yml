@@ -2,7 +2,7 @@ name: Python package
 
 on:
   push:
-    branches: [main, develop, feature/*, validator-and-predictor-refactoring]
+    branches: [main, develop, feature/*]
   pull_request:
     branches: [main, develop]
 

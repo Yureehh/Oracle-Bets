@@ -6,52 +6,135 @@ This script defines utility functions for the project.
 
 import json
 import pickle
-from typing import List
+from typing import Any, List, Union
+
+import pandas as pd
 
 
 def get_sorting_keys(entity: str) -> List[str]:
     """
     Get sorting keys for the specified entity.
 
-    Parameters
-    ----------
-    entity : str
-        Entity for which sorting keys are to be computed.
+    Parameters:
+        entity (str): The entity type, either 'team' or 'player'.
 
-    Returns
-    -------
-    List[str]
-        List of sorting keys.
+    Returns:
+        List[str]: A list of sorting keys.
     """
-    if entity.lower() == "team":
-        return ["date", "league", "gameid", "side"]
-    return ["date", "league", "gameid", "teamid", "side", "position"]
+    keys = {
+        "team": ["date", "league", "gameid", "side"],
+        "player": ["date", "league", "gameid", "side", "teamid", "position"],
+    }
+    entity_lower = entity.lower()
+    if entity_lower in keys:
+        return keys[entity_lower]
+    else:
+        raise ValueError(f"Entity must be either 'player' or 'team', not '{entity}'.")
 
 
-def json_loader(file_path):
-    """Load the JSON file from the specified file path."""
-    with open(file_path) as file:
-        return json.load(file)
+def json_loader(file_path: str) -> Any:
+    """
+    Load the JSON file from the specified file path.
+    """
+    return load_file(file_path, file_type="json")
 
 
-def get_identity(entity):
-    if entity.lower() not in ["player", "team"]:
-        raise ValueError("Entity must be either 'player' or 'team'.")
-    return "playerid" if entity.lower() == "player" else "teamid"
+def csv_loader(file_path: str) -> pd.DataFrame:
+    """
+    Load the CSV file from the specified file path.
+
+    Parameters:
+        file_path (str): The path to the CSV file.
+
+    Returns:
+        pd.DataFrame: The loaded CSV data.
+    """
+    return load_file(file_path, file_type="csv")
 
 
-def setup_pandas(pd):
+def parquet_loader(file_path: str) -> pd.DataFrame:
+    """
+    Load the parquet file from the specified file path.
+
+    Parameters:
+        file_path (str): The path to the parquet file.
+
+    Returns:
+        pd.DataFrame: The loaded parquet data.
+    """
+    return pd.read_parquet(file_path)
+
+
+def load_file(file_path: str, file_type: str = "json") -> Union[Any, pd.DataFrame]:
+    """
+    Generic file loading function to handle JSON, CSV, and parquet files.
+
+    Parameters:
+        file_path (str): The path to the file.
+        file_type (str): The type of the file ('json', 'csv', 'parquet').
+
+    Returns:
+        Union[Any, pd.DataFrame]: The loaded file data.
+    """
+    try:
+        if file_type == "json":
+            with open(file_path) as file:
+                return json.load(file)
+        elif file_type == "csv":
+            return pd.read_csv(file_path)
+        elif file_type == "parquet":
+            return pd.read_parquet(file_path)
+        else:
+            raise ValueError(f"Unsupported file type: '{file_type}'")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"No such file: '{file_path}'")
+    except (json.JSONDecodeError, pd.errors.ParserError) as e:
+        error_msg = "JSON" if file_type == "json" else "CSV"
+        raise type(e)(f"Error parsing {error_msg} file: '{file_path}'. {e}")
+
+
+def get_identity(entity: str) -> str:
+    """
+    Get the identity column name based on the entity type.
+
+    Parameters:
+        entity (str): The entity type, either 'player' or 'team'.
+
+    Returns:
+        str: The identity column name.
+    """
+    entity_lower = entity.lower()
+    if entity_lower in ["player", "team"]:
+        return f"{entity_lower}id"
+    raise ValueError("Entity must be either 'player' or 'team'.")
+
+
+def setup_pandas(pd: pd):
     """
     Set up pandas display options for better readability.
+
+    Parameters:
+        pd (pd): The pandas module.
     """
     pd.options.display.float_format = "{:,.4f}".format
-    pd.set_option("display.max_rows", None, "display.max_columns", None)
+    pd.set_option("display.max_rows", None)
+    pd.set_option("display.max_columns", None)
 
 
-def load_model(filepath: str):
+def load_model(filepath: str) -> Any:
     """
     Load a machine learning model from a file.
+
+    Parameters:
+        filepath (str): The path to the model file.
+
+    Returns:
+        Any: The loaded model.
     """
-    with open(filepath, "rb") as file:
-        model = pickle.load(file)
-    return model
+    try:
+        with open(filepath, "rb") as file:
+            return pickle.load(file)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Model file not found: '{filepath}'")
+    except Exception as e:
+        raise Exception(f"Error loading model from '{filepath}': {e}")

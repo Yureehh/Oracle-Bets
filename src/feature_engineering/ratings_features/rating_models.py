@@ -1,41 +1,113 @@
 """
 Wrapper class for rating models
+
+This script contains a dataclass that serves as a wrapper for various rating models.
 """
 
 from dataclasses import dataclass
+from typing import Any, Dict
 
+from feature_engineering.ratings_features.glicko import calculate_glicko2
+from feature_engineering.ratings_features.leagues_elo import calculate_leagues_elo
+from feature_engineering.ratings_features.trueskill import calculate_trueskill
+from feature_engineering.ratings_features.wh import calculate_whr
 from src.feature_engineering.ratings_features.elo import calculate_elo
 from src.feature_engineering.ratings_features.plackett_luce import calculate_plackett_luce
-from src.feature_engineering.ratings_features.trueskill import trueskill_model
 
 
 @dataclass
 class Ratings:
     """
-    Wrapper class for rating models
+    A dataclass that serves as a wrapper for various rating models.
     """
 
-    @staticmethod
-    def compute_elo(df, entity, initial_elo=None, k=None):
-        args = {"df": df, "entity": entity}
-        if initial_elo is not None:
-            args["initial_elo"] = initial_elo
-        if k is not None:
-            args["k"] = k
-        return calculate_elo(**args)
+    def _prepare_args(self, df: Any, entity: str) -> Dict[str, Any]:
+        """
+        Prepare arguments for rating calculation functions.
 
-    @staticmethod
-    def compute_plackett_luce(df, entity, initial_mu=None, initial_sigma=None):
-        args = {"df": df, "entity": entity}
-        if initial_mu is not None:
-            args["initial_mu"] = initial_mu
-        if initial_sigma is not None:
-            args["initial_sigma"] = initial_sigma
-        return calculate_plackett_luce(**args)
+        Parameters:
+            df (Any): The input dataframe containing match data.
+            entity (str): The type of entity, e.g., 'team' or 'player'.
 
-    @staticmethod
-    def compute_trueskill(player_data, team_data, initial_sigma=None):
-        args = {"player_data": player_data, "team_data": team_data}
-        if initial_sigma is not None:
-            args["initial_sigma"] = initial_sigma
-        return trueskill_model(**args)
+        Returns:
+            Dict[str, Any]: A dictionary of filtered arguments.
+        """
+        return {"df": df, "entity": entity}
+
+    def compute_elo(self, df: Any, entity: str) -> Any:
+        """
+        Computes the ELO rating for the given dataframe and entity.
+
+        Parameters:
+            df (Any): The input dataframe containing match data.
+            entity (str): The type of entity, e.g., 'team' or 'player'.
+
+        Returns:
+            Any: The dataframe with computed ELO ratings.
+        """
+        return calculate_elo(**self._prepare_args(df, entity))
+
+    def compute_glicko2(self, df: Any, entity: str) -> Any:
+        """
+        Computes the Glicko-2 rating for the given dataframe and entity.
+
+        Parameters:
+            df (Any): The input dataframe containing match data.
+            entity (str): The type of entity, e.g., 'team' or 'player'.
+
+        Returns:
+            Any: The dataframe with computed Glicko-2 ratings.
+        """
+        return calculate_glicko2(**self._prepare_args(df, entity))
+
+    def compute_plackett_luce(self, df: Any, entity: str) -> Any:
+        """
+        Computes the Plackett-Luce rating for the given dataframe and entity.
+
+        Parameters:
+            df (Any): The input dataframe containing match data.
+            entity (str): The type of entity, e.g., 'team' or 'player'.
+
+        Returns:
+            Any: The dataframe with computed Plackett-Luce ratings.
+        """
+        return calculate_plackett_luce(**self._prepare_args(df, entity))
+
+    def compute_trueskill(self, df: Any, entity: str) -> Any:
+        """
+        Computes the TrueSkill rating for the given dataframe and entity.
+
+        Parameters:
+            df (Any): The input dataframe containing match data.
+            entity (str): The type of entity, e.g., 'team' or 'player'.
+
+        Returns:
+            Any: The dataframe with computed TrueSkill ratings.
+        """
+        return calculate_trueskill(**self._prepare_args(df, entity))
+
+    def compute_whr(self, df: Any, entity: str) -> Any:
+        """
+        Computes the Whole History Rating for the given dataframe and entity.
+
+        Parameters:
+            df (Any): The input dataframe containing match data.
+            entity (str): The type of entity, e.g., 'team' or 'player'.
+
+        Returns:
+            Any: The dataframe with computed Whole History Ratings.
+        """
+        return calculate_whr(**self._prepare_args(df, entity))
+
+    def compute_leagues_elo(self, df: Any, entity: str) -> Any:
+        """
+        Computes the ELO rating for leagues based on the given dataframe and entity.
+
+        Parameters:
+            df (Any): The input dataframe containing match data.
+            entity (str): The type of entity, e.g., 'team' or 'player'.
+
+        Returns:
+            Any: The dataframe with computed league ELO ratings.
+        """
+        return calculate_leagues_elo(**self._prepare_args(df, entity))
