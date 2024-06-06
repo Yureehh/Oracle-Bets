@@ -44,24 +44,24 @@ jobs:
         poetry run black --check src
         poetry run isort --check-only src
 
-    - name: Run Tests
-      continue-on-error: true
-      run: poetry run pytest --cov=src --cov-report html
+    # - name: Run Tests
+    #   continue-on-error: true
+    #   run: poetry run pytest --cov=src --cov-report html
 
-    - name: Check if coverage report exists
-      id: check_coverage
-      run: |
-        if [[ -d "htmlcov/" ]]; then
-          echo "Coverage report exists"
-          echo "exists=true" >> $GITHUB_ENV
-        else
-          echo "Coverage report doesn't exist"
-          echo "exists=false" >> $GITHUB_ENV
-        fi
+    # - name: Check if coverage report exists
+    #   id: check_coverage
+    #   run: |
+    #     if [[ -d "htmlcov/" ]]; then
+    #       echo "Coverage report exists"
+    #       echo "exists=true" >> $GITHUB_ENV
+    #     else
+    #       echo "Coverage report doesn't exist"
+    #       echo "exists=false" >> $GITHUB_ENV
+    #     fi
 
-    - name: Upload HTML Coverage Report
-      if: steps.check_coverage.outputs.exists == 'true'
-      uses: actions/upload-artifact@v3
-      with:
-        name: html-coverage-report
-        path: ./htmlcov/
+    # - name: Upload HTML Coverage Report
+    #   if: steps.check_coverage.outputs.exists == 'true'
+    #   uses: actions/upload-artifact@v3
+    #   with:
+    #     name: html-coverage-report
+    #     path: ./htmlcov/

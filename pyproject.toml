@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "lol-oracle"
-version = "1.0.0"
-description = "League of Legends esports analytics suite"
+version = "0.9.0"
+description = "League of Legends esports analytics betting suite"
 authors = ["Matthew Rittinghouse <matthew.rittinghouse@gmail.com>, Juri Fabbri <yureefabbri@gmail.com>"]
 readme = "README.md"
 packages = [
