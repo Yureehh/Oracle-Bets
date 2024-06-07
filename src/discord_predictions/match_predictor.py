@@ -30,7 +30,6 @@ from utils.team import Team
 from utils.utils import load_model
 
 # Constants
-DEFAULT_TEST_SIZE = 0.25
 PREDICTION_PRECISION = 3
 ELO_FACTOR = 400
 RATING_DECIMALS = 3

@@ -83,7 +83,6 @@ NOTEBOOKS_DIR = BASE_DIR / "notebooks"
 
 
 # Logs storage
-GENERAL_LOGS = LOGS_DIR / "general.log"
 MODELS_LOGS = LOGS_DIR / "gbdt_models.log"
 EARLY_GAME_INPUTING_LOGS = LOGS_DIR / "early_game_inputing.log"
 

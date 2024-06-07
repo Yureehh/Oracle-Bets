@@ -4,7 +4,6 @@ Early Game Stats Imputer
 Consists of the following classes:
 - EarlyGameStatsImputer: Impute metrics for the 15m mark, `csat15`, `xpat15`, `goldat15` given end game values using an
     ensemble model composed of L2 Regression, k-NN, and a decision tree.
-- FutureGamesStatsImputer: Impute future game stats using the same ensemble model as EarlyGameStatsImputer.
 """
 
 from dataclasses import dataclass, field
@@ -196,12 +195,3 @@ class EarlyGameStatsImputer:
         early_game_metrics_logger.info(f"Finished imputing metrics for {entity} data\n\n")
         logger.info(f"Finished data imputation for {entity}\n")
         return data
-
-
-@dataclass
-class FutureGamesStatsImputer:
-    """
-    Placeholder for future games stats imputer.
-    """
-
-    pass

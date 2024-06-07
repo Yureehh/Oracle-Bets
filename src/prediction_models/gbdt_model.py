@@ -31,12 +31,9 @@ sns.set_style("darkgrid")
 # Constants
 DEFAULT_TRIALS = 1000
 VALIDATION_SIZE = 0.15
-N_SPLITS = 1
 TOP_N_FEATURES = 25
 LOW_STD_THRESHOLD = 0.05
 HIGH_CORR_THRESHOLD = 0.90
-CONFUSION_MATRIX_LABELS = ["Actual Negative:0", "Actual Positive:1"]
-POLYNOMIAL_DEGREE = 3
 
 
 @dataclass
@@ -262,11 +259,6 @@ class GradientBoostingModel(ABC):
 
         return X, categorical_columns
 
-    @staticmethod
-    def get_dummies_with_consistent_categories(X: pd.DataFrame, categorical_columns: List[str]) -> pd.DataFrame:
-        """Convert categorical columns to dummy/one-hot encoded columns."""
-        return pd.get_dummies(X, columns=categorical_columns, drop_first=True)
-
     def store_best_hyperparameters(self, study) -> None:
         """Store best hyperparameters to a pickle file."""
         try:
@@ -366,7 +358,7 @@ class GradientBoostingModel(ABC):
 
         start_date = df_grouped["date"].min() + pd.DateOffset(days=30)
         df_filtered = df_grouped[df_grouped["date"] > start_date]
-        fig, ax = plt.subplots(figsize=(15, 8))
+        _, ax = plt.subplots(figsize=(15, 8))
         sns.lineplot(data=df_filtered, x="date", y="accuracy", marker="o", linestyle="-", ax=ax, label="Daily Accuracy")
 
         polynomial_degree = 3

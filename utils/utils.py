@@ -109,18 +109,6 @@ def get_identity(entity: str) -> str:
     raise ValueError("Entity must be either 'player' or 'team'.")
 
 
-def setup_pandas(pd: pd):
-    """
-    Set up pandas display options for better readability.
-
-    Parameters:
-        pd (pd): The pandas module.
-    """
-    pd.options.display.float_format = "{:,.4f}".format
-    pd.set_option("display.max_rows", None)
-    pd.set_option("display.max_columns", None)
-
-
 def load_model(filepath: str) -> Any:
     """
     Load a machine learning model from a file.

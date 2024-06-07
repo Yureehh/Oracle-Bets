@@ -107,36 +107,6 @@ def get_validation_metrics(model: str, get_graph: bool = False) -> Tuple[str, Li
     return metrics_md, None
 
 
-def format_prediction_message(
-    prediction: Dict[str, any], blue_team_profile_md: Optional[str] = None, red_team_profile_md: Optional[str] = None
-) -> str:
-    """Formats the prediction message for Discord."""
-    if not prediction:
-        return "Prediction could not be made. Please ensure both teams have valid rosters."
-
-    prediction_summary = pd.DataFrame(
-        {
-            "Team": [prediction["team1"], prediction["team2"]],
-            "Side": [prediction["team1_side"], prediction["team2_side"]],
-            "Win Likelihood": [
-                f"{prediction['team1_win_likelihood'] * 100:.2f}%",
-                f"{prediction['team2_win_likelihood'] * 100:.2f}%",
-            ],
-            "Roster": [list(prediction["team1_roster"].values()), list(prediction["team2_roster"].values())],
-        }
-    )
-
-    prediction_md = f"\n**Prediction:**\n{convert_to_discord_markdown(prediction_summary)}"
-
-    full_message = (
-        prediction_md
-        + (f"\n**Blue Team Profile:**\n{blue_team_profile_md}" if blue_team_profile_md else "")
-        + (f"\n**Red Team Profile:**\n{red_team_profile_md}" if red_team_profile_md else "")
-    )
-
-    return full_message
-
-
 def get_player_data(entity_name: str, players_path: Path) -> Optional[pd.DataFrame]:
     """Retrieves player data from the specified file path."""
     try:
@@ -251,11 +221,6 @@ def format_team_profile(data: pd.DataFrame, truncate: bool = False) -> str:
     return convert_to_discord_markdown(team_profile_df)
 
 
-def format_entity_profile(data, is_player, truncate=False):
-    """Formats either player or team profile data."""
-    return format_player_profile(data, truncate) if is_player else format_team_profile(data, truncate)
-
-
 def convert_to_discord_markdown(df: pd.DataFrame) -> str:
     """Converts a DataFrame to a Discord-friendly Markdown format."""
     try:
@@ -351,25 +316,6 @@ def process_roster(roster_str: str, positions: Optional[List[str]] = None) -> Di
     return dict(zip(positions, players))
 
 
-def format_prediction_results(team1: Team, team2: Team, prediction: np.ndarray, account_for_side: bool) -> dict:
-    """Formats the prediction results into a dictionary, including win likelihoods and team information."""
-    team1_win_likelihood = prediction[:, 1][0]
-    team2_win_likelihood = prediction[:, 0][0]
-    assert round(team1_win_likelihood + team2_win_likelihood, 5) == 1.0, "Probabilities do not sum to 1"
-    assert round(1 - team1_win_likelihood, 5) == team2_win_likelihood, "Probabilities do not match"
-
-    return {
-        "team1": team1.name,
-        "team2": team2.name,
-        "team1_roster": team1.roster,
-        "team2_roster": team2.roster,
-        "team1_side": team1.side if account_for_side else "N/A",
-        "team2_side": team2.side if account_for_side else "N/A",
-        "team1_win_likelihood": team1_win_likelihood,
-        "team2_win_likelihood": team2_win_likelihood,
-    }
-
-
 def get_allowed_models() -> List[str]:
     """Retrieves a list of allowed models from the configuration."""
     try:
@@ -399,7 +345,7 @@ def convert_odds(odds: float) -> float:
     return odds
 
 
-def calculate_kelly_criterion(bookmaker_odds: float, win_probability: float, is_decimal: bool = False) -> float:
+def calculate_kelly_criterion(bookmaker_odds: float, win_probability: float) -> float:
     """Helper function to calculate the half Kelly Criterion based on win probability and bookmaker odds."""
     loss_probability = 1 - win_probability
     net_odds = bookmaker_odds - 1
