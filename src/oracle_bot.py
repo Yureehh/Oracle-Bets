@@ -6,7 +6,6 @@ It allows users to call down predictions and view various information.
 import os
 
 import discord
-import pandas as pd
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -30,7 +29,6 @@ from src.ingestion.schedule import PandaScoreSchedule
 from utils.logger import logger
 from utils.paths import SCHEDULE
 from utils.team import Team
-from utils.utils import setup_pandas
 
 # Load environment variables from .env file
 load_dotenv()
@@ -291,7 +289,6 @@ async def kill(ctx):
 def run_bot():
     """Runs the Discord bot."""
     try:
-        setup_pandas(pd)
         bot.run(os.getenv(DISCORD_TOKEN_ENV))
     except Exception as e:
         logger.error(f"Failed to start the bot: {e}")
