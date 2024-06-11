@@ -87,10 +87,10 @@ def load_file(file_path: str, file_type: str = "json") -> Union[Any, pd.DataFram
         else:
             raise ValueError(f"Unsupported file type: '{file_type}'")
     except FileNotFoundError:
-        raise FileNotFoundError(f"No such file: '{file_path}'")
+        raise FileNotFoundError(f"No such file: '{file_path}'") from None
     except (json.JSONDecodeError, pd.errors.ParserError) as e:
         error_msg = "JSON" if file_type == "json" else "CSV"
-        raise type(e)(f"Error parsing {error_msg} file: '{file_path}'. {e}")
+        raise type(e)(f"Error parsing {error_msg} file: '{file_path}'. {e}") from e
 
 
 def get_identity(entity: str) -> str:
@@ -123,6 +123,6 @@ def load_model(filepath: str) -> Any:
         with open(filepath, "rb") as file:
             return pickle.load(file)
     except FileNotFoundError:
-        raise FileNotFoundError(f"Model file not found: '{filepath}'")
+        raise FileNotFoundError(f"Model file not found: '{filepath}'") from None
     except Exception as e:
-        raise Exception(f"Error loading model from '{filepath}': {e}")
+        raise Exception(f"Error loading model from '{filepath}': {e}") from e

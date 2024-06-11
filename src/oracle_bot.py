@@ -71,7 +71,7 @@ async def leagues(ctx):
     """Displays the list of supported leagues."""
     try:
         leagues = PandaScoreSchedule.load_schedule(SCHEDULE)["league"].unique()
-        response = format_leagues_message(sorted(list(leagues)))
+        response = format_leagues_message(sorted(leagues))
     except Exception as e:
         response = handle_command_error(e, additional_info="Could not retrieve league information.")
     await ctx.send(response)

@@ -120,13 +120,13 @@ class MatchPredictor:
             team1_league = self.team_to_league.loc[self.team_to_league["teamid"] == team1_id, "league"].values[0]
             team2_league = self.team_to_league.loc[self.team_to_league["teamid"] == team2_id, "league"].values[0]
         except IndexError as e:
-            raise ValueError(f"Team ID not found: {e}")
+            raise ValueError(f"Team ID not found: {e}") from e
 
         try:
             team1_league_elo = self.league_to_elo.loc[self.league_to_elo["league"] == team1_league, "elo"].values[0]
             team2_league_elo = self.league_to_elo.loc[self.league_to_elo["league"] == team2_league, "elo"].values[0]
         except IndexError as e:
-            raise ValueError(f"League not found in ELO ratings: {e}")
+            raise ValueError(f"League not found in ELO ratings: {e}") from e
 
         return round(1 / (1 + 10 ** ((team2_league_elo - team1_league_elo) / ELO_FACTOR)), RATING_DECIMALS)
 

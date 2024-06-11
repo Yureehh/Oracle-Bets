@@ -45,7 +45,7 @@ def dynamic_percentage_reset(
     elo_ratings: Dict[Union[int, str], Dict[str, Any]], baseline: float, current_season: int
 ) -> None:
     """Apply dynamic percentage reset to Elo ratings at the beginning of a new season."""
-    for entity, data in elo_ratings.items():
+    for _, data in elo_ratings.items():
         if data["season"] < current_season:
             delta = abs(data["elo"] - baseline)
             reset_factor = RESET_BASE / (math.log2(delta + RESET_BASE) + RESET_BASE)

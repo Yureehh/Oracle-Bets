@@ -38,6 +38,9 @@ whole-history-rating = "1.6.2"
 tdqm = "^0.0.1"
 ipykernel = "^6.29.4"
 shap = "^0.45.1"
+flake8-bugbear = "^24.4.26"
+flake8-comprehensions = "^3.14.0"
+pep8-naming = "^0.14.1"
 
 [build-system]
 requires = ["poetry-core"]

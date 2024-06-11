@@ -79,7 +79,7 @@ def dynamic_percentage_reset_league_elo(
         baseline (float): Baseline Elo value.
         current_season (int): The current season.
     """
-    for league, data in elo_ratings.items():
+    for _, data in elo_ratings.items():
         if data["season"] < current_season:
             delta = abs(data["elo"] - baseline)
             reset_factor = 1 / (math.log2(delta + 1) + 1)

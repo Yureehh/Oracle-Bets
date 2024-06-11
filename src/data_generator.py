@@ -126,10 +126,10 @@ class DataGenerator:
                 invalid_config = json.load(file)
         except FileNotFoundError:
             logger.error(f"Configuration file for invalid games not found: {INVALID_GAMES}")
-            raise FileNotFoundError(f"Configuration file not found: {INVALID_GAMES}")
+            raise FileNotFoundError(f"Configuration file not found: {INVALID_GAMES}") from None
         except json.JSONDecodeError:
             logger.error(f"Invalid JSON format in file: {INVALID_GAMES}")
-            raise json.JSONDecodeError("Invalid JSON format in the configuration file.")
+            raise json.JSONDecodeError("Invalid JSON format in the configuration file.") from None
 
         logger.info("Removing buggy games based on predefined criteria and additional checks.")
         invalid_games = invalid_config["invalid_games"]
@@ -336,7 +336,10 @@ class DataGenerator:
         logger.info("Completed flattening of inference data.\n")
 
     def run(self):
-        """Run the complete data generation process including data ingestion, enrichment, training data extraction, and inference data flattening."""
+        """
+        Run the complete data generation process including data ingestion, enrichment,
+        training data extraction, and inference data flattening.
+        """
         try:
             logger.info("Starting data generation process.\n")
             self.ingest_data_from_s3()

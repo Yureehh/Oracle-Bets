@@ -114,7 +114,7 @@ def get_player_data(entity_name: str, players_path: Path) -> Optional[pd.DataFra
         filtered_players = players_df[players_df["playername"].str.lower() == entity_name.lower()]
         return filtered_players if not filtered_players.empty else None
     except Exception as e:
-        raise ValueError(f"Error processing player data: {e}")
+        raise ValueError(f"Error processing player data: {e}") from e
 
 
 def get_team_data(entity_name: str, teams_path: Path) -> Optional[pd.DataFrame]:
@@ -124,7 +124,7 @@ def get_team_data(entity_name: str, teams_path: Path) -> Optional[pd.DataFrame]:
         filtered_teams = teams_df[teams_df["teamname"].str.lower() == entity_name.lower()]
         return filtered_teams if not filtered_teams.empty else None
     except Exception as e:
-        raise ValueError(f"Error processing team data: {e}")
+        raise ValueError(f"Error processing team data: {e}") from e
 
 
 def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
@@ -228,7 +228,7 @@ def convert_to_discord_markdown(df: pd.DataFrame) -> str:
         discord_friendly_md = "\n".join(line.lstrip() for line in markdown_text.split("\n"))
         return f"```{discord_friendly_md}``` \n\n"
     except Exception as e:
-        raise ValueError(f"Error converting DataFrame to Markdown: {e}")
+        raise ValueError(f"Error converting DataFrame to Markdown: {e}") from e
 
 
 async def get_formatted_team_profile(team_name: str, truncate: bool = False) -> Tuple[Optional[str], Optional[str]]:
@@ -321,7 +321,7 @@ def get_allowed_models() -> List[str]:
     try:
         return list(MODEL_FILES.keys())
     except KeyError:
-        raise KeyError("MODEL_FILES configuration is missing or corrupt.")
+        raise KeyError("MODEL_FILES configuration is missing or corrupt.") from None
 
 
 def calculate_odds(win_probability: float, to_decimal: bool) -> float:

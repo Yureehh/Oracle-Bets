@@ -26,7 +26,7 @@ def format_game_data(blue_row, red_row, entity_column, result):
     """
     blue_id = getattr(blue_row, entity_column)
     red_id = getattr(red_row, entity_column)
-    game_date = getattr(blue_row, "date").replace("-", "").replace(" ", "").replace(":", "")
+    game_date = blue_row.date.replace("-", "").replace(" ", "").replace(":", "")
     winner = "B" if result == 1 else "W"
     return f"{blue_id};{red_id};{winner};{game_date};0"
 
@@ -49,7 +49,7 @@ def process_game_group(group, whr, df):
     red_rows = group[group["side"] == "Red"]
 
     for blue_row, red_row in zip(blue_rows.itertuples(), red_rows.itertuples()):
-        result = getattr(blue_row, "result")
+        result = blue_row.result
         blue_id = getattr(blue_row, entity_column)
         red_id = getattr(red_row, entity_column)
 
