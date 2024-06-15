@@ -145,7 +145,7 @@ class RosterOptimizer:
         del best_roster["Score"]
 
         if all(value == "" or value == 0 for value in best_roster.values()):
-            raise Exception("No mathematically possible rosters for this stack.")
+            raise RuntimeError("No valid roster found. Please adjust constraints.")
         else:
             return best_roster
 

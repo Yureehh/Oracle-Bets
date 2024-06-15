@@ -176,6 +176,6 @@ def calculate_leagues_elo(
 
     league_elo_ratings_dict = {league: data["elo"] for league, data in league_elo_ratings.items()}
     league_elo_df = pd.DataFrame(league_elo_ratings_dict.items(), columns=["league", "elo"])
-    league_elo_df.sort_values(by="elo", ascending=False, inplace=True)
+    league_elo_df = league_elo_df.sort_values(by="elo", ascending=False).reset_index(drop=True)
 
     return df_sorted, belonging_league_df, league_elo_df

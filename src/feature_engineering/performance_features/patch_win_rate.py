@@ -44,8 +44,6 @@ def compute_ema_patch(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     df["ema_patch_win_rate_after"] = grouped["result"].transform(
         lambda x: x.ewm(halflife=HALF_LIFE, ignore_na=True).mean()
     )
-    df["ema_patch_win_rate_before"] = grouped["ema_patch_win_rate_before"].transform(lambda x: x.bfill().ffill())
-
     return df
 
 

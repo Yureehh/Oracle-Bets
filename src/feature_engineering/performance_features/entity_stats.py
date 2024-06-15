@@ -33,7 +33,12 @@ def select_columns_for_entity(entity: str) -> List[str]:
     Raises:
         ValueError: If the entity type is neither 'team' nor 'player'.
     """
-    config = FLATTENED_TEAM_CONFIG if entity == "team" else FLATTENED_PLAYER_CONFIG if entity == "player" else None
+    config = None
+    if entity == "team":
+        config = FLATTENED_TEAM_CONFIG
+    elif entity == "player":
+        config = FLATTENED_PLAYER_CONFIG
+
     if not config:
         raise ValueError("Entity must be either 'team' or 'player'.")
 

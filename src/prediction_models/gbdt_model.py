@@ -69,7 +69,9 @@ class GradientBoostingModel(ABC):
         """Merge team and player datasets.
         Remember: I don't drop gameid here because I use it later for plotting daily accuracy
         """
-        self.training_data = pd.merge(self.team_data, self.player_data, on=["gameid", "side"])
+        self.training_data = pd.merge(
+            self.team_data, self.player_data, on=["gameid", "side"], how="inner", validate="many_to_many"
+        )
         for pos in ["top", "jng", "mid", "bot", "sup"]:
             self.training_data.drop([f"{pos}_gameid", f"{pos}_side"], axis=1, inplace=True)
 
@@ -142,21 +144,22 @@ class GradientBoostingModel(ABC):
     @staticmethod
     def fuse_opposing_team_features(X):
         """Fuses opposing team features by subtracting the opposing stats from the original stats."""
-        for col in X.columns:
-            if col.startswith("opp_"):
-                original_col = col[4:]
+        # General opposing stats
+        for col in X.filter(like="opp_").columns:
+            original_col = col[4:]
+            if original_col in X.columns:
+                X[original_col] -= X[col]
+                X.drop(columns=[col], inplace=True)
+
+        # Role-specific opposing stats
+        roles = ["top", "jng", "mid", "bot", "sup"]
+        for role in roles:
+            for col in X.filter(like=f"{role}_opp_").columns:
+                original_col = col.replace(f"{role}_opp_", f"{role}_")
                 if original_col in X.columns:
                     X[original_col] -= X[col]
                     X.drop(columns=[col], inplace=True)
 
-        # Symmetric stats for roles
-        for role in ["top", "jng", "mid", "bot", "sup"]:
-            for col in X.columns:
-                if col.startswith(f"{role}_opp_"):
-                    original_col = col.replace(f"{role}_opp_", f"{role}_")
-                    if original_col in X.columns:
-                        X[original_col] -= X[col]
-                        X.drop(columns=[col], inplace=True)
         return X
 
     @staticmethod
@@ -348,11 +351,15 @@ class GradientBoostingModel(ABC):
 
         if "date" not in X_val.columns:
             team_data = pd.read_parquet(PROCESSED_TEAMS)[["gameid", "date"]].drop_duplicates()
-            X_val = pd.merge(X_val, team_data, on="gameid", how="left").drop("gameid", axis=1).reset_index(drop=True)
+            X_val = (
+                pd.merge(X_val, team_data, on="gameid", how="left", validate="many_to_many")
+                .drop("gameid", axis=1)
+                .reset_index(drop=True)
+            )
 
         df = pd.DataFrame({"date": X_val["date"].values, "correct": (y_val == predictions).astype(int)})
         df["date"] = pd.to_datetime(df["date"]).dt.date
-        df.sort_values(by="date", inplace=True)
+        df = df.sort_values(by="date")
         df_grouped = df.groupby("date")["correct"].mean().reset_index(name="accuracy")
         df_grouped["date"] = pd.to_datetime(df_grouped["date"])
 
@@ -388,7 +395,7 @@ class GradientBoostingModel(ABC):
         # ? Save to CSV for debugging or further analysis
         data = [{"Feature": name, "Importance": importance} for name, importance in sorted_importances]
         df = pd.DataFrame(data)
-        df.to_parquet(INSIGHTS_DIR / f"{self.model_name}_feature_importances.csv", index=False)
+        df.to_parquet(INSIGHTS_DIR / f"{self.model_name}_feature_importances.parquet", index=False)
 
         self.plot_feature_importance(sorted_importances)
 

@@ -21,6 +21,7 @@ load_dotenv()
 PANDASCORE_BASE_URL = "https://api.pandascore.co/lol/matches/upcoming"
 ACCEPT_JSON_HEADER = {"Accept": "application/json"}
 PER_PAGE = 100
+START_STRING = "Start (UTC)"
 
 
 @dataclass
@@ -56,7 +57,7 @@ class PandaScoreSchedule:
                     "league": match.get("league", {}).get("name", "N/A"),
                     "Blue": match["opponents"][0]["opponent"]["name"] if match.get("opponents") else "N/A",
                     "Red": match["opponents"][1]["opponent"]["name"] if len(match.get("opponents", [])) > 1 else "N/A",
-                    "Start (UTC)": match["scheduled_at"],
+                    START_STRING: match["scheduled_at"],
                     "Best Of": match["number_of_games"],
                 }
                 for match in matches
@@ -102,10 +103,8 @@ class PandaScoreSchedule:
 
         while True:
             matches = self._fetch_matches(page)
-            if matches is None:  # Handle API errors returning None
-                break
             if not matches:
-                if page == 1:  # Log error only if the first page has an issue
+                if page == 1:
                     logger.error("No matches found or failed to fetch matches.")
                 break
 
@@ -114,15 +113,15 @@ class PandaScoreSchedule:
                 break
 
             parsed_matches = pd.DataFrame(parsed_matches)
-            parsed_matches["Start (UTC)"] = pd.to_datetime(parsed_matches["Start (UTC)"], format=time_format)
-            if parsed_matches["Start (UTC)"].dt.tz is None:
-                parsed_matches["Start (UTC)"] = parsed_matches["Start (UTC)"].dt.tz_localize("UTC")
+            parsed_matches[START_STRING] = pd.to_datetime(parsed_matches[START_STRING], format=time_format)
+            if parsed_matches[START_STRING].dt.tz is None:
+                parsed_matches[START_STRING] = parsed_matches[START_STRING].dt.tz_localize("UTC")
 
             within_range_df = parsed_matches[
-                (parsed_matches["Start (UTC)"] >= start_datetime) & (parsed_matches["Start (UTC)"] <= end_datetime)
+                (parsed_matches[START_STRING] >= start_datetime) & (parsed_matches[START_STRING] <= end_datetime)
             ]
 
-            if within_range_df.empty and parsed_matches["Start (UTC)"].min() > end_datetime:
+            if within_range_df.empty and parsed_matches[START_STRING].min() > end_datetime:
                 break
 
             schedule_df = pd.concat([schedule_df, within_range_df], ignore_index=True)

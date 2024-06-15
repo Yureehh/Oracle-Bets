@@ -15,7 +15,8 @@ class BestOfs:
     @staticmethod
     def validate_probabilities(t1odds, t2odds):
         """Validate that the sum of probabilities is equal to 1."""
-        if not round(t1odds + t2odds, 5) == 1.0:
+        tolerance = 1e-5
+        if abs(t1odds + t2odds - 1.0) > tolerance:
             raise ValueError(BestOfs.PROB_SUM_ERROR_MESSAGE)
 
     @staticmethod

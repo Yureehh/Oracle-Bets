@@ -40,7 +40,6 @@ def compute_ema_side(df: pd.DataFrame, side: str, identity: str) -> pd.DataFrame
     side_df[f"{ema_col}_after"] = side_df.groupby(identity)["result"].transform(
         lambda x: x.ewm(halflife=HALF_LIFE, ignore_na=True).mean()
     )
-    side_df[f"{ema_col}_before"] = side_df.groupby(identity)[f"{ema_col}_before"].transform(lambda x: x.bfill().ffill())
     return side_df
 
 

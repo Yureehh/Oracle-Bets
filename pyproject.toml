@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "lol-oracle"
-version = "0.9.1"
+version = "0.10.0"
 description = "League of Legends esports analytics betting suite"
 authors = ["Matthew Rittinghouse <matthew.rittinghouse@gmail.com>, Juri Fabbri <yureefabbri@gmail.com>"]
 readme = "README.md"
@@ -41,7 +41,16 @@ shap = "^0.45.1"
 flake8-bugbear = "^24.4.26"
 flake8-comprehensions = "^3.14.0"
 pep8-naming = "^0.14.1"
+commitizen = "^3.27.0"
 
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "$version"
+version_scheme = "pep440"
+version_provider = "poetry"
+update_changelog_on_bump = true
+major_version_zero = true
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

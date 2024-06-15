@@ -124,5 +124,5 @@ def load_model(filepath: str) -> Any:
             return pickle.load(file)
     except FileNotFoundError:
         raise FileNotFoundError(f"Model file not found: '{filepath}'") from None
-    except Exception as e:
-        raise Exception(f"Error loading model from '{filepath}': {e}") from e
+    except pickle.PickleError as e:
+        raise pickle.PickleError(f"Error loading model from '{filepath}': {e}") from e

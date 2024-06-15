@@ -64,7 +64,7 @@ def update_ratings(
 
 def predict_win_probability(
     model: PlackettLuce, team1: List[PlackettLuce.rating], team2: List[PlackettLuce.rating]
-) -> float:
+) -> List[float]:
     """
     Predict the win probability between two teams or players based on their current ratings.
 

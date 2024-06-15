@@ -35,7 +35,6 @@ class EarlyGameStatsImputer:
     """
 
     test_size: float = 0.15
-    random_state: int = 42
     involved_cols: List[str] = field(default_factory=load_features)
 
     def train_models(self, train_data: pd.DataFrame, target: str) -> Dict[str, RegressorMixin]:
@@ -178,7 +177,7 @@ class EarlyGameStatsImputer:
         logger.info(f"Starting data imputation for {entity}...")
         data = self.prepare_data(data)
         features = [col for col in data.columns if col in self.involved_cols]
-        train_data, val_data = train_test_split(data, test_size=self.test_size, random_state=self.random_state)
+        train_data, val_data = train_test_split(data, test_size=self.test_size)
         stacked_models = {}
 
         for target in self.involved_cols:

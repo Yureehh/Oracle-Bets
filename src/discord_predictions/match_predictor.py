@@ -235,7 +235,7 @@ class MatchPredictor:
         player1_stats, player2_stats = team1.player_stats.copy(), team2.player_stats.copy()
         self.apply_player_stat_modifications(player1_stats, player2_stats)
         player2_stats.columns = [f"opp_{col}" if col != "position" else col for col in player2_stats.columns]
-        return pd.merge(player1_stats, player2_stats, on="position")
+        return pd.merge(player1_stats, player2_stats, on="position", how="inner", validate="many_to_many")
 
     def pivot_player_data(self, player_data: pd.DataFrame) -> pd.DataFrame:
         """Pivots player data to prepare for merging with team data by grouping numeric and non-numeric columns."""
@@ -254,7 +254,9 @@ class MatchPredictor:
 
     def merge_datasets(self, team_data: pd.DataFrame, player_data: pd.DataFrame) -> pd.DataFrame:
         """Merges team data with pivoted player data by game ID and team name, removing redundant columns."""
-        prediction_data = pd.merge(team_data, player_data, on=["gameid", "teamname"])
+        prediction_data = pd.merge(
+            team_data, player_data, on=["gameid", "teamname"], how="inner", validate="many_to_many"
+        )
 
         columns_to_drop = ["gameid", "teamname"] + [
             f"{pos}_{field}" for pos in ["top", "jng", "mid", "bot", "sup"] for field in ["gameid", "teamname"]

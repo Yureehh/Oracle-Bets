@@ -234,7 +234,7 @@ class DataGenerator:
 
             return self.team_data, self.player_data
         except Exception:
-            raise
+            raise RuntimeError("Failed to enrich datasets.") from None
 
     def load_and_sort_data(self):
         """Load data from parquet and sort it based on predefined keys."""
@@ -348,7 +348,7 @@ class DataGenerator:
             self.flatten_inference_data()
             logger.info("Data generation process completed successfully.")
         except Exception:
-            raise
+            raise RuntimeError("Failed to complete the data generation process.") from None
 
 
 if __name__ == "__main__":

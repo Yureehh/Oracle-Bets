@@ -38,6 +38,8 @@ DISCORD_TOKEN_ENV = "DISCORD_TOKEN"
 PANDASCORE_API_KEY_ENV = "PANDASCORE_API_KEY"
 BOT_COMMAND_PREFIX = "!"
 BOT_DESCRIPTION = "A comprehensive League of Legends esports prediction bot."
+PLEASE_PROVIDE = "Please provide both a blue and red team name."
+DIFFERENT_TEAMS = "The two teams must be different."
 
 # Initialize bot with command prefix and description
 bot = commands.Bot(
@@ -158,10 +160,10 @@ async def bo1(
 ):
     """Predicts the outcome of a best-of-one match between two teams."""
     if not blue_team_name or not red_team_name:
-        await ctx.send("Please provide both a blue and red team name.")
+        await ctx.send(PLEASE_PROVIDE)
         return
     if blue_team_name == red_team_name:
-        await ctx.send("The two teams must be different.")
+        await ctx.send(DIFFERENT_TEAMS)
         return
     await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", False)
 
@@ -172,10 +174,10 @@ async def sided_bo1(
 ):
     """Predicts the outcome of a best-of-one match between two teams with side considerations."""
     if not blue_team_name or not red_team_name:
-        await ctx.send("Please provide both a blue and red team name.")
+        await ctx.send(PLEASE_PROVIDE)
         return
     if blue_team_name == red_team_name:
-        await ctx.send("The two teams must be different.")
+        await ctx.send(DIFFERENT_TEAMS)
         return
     await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", True)
 
@@ -186,10 +188,10 @@ async def bo3(
 ):
     """Predicts the outcome of a best-of-three match between two teams."""
     if not blue_team_name or not red_team_name:
-        await ctx.send("Please provide both a blue and red team name.")
+        await ctx.send(PLEASE_PROVIDE)
         return
     if blue_team_name == red_team_name:
-        await ctx.send("The two teams must be different.")
+        await ctx.send(DIFFERENT_TEAMS)
         return
     await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo3", False)
 
@@ -200,10 +202,10 @@ async def bo5(
 ):
     """Predicts the outcome of a best-of-five match between two teams."""
     if not (blue_team_name or red_team_name):
-        await ctx.send("Please provide both a blue and red team name.")
+        await ctx.send(PLEASE_PROVIDE)
         return
     if blue_team_name == red_team_name:
-        await ctx.send("The two teams must be different.")
+        await ctx.send(DIFFERENT_TEAMS)
         return
     await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo5", False)
 
