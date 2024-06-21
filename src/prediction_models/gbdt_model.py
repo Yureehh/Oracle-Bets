@@ -92,7 +92,7 @@ class GradientBoostingModel(ABC):
             logger.error(f"Failed to store categorical features: {e}")
 
     @staticmethod
-    def grouped_stratified_train_val_test_split(X, y, groups, stratify, test_size, val_size):
+    def grouped_stratified_train_val_test_split(X, y, groups, stratify, val_size, test_size):
         """
         Splits the data into training, validation, and test sets, grouped by specified columns and stratified by a specified column.
         """
@@ -100,7 +100,7 @@ class GradientBoostingModel(ABC):
         temp_df = pd.DataFrame({"group": groups, "stratify": stratify}).drop_duplicates()
 
         # Step 2: Perform stratified split on the temporary DataFrame for test set
-        strat_split = StratifiedGroupKFold(n_splits=int(1 / test_size), shuffle=True, random_state=42)
+        strat_split = StratifiedGroupKFold(n_splits=int(1 / test_size), shuffle=True)
         train_val_idx, test_idx = next(
             strat_split.split(temp_df["group"], temp_df["stratify"], groups=temp_df["group"])
         )
@@ -216,10 +216,6 @@ class GradientBoostingModel(ABC):
         df = pd.concat([X, y], axis=1)
         corr_matrix = df.corr()
 
-        # Save the correlation matrix to a CSV file
-        # ? This is not necessary, as the correlation matrix is stored as a PNG file already
-        # corr_matrix.to_parquet(INSIGHTS_DIR / f"{self.model_name}_Correlation_Matrix.csv")
-
         # Create a heatmap from the correlation matrix
         plt.figure(figsize=(20, 16))
         sns.heatmap(corr_matrix, cmap="coolwarm", cbar=True)
@@ -270,27 +266,26 @@ class GradientBoostingModel(ABC):
         except OSError as e:
             logger.error(f"Failed to store hyperparameters: {e}")
 
-    def store_prediction_insights(self, predictions, eval_gameids, eval_sides):
+    def store_predictions(self, predictions, eval_gameids, eval_sides):
         """Store prediction insights to a CSV file."""
         insights = pd.DataFrame({"prediction": predictions, "gameid": eval_gameids, "side": eval_sides})
         try:
             insights.to_parquet(INSIGHTS_DIR / f"{self.model_name}_predictions.parquet", index=False)
-            logger.info("Prediction insights for {self.model_name} stored.")
+            logger.info(f"Prediction insights for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to store prediction insights: {e}")
 
-    def validate_model(self, model, X_val, y_val, eval_gameids, eval_sides):
+    def validate_model(self, model, X_test, y_test, eval_gameids, eval_sides):
         """Validate the model and store evaluation metrics."""
         logger.info("Validating the model...")
-        predictions = model.predict(X_val)
-        metrics = self.compute_evaluation_metrics(y_val, predictions)
+        predictions = model.predict(X_test)
+        metrics = self.compute_evaluation_metrics(y_test, predictions)
         self.log_evaluation_metrics(metrics)
-        self.store_correlation(X_val, y_val)
-        self.store_prediction_insights(predictions, eval_gameids, eval_sides)
         self.plot_confusion_matrix(metrics["cm"])
-        self.plot_accuracy_over_time(y_val, predictions)
-        self.plot_historical_accuracy(X_val, y_val, predictions, eval_gameids)
         self.store_evaluation_metrics(metrics)
+        self.store_predictions(predictions, eval_gameids, eval_sides)
+        self.plot_accuracy_over_samples(y_test, predictions)
+        self.plot_historical_accuracy(X_test, y_test, predictions, eval_gameids)
         logger.info(f"Model {self.model_name} validated and insights stored.\n")
 
     def compute_evaluation_metrics(self, y_val, predictions) -> Dict[str, Any]:
@@ -331,7 +326,7 @@ class GradientBoostingModel(ABC):
         plt.close()
         logger.info(f"Confusion matrix plot for {self.model_name} stored.")
 
-    def plot_accuracy_over_time(self, y_val, predictions) -> None:
+    def plot_accuracy_over_samples(self, y_val, predictions) -> None:
         """Plot and save accuracy over time."""
         accuracy_timeline = [accuracy_score(y_val[:i], predictions[:i]) for i in range(1, len(y_val) + 1)]
         plt.figure(figsize=(10, 5))
@@ -340,12 +335,12 @@ class GradientBoostingModel(ABC):
         plt.ylabel("Accuracy")
         plt.title("Accuracy Over Time")
         plt.legend()
-        plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Time.png"), dpi=300)
+        plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"), dpi=300)
         plt.close()
         logger.info(f"Accuracy over time plot for {self.model_name} stored.")
 
     def plot_historical_accuracy(self, X_val, y_val, predictions, eval_gameids) -> None:
-        """Plot and save historical accuracy."""
+        """Plot and save historical accuracy over weekly timespans and analyze league distribution."""
         X_val = pd.DataFrame(X_val.copy())
         X_val["gameid"] = eval_gameids
 
@@ -358,22 +353,23 @@ class GradientBoostingModel(ABC):
             )
 
         df = pd.DataFrame({"date": X_val["date"].values, "correct": (y_val == predictions).astype(int)})
-        df["date"] = pd.to_datetime(df["date"]).dt.date
+        df["date"] = pd.to_datetime(df["date"]).dt.to_period("W").apply(lambda r: r.start_time)
         df = df.sort_values(by="date")
         df_grouped = df.groupby("date")["correct"].mean().reset_index(name="accuracy")
         df_grouped["date"] = pd.to_datetime(df_grouped["date"])
 
-        start_date = df_grouped["date"].min() + pd.DateOffset(days=30)
-        df_filtered = df_grouped[df_grouped["date"] > start_date]
         _, ax = plt.subplots(figsize=(15, 8))
-        sns.lineplot(data=df_filtered, x="date", y="accuracy", marker="o", linestyle="-", ax=ax, label="Daily Accuracy")
+        sns.lineplot(data=df_grouped, x="date", y="accuracy", marker="o", linestyle="-", ax=ax, label="Weekly Accuracy")
+
+        # Add a horizontal line at y=0.5
+        plt.axhline(y=0.5, color="gray", linestyle="--", label="50% Accuracy")
 
         polynomial_degree = 3
-        z = np.polyfit(mdates.date2num(df_filtered["date"]), df_filtered["accuracy"], polynomial_degree)
+        z = np.polyfit(mdates.date2num(df_grouped["date"]), df_grouped["accuracy"], polynomial_degree)
         p = np.poly1d(z)
-        plt.plot(df_filtered["date"], p(mdates.date2num(df_filtered["date"])), "r--", label="Trend Line")
+        plt.plot(df_grouped["date"], p(mdates.date2num(df_grouped["date"])), "r--", label="Trend Line")
 
-        ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+        ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
         plt.xticks(rotation=90)
         ax.set_xlabel("Date")

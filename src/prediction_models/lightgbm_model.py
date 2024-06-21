@@ -20,7 +20,7 @@ from utils.utils import load_model
 
 # Constants
 VALIDATION_SIZE = 0.25
-TEST_SIZE = 0.25
+TEST_SIZE = 0.2
 
 
 @dataclass
@@ -35,7 +35,7 @@ class LightGBMModel(GradientBoostingModel):
 
         # Split the data into training, validation, and testing sets
         X_train, X_val, X_test, y_train, y_val, y_test = self.grouped_stratified_train_val_test_split(
-            X, y, X["gameid"], X["league"], test_size=TEST_SIZE, val_size=VALIDATION_SIZE
+            X, y, X["gameid"], X["league"], val_size=VALIDATION_SIZE, test_size=TEST_SIZE
         )
 
         eval_gameids, eval_sides = X_test["gameid"], X_test["side"]
@@ -53,11 +53,12 @@ class LightGBMModel(GradientBoostingModel):
         X_val = self.fuse_opposing_team_features(X_val)
         X_test = self.fuse_opposing_team_features(X_test)
 
-        # Remove unnecessary columns
+        # Remove unnecessary columns and plot correlation matrix
         X_train = self.remove_unnecessary_columns(X_train)
         selected_features = X_train.columns
         X_val = X_val[selected_features]
         X_test = X_test[selected_features]
+        self.store_correlation(X_val, y_val)
 
         # Update and store categorical features
         categorical_features = [col for col in categorical_cols if col in selected_features]

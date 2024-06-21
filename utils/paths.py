@@ -21,6 +21,7 @@ REPORTS_DIR = BASE_DIR / "reports"
 RAW_DIR = DATA_DIR / "raw"
 INTERIM_DIR = DATA_DIR / "interim"
 PROCESSED_DIR = DATA_DIR / "processed"
+EXTERNAL_DIR = DATA_DIR / "external"
 
 # Config file path
 
@@ -36,6 +37,9 @@ IMPORT_COLUMNS = DATA_INGESTION_DIR / "import_columns.json"
 TEAM_REPLACEMENTS = DATA_INGESTION_DIR / "team_replacements.json"
 CONSIDERED_LEAGUES = DATA_INGESTION_DIR / "considered_leagues.json"
 FEATURES_TO_IMPUTE = DATA_INGESTION_DIR / "features_to_impute.json"
+
+# External Bets
+EXTERNAL_BETS = EXTERNAL_DIR / "bets.csv"
 
 # Raw data
 RAW_DATA = RAW_DIR / "raw_data.parquet"

@@ -27,6 +27,7 @@ EMPTY_ROSTER = config["EMPTY_ROSTER"].copy()
 VALID_MATCH_TYPES = ["bo1", "bo3", "bo5"]
 POSITIONS = ["top", "jng", "mid", "bot", "sup"]
 MODEL_FILES = config["MODEL_FILES"]
+WEEKS_FOR_DELAY = config.get("WEEKS_FOR_DELAY", 3)
 
 
 def get_empty_roster() -> Dict[str, str]:
@@ -101,8 +102,8 @@ def get_validation_metrics(model: str, get_graph: bool = False) -> Tuple[str, Li
     if get_graph:
         validation_graph = read_discord_image(graph_file_path, cf_graph_filename)
         historical_accuracy_graph = read_discord_image(ha_graph_file_path, ha_graph_filename)
-        accuracy_over_time_graph = read_discord_image(aot_graph_file_path, aot_graph_filename)
-        return metrics_md, [validation_graph, historical_accuracy_graph, accuracy_over_time_graph]
+        accuracy_over_samples_graph = read_discord_image(aot_graph_file_path, aot_graph_filename)
+        return metrics_md, [validation_graph, historical_accuracy_graph, accuracy_over_samples_graph]
 
     return metrics_md, None
 
@@ -283,6 +284,13 @@ async def predict_and_format_result(
         blue_team = Team(name=blue_team_name, side="Blue", roster=blue_roster)
         red_team = Team(name=red_team_name, side="Red", roster=red_roster)
 
+        today_dt = pd.Timestamp.today().strftime("%Y-%m-%d")
+        blue_team_past_days = (pd.Timestamp(today_dt) - pd.Timestamp(blue_team.team_stats["date"])).days
+        red_team_past_days = (pd.Timestamp(today_dt) - pd.Timestamp(red_team.team_stats["date"])).days
+
+        break_blue_flag = blue_team_past_days >= WEEKS_FOR_DELAY * 7
+        break_red_flag = red_team_past_days >= WEEKS_FOR_DELAY * 7
+
         first_prediction = match_predictor.predict_match(blue_team, red_team, account_for_side=account_for_side)
         second_prediction = match_predictor.predict_match(red_team, blue_team, account_for_side=account_for_side)
 
@@ -296,10 +304,28 @@ async def predict_and_format_result(
         elif match_type == "bo5":
             output = BestOfs.best_of_five(blue_team_name, final_team1_win, red_team_name, final_team2_win)
 
+        output = add_roster_to_output(output, blue_team, red_team)
+        output = add_break_flags_to_output(output, break_blue_flag, blue_team_name, break_red_flag, red_team_name)
+
         await message.edit(content=output)
 
     except Exception as e:
-        await ctx.send(content=handle_command_error(e, additional_info="Could not complete the prediction."))
+        await message.edit(content=handle_command_error(e, additional_info="Could not complete the prediction."))
+
+
+def add_roster_to_output(output, blue_team, red_team):
+    output += "\n## Found Rosters\n"
+    output += "**Blue Team:\t** " + "\t-\t".join([f"{player}" for player in blue_team.roster.values()]) + "\n"
+    output += "**Red Team:\t** " + "\t-\t".join([f"{player}" for player in red_team.roster.values()])
+    return output
+
+
+def add_break_flags_to_output(output, break_blue_flag, blue_team_name, break_red_flag, red_team_name):
+    if break_blue_flag:
+        output += f"\n\nCAREFUL! {blue_team_name.capitalize()} has not played in the last {WEEKS_FOR_DELAY} weeks."
+    if break_red_flag:
+        output += f"\n\nCAREFUL! {red_team_name.capitalize()} has not played in the last {WEEKS_FOR_DELAY} weeks."
+    return output
 
 
 def process_roster(roster_str: str, positions: Optional[List[str]] = None) -> Dict[str, str]:
