@@ -38,11 +38,17 @@ jobs:
     - name: Install Dependencies with Poetry
       run: poetry install --no-root
 
+    - name: Install pre-commit
+      run: pip install pre-commit
+
+    - name: Run Pre-commit Hooks
+      run: pre-commit run --all-files
+
     - name: Run Linting and Formatting Checks
       run: |
-        poetry run flake8 src
         poetry run black --check src
         poetry run isort --check-only src
+        poetry run flake8 src
 
     - name: Run Tests with Coverage
       continue-on-error: true
