@@ -330,10 +330,9 @@ class GradientBoostingModel(ABC):
         """Plot and save accuracy over samples."""
         accuracy_timeline = [accuracy_score(y_val[:i], predictions[:i]) for i in range(1, len(y_val) + 1)]
         plt.figure(figsize=(10, 5))
-        plt.plot(accuracy_timeline, label="Accuracy Over Samples")
+        plt.plot(accuracy_timeline)
         plt.xlabel("Number of Samples")
         plt.ylabel("Accuracy")
-        plt.title("Accuracy Over Samples")
         plt.legend()
         plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"), dpi=300)
         plt.close()
@@ -374,7 +373,6 @@ class GradientBoostingModel(ABC):
         plt.xticks(rotation=90)
         ax.set_xlabel("Date")
         ax.set_ylabel("Accuracy")
-        ax.set_title(f"Historical Accuracy of {self.model_name}")
         ax.grid(True)
         plt.legend()
         plt.tight_layout()
