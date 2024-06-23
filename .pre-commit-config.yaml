@@ -4,16 +4,17 @@ repos:
     hooks:
       - id: pyupgrade
 
+  - repo: https://github.com/psf/black
+    rev: 24.3.0
+    hooks:
+      - id: black
+
   - repo: https://github.com/pycqa/isort
     rev: 5.13.2
     hooks:
       - id: isort
         name: isort (python)
-
-  - repo: https://github.com/psf/black
-    rev: 24.3.0
-    hooks:
-      - id: black
+        args: ["--profile", "black", "--filter-files"]
 
   - repo: https://github.com/pycqa/flake8
     rev: 7.0.0
@@ -23,7 +24,6 @@ repos:
           - flake8-bugbear
           - flake8-comprehensions
           - pep8-naming
-          - flake8-import-order
           - flake8-docstrings
         verbose: true
         args: ['--ignore=E501,W503,I101,D,N803,N806,B905,B907,B950', '--exclude=tests']
@@ -48,3 +48,9 @@ repos:
       - id: python-check-blanket-noqa
       - id: python-use-type-annotations
       - id: text-unicode-replacement-char
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.4
+    hooks:
+      - id: bandit
+        args: ['-r', '.']
