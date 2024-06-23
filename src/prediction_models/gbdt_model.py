@@ -327,17 +327,17 @@ class GradientBoostingModel(ABC):
         logger.info(f"Confusion matrix plot for {self.model_name} stored.")
 
     def plot_accuracy_over_samples(self, y_val, predictions) -> None:
-        """Plot and save accuracy over time."""
+        """Plot and save accuracy over samples."""
         accuracy_timeline = [accuracy_score(y_val[:i], predictions[:i]) for i in range(1, len(y_val) + 1)]
         plt.figure(figsize=(10, 5))
-        plt.plot(accuracy_timeline, label="Accuracy Over Time")
+        plt.plot(accuracy_timeline, label="Accuracy Over Samples")
         plt.xlabel("Number of Samples")
         plt.ylabel("Accuracy")
-        plt.title("Accuracy Over Time")
+        plt.title("Accuracy Over Samples")
         plt.legend()
         plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"), dpi=300)
         plt.close()
-        logger.info(f"Accuracy over time plot for {self.model_name} stored.")
+        logger.info(f"Accuracy over samples plot for {self.model_name} stored.")
 
     def plot_historical_accuracy(self, X_val, y_val, predictions, eval_gameids) -> None:
         """Plot and save historical accuracy over weekly timespans and analyze league distribution."""
