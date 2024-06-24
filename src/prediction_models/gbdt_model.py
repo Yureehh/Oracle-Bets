@@ -331,13 +331,15 @@ class GradientBoostingModel(ABC):
         accuracy_timeline = [accuracy_score(y_val[:i], predictions[:i]) for i in range(1, len(y_val) + 1)]
         plt.figure(figsize=(10, 5))
         sns.lineplot(x=range(1, len(y_val) + 1), y=accuracy_timeline, linestyle="--", color="#84C3FA")
-        plt.xlabel("Number of Samples")
-        plt.ylabel("Accuracy")
+        plt.xlabel("Number of Samples", color="white")
+        plt.ylabel("Accuracy", color="white")
         plt.grid(True, linestyle="--", alpha=0.6, axis="y")
         plt.grid(False, axis="x")  # Disable vertical grid lines
         plt.gca().set_facecolor("none")  # Make the background transparent
-        plt.legend(["Accuracy"])
+        plt.legend(["Accuracy"], facecolor="none", edgecolor="none")
         plt.tight_layout()
+        plt.gca().tick_params(axis="x", colors="white")
+        plt.gca().tick_params(axis="y", colors="white")
         plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"), dpi=300, transparent=True)
         plt.close()
         logger.info(f"Accuracy over samples plot for {self.model_name} stored.")
@@ -383,14 +385,16 @@ class GradientBoostingModel(ABC):
 
         ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-        plt.xticks(rotation=90)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Accuracy")
+        plt.xticks(rotation=90, color="white")
+        ax.set_xlabel("Date", color="white")
+        ax.set_ylabel("Accuracy", color="white")
         ax.grid(True, linestyle="--", alpha=0.6, axis="y")
         ax.grid(False, axis="x")  # Disable vertical grid lines
         plt.gca().set_facecolor("none")  # Make the background transparent
-        plt.legend()
+        plt.legend(facecolor="none", edgecolor="none")
         plt.tight_layout()
+        ax.tick_params(axis="x", colors="white")
+        ax.tick_params(axis="y", colors="white")
 
         plt.savefig(self.directory.joinpath(f"{self.model_name}_Historical_Accuracy.png"), dpi=300, transparent=True)
         plt.close()
