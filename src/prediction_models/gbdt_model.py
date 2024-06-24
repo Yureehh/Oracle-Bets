@@ -330,11 +330,15 @@ class GradientBoostingModel(ABC):
         """Plot and save accuracy over samples."""
         accuracy_timeline = [accuracy_score(y_val[:i], predictions[:i]) for i in range(1, len(y_val) + 1)]
         plt.figure(figsize=(10, 5))
-        plt.plot(accuracy_timeline)
+        sns.lineplot(x=range(1, len(y_val) + 1), y=accuracy_timeline, linestyle="--", color="#84C3FA")
         plt.xlabel("Number of Samples")
         plt.ylabel("Accuracy")
-        plt.legend()
-        plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"), dpi=300)
+        plt.grid(True, linestyle="--", alpha=0.6, axis="y")
+        plt.grid(False, axis="x")  # Disable vertical grid lines
+        plt.gca().set_facecolor("none")  # Make the background transparent
+        plt.legend(["Accuracy"])
+        plt.tight_layout()
+        plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"), dpi=300, transparent=True)
         plt.close()
         logger.info(f"Accuracy over samples plot for {self.model_name} stored.")
 
@@ -358,7 +362,16 @@ class GradientBoostingModel(ABC):
         df_grouped["date"] = pd.to_datetime(df_grouped["date"])
 
         _, ax = plt.subplots(figsize=(15, 8))
-        sns.lineplot(data=df_grouped, x="date", y="accuracy", marker="o", linestyle="-", ax=ax, label="Weekly Accuracy")
+        sns.lineplot(
+            data=df_grouped,
+            x="date",
+            y="accuracy",
+            marker="o",
+            linestyle="--",
+            ax=ax,
+            label="Weekly Accuracy",
+            color="#84C3FA",
+        )
 
         # Add a horizontal line at y=0.5
         plt.axhline(y=0.5, color="gray", linestyle="--", label="50% Accuracy")
@@ -373,11 +386,13 @@ class GradientBoostingModel(ABC):
         plt.xticks(rotation=90)
         ax.set_xlabel("Date")
         ax.set_ylabel("Accuracy")
-        ax.grid(True)
+        ax.grid(True, linestyle="--", alpha=0.6, axis="y")
+        ax.grid(False, axis="x")  # Disable vertical grid lines
+        plt.gca().set_facecolor("none")  # Make the background transparent
         plt.legend()
         plt.tight_layout()
 
-        plt.savefig(self.directory.joinpath(f"{self.model_name}_Historical_Accuracy.png"), dpi=300)
+        plt.savefig(self.directory.joinpath(f"{self.model_name}_Historical_Accuracy.png"), dpi=300, transparent=True)
         plt.close()
         logger.info(f"Historical accuracy plot for {self.model_name} stored.")
 
