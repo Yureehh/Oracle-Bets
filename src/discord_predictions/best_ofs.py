@@ -47,7 +47,9 @@ class BestOfs:
         exactly_three_games = t1_21 + t2_21
 
         output = (
-            f"```Overall Likelihood Of {t1name} To Win Series: {(t1_win_series * 100):.2f}%\n\n"
+            f"```Likelihood Of {t1name} To Win a single game: {(t1odds * 100):.2f}%\n"
+            f"Likelihood Of {t2name} To Win a single game: {(t2odds * 100):.2f}%\n\n"
+            f"Overall Likelihood Of {t1name} To Win Series: {(t1_win_series * 100):.2f}%\n\n"
             f"\tProbability {t1name} wins 2/0: {(t1_20 * 100):.2f}%\n"
             f"\tProbability {t1name} wins 2/1: {(t1_21 * 100):.2f}%\n\n"
             f"Overall Likelihood Of {t2name} To Win Series: {(t2_win_series * 100):.2f}%\n\n"
@@ -78,7 +80,9 @@ class BestOfs:
         exactly_five_games = t1_32 + t2_32
 
         output = (
-            f"```Overall Likelihood Of {t1name} To Win Series: {(t1_win_series * 100):.2f}%\n\n"
+            f"```Likelihood Of {t1name} To Win a single game: {(t1odds * 100):.2f}%\n"
+            f"Likelihood Of {t2name} To Win a single game: {(t2odds * 100):.2f}%\n\n"
+            f"Overall Likelihood Of {t1name} To Win Series: {(t1_win_series * 100):.2f}%\n\n"
             f"\tProbability {t1name} wins 3/0: {(t1_30 * 100):.2f}%\n"
             f"\tProbability {t1name} wins 3/1: {(t1_31 * 100):.2f}%\n"
             f"\tProbability {t1name} wins 3/2: {(t1_32 * 100):.2f}%\n\n"
