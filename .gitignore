@@ -102,3 +102,6 @@ poetry.lock
 
 # Catboost info
 catboost_info/
+
+# All models folder
+models/

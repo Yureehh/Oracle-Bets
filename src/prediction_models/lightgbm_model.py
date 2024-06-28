@@ -38,6 +38,7 @@ class LightGBMModel(GradientBoostingModel):
             X, y, X["gameid"], X["league"], val_size=VALIDATION_SIZE, test_size=TEST_SIZE
         )
 
+        # Store evaluation gameids and sides
         eval_gameids, eval_sides = X_test["gameid"], X_test["side"]
 
         # Drop specific columns
@@ -71,18 +72,26 @@ class LightGBMModel(GradientBoostingModel):
         best_params = self.get_best_hyperparameters(X_train, y_train, X_val, y_val)
         model = lgb.LGBMClassifier(**best_params, force_col_wise=True, verbosity=-1)
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
+        return model, X_test, y_test, eval_gameids, eval_sides
 
-        # Validate the model
+    def train_and_validate_model(self):
+        """Train and validate the LightGBM model."""
+        model, X_test, y_test, eval_gameids, eval_sides = self.train_model()
         self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
+        self.calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns, X_test)
 
-        # Calculate and plot feature importances
+    def validate_only(self, model, X_test, y_test, eval_gameids, eval_sides):
+        """Validate an existing model."""
+        self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
+        self.calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns, X_test)
+
+    def calculate_and_plot_feature_importances(self, model, X_test, y_test, selected_features, X_train):
+        """Calculate and plot feature importances."""
         logger.info("Calculating and plotting feature importances...")
         self.store_feature_importance(model, selected_features)
         self.calculate_permutation_importance(model, X_test, y_test, selected_features)
         self.calculate_and_plot_shap(model, X_train, selected_features)
         logger.info("Finished calculating and plotting feature importances.\n")
-
-        return model
 
     def get_best_hyperparameters(self, X_train, y_train, X_val, y_val):
         """Retrieve the best hyperparameters for the LightGBM model."""

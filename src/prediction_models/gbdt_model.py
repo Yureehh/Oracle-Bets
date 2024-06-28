@@ -48,9 +48,7 @@ class GradientBoostingModel(ABC):
     def preprocess_data(self) -> pd.DataFrame:
         """Preprocess the data by pivoting player data and merging datasets."""
         self.pivot_player_data()
-        logger.debug("Player data pivoted and ready for merging.")
         self.merge_datasets()
-        logger.debug("Datasets merged and ready for training.\n")
         return self.training_data
 
     def pivot_player_data(self) -> None:
@@ -72,86 +70,77 @@ class GradientBoostingModel(ABC):
         self.training_data = pd.merge(
             self.team_data, self.player_data, on=["gameid", "side"], how="inner", validate="many_to_many"
         )
-        for pos in ["top", "jng", "mid", "bot", "sup"]:
-            self.training_data.drop([f"{pos}_gameid", f"{pos}_side"], axis=1, inplace=True)
+        drop_cols = [f"{pos}_gameid" for pos in ["top", "jng", "mid", "bot", "sup"]] + [
+            f"{pos}_side" for pos in ["top", "jng", "mid", "bot", "sup"]
+        ]
+        self.training_data.drop(columns=drop_cols, inplace=True)
 
     def store_model_features(self, all_features: pd.Index) -> None:
         """Store all features to a pickle file."""
-        try:
-            with open(MODELS_DIR / f"{self.model_name}_final_features.pkl", "wb") as f:
-                pickle.dump(all_features, f)
-        except Exception as e:
-            logger.error(f"Failed to store all features: {e}")
+        self._store_pickle(f"{self.model_name}_final_features.pkl", all_features)
 
     def store_categorical_features(self, categorical_features: list) -> None:
         """Store categorical features to a pickle file."""
+        self._store_pickle(f"{self.model_name}_categorical_features.pkl", categorical_features)
+
+    def _store_pickle(self, filename: str, data: Any) -> None:
         try:
-            with open(MODELS_DIR / f"{self.model_name}_categorical_features.pkl", "wb") as f:
-                pickle.dump(categorical_features, f)
+            with open(MODELS_DIR / filename, "wb") as f:
+                pickle.dump(data, f)
         except Exception as e:
-            logger.error(f"Failed to store categorical features: {e}")
+            logger.error(f"Failed to store {filename}: {e}")
 
     @staticmethod
-    def grouped_stratified_train_val_test_split(X, y, groups, stratify, val_size, test_size):
+    def grouped_stratified_train_val_test_split(
+        X: pd.DataFrame, y: pd.Series, groups: pd.Series, stratify: pd.Series, val_size: float, test_size: float
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
         """
         Splits the data into training, validation, and test sets, grouped by specified columns and stratified by a specified column.
         """
-        # Step 1: Create a temporary DataFrame to hold the unique groups and their stratify labels
+
+        def stratified_split(temp_df, n_splits, groups_col, stratify_col):
+            strat_split = StratifiedGroupKFold(n_splits=n_splits, shuffle=True)
+            return next(strat_split.split(temp_df[groups_col], temp_df[stratify_col], groups=temp_df[groups_col]))
+
         temp_df = pd.DataFrame({"group": groups, "stratify": stratify}).drop_duplicates()
 
-        # Step 2: Perform stratified split on the temporary DataFrame for test set
-        strat_split = StratifiedGroupKFold(n_splits=int(1 / test_size), shuffle=True)
-        train_val_idx, test_idx = next(
-            strat_split.split(temp_df["group"], temp_df["stratify"], groups=temp_df["group"])
-        )
+        train_val_idx, test_idx = stratified_split(temp_df, int(1 / test_size), "group", "stratify")
 
-        # Step 3: Map the split indices back to the original DataFrame
         train_val_groups = temp_df["group"].iloc[train_val_idx]
         test_groups = temp_df["group"].iloc[test_idx]
 
-        # Step 4: Select the original rows based on the group split
-        train_val_mask = X["gameid"].isin(train_val_groups)
-        test_mask = X["gameid"].isin(test_groups)
+        X_train_val, X_test = X[X["gameid"].isin(train_val_groups)], X[X["gameid"].isin(test_groups)]
+        y_train_val, y_test = y[X["gameid"].isin(train_val_groups)], y[X["gameid"].isin(test_groups)]
 
-        X_train_val, X_test = X[train_val_mask], X[test_mask]
-        y_train_val, y_test = y[train_val_mask], y[test_mask]
-
-        # Step 5: Perform stratified split on the training-validation set for validation set
         temp_df_train_val = pd.DataFrame(
             {"group": X_train_val["gameid"], "stratify": X_train_val["league"]}
         ).drop_duplicates()
-        strat_split = StratifiedGroupKFold(n_splits=int(1 / val_size), shuffle=True)
-        train_idx, val_idx = next(
-            strat_split.split(
-                temp_df_train_val["group"], temp_df_train_val["stratify"], groups=temp_df_train_val["group"]
-            )
-        )
 
-        # Step 6: Map the split indices back to the original DataFrame
+        train_idx, val_idx = stratified_split(temp_df_train_val, int(1 / val_size), "group", "stratify")
+
         train_groups = temp_df_train_val["group"].iloc[train_idx]
         val_groups = temp_df_train_val["group"].iloc[val_idx]
 
-        # Step 7: Select the original rows based on the group split
-        train_mask = X_train_val["gameid"].isin(train_groups)
-        val_mask = X_train_val["gameid"].isin(val_groups)
+        X_train, X_val = (
+            X_train_val[X_train_val["gameid"].isin(train_groups)],
+            X_train_val[X_train_val["gameid"].isin(val_groups)],
+        )
+        y_train, y_val = (
+            y_train_val[X_train_val["gameid"].isin(train_groups)],
+            y_train_val[X_train_val["gameid"].isin(val_groups)],
+        )
 
-        X_train, X_val = X_train_val[train_mask], X_train_val[val_mask]
-        y_train, y_val = y_train_val[train_mask], y_train_val[val_mask]
-
-        # Return all the splits
         return X_train, X_val, X_test, y_train, y_val, y_test
 
     @staticmethod
-    def fuse_opposing_team_features(X):
+    def fuse_opposing_team_features(X: pd.DataFrame) -> pd.DataFrame:
         """Fuses opposing team features by subtracting the opposing stats from the original stats."""
-        # General opposing stats
         for col in X.filter(like="opp_").columns:
             original_col = col[4:]
             if original_col in X.columns:
                 X[original_col] -= X[col]
                 X.drop(columns=[col], inplace=True)
 
-        # Role-specific opposing stats
         roles = ["top", "jng", "mid", "bot", "sup"]
         for role in roles:
             for col in X.filter(like=f"{role}_opp_").columns:
@@ -163,7 +152,7 @@ class GradientBoostingModel(ABC):
         return X
 
     @staticmethod
-    def process_players_likelihood_columns(df):
+    def process_players_likelihood_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Processes player likelihood columns by renaming and dropping unnecessary ones."""
         likelihood_columns = df.columns[df.columns.str.contains("likelihood")]
         modified_df = df[likelihood_columns].rename(columns=lambda x: x.replace("top_", "players_"))
@@ -172,12 +161,10 @@ class GradientBoostingModel(ABC):
             modified_df.drop(columns=[col for col in modified_df.columns if col.startswith(role)], inplace=True)
 
         df = df.drop(columns=likelihood_columns, inplace=False)
-        df = pd.concat([df, modified_df], axis=1)
-
-        return df
+        return pd.concat([df, modified_df], axis=1)
 
     @staticmethod
-    def remove_unnecessary_columns(df):
+    def remove_unnecessary_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Removes columns that are unnecessary or degrade model performance."""
         df = df.loc[:, ~df.columns.str.contains("_std")]
         df = df.loc[:, ~df.columns.str.contains("season_win_likelihood")]
@@ -207,16 +194,15 @@ class GradientBoostingModel(ABC):
         upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
         to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
         df_dropped = df.drop(columns=to_drop)
-        logger.info(f"Dropped columns due to high correlation: {list(to_drop)}\n")
-        models_logger.info(f"Dropped columns due to high correlation: {list(to_drop)}\n")
+        logger.info(f"Dropped columns due to high correlation: {list(to_drop)}")
+        models_logger.info(f"Dropped columns due to high correlation: {list(to_drop)}")
         return df_dropped
 
-    def store_correlation(self, X: pd.DataFrame, y: pd.Series):
+    def store_correlation(self, X: pd.DataFrame, y: pd.Series) -> None:
         """Stores the correlation matrix as a heatmap."""
         df = pd.concat([X, y], axis=1)
         corr_matrix = df.corr()
 
-        # Create a heatmap from the correlation matrix
         plt.figure(figsize=(20, 16))
         sns.heatmap(corr_matrix, cmap="coolwarm", cbar=True)
         plt.title("Correlation Matrix Heatmap")
@@ -260,13 +246,9 @@ class GradientBoostingModel(ABC):
 
     def store_best_hyperparameters(self, study) -> None:
         """Store best hyperparameters to a pickle file."""
-        try:
-            with open(MODELS_DIR / f"{self.model_name}_best_hyperparameters.pkl", "wb") as f:
-                pickle.dump(study.best_params, f)
-        except OSError as e:
-            logger.error(f"Failed to store hyperparameters: {e}")
+        self._store_pickle(f"{self.model_name}_best_hyperparameters.pkl", study.best_params)
 
-    def store_predictions(self, predictions, eval_gameids, eval_sides):
+    def store_predictions(self, predictions: np.ndarray, eval_gameids: pd.Series, eval_sides: pd.Series) -> None:
         """Store prediction insights to a CSV file."""
         insights = pd.DataFrame({"prediction": predictions, "gameid": eval_gameids, "side": eval_sides})
         try:
@@ -275,7 +257,9 @@ class GradientBoostingModel(ABC):
         except Exception as e:
             logger.error(f"Failed to store prediction insights: {e}")
 
-    def validate_model(self, model, X_test, y_test, eval_gameids, eval_sides):
+    def validate_model(
+        self, model, X_test: pd.DataFrame, y_test: pd.Series, eval_gameids: pd.Series, eval_sides: pd.Series
+    ) -> None:
         """Validate the model and store evaluation metrics."""
         logger.info("Validating the model...")
         predictions = model.predict(X_test)
@@ -288,14 +272,14 @@ class GradientBoostingModel(ABC):
         self.plot_historical_accuracy(X_test, y_test, predictions, eval_gameids)
         logger.info(f"Model {self.model_name} validated and insights stored.\n")
 
-    def compute_evaluation_metrics(self, y_val, predictions) -> Dict[str, Any]:
+    def compute_evaluation_metrics(self, y_val: pd.Series, predictions: np.ndarray) -> Dict[str, Any]:
         """Compute evaluation metrics for the model."""
         accuracy = accuracy_score(y_val, predictions)
         precision, recall, f1, _ = precision_recall_fscore_support(y_val, predictions, average="binary")
         cm = confusion_matrix(y_val, predictions)
         return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1, "cm": cm}
 
-    def store_evaluation_metrics(self, metrics) -> None:
+    def store_evaluation_metrics(self, metrics: Dict[str, Any]) -> None:
         """Store evaluation metrics to a JSON file."""
         metrics.pop("cm")
         try:
@@ -305,7 +289,7 @@ class GradientBoostingModel(ABC):
         except OSError as e:
             logger.error(f"Failed to store evaluation metrics: {e}")
 
-    def log_evaluation_metrics(self, metrics) -> None:
+    def log_evaluation_metrics(self, metrics: Dict[str, Any]) -> None:
         """Log evaluation metrics."""
         logger.info(
             f"Evaluation Metrics - Accuracy: {metrics['accuracy']:.4f}, Precision: {metrics['precision']:.4f}, Recall: {metrics['recall']:.4f}, F1 Score: {metrics['f1']:.4f}\n"
@@ -314,7 +298,7 @@ class GradientBoostingModel(ABC):
             f"Evaluation Metrics - Accuracy: {metrics['accuracy']:.4f}, Precision: {metrics['precision']:.4f}, Recall: {metrics['recall']:.4f}, F1 Score: {metrics['f1']:.4f}\n"
         )
 
-    def plot_confusion_matrix(self, cm) -> None:
+    def plot_confusion_matrix(self, cm: np.ndarray) -> None:
         """Plot and save the confusion matrix."""
         cm_df = pd.DataFrame(
             cm, index=["Actual Negative:0", "Actual Positive:1"], columns=["Predict Negative:0", "Predict Positive:1"]
@@ -326,7 +310,7 @@ class GradientBoostingModel(ABC):
         plt.close()
         logger.info(f"Confusion matrix plot for {self.model_name} stored.")
 
-    def plot_accuracy_over_samples(self, y_val, predictions) -> None:
+    def plot_accuracy_over_samples(self, y_val: pd.Series, predictions: np.ndarray) -> None:
         """Plot and save accuracy over samples."""
         accuracy_timeline = [accuracy_score(y_val[:i], predictions[:i]) for i in range(1, len(y_val) + 1)]
         plt.figure(figsize=(10, 5))
@@ -334,8 +318,8 @@ class GradientBoostingModel(ABC):
         plt.xlabel("Number of Samples", color="white")
         plt.ylabel("Accuracy", color="white")
         plt.grid(True, linestyle="--", alpha=0.6, axis="y")
-        plt.grid(False, axis="x")  # Disable vertical grid lines
-        plt.gca().set_facecolor("none")  # Make the background transparent
+        plt.grid(False, axis="x")
+        plt.gca().set_facecolor("none")
         plt.legend(["Accuracy"], facecolor="none", edgecolor="none")
         plt.tight_layout()
         plt.gca().tick_params(axis="x", colors="white")
@@ -344,7 +328,9 @@ class GradientBoostingModel(ABC):
         plt.close()
         logger.info(f"Accuracy over samples plot for {self.model_name} stored.")
 
-    def plot_historical_accuracy(self, X_val, y_val, predictions, eval_gameids) -> None:
+    def plot_historical_accuracy(
+        self, X_val: pd.DataFrame, y_val: pd.Series, predictions: np.ndarray, eval_gameids: pd.Series
+    ) -> None:
         """Plot and save historical accuracy over weekly timespans and analyze league distribution."""
         X_val = pd.DataFrame(X_val.copy())
         X_val["gameid"] = eval_gameids
@@ -375,7 +361,6 @@ class GradientBoostingModel(ABC):
             color="#84C3FA",
         )
 
-        # Add a horizontal line at y=0.5
         plt.axhline(y=0.5, color="gray", linestyle="--", label="50% Accuracy")
 
         polynomial_degree = 3
@@ -389,8 +374,8 @@ class GradientBoostingModel(ABC):
         ax.set_xlabel("Date", color="white")
         ax.set_ylabel("Accuracy", color="white")
         ax.grid(True, linestyle="--", alpha=0.6, axis="y")
-        ax.grid(False, axis="x")  # Disable vertical grid lines
-        plt.gca().set_facecolor("none")  # Make the background transparent
+        ax.grid(False, axis="x")
+        plt.gca().set_facecolor("none")
         plt.legend(facecolor="none", edgecolor="none")
         plt.tight_layout()
         ax.tick_params(axis="x", colors="white")
@@ -400,19 +385,18 @@ class GradientBoostingModel(ABC):
         plt.close()
         logger.info(f"Historical accuracy plot for {self.model_name} stored.")
 
-    def store_feature_importance(self, model, feature_names):
+    def store_feature_importance(self, model, feature_names: List[str]) -> None:
         """Store feature importance to a CSV and plot as a PNG file."""
         importances = model.feature_importances_
         sorted_importances = sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)
 
-        # ? Save to CSV for debugging or further analysis
         data = [{"Feature": name, "Importance": importance} for name, importance in sorted_importances]
         df = pd.DataFrame(data)
         df.to_parquet(INSIGHTS_DIR / f"{self.model_name}_feature_importances.parquet", index=False)
 
         self.plot_feature_importance(sorted_importances)
 
-    def plot_feature_importance(self, sorted_importances, top_n=TOP_N_FEATURES):
+    def plot_feature_importance(self, sorted_importances: List[Tuple[str, float]], top_n: int = TOP_N_FEATURES) -> None:
         """Plots the feature importances, showing only the top_n features."""
         sorted_importances = sorted_importances[:top_n]
         features, importances = zip(*sorted_importances)
@@ -426,7 +410,9 @@ class GradientBoostingModel(ABC):
         plt.close()
         logger.info(f"Top {top_n} feature importances for {self.model_name} stored.")
 
-    def calculate_permutation_importance(self, model, X_test, y_test, feature_names, top_n=TOP_N_FEATURES):
+    def calculate_permutation_importance(
+        self, model, X_test: pd.DataFrame, y_test: pd.Series, feature_names: List[str], top_n: int = TOP_N_FEATURES
+    ) -> None:
         """Calculates and plots permutation importances for the top_n features."""
         result = permutation_importance(model, X_test, y_test, n_repeats=10, n_jobs=-1)
         sorted_idx = result.importances_mean.argsort()[-top_n:]
@@ -438,7 +424,9 @@ class GradientBoostingModel(ABC):
         plt.savefig(FEATURE_IMP_DIR / f"{self.model_name}_permutation_importance_plot.png")
         plt.close()
 
-    def calculate_and_plot_shap(self, model, df, feature_names, top_n=TOP_N_FEATURES):
+    def calculate_and_plot_shap(
+        self, model, df: pd.DataFrame, feature_names: List[str], top_n: int = TOP_N_FEATURES
+    ) -> None:
         """Plots SHAP values for the top_n features."""
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(df, from_call=True)

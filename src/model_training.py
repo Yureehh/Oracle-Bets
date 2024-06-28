@@ -33,7 +33,7 @@ def initialize_and_train_model(model_name: str, training_team_data: pd.DataFrame
         start = dt.datetime.now()
 
         lightgbm_model.preprocess_data()
-        lightgbm_clf = lightgbm_model.train_model()
+        lightgbm_model.train_and_validate_model()
 
         end = dt.datetime.now()
         elapsed_time = end - start
@@ -41,7 +41,7 @@ def initialize_and_train_model(model_name: str, training_team_data: pd.DataFrame
         logger.info(f"{model_name} model training and evaluation completed in {elapsed_time}")
         models_logger.info(f"{model_name} model training and evaluation completed in {elapsed_time}\n")
 
-        return lightgbm_clf
+        return lightgbm_model
     except Exception as e:
         logger.error(f"Failed to initialize and train the model: {e}")
         models_logger.error(f"Failed to initialize and train the model: {e}\n")
@@ -67,8 +67,8 @@ def main():
     """Main function to run the model training process."""
     try:
         training_team_data, training_player_data = load_training_data()
-        lightgbm_clf = initialize_and_train_model(MODEL_NAME, training_team_data, training_player_data)
-        store_model(lightgbm_clf, MODEL_NAME)
+        lightgbm_model = initialize_and_train_model(MODEL_NAME, training_team_data, training_player_data)
+        store_model(lightgbm_model, MODEL_NAME)
 
         logger.info("Training process completed successfully.\n")
         models_logger.info("Training process completed successfully.\n")
