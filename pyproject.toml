@@ -104,5 +104,6 @@ ensure_newline_before_comments = true
 docstring-convention = "google"
 
 [tool.pytest.ini_options]
-addopts = "--cov=src --cov-report=term-missing"
 minversion = "6.0"
+addopts = "--cov=src --cov-report=term-missing"
+testpaths = ["tests"]

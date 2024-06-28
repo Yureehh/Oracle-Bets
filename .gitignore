@@ -100,4 +100,5 @@ poetry.lock
 # All parquet files
 *.parquet
 
+# Catboost info
 catboost_info/
