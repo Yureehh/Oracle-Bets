@@ -8,7 +8,7 @@ from utils.logger import logger, models_logger
 from utils.paths import MODELS_DIR, TRAINING_PLAYER_DATA, TRAINING_TEAM_DATA
 
 # Constants
-MODEL_NAME = "LightGBM"
+MODEL_NAME = "lightgbm"
 MODEL_FILE_EXTENSION = "pkl"
 
 
