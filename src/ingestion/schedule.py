@@ -11,11 +11,8 @@ from typing import List, Optional
 
 import pandas as pd
 import requests
-from dotenv import load_dotenv
 
 from utils.logger import logger
-
-load_dotenv()
 
 # Constants
 PANDASCORE_BASE_URL = "https://api.pandascore.co/lol/matches/upcoming"

@@ -3,11 +3,8 @@ This bot shows commands for a League of Legends esports prediction model.
 It allows users to call down predictions and view various information.
 """
 
-import os
-
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 
 from src.discord_predictions.discord import (
     calculate_kelly_criterion,
@@ -28,14 +25,11 @@ from src.discord_predictions.discord import (
 from src.ingestion.schedule import PandaScoreSchedule
 from utils.logger import logger
 from utils.paths import SCHEDULE
+from utils.secrets import get_secret_value
 from utils.team import Team
-
-# Load environment variables from .env file
-load_dotenv()
 
 # Constants
 DISCORD_TOKEN_ENV = "DISCORD_TOKEN"
-PANDASCORE_API_KEY_ENV = "PANDASCORE_API_KEY"
 BOT_COMMAND_PREFIX = "!"
 BOT_DESCRIPTION = "A comprehensive League of Legends esports prediction bot."
 PLEASE_PROVIDE = "Please provide both a blue and red team name."
@@ -291,7 +285,7 @@ async def kill(ctx):
 def run_bot():
     """Runs the Discord bot."""
     try:
-        bot.run(os.getenv(DISCORD_TOKEN_ENV))
+        bot.run(get_secret_value("lol_oracle", "DISCORD_TOKEN"))
     except Exception as e:
         logger.error(f"Failed to start the bot: {e}")
 

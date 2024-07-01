@@ -28,8 +28,8 @@ EXTERNAL_DIR = DATA_DIR / "external"
 DISCORD_CONFIG = CONFIG_DIR / "discord_config.json"
 DATA_INGESTION_DIR = CONFIG_DIR / "data_ingestion"
 DEFAULT_MODELS_PARAMETERS = CONFIG_DIR / "default_models_parameters.json"
-OUTCOME_TRAINING_AND_INPUT_COLS_DIR = CONFIG_DIR / "outcome" / "train_and_input_cols"
-GAMELENGTH_TRAINING_AND_INPUT_COLS_DIR = CONFIG_DIR / "gamelength" / "train_and_input_cols"
+OUTCOME_TRAINING_AND_INPUT_COLS_DIR = CONFIG_DIR / "train_and_input_cols" / "outcome"
+GAMELENGTH_TRAINING_AND_INPUT_COLS_DIR = CONFIG_DIR / "train_and_input_cols" / "gamelength"
 
 # Data Ingestion
 YEARS_RANGE_PATH = DATA_INGESTION_DIR / "years_to_consider.json"

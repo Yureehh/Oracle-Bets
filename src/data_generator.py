@@ -6,20 +6,17 @@ It takes the data that is daily stored in an S3 bucket from Oracle Elixir
 and enriches it with additional data based on computed ratings.
 The enriched data is then stored in the processed directory.
 
-
 Please visit and support www.oracleselixir.com
 Tim provides an invaluable service to the League community.
 """
 
 import datetime as dt
 import json
-import os
 from dataclasses import dataclass, field
-from os import getenv
 
+import awswrangler as wr
 import boto3
 import pandas as pd
-from dotenv import load_dotenv
 
 from src.feature_engineering.features_generator import FeatureGenerator
 from src.feature_engineering.impute_early_game_metrics import EarlyGameStatsImputer
@@ -27,26 +24,16 @@ from src.feature_engineering.performance_features.performance_metrics import Per
 from src.feature_engineering.ratings_features.rating_models import Ratings
 from src.ingestion.oracles_elixir import OraclesElixir
 from utils.logger import logger
-from utils.paths import (
+from utils.paths import (  # LEAGUE_ELO,; RAW_DATA,; TEAM_LEAGUES_MAPPING,
     FLATTENED_PLAYER_CONFIG,
     FLATTENED_TEAM_CONFIG,
-    INTERIM_PLAYER_DATA,
-    INTERIM_TEAM_DATA,
     INVALID_GAMES,
-    LEAGUE_ELO,
-    PROCESSED_DIR,
-    PROCESSED_PLAYERS,
-    PROCESSED_TEAMS,
-    RAW_DATA,
-    TEAM_LEAGUES_MAPPING,
     TRAINING_PLAYER_CONFIG,
     TRAINING_TEAM_CONFIG,
     YEARS_RANGE_PATH,
 )
+from utils.secrets import get_secret_value
 from utils.utils import get_sorting_keys, json_loader
-
-# Load environment variables from .env file
-load_dotenv()
 
 # Constants
 BUCKET_NAME_ENV = "BUCKET_NAME"
@@ -61,33 +48,30 @@ MAX_EXPECTED_ROWS = 12
 class DataGenerator:
     team_data: pd.DataFrame = field(default_factory=pd.DataFrame)
     player_data: pd.DataFrame = field(default_factory=pd.DataFrame)
-    bucket_name: str = field(init=False)
+    oe_bucket_name: str = field(init=False)
+    lol_oracle_bucket_name: str = field(init=False)
+    s3_session: boto3.Session = field(init=False)
 
     def __post_init__(self):
         """Initialize DataGenerator with S3 session and feature generation components."""
-        self.bucket_name = getenv(BUCKET_NAME_ENV)
-        if not self.bucket_name:
-            logger.error("Bucket name not specified in the environment variables.")
-            raise ValueError("BUCKET_NAME environment variable not set.")
+        self.oe_bucket_name = get_secret_value("lol_oracle", "OE_BUCKET")
+        if not self.oe_bucket_name:
+            logger.error("Bucket name not specified in AWS Secrets.")
+            raise ValueError("BUCKET_NAME secret not specified.")
+        self.lol_oracle_bucket_name = get_secret_value("lol_oracle", "LOL_ORACLE_BUCKET")
+        if not self.lol_oracle_bucket_name:
+            logger.error("Bucket name not specified in AWS Secrets.")
+            raise ValueError("BUCKET_NAME secret not specified.")
         self.s3_session = self.create_s3_session()
-        self.oracle = OraclesElixir(session=self.s3_session, bucket=self.bucket_name)
+        self.oracle = OraclesElixir(session=self.s3_session, bucket=self.oe_bucket_name)
         self.imputer = EarlyGameStatsImputer()
         self.feature_generator = FeatureGenerator()
         self.rating_models = Ratings()
 
     @staticmethod
     def create_s3_session():
-        """Create a boto3 session to access the S3 bucket using environment variables."""
-        access_key = getenv(ACCESS_ID_ENV)
-        secret_key = getenv(SECRET_ID_ENV)
-        if not access_key or not secret_key:
-            logger.error("AWS access credentials are not set in environment variables.")
-            raise RuntimeError("Missing AWS credentials in environment variables.")
-
-        return boto3.Session(
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-        )
+        """Create a boto3 session to access the S3 bucket using aws profile."""
+        return boto3.Session(profile_name="lol_oracle")
 
     @staticmethod
     def get_years_to_process():
@@ -122,8 +106,7 @@ class DataGenerator:
     def remove_buggy_games(data: pd.DataFrame) -> pd.DataFrame:
         """Remove games identified as buggy based on criteria in the INVALID_GAMES config and internal checks."""
         try:
-            with open(INVALID_GAMES) as file:
-                invalid_config = json.load(file)
+            invalid_config = json_loader(INVALID_GAMES)
         except FileNotFoundError:
             logger.error(f"Configuration file for invalid games not found: {INVALID_GAMES}")
             raise FileNotFoundError(f"Configuration file not found: {INVALID_GAMES}") from None
@@ -147,8 +130,8 @@ class DataGenerator:
         self.team_data.sort_values(get_sorting_keys("team"), inplace=True)
         self.player_data.sort_values(get_sorting_keys("player"), inplace=True)
 
-        self.team_data.to_parquet(INTERIM_TEAM_DATA, index=False)
-        self.player_data.to_parquet(INTERIM_PLAYER_DATA, index=False)
+        self.upload_to_s3(self.team_data, "interim/team_data.parquet")
+        self.upload_to_s3(self.player_data, "interim/player_data.parquet")
         logger.info("Cleaned and stored interim data.\n")
 
     def ingest_data_from_s3(self):
@@ -157,7 +140,7 @@ class DataGenerator:
             logger.info("Starting data ingestion from S3...")
             years = self.get_years_to_process()
             data = self.oracle.ingest_data(years=years)
-            data.to_parquet(RAW_DATA, index=False)
+            self.upload_to_s3(data, "raw/raw_data.parquet")
             logger.info("Data ingestion completed and stored.\n")
 
             data = DataGenerator.remove_buggy_games(data)
@@ -196,8 +179,8 @@ class DataGenerator:
             df=self.team_data, entity="team"
         )
 
-        league_elos.to_parquet(LEAGUE_ELO, index=False)
-        belonging_league.to_parquet(TEAM_LEAGUES_MAPPING, index=False)
+        self.upload_to_s3(league_elos, "processed/league_elo.parquet")
+        self.upload_to_s3(belonging_league, "processed/team_league_mapping.parquet")
         logger.info("Enriched team data with leagues elo and stored the ratings.")
 
         logger.info("Completed enriching data with all ratings.\n")
@@ -237,9 +220,9 @@ class DataGenerator:
             raise RuntimeError("Failed to enrich datasets.") from None
 
     def load_and_sort_data(self):
-        """Load data from parquet and sort it based on predefined keys."""
-        self.team_data = pd.read_parquet(INTERIM_TEAM_DATA)
-        self.player_data = pd.read_parquet(INTERIM_PLAYER_DATA)
+        """Load data from S3 and sort it based on predefined keys."""
+        self.team_data = self.read_from_s3("interim/team_data.parquet")
+        self.player_data = self.read_from_s3("interim/player_data.parquet")
         self.team_data.sort_values(get_sorting_keys("team"), inplace=True)
         self.player_data.sort_values(get_sorting_keys("player"), inplace=True)
 
@@ -252,9 +235,9 @@ class DataGenerator:
         self.player_data = self.imputer.impute_data(self.player_data, "Player")
 
     def store_enriched_data(self):
-        """Store enriched team and player data to parquet files."""
-        self.team_data.to_parquet(PROCESSED_TEAMS, index=False)
-        self.player_data.to_parquet(PROCESSED_PLAYERS, index=False)
+        """Store enriched team and player data to S3."""
+        self.upload_to_s3(self.team_data, "processed/team_data.parquet")
+        self.upload_to_s3(self.player_data, "processed/player_data.parquet")
         logger.info("Stored enriched data.")
 
     def extract_team_inference_data(self):
@@ -274,7 +257,7 @@ class DataGenerator:
         inference_data = data[training_cols]
         inference_data = inference_data.rename(columns={col: col.replace("_before", "") for col in before_cols})
 
-        inference_data.to_parquet(PROCESSED_DIR / f"training_{entity_type}_data.parquet", index=False)
+        self.upload_to_s3(inference_data, f"processed/training_{entity_type}_data.parquet")
         logger.info(f"Stored training {entity_type} data.")
 
     def extract_training_data(self):
@@ -304,19 +287,10 @@ class DataGenerator:
         flattened_entities = flattened_entities.rename(columns={col: col.replace("_after", "") for col in after_cols})
 
         # Define output path
-        output_path = PROCESSED_DIR / f"flattened_{entity_type}s.parquet"
+        output_path = f"processed/flattened_{entity_type}s.parquet"
 
         # Store data to Parquet
-        try:
-            flattened_entities.to_parquet(output_path, index=False, engine="pyarrow")
-        except Exception:
-            # TODO!: find a way to avoid needing the fallback
-            logger.warning("Failed to save to Parquet. Fallback to CSV and re-read.")
-            fallback_csv_path = PROCESSED_DIR / f"flattened_{entity_type}s.csv"
-            flattened_entities.to_csv(fallback_csv_path, index=False)
-            read_back_data = pd.read_csv(fallback_csv_path)
-            read_back_data.to_parquet(output_path, index=False, engine="pyarrow")
-            os.remove(fallback_csv_path)
+        self.upload_to_s3(flattened_entities, output_path)
 
     def flatten_team_data(self):
         """Flatten the team_data dataframe to get the most recent record per team."""
@@ -334,6 +308,29 @@ class DataGenerator:
         self.flatten_team_data()
         self.flatten_player_data()
         logger.info("Completed flattening of inference data.\n")
+
+    def upload_to_s3(self, data: pd.DataFrame, s3_path: str):
+        """Upload data to S3 using awswrangler."""
+        try:
+            wr.s3.to_parquet(
+                df=data, path=f"s3://{self.lol_oracle_bucket_name}/{s3_path}", boto3_session=self.s3_session
+            )
+            logger.info(f"Uploaded {s3_path} to S3.")
+        except Exception as e:
+            logger.error(f"Failed to upload {s3_path} to S3: {e}")
+            raise
+
+    def read_from_s3(self, s3_path: str) -> pd.DataFrame:
+        """Read data from S3 using awswrangler."""
+        try:
+            data = wr.s3.read_parquet(
+                path=f"s3://{self.lol_oracle_bucket_name}/{s3_path}", boto3_session=self.s3_session
+            )
+            logger.info(f"Read {s3_path} from S3.")
+            return data
+        except Exception as e:
+            logger.error(f"Failed to read {s3_path} from S3: {e}")
+            raise
 
     def run(self):
         """

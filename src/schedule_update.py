@@ -1,19 +1,13 @@
 import datetime as dt
-from os import getenv
-
-from dotenv import load_dotenv
 
 from ingestion.schedule import PandaScoreSchedule
 from utils.logger import logger
 from utils.paths import SCHEDULE
-
-# Load environment variables from .env file
-load_dotenv()
+from utils.secrets import get_secret_value
 
 # Constants
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 MAX_DAYS_RANGE = 7
-PANDASCORE_API_KEY_ENV = "PANDASCORE_API_KEY"
 
 
 def main():
@@ -25,7 +19,7 @@ def main():
         logger.info(f"Fetching schedule from {start} to {end}")
 
         # Fetch the schedule from PandaScore API
-        api_key = getenv(PANDASCORE_API_KEY_ENV)
+        api_key = get_secret_value("lol_oracle", "PANDASCORE_API_KEY")
         if not api_key:
             raise ValueError("PandaScore API key is not set in environment variables.")
 

@@ -18,14 +18,10 @@ import awswrangler as wr
 import boto3
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
 
 from utils.logger import logger
 from utils.paths import CONSIDERED_LEAGUES, IMPORT_COLUMNS, TEAM_REPLACEMENTS
 from utils.utils import get_sorting_keys, json_loader
-
-# Load environment variables from .env file
-load_dotenv()
 
 # Constants for the gap between players/teams for getting opponent data
 GAP_PLAYER = 5
