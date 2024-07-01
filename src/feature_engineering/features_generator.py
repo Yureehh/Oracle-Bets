@@ -62,17 +62,23 @@ class FeatureGenerator:
         # Compute key statistics
         data["ka_ratio"] = (data["kills"] + data["assists"]) / (
             data["enemyTeamKills"] + data["kills"] + data["assists"]
+        ).replace({np.inf: np.nan})
+        data["d_ratio"] = (data["deaths"] / data["enemyTeamDeaths"]).replace({np.inf: np.nan})
+        data["damages_ratio"] = (data["damagetochampions"] / data["enemyTeamDamages"]).replace({np.inf: np.nan})
+        data["damage_tanked_ratio"] = (
+            data["damagetakenperminute"] * data["gamelength"] / data["enemyTeamDamages"]
+        ).replace({np.inf: np.nan})
+        data["damage_mitigated_ratio"] = (
+            data["damagemitigatedperminute"] * data["gamelength"] / data["enemyTeamDamages"]
+        ).replace({np.inf: np.nan})
+        data["gold_ratio"] = (data["totalgold"] / data["enemyTeamGolds"]).replace({np.inf: np.nan})
+        data["cs_to_gold_ratio"] = (data["total_cs"] / data["enemyTeamGolds"]).replace({np.inf: np.nan})
+        data["wards_placed_ratio"] = (data["wpm"] * data["gamelength"] / data["enemyTeamWardPlaced"]).replace(
+            {np.inf: np.nan}
         )
-        data["d_ratio"] = data["deaths"] / data["enemyTeamDeaths"]
-        data["damages_ratio"] = data["damagetochampions"] / data["enemyTeamDamages"]
-        data["damage_tanked_ratio"] = (data["damagetakenperminute"] * data["gamelength"]) / data["enemyTeamDamages"]
-        data["damage_mitigated_ratio"] = (data["damagemitigatedperminute"] * data["gamelength"]) / data[
-            "enemyTeamDamages"
-        ]
-        data["gold_ratio"] = data["totalgold"] / data["enemyTeamGolds"]
-        data["cs_to_gold_ratio"] = data["total_cs"] / data["enemyTeamGolds"]
-        data["wards_placed_ratio"] = (data["wpm"] * data["gamelength"]) / data["enemyTeamWardPlaced"]
-        data["wards_killed_ratio"] = (data["wcpm"] * data["gamelength"]) / data["enemyTeamWardPlaced"]
+        data["wards_killed_ratio"] = (data["wcpm"] * data["gamelength"] / data["enemyTeamWardPlaced"]).replace(
+            {np.inf: np.nan}
+        )
 
         return data
 
