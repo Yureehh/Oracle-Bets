@@ -98,8 +98,6 @@
     "ema_goldat10_after",
     "ema_goldat10_std_after",
     "ema_patch_win_rate_after",
-    "opp_patch_ema_win_rate_after",
-    "ema_season_win_rate_after",
-    "opp_season_ema_win_rate_after"
+    "ema_season_win_rate_after"
   ]
 }
