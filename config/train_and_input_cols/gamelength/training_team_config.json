@@ -1,17 +1,11 @@
 {
-  "whr_features": [
-    "whr_win_likelihood",
-    "whr_mu_before",
-    "whr_sigma_before",
-    "opp_whr_mu_before",
-    "opp_whr_sigma_before"
-  ],
   "team_features": [
     "date",
     "gameid",
     "side",
     "league",
-    "result",
+    "patch",
+    "gamelength",
     "elo_win_likelihood",
     "gl2_win_likelihood",
     "pl_win_likelihood",
@@ -30,6 +24,12 @@
     "ema_assists_std_before",
     "ema_kda_before",
     "ema_kda_std_before",
+    "ema_killsat10_before",
+    "ema_killsat10_std_before",
+    "ema_assistsat10_before",
+    "ema_assistsat10_std_before",
+    "ema_deathsat10_before",
+    "ema_deathsat10_std_before",
     "ema_goldat10_before",
     "ema_goldat10_std_before",
     "ema_xpat10_before",
@@ -82,8 +82,6 @@
     "ema_firstmidtower_std_before",
     "ema_firsttothreetowers_before",
     "ema_firsttothreetowers_std_before",
-    "ema_teamkills_before",
-    "ema_teamkills_std_before",
     "ema_dragons_before",
     "ema_dragons_std_before",
     "ema_towers_before",
@@ -121,7 +119,6 @@
     "opp_ema_teamdeaths_before",
     "opp_ema_turretplates_before",
     "opp_ema_inhibitors_before",
-    "opp_ema_teamkills_before",
     "opp_ema_dragons_before",
     "opp_ema_towers_before",
     "opp_ema_team_kpm_before",
@@ -153,7 +150,6 @@
     "opp_ema_teamdeaths_std_before",
     "opp_ema_turretplates_std_before",
     "opp_ema_inhibitors_std_before",
-    "opp_ema_teamkills_std_before",
     "opp_ema_dragons_std_before",
     "opp_ema_towers_std_before",
     "opp_ema_team_kpm_std_before",
@@ -171,6 +167,10 @@
     "opp_ema_firsttothreetowers_before",
     "opp_ema_firsttothreetowers_std_before",
     "opp_ema_gspd_std_before",
-    "opp_ema_barons_std_before"
+    "opp_ema_barons_std_before",
+    "ema_patch_win_rate_before",
+    "opp_patch_ema_win_rate_before",
+    "ema_season_win_rate_before",
+    "opp_season_ema_win_rate_before"
   ]
 }

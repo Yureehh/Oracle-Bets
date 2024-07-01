@@ -248,8 +248,12 @@ class DataGenerator:
         self.team_data = self.feature_generator.generate_new_team_features(self.team_data)
         self.team_data = self.imputer.impute_data(self.team_data, "Team")
 
+        self.team_data.to_csv("team_data.csv", index=False)
+
         self.player_data = self.feature_generator.generate_new_player_features(self.player_data)
         self.player_data = self.imputer.impute_data(self.player_data, "Player")
+
+        self.player_data.to_csv("player_data.csv", index=False)
 
     def store_enriched_data(self):
         """Store enriched team and player data to parquet files."""

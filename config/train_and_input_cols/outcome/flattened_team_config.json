@@ -23,8 +23,6 @@
     "ema_assists_std_after",
     "ema_kda_after",
     "ema_kda_std_after",
-    "ema_teamkills_after",
-    "ema_teamkills_std_after",
     "ema_teamdeaths_after",
     "ema_teamdeaths_std_after",
     "ema_team_kpm_after",
@@ -81,6 +79,12 @@
     "ema_blue_side_after",
     "ema_patch_win_rate_after",
     "ema_season_win_rate_after",
+    "ema_killsat10_after",
+    "ema_killsat10_std_after",
+    "ema_assistsat10_after",
+    "ema_assistsat10_std_after",
+    "ema_deathsat10_after",
+    "ema_deathsat10_std_after",
     "ema_xpat10_after",
     "ema_xpat10_std_after",
     "ema_csat10_after",
@@ -92,6 +96,10 @@
     "ema_csdiffat10_after",
     "ema_csdiffat10_std_after",
     "ema_goldat10_after",
-    "ema_goldat10_std_after"
+    "ema_goldat10_std_after",
+    "ema_patch_win_rate_after",
+    "opp_patch_ema_win_rate_after",
+    "ema_season_win_rate_after",
+    "opp_season_ema_win_rate_after"
   ]
 }
