@@ -67,7 +67,6 @@ def apply_ema_and_std(df: pd.DataFrame, identity: str, columns: List[str], half_
     new_cols_before, new_cols_after = {}, {}
 
     for col in tqdm(columns):
-        print(col)
         group = df.groupby(identity)[col]
 
         # Calculate EMA and Standard Deviation for 'before'
@@ -123,15 +122,11 @@ def enrich_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     if entity not in ["team", "player"]:
         raise ValueError("Entity must be either 'team' or 'player'.")
 
-    print("1 test")
     df.sort_values(get_sorting_keys(entity), inplace=True)
     identity = get_identity(entity)
-    print("2 test")
     columns = select_columns_for_entity(entity)
-    print("3 test")
+
     df = apply_ema_and_std(df, identity, columns, HALF_LIFE)
-    print("4 test")
     df = apply_opponent_stats(df, entity, columns)
-    print("5 test")
 
     return df
