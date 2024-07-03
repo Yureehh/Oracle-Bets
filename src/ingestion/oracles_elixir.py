@@ -66,14 +66,12 @@ class OraclesElixir:
         oe_data["date"] = pd.to_datetime(oe_data["date"], errors="coerce")
 
         id_cols = ["gameid", "playerid", "teamid", "league", "teamname", "playername"]
-        oe_data[id_cols] = oe_data[id_cols].apply(lambda x: x.str.strip().replace("", np.nan))
-
-        # Normalize null representations
+        # Normalize string columns by stripping whitespace and replacing null values
+        oe_data[id_cols] = oe_data[id_cols].apply(lambda x: x.str.strip()).replace("", np.nan)
         oe_data.replace(NULL_REPLACEMENTS, pd.NA, inplace=True)
 
-        oe_data["gamelength"] = oe_data["gamelength"].apply(lambda x: x / 60 if pd.notna(x) else x)
+        oe_data["gamelength"] = oe_data["gamelength"].div(60)
         logger.info("Data formatting completed.")
-
         return oe_data
 
     @staticmethod

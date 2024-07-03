@@ -11,12 +11,12 @@ class BestOfs:
     """
 
     PROB_SUM_ERROR_MESSAGE = "Probabilities do not sum to 1"
+    TOLERANCE = 1e-5
 
     @staticmethod
     def validate_probabilities(t1odds, t2odds):
         """Validate that the sum of probabilities is equal to 1."""
-        tolerance = 1e-5
-        if abs(t1odds + t2odds - 1.0) > tolerance:
+        if abs(t1odds + t2odds - 1.0) > BestOfs.TOLERANCE:
             raise ValueError(BestOfs.PROB_SUM_ERROR_MESSAGE)
 
     @staticmethod
@@ -24,11 +24,10 @@ class BestOfs:
         """Calculate the likelihood of each team winning a best of one series."""
         BestOfs.validate_probabilities(t1odds, t2odds)
 
-        output = (
+        return (
             f"```Overall Likelihood Of {t1name} To Win Game: {(t1odds * 100):.2f}%\n\n"
             f"Overall Likelihood Of {t2name} To Win Game: {(t2odds * 100):.2f}%```"
         )
-        return output
 
     @staticmethod
     def best_of_three(t1name, t1odds, t2name, t2odds):
@@ -46,7 +45,7 @@ class BestOfs:
         t2_win_at_least_one = t2_win_series + t1_21
         exactly_three_games = t1_21 + t2_21
 
-        output = (
+        return (
             f"```Likelihood Of {t1name} To Win a single game: {(t1odds * 100):.2f}%\n"
             f"Likelihood Of {t2name} To Win a single game: {(t2odds * 100):.2f}%\n\n"
             f"Overall Likelihood Of {t1name} To Win Series: {(t1_win_series * 100):.2f}%\n\n"
@@ -60,7 +59,6 @@ class BestOfs:
             f"\tProbability {t2name} wins at least 1 game: {(t2_win_at_least_one * 100):.2f}%\n\n"
             f"Overall Likelihood Of Exactly 3 Games: {(exactly_three_games * 100):.2f}%```"
         )
-        return output
 
     @staticmethod
     def best_of_five(t1name, t1odds, t2name, t2odds):
@@ -79,7 +77,7 @@ class BestOfs:
         at_least_four_games = t1_31 + t1_32 + t2_31 + t2_32
         exactly_five_games = t1_32 + t2_32
 
-        output = (
+        return (
             f"```Likelihood Of {t1name} To Win a single game: {(t1odds * 100):.2f}%\n"
             f"Likelihood Of {t2name} To Win a single game: {(t2odds * 100):.2f}%\n\n"
             f"Overall Likelihood Of {t1name} To Win Series: {(t1_win_series * 100):.2f}%\n\n"
@@ -96,4 +94,3 @@ class BestOfs:
             f"Overall Likelihood Of At Least 4 Games: {(at_least_four_games * 100):.2f}%\n\n"
             f"Overall Likelihood Of Exactly 5 Games: {(exactly_five_games * 100):.2f}%```"
         )
-        return output

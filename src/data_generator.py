@@ -99,24 +99,19 @@ class DataGenerator:
     @staticmethod
     def _detect_buggy_games(data: pd.DataFrame) -> set:
         """Identify buggy games within the dataset."""
-        incorrect_rows = set(data.groupby("gameid").filter(lambda x: len(x) != MAX_EXPECTED_ROWS)["gameid"].unique())
+        grouped = data.groupby("gameid")
+        incorrect_rows = set(grouped.filter(lambda x: len(x) != MAX_EXPECTED_ROWS)["gameid"].unique())
         incorrect_teams = set(
-            data.groupby("gameid")
-            .filter(lambda x: x["teamid"].nunique() != MAX_EXPECTED_TEAMS or "unknown team" in x["teamname"].values)[
-                "gameid"
-            ]
-            .unique()
+            grouped.filter(
+                lambda x: x["teamid"].nunique() != MAX_EXPECTED_TEAMS or "unknown team" in x["teamname"].values
+            )["gameid"].unique()
         )
         incorrect_players = set(
-            data.groupby("gameid")
-            .filter(
+            grouped.filter(
                 lambda x: x["playerid"].nunique() != MAX_EXPECTED_PLAYERS or "unknown player" in x["playername"].values
-            )["gameid"]
-            .unique()
+            )["gameid"].unique()
         )
-
-        buggy_games = incorrect_rows.union(incorrect_teams, incorrect_players)
-        return buggy_games
+        return incorrect_rows.union(incorrect_teams, incorrect_players)
 
     @staticmethod
     def remove_buggy_games(data: pd.DataFrame) -> pd.DataFrame:
@@ -124,25 +119,23 @@ class DataGenerator:
         try:
             with open(INVALID_GAMES) as file:
                 invalid_config = json.load(file)
-        except FileNotFoundError:
-            logger.error(f"Configuration file for invalid games not found: {INVALID_GAMES}")
-            raise FileNotFoundError(f"Configuration file not found: {INVALID_GAMES}") from None
-        except json.JSONDecodeError:
-            logger.error(f"Invalid JSON format in file: {INVALID_GAMES}")
-            raise json.JSONDecodeError("Invalid JSON format in the configuration file.") from None
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error(f"Error loading configuration file {INVALID_GAMES}: {e}")
+            raise
 
         logger.info("Removing buggy games based on predefined criteria and additional checks.")
-        invalid_games = invalid_config["invalid_games"]
+        invalid_games = set(invalid_config["invalid_games"])
         other_invalid_games = DataGenerator._detect_buggy_games(data)
-        cleaned_data = data[~data["gameid"].isin(set(invalid_games).union(other_invalid_games))]
+        cleaned_data = data[~data["gameid"].isin(invalid_games.union(other_invalid_games))]
 
         logger.info(f"Removed buggy games. Remaining games: {len(cleaned_data)}\n")
         return cleaned_data
 
     def clean_and_store_data(self, data: pd.DataFrame):
         """Clean, sort, and store team and player data in interim directory."""
-        self.team_data = self.oracle.clean_data(data, split_on="team")
-        self.player_data = self.oracle.clean_data(data, split_on="player")
+        cleaned_data = DataGenerator.remove_buggy_games(data)
+        self.team_data = self.oracle.clean_data(cleaned_data, split_on="team")
+        self.player_data = self.oracle.clean_data(cleaned_data, split_on="player")
 
         self.team_data.sort_values(get_sorting_keys("team"), inplace=True)
         self.player_data.sort_values(get_sorting_keys("player"), inplace=True)
@@ -152,19 +145,14 @@ class DataGenerator:
         logger.info("Cleaned and stored interim data.\n")
 
     def ingest_data_from_s3(self):
-        """Ingest data from S3 bucket and store it in the interim directory."""
+        """Ingest data from S3 bucket and return the raw data."""
         try:
             logger.info("Starting data ingestion from S3...")
             years = self.get_years_to_process()
             data = self.oracle.ingest_data(years=years)
             data.to_parquet(RAW_DATA, index=False)
             logger.info("Data ingestion completed and stored.\n")
-
-            data = DataGenerator.remove_buggy_games(data)
-            self.clean_and_store_data(data)
-
-            return self.team_data, self.player_data
-
+            return data
         except Exception as e:
             logger.error(f"Failed to ingest data from S3: {e}")
             raise
@@ -189,8 +177,7 @@ class DataGenerator:
         self.player_data = self.rating_models.compute_trueskill(df=self.player_data, entity="player")
         logger.info("Enriched data with trueskill.")
 
-        # self.team_data = self.rating_models.compute_whr(df=self.team_data, entity="team")
-        # logger.info("Enriched team data with WHR.")
+        # If i want to add whr it should go here.
 
         self.team_data, belonging_league, league_elos = self.rating_models.compute_leagues_elo(
             df=self.team_data, entity="team"
@@ -205,11 +192,9 @@ class DataGenerator:
     def _enrich_data_with_performance_metrics(self):
         """Enrich data with performance metrics."""
         logger.info("Enriching data with performance metrics...")
-
         self.team_data = PerformanceMetrics.add_entity_ema_statistics(self.team_data, entity="team")
         self.player_data = PerformanceMetrics.add_entity_ema_statistics(self.player_data, entity="player")
         logger.info("Enriched data with EMA statistics.")
-
         self.team_data = PerformanceMetrics.add_side_win_rate_ewm(self.team_data, entity="team")
         self.team_data = PerformanceMetrics.add_patch_win_rate_ewm(self.team_data, entity="team")
         self.team_data = PerformanceMetrics.add_season_win_rate_ewm(self.team_data, entity="team")
@@ -342,13 +327,13 @@ class DataGenerator:
         """
         try:
             logger.info("Starting data generation process.\n")
-            self.ingest_data_from_s3()
+            self.clean_and_store_data(self.ingest_data_from_s3())
             self.enrich_datasets()
             self.extract_training_data()
             self.flatten_inference_data()
             logger.info("Data generation process completed successfully.")
-        except Exception:
-            raise RuntimeError("Failed to complete the data generation process.") from None
+        except Exception as e:
+            raise RuntimeError("Failed to complete the data generation process.") from e
 
 
 if __name__ == "__main__":

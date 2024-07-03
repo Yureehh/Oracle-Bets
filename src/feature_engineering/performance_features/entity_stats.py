@@ -5,7 +5,7 @@ This script contains functions to calculate entity-specific statistics, such as 
 It uses EMA (Exponential Moving Average) to calculate the statistics for 'before' and 'after' periods.
 """
 
-from typing import Dict, List
+from typing import List
 
 import pandas as pd
 from tqdm import tqdm
@@ -14,12 +14,13 @@ from src.ingestion.oracles_elixir import get_opponent
 from utils.paths import DEFAULT_MODELS_PARAMETERS, FLATTENED_PLAYER_CONFIG, FLATTENED_TEAM_CONFIG
 from utils.utils import get_identity, get_sorting_keys, json_loader
 
-# Load configuration parameters
+# Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)
 HALF_LIFE = config_params["half_life"]
 EPSILON = 1e-8  # Small constant to prevent division by zero
 
 
+# Helper Functions
 def select_columns_for_entity(entity: str) -> List[str]:
     """
     Select relevant columns for EMA statistics based on the entity type.
@@ -33,22 +34,17 @@ def select_columns_for_entity(entity: str) -> List[str]:
     Raises:
         ValueError: If the entity type is neither 'team' nor 'player'.
     """
-    config = None
-    if entity == "team":
-        config = FLATTENED_TEAM_CONFIG
-    elif entity == "player":
-        config = FLATTENED_PLAYER_CONFIG
-
-    if not config:
+    if entity not in ["team", "player"]:
         raise ValueError("Entity must be either 'team' or 'player'.")
 
-    # Extract relevant columns for the entity
+    config = FLATTENED_TEAM_CONFIG if entity == "team" else FLATTENED_PLAYER_CONFIG
     entity_cols = json_loader(config)["flattened_cols"]
     avoid_cols = [
         "ema_red_side_after",
         "ema_blue_side_after",
         "ema_patch_win_rate_after",
         "ema_season_win_rate_after",
+        "patch_avg_gamelength",
     ]
 
     return [
@@ -99,10 +95,8 @@ def apply_opponent_stats(df: pd.DataFrame, entity: str, columns: List[str]) -> p
         pd.DataFrame: DataFrame with new opponent statistics columns added.
     """
     ema_cols = [item for col in columns for item in (f"ema_{col}_before", f"ema_{col}_std_before")]
-    new_cols: Dict[str, pd.Series] = {f"opp_{col}": get_opponent(df[col], entity=entity) for col in tqdm(ema_cols)}
-
-    df = pd.concat([df, pd.DataFrame(new_cols)], axis=1)
-    return df
+    new_cols = {f"opp_{col}": get_opponent(df[col], entity=entity) for col in tqdm(ema_cols)}
+    return pd.concat([df, pd.DataFrame(new_cols)], axis=1)
 
 
 def enrich_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:

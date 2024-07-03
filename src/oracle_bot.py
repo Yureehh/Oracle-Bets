@@ -1,6 +1,9 @@
 """
+League of Legends Esports Prediction Bot.
+
 This bot shows commands for a League of Legends esports prediction model.
-It allows users to call down predictions and view various information.
+It allows users to call down predictions and view various information such as
+team rosters, player profiles, match schedules, and betting odds.
 """
 
 import os

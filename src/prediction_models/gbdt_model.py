@@ -24,14 +24,15 @@ from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_f
 from sklearn.model_selection import StratifiedGroupKFold
 
 from utils.logger import logger, models_logger
-from utils.paths import FEATURE_IMP_DIR, FIGURES_DIR, INSIGHTS_DIR, MODELS_DIR, PROCESSED_TEAMS
+from utils.paths import FEATURE_IMP_DIR, FIGURES_DIR, INSIGHTS_DIR, MODELS_DIR, PROCESSED_TEAMS, TARGET_FEATURES
+from utils.utils import json_loader
 
 sns.set_style("darkgrid")
 
 # Constants
-DEFAULT_TRIALS = 1000
+DEFAULT_TRIALS = 2000
 VALIDATION_SIZE = 0.15
-TOP_N_FEATURES = 25
+TOP_N_FEATURES = 30
 LOW_STD_THRESHOLD = 0.05
 HIGH_CORR_THRESHOLD = 0.90
 
@@ -45,11 +46,17 @@ class GradientBoostingModel(ABC):
     trials: int = field(default=DEFAULT_TRIALS)
     directory: Path = field(default=FIGURES_DIR)
 
-    def preprocess_data(self) -> pd.DataFrame:
+    def preprocess_data(self, target_col) -> pd.DataFrame:
         """Preprocess the data by pivoting player data and merging datasets."""
+        self.remove_other_targets(target_col=target_col)
         self.pivot_player_data()
         self.merge_datasets()
-        return self.training_data
+
+    def remove_other_targets(self, target_col: str) -> None:
+        """Remove other target columns from the dataset."""
+        target_cols = json_loader(TARGET_FEATURES)["targets"]
+        target_cols.remove(target_col)
+        self.team_data.drop(columns=target_cols, inplace=True)
 
     def pivot_player_data(self) -> None:
         """Pivot player data to create features for each position."""
@@ -67,12 +74,15 @@ class GradientBoostingModel(ABC):
         """Merge team and player datasets.
         Remember: I don't drop gameid here because I use it later for plotting daily accuracy
         """
+        drop_cols = (
+            [f"{pos}_gameid" for pos in ["top", "jng", "mid", "bot", "sup"]]
+            + [f"{pos}_side" for pos in ["top", "jng", "mid", "bot", "sup"]]
+            + ["date"]
+        )
         self.training_data = pd.merge(
             self.team_data, self.player_data, on=["gameid", "side"], how="inner", validate="many_to_many"
         )
-        drop_cols = [f"{pos}_gameid" for pos in ["top", "jng", "mid", "bot", "sup"]] + [
-            f"{pos}_side" for pos in ["top", "jng", "mid", "bot", "sup"]
-        ]
+        self.training_data.sort_values(by=["date", "gameid", "side"], inplace=True)
         self.training_data.drop(columns=drop_cols, inplace=True)
 
     def store_model_features(self, all_features: pd.Index) -> None:
@@ -167,7 +177,8 @@ class GradientBoostingModel(ABC):
     def remove_unnecessary_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Removes columns that are unnecessary or degrade model performance."""
         df = df.loc[:, ~df.columns.str.contains("_std")]
-        df = df.loc[:, ~df.columns.str.contains("season_win_likelihood")]
+        # df = df.loc[:, ~df.columns.str.contains("season_win_likelihood")]
+        # df = df.loc[:, ~df.columns.str.contains("patch_win_likelihood")]
         df = GradientBoostingModel.drop_low_std_columns(df, LOW_STD_THRESHOLD)
         df = GradientBoostingModel.drop_highly_correlated_features(df, HIGH_CORR_THRESHOLD)
         return df
@@ -189,13 +200,28 @@ class GradientBoostingModel(ABC):
 
     @staticmethod
     def drop_highly_correlated_features(df: pd.DataFrame, threshold: float = HIGH_CORR_THRESHOLD) -> pd.DataFrame:
-        """Drops highly correlated features."""
+        """Drops one feature from each pair of highly correlated features."""
         corr_matrix = df.corr().abs()
         upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-        to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
+
+        # Set to track columns to drop
+        to_drop = set()
+
+        # Iterate over the columns of the upper triangle
+        for column in upper.columns:
+            # Find columns with correlations above the threshold
+            highly_correlated = [index for index in upper.index if upper.loc[index, column] > threshold]
+
+            # Check if none of the elements in the pair are already in the to_drop set
+            if highly_correlated and not any(col in to_drop for col in highly_correlated):
+                # Add the current column to the drop set
+                to_drop.add(column)
+
         df_dropped = df.drop(columns=to_drop)
+
         logger.info(f"Dropped columns due to high correlation: {list(to_drop)}")
         models_logger.info(f"Dropped columns due to high correlation: {list(to_drop)}")
+
         return df_dropped
 
     def store_correlation(self, X: pd.DataFrame, y: pd.Series) -> None:
@@ -216,7 +242,7 @@ class GradientBoostingModel(ABC):
         pass
 
     @abstractmethod
-    def optimize_hyperparameters(
+    def _optimize_hyperparameters(
         self, X_train: pd.DataFrame, y_train: pd.Series, X_test: pd.DataFrame, y_test: pd.Series
     ) -> dict:
         """Abstract method to optimize hyperparameters."""

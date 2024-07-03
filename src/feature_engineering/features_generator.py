@@ -33,25 +33,14 @@ class FeatureGenerator:
         enemy_team_stats = (
             data.groupby(["gameid", "side"])
             .agg(
-                kills=("kills", "sum"),
-                deaths=("deaths", "sum"),
-                damagetochampions=("damagetochampions", "sum"),
-                totalgold=("totalgold", "sum"),
-                wpm=("wpm", "sum"),
+                enemyTeamKills=("kills", "sum"),
+                enemyTeamDeaths=("deaths", "sum"),
+                enemyTeamDamages=("damagetochampions", "sum"),
+                enemyTeamGolds=("totalgold", "sum"),
+                enemyTeamWardPlaced=("wpm", "sum"),
             )
             .reset_index()
         )
-
-        # Rename columns for clarity
-        enemy_team_stats.columns = [
-            "gameid",
-            "side",
-            "enemyTeamKills",
-            "enemyTeamDeaths",
-            "enemyTeamDamages",
-            "enemyTeamGolds",
-            "enemyTeamWardPlaced",
-        ]
 
         # Map sides to their opposites
         enemy_team_stats["side"] = enemy_team_stats["side"].map({"Blue": "Red", "Red": "Blue"})
@@ -62,23 +51,20 @@ class FeatureGenerator:
         # Compute key statistics
         data["ka_ratio"] = (data["kills"] + data["assists"]) / (
             data["enemyTeamKills"] + data["kills"] + data["assists"]
-        ).replace({np.inf: np.nan})
-        data["d_ratio"] = (data["deaths"] / data["enemyTeamDeaths"]).replace({np.inf: np.nan})
-        data["damages_ratio"] = (data["damagetochampions"] / data["enemyTeamDamages"]).replace({np.inf: np.nan})
-        data["damage_tanked_ratio"] = (
-            data["damagetakenperminute"] * data["gamelength"] / data["enemyTeamDamages"]
-        ).replace({np.inf: np.nan})
+        )
+        data["d_ratio"] = data["deaths"] / data["enemyTeamDeaths"]
+        data["damages_ratio"] = data["damagetochampions"] / data["enemyTeamDamages"]
+        data["damage_tanked_ratio"] = data["damagetakenperminute"] * data["gamelength"] / data["enemyTeamDamages"]
         data["damage_mitigated_ratio"] = (
             data["damagemitigatedperminute"] * data["gamelength"] / data["enemyTeamDamages"]
-        ).replace({np.inf: np.nan})
-        data["gold_ratio"] = (data["totalgold"] / data["enemyTeamGolds"]).replace({np.inf: np.nan})
-        data["cs_to_gold_ratio"] = (data["total_cs"] / data["enemyTeamGolds"]).replace({np.inf: np.nan})
-        data["wards_placed_ratio"] = (data["wpm"] * data["gamelength"] / data["enemyTeamWardPlaced"]).replace(
-            {np.inf: np.nan}
         )
-        data["wards_killed_ratio"] = (data["wcpm"] * data["gamelength"] / data["enemyTeamWardPlaced"]).replace(
-            {np.inf: np.nan}
-        )
+        data["gold_ratio"] = data["totalgold"] / data["enemyTeamGolds"]
+        data["cs_to_gold_ratio"] = data["total_cs"] / data["enemyTeamGolds"]
+        data["wards_placed_ratio"] = data["wpm"] * data["gamelength"] / data["enemyTeamWardPlaced"]
+        data["wards_killed_ratio"] = data["wcpm"] * data["gamelength"] / data["enemyTeamWardPlaced"]
+
+        # Replace inf and nan values in one go to improve efficiency
+        data.replace({np.inf: np.nan, np.nan: 0}, inplace=True)
 
         return data
 
@@ -157,15 +143,15 @@ class FeatureGenerator:
 
         # Calculate total game kills and total tower kills
         game_stats = (
-            data.groupby("gameid").agg(totalGameKills=("kills", "sum"), totalGameTowers=("towers", "sum")).reset_index()
+            data.groupby("gameid").agg(total_kills=("kills", "sum"), total_towers=("towers", "sum")).reset_index()
         )
 
         # Merge aggregated stats back to the original data
         data = data.merge(game_stats, on="gameid", how="left")
 
-        # Ensure no double counting by adding total game kills and towers as they are
-        data["total_kills_in_game"] = data["totalGameKills"]
-        data["total_towers_in_game"] = data["totalGameTowers"]
+        # Calculate patch average game length
+        patch_avg_gamelength = data.groupby("patch")["gamelength"].transform("mean")
+        data["patch_avg_gamelength"] = patch_avg_gamelength
 
         logger.info("Team features generation completed.\n")
         return data
