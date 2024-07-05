@@ -70,7 +70,7 @@ class OraclesElixir:
         id_cols = ["gameid", "playerid", "teamid", "league", "teamname", "playername"]
         oe_data.loc[:, id_cols] = oe_data[id_cols].apply(lambda x: x.str.strip()).replace("", np.nan)
         oe_data = oe_data.replace(NULL_REPLACEMENTS, pd.NA)
-        oe_data.loc[:, "gamelength"] = oe_data["gamelength"].astype(float).div(60)
+        oe_data["gamelength"] = oe_data["gamelength"].astype(float).div(60)
         logger.info("Data formatting completed.")
         return oe_data
 
