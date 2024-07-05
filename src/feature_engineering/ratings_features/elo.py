@@ -37,8 +37,8 @@ def update_elo_rating(old_elo: float, expected: float, actual_result: float, k_f
 def aggregate_team_elo(
     rows: pd.DataFrame, elo_ratings: Dict[Union[int, str], Dict[str, Any]], entity_key: str
 ) -> float:
-    """Aggregate Elo ratings for a team or player set."""
-    return sum(elo_ratings[getattr(row, entity_key)]["elo"] for row in rows.itertuples())
+    """Aggregate Elo ratings for a team or group of players."""
+    return rows[entity_key].map(lambda x: elo_ratings[x]["elo"]).sum()
 
 
 def dynamic_percentage_reset(
