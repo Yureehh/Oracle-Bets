@@ -13,7 +13,6 @@ Tim provides an invaluable service to the League community.
 
 import datetime as dt
 import json
-import os
 from dataclasses import dataclass, field
 from os import getenv
 
@@ -43,7 +42,7 @@ from utils.paths import (
     TRAINING_TEAM_CONFIG,
     YEARS_RANGE_PATH,
 )
-from utils.utils import get_sorting_keys, json_loader
+from utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
 
 # Load environment variables from .env file
 load_dotenv()
@@ -238,8 +237,8 @@ class DataGenerator:
 
     def store_enriched_data(self):
         """Store enriched team and player data to parquet files."""
-        self.team_data.to_parquet(PROCESSED_TEAMS, index=False)
-        self.player_data.to_parquet(PROCESSED_PLAYERS, index=False)
+        safe_store_df_as_parquet(self.team_data, PROCESSED_TEAMS, logger)
+        safe_store_df_as_parquet(self.player_data, PROCESSED_PLAYERS, logger)
         logger.info("Stored enriched data.")
 
     def extract_team_inference_data(self):
@@ -292,16 +291,7 @@ class DataGenerator:
         output_path = PROCESSED_DIR / f"flattened_{entity_type}s.parquet"
 
         # Store data to Parquet
-        try:
-            flattened_entities.to_parquet(output_path, index=False, engine="pyarrow")
-        except Exception:
-            # TODO!: find a way to avoid needing the fallback
-            logger.warning("Failed to save to Parquet. Fallback to CSV and re-read.")
-            fallback_csv_path = PROCESSED_DIR / f"flattened_{entity_type}s.csv"
-            flattened_entities.to_csv(fallback_csv_path, index=False)
-            read_back_data = pd.read_csv(fallback_csv_path)
-            read_back_data.to_parquet(output_path, index=False, engine="pyarrow")
-            os.remove(fallback_csv_path)
+        safe_store_df_as_parquet(flattened_entities, output_path, logger)
 
     def flatten_team_data(self):
         """Flatten the team_data dataframe to get the most recent record per team."""
@@ -329,6 +319,8 @@ class DataGenerator:
             logger.info("Starting data generation process.\n")
             self.clean_and_store_data(self.ingest_data_from_s3())
             self.enrich_datasets()
+            # self.team_data = pd.read_parquet(PROCESSED_TEAMS)
+            # self.player_data = pd.read_parquet(PROCESSED_PLAYERS)
             self.extract_training_data()
             self.flatten_inference_data()
             logger.info("Data generation process completed successfully.")

@@ -6,6 +6,7 @@ This script defines utility functions for the project.
 
 import json
 import logging
+import os
 import pickle
 from pathlib import Path
 from typing import Any, List, Tuple, Union
@@ -137,7 +138,7 @@ def store_model(path: Path, model, model_name: str, logger: logging.Logger, mode
             pickle.dump(model, f)
 
         logger.info(f"Stored {model_name} model to {path}")
-        models_logger.info(f"Stored {model_name} model to {path}\n")
+        models_logger.info(f"Stored {model_name} model to {path}")
     except Exception as e:
         logger.error(f"Failed to store the model: {e}")
         models_logger.error(f"Failed to store the model: {e}\n")
@@ -156,3 +157,19 @@ def load_training_data(
     except Exception as e:
         logger.error(f"Failed to load training data: {e}")
         raise
+
+
+def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Path, logger: logging.Logger):
+    """
+    Store a DataFrame to Parquet format with a fallback to CSV if an error occurs.
+    # TODO!: find a way to avoid needing the fallback to CSV
+    """
+    try:
+        df.to_parquet(output_path, index=False, engine="pyarrow")
+    except Exception:
+        logger.warning("Failed to save to Parquet. Fallback to CSV and re-read.")
+        fallback_csv_path = output_path.with_suffix(".csv")
+        df.to_csv(fallback_csv_path, index=False)
+        read_back_data = pd.read_csv(fallback_csv_path)
+        read_back_data.to_parquet(output_path, index=False, engine="pyarrow")
+        os.remove(fallback_csv_path)

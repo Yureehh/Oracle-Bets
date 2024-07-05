@@ -45,6 +45,7 @@ class LightGBMModel(GradientBoostingModel):
         model, X_test, y_test, eval_gameids, eval_sides = self.train_model(target_col)
         self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
         self._calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns, X_test)
+        return model
 
     def _prepare_features_and_target(self, target_col: str):
         """Prepare the features and target for model training."""
@@ -105,7 +106,7 @@ class LightGBMModel(GradientBoostingModel):
         if OUTCOME_PREDICTION_BEST_HYPERPARAMETERS.exists():
             best_params = load_model(OUTCOME_PREDICTION_BEST_HYPERPARAMETERS)
             logger.info(f"Found best hyperparameters: {best_params}\n")
-            models_logger.info(f"Found best hyperparameters: {best_params}\n")
+            models_logger.info(f"Found best hyperparameters: {best_params}")
         else:
             best_params = self._optimize_hyperparameters(X_train, y_train, X_val, y_val)
         return best_params
@@ -151,7 +152,7 @@ class LightGBMModel(GradientBoostingModel):
         logger.info(f"Best hyperparameters: {study.best_params}")
         logger.info(f"Best log loss: {study.best_value:.4f}\n")
         models_logger.info(f"Best hyperparameters: {study.best_params}")
-        models_logger.info(f"Best log loss: {study.best_value:.4f}\n")
+        models_logger.info(f"Best log loss: {study.best_value:.4f}")
         return study.best_params
 
     def _calculate_and_plot_feature_importances(self, model, X_test, y_test, selected_features, X_train):
@@ -160,4 +161,4 @@ class LightGBMModel(GradientBoostingModel):
         self.store_feature_importance(model, selected_features)
         self.calculate_permutation_importance(model, X_test, y_test, selected_features)
         self.calculate_and_plot_shap(model, X_train, selected_features)
-        logger.info("Finished calculating and plotting feature importances.")
+        logger.info("Finished calculating and plotting feature importances\n")

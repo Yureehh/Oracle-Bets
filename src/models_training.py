@@ -35,15 +35,15 @@ def initialize_and_train_model(
     start = dt.datetime.now()
 
     lightgbm_model.preprocess_data(target_column_name)
-    lightgbm_model.train_and_validate_model(target_column_name)
+    trained_model = lightgbm_model.train_and_validate_model(target_column_name)
 
     end = dt.datetime.now()
     elapsed_time = end - start
 
     logger.info(f"{model_name} model training and evaluation completed in {elapsed_time}")
-    models_logger.info(f"{model_name} model training and evaluation completed in {elapsed_time}\n")
+    models_logger.info(f"{model_name} model training and evaluation completed in {elapsed_time}")
 
-    return lightgbm_model
+    return trained_model
 
 
 def main():
@@ -51,17 +51,19 @@ def main():
     Main function to run the model training process.
     """
     try:
+        logger.info("Starting the training process...\n")
+        models_logger.info("Starting the training process...\n")
         training_team_data, training_player_data = load_training_data(TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA, logger)
         outcome_prediction_model = initialize_and_train_model(
             OUTCOME_MODEL_NAME, training_team_data, training_player_data, "result"
         )
-        model_path = MODELS_DIR / f"{OUTCOME_MODEL_NAME.lower()}.{MODEL_FILE_EXTENSION}"
+        model_path = MODELS_DIR / f"{OUTCOME_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
         store_model(model_path, outcome_prediction_model, OUTCOME_MODEL_NAME, logger, models_logger)
 
         logger.info("Training process completed successfully.\n")
-        models_logger.info("Training process completed successfully.\n")
+        models_logger.info("Training process completed successfully.\n\n\n")
     except Exception as e:
-        error_message = f"An error occurred during the training process: {e}\n"
+        error_message = f"An error occurred during the training process: {e}\n\n\n"
         logger.error(error_message)
         models_logger.error(error_message)
 
