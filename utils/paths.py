@@ -28,6 +28,7 @@ EXTERNAL_DIR = DATA_DIR / "external"
 DISCORD_CONFIG = CONFIG_DIR / "discord_config.json"
 DATA_INGESTION_DIR = CONFIG_DIR / "data_ingestion"
 DEFAULT_MODELS_PARAMETERS = CONFIG_DIR / "default_models_parameters.json"
+TARGET_FEATURES = CONFIG_DIR / "target_features.json"
 TRAINING_AND_INPUT_COLS_DIR = CONFIG_DIR / "train_and_input_cols"
 
 # Data Ingestion
@@ -63,7 +64,7 @@ SCHEDULE = PROCESSED_DIR / "schedule.parquet"
 FLATTENED_TEAMS = PROCESSED_DIR / "flattened_teams.parquet"
 FLATTENED_PLAYERS = PROCESSED_DIR / "flattened_players.parquet"
 
-# Training and input cols
+# Training and input cols for outcome prediction
 TRAINING_TEAM_CONFIG = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
 FLATTENED_TEAM_CONFIG = TRAINING_AND_INPUT_COLS_DIR / "flattened_team_config.json"
 TRAINING_PLAYER_CONFIG = TRAINING_AND_INPUT_COLS_DIR / "training_player_config.json"
@@ -71,10 +72,10 @@ FLATTENED_PLAYER_CONFIG = TRAINING_AND_INPUT_COLS_DIR / "flattened_player_config
 
 # Models storage
 WHOLE_HISTORY_RATING_PATH = MODELS_DIR / "whr.pkl"
-PREDICTION_MODEL_PATH = MODELS_DIR / "lightgbm.pkl"
-LIGHTGBM_CATEGORICAL_FEATURES = MODELS_DIR / "LightGBM_categorical_features.pkl"
-LIGHTGBM_FINAL_FEATURES = MODELS_DIR / "LightGBM_final_features.pkl"
-LIGHTGBM_BEST_HYPERPARAMETERS = MODELS_DIR / "LightGBM_best_hyperparameters.pkl"
+OUTCOME_PREDICTION_MODEL_PATH = MODELS_DIR / "OutcomePrediction.pkl"
+OUTCOME_PREDICTION_CATEGORICAL_FEATURES = MODELS_DIR / "OutcomePrediction_categorical_features.pkl"
+OUTCOME_PREDICTION_FINAL_FEATURES = MODELS_DIR / "OutcomePrediction_final_features.pkl"
+OUTCOME_PREDICTION_BEST_HYPERPARAMETERS = MODELS_DIR / "OutcomePrediction_best_hyperparameters.pkl"
 
 # Reports storage
 LOGS_DIR = REPORTS_DIR / "logs"

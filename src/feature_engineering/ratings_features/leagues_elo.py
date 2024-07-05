@@ -24,13 +24,6 @@ ELO_DIVISOR = 400  # Constant for Elo rating calculation
 def map_team_to_league(df: pd.DataFrame, team_column: str) -> Dict[str, str]:
     """
     Map each team to its corresponding league based on the highest frequency of league appearance.
-
-    Parameters:
-        df (pd.DataFrame): DataFrame containing at least columns for teams and leagues.
-        team_column (str): Name of the column in the DataFrame that contains team names.
-
-    Returns:
-        Dict[str, str]: A dictionary mapping each team to its most frequently associated league.
     """
     belonging_league = df.groupby(team_column)["league"].agg(lambda x: x.value_counts().idxmax()).to_dict()
     return belonging_league
@@ -39,13 +32,6 @@ def map_team_to_league(df: pd.DataFrame, team_column: str) -> Dict[str, str]:
 def expected_outcome(elo_a: float, elo_b: float) -> float:
     """
     Calculate the expected match outcome between two aggregated Elo ratings.
-
-    Parameters:
-        elo_a (float): Elo rating of team A.
-        elo_b (float): Elo rating of team B.
-
-    Returns:
-        float: Expected outcome probability for team A.
     """
     exponent = (elo_b - elo_a) / ELO_DIVISOR
     return 1 / (1 + 10**exponent)
@@ -54,15 +40,6 @@ def expected_outcome(elo_a: float, elo_b: float) -> float:
 def update_elo_rating(old_elo: float, expected: float, actual_result: float, k_factor: int) -> float:
     """
     Update Elo rating based on match result.
-
-    Parameters:
-        old_elo (float): Previous Elo rating.
-        expected (float): Expected match outcome.
-        actual_result (float): Actual match result (1 for win, 0 for loss).
-        k_factor (int): K-factor for Elo rating adjustment.
-
-    Returns:
-        float: Updated Elo rating.
     """
     adjustment = k_factor * (actual_result - expected)
     return old_elo + adjustment
@@ -73,11 +50,6 @@ def dynamic_percentage_reset_league_elo(
 ) -> None:
     """
     Apply dynamic percentage reset to league Elo ratings at the beginning of a new season.
-
-    Parameters:
-        elo_ratings (Dict[str, Dict[str, Union[float, int]]]): Dictionary of current Elo ratings.
-        baseline (float): Baseline Elo value.
-        current_season (int): The current season.
     """
     for _, data in elo_ratings.items():
         if data["season"] < current_season:
@@ -98,15 +70,6 @@ def process_game(
 ) -> None:
     """
     Process each game and update Elo ratings for both sides.
-
-    Parameters:
-        df_sorted (pd.DataFrame): The sorted DataFrame containing match data.
-        game_group (pd.DataFrame): The game group DataFrame.
-        elo_ratings (Dict[str, Dict[str, Union[float, int]]]): Dictionary of current Elo ratings.
-        k_factor (int): K-factor for Elo rating adjustment.
-        entity_key (str): The column name for the entity identifier.
-        belonging_league (Dict[str, str]): Dictionary mapping each team to its most frequently associated league.
-        baseline_elo (float): Baseline Elo value.
     """
     current_season = game_group.iloc[0]["season"]
     dynamic_percentage_reset_league_elo(elo_ratings, baseline_elo, current_season)
@@ -154,15 +117,6 @@ def calculate_leagues_elo(
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Calculate and update Elo ratings for entities within each team, return DataFrame and ratings dictionary.
-
-    Parameters:
-        df (pd.DataFrame): DataFrame containing match data.
-        entity (str): The type of entity, e.g., 'team'.
-        initial_elo (int): Initial Elo rating.
-        k_factor (int): K-factor for Elo rating adjustment.
-
-    Returns:
-        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: Updated DataFrame, team-to-league mapping, and league Elo ratings.
     """
     entity_key = "teamid"
     df_sorted = df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)

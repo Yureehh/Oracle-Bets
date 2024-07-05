@@ -49,7 +49,7 @@ class PandaScoreSchedule:
             return None
 
     @staticmethod
-    def _parse_matches_response(matches: list) -> pd.DataFrame:
+    def _parse_matches_response(matches: List[dict]) -> pd.DataFrame:
         """Parse and structure matches data from the API response."""
         try:
             data = [
@@ -79,10 +79,17 @@ class PandaScoreSchedule:
     @staticmethod
     def load_schedule(schedule_path: str, leagues: Optional[str] = None) -> pd.DataFrame:
         """Load the schedule from a parquet file and optionally filter by leagues."""
-        schedule_df = pd.read_parquet(schedule_path)
-        if leagues:
-            return schedule_df[schedule_df["league"].isin(leagues.split(","))]
-        return schedule_df
+        try:
+            schedule_df = pd.read_parquet(schedule_path)
+            if leagues:
+                schedule_df = schedule_df[schedule_df["league"].isin(leagues.split(","))]
+            return schedule_df
+        except FileNotFoundError as e:
+            logger.error(f"File not found: {schedule_path} - {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Error loading schedule: {e}")
+            return pd.DataFrame()
 
     def get_schedule(
         self,
@@ -112,7 +119,6 @@ class PandaScoreSchedule:
             if parsed_matches.empty:
                 break
 
-            parsed_matches = pd.DataFrame(parsed_matches)
             parsed_matches[START_STRING] = pd.to_datetime(parsed_matches[START_STRING], format=time_format)
             if parsed_matches[START_STRING].dt.tz is None:
                 parsed_matches[START_STRING] = parsed_matches[START_STRING].dt.tz_localize("UTC")

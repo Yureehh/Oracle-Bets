@@ -6,7 +6,7 @@ This script is intended to query the data lake and predict upcoming games using 
 
 import pickle
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -21,9 +21,9 @@ from feature_engineering.ratings_features.trueskill import win_probability as tr
 from prediction_models.gbdt_model import GradientBoostingModel
 from utils.paths import (
     LEAGUE_ELO,
-    LIGHTGBM_CATEGORICAL_FEATURES,
-    LIGHTGBM_FINAL_FEATURES,
-    PREDICTION_MODEL_PATH,
+    OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
+    OUTCOME_PREDICTION_FINAL_FEATURES,
+    OUTCOME_PREDICTION_MODEL_PATH,
     TEAM_LEAGUES_MAPPING,
 )
 from utils.team import Team
@@ -37,15 +37,22 @@ RATING_DECIMALS = 3
 
 @dataclass
 class MatchPredictor:
-    prediction_model: dict = field(default=None, init=False)
-    team_to_league: pd.DataFrame = field(default=None, init=False)
-    league_to_elo: pd.DataFrame = field(default=None, init=False)
+    outcome_prediction_model: Optional[dict] = field(default=None, init=False)
+    team_to_league: Optional[pd.DataFrame] = field(default=None, init=False)
+    league_to_elo: Optional[pd.DataFrame] = field(default=None, init=False)
 
     def __post_init__(self):
         """Initializes the models from predefined paths."""
-        self.prediction_model = load_model(PREDICTION_MODEL_PATH)
-        self.team_to_league = pd.read_parquet(TEAM_LEAGUES_MAPPING)
-        self.league_to_elo = pd.read_parquet(LEAGUE_ELO)
+        self.load_models_and_data()
+
+    def load_models_and_data(self):
+        """Lazy loading of models and dataframes."""
+        if self.outcome_prediction_model is None:
+            self.outcome_prediction_model = load_model(OUTCOME_PREDICTION_MODEL_PATH)
+        if self.team_to_league is None:
+            self.team_to_league = pd.read_parquet(TEAM_LEAGUES_MAPPING)
+        if self.league_to_elo is None:
+            self.league_to_elo = pd.read_parquet(LEAGUE_ELO)
 
     @staticmethod
     def is_iterable(obj: Any) -> bool:
@@ -64,17 +71,10 @@ class MatchPredictor:
     @staticmethod
     def elo_prediction(team1_elo: List[float], team2_elo: List[float]) -> float:
         """Predict based on ELO rating differences."""
-        return round(
-            1
-            / (
-                1
-                + 10
-                ** (
-                    (MatchPredictor.aggregate_stats(team2_elo) - MatchPredictor.aggregate_stats(team1_elo)) / ELO_FACTOR
-                )
-            ),
-            RATING_DECIMALS,
-        )
+        team1_elo_sum = MatchPredictor.aggregate_stats(team1_elo)
+        team2_elo_sum = MatchPredictor.aggregate_stats(team2_elo)
+        prediction = 1 / (1 + 10 ** ((team2_elo_sum - team1_elo_sum) / ELO_FACTOR))
+        return round(prediction, RATING_DECIMALS)
 
     @staticmethod
     def gl2_prediction(
@@ -88,7 +88,8 @@ class MatchPredictor:
         mean_blue_rating = calculate_mean_rating(blue_ratings)
         mean_red_rating = calculate_mean_rating(red_ratings)
         mean_blue_impact = sum(model.reduce_impact(rating) for rating in blue_ratings) / len(blue_ratings)
-        return round(model.expect_score(mean_blue_rating, mean_red_rating, mean_blue_impact), RATING_DECIMALS)
+        prediction = model.expect_score(mean_blue_rating, mean_red_rating, mean_blue_impact)
+        return round(prediction, RATING_DECIMALS)
 
     @staticmethod
     def pl_prediction(
@@ -98,7 +99,8 @@ class MatchPredictor:
         model = PlackettLuce()
         team1_ratings = [model.rating(mu, sigma) for mu, sigma in zip(team1_mus, team1_sigmas)]
         team2_ratings = [model.rating(mu, sigma) for mu, sigma in zip(team2_mus, team2_sigmas)]
-        return round(pl_win_probability(model, team1_ratings, team2_ratings)[0], RATING_DECIMALS)
+        prediction = pl_win_probability(model, team1_ratings, team2_ratings)[0]
+        return round(prediction, RATING_DECIMALS)
 
     @staticmethod
     def trueskill_prediction(
@@ -107,7 +109,8 @@ class MatchPredictor:
         """Predict based on TrueSkill ratings."""
         team1_ratings = [TrueskillRating(mu, sigma) for mu, sigma in zip(team1_mus, team1_sigmas)]
         team2_ratings = [TrueskillRating(mu, sigma) for mu, sigma in zip(team2_mus, team2_sigmas)]
-        return round(trueskill_win_probability(team1_ratings, team2_ratings), RATING_DECIMALS)
+        prediction = trueskill_win_probability(team1_ratings, team2_ratings)
+        return round(prediction, RATING_DECIMALS)
 
     def whr_prediction(self, blue_name: int, red_name: int) -> float:
         """Predict winning likelihood based on Whole History Rating (WHR)."""
@@ -128,19 +131,22 @@ class MatchPredictor:
         except IndexError as e:
             raise ValueError(f"League not found in ELO ratings: {e}") from e
 
-        return round(1 / (1 + 10 ** ((team2_league_elo - team1_league_elo) / ELO_FACTOR)), RATING_DECIMALS)
+        prediction = 1 / (1 + 10 ** ((team2_league_elo - team1_league_elo) / ELO_FACTOR))
+        return round(prediction, RATING_DECIMALS)
 
     @staticmethod
     def side_wr_prediction(team1_side_wr: float, team2_side_wr: float) -> float:
         """Predict winning likelihood based on side win rates."""
-        return round(team1_side_wr / (team1_side_wr + team2_side_wr + 1e-8), RATING_DECIMALS)
+        prediction = team1_side_wr / (team1_side_wr + team2_side_wr + 1e-8)
+        return round(prediction, RATING_DECIMALS)
 
     @staticmethod
     def patch_season_wr_prediction(team1_patch_wr: float, team2_patch_wr: float) -> float:
         """Predict winning likelihood based on patch win rates."""
-        return round(team1_patch_wr / (team1_patch_wr + team2_patch_wr + 1e-8), RATING_DECIMALS)
+        prediction = team1_patch_wr / (team1_patch_wr + team2_patch_wr + 1e-8)
+        return round(prediction, RATING_DECIMALS)
 
-    def apply_team_stat_modifications(
+    def apply_stat_modifications(
         self, team1_stats: pd.Series, team2_stats: pd.Series, team1_side: str, team2_side: str, account_for_side: bool
     ) -> None:
         """Applies statistical predictions to modify team statistics based on game side and other predictive metrics."""
@@ -160,17 +166,17 @@ class MatchPredictor:
         team1_stats["league_elo_win_likelihood"] = self.league_elo_prediction(
             team1_stats["teamid"], team2_stats["teamid"]
         )
-        team1_stats["ema_side_win_likelihood"] = (
+        team1_stats["side_win_likelihood"] = (
             self.side_wr_prediction(
                 team1_stats[f"ema_{team1_side.lower()}_side"], team2_stats[f"ema_{team2_side.lower()}_side"]
             )
             if account_for_side
             else 0.5
         )
-        team1_stats["ema_patch_win_likelihood"] = self.patch_season_wr_prediction(
+        team1_stats["patch_win_likelihood"] = self.patch_season_wr_prediction(
             team1_stats["ema_patch_win_rate"], team2_stats["ema_patch_win_rate"]
         )
-        team1_stats["ema_season_win_likelihood"] = self.patch_season_wr_prediction(
+        team1_stats["season_win_likelihood"] = self.patch_season_wr_prediction(
             team1_stats["ema_season_win_rate"], team2_stats["ema_season_win_rate"]
         )
 
@@ -179,8 +185,6 @@ class MatchPredictor:
             "date",
             "ema_red_side",
             "ema_blue_side",
-            "ema_patch_win_rate",
-            "ema_season_win_rate",
             "league_elo",
             "elo",
             "gl2_mu",
@@ -196,7 +200,7 @@ class MatchPredictor:
     def calculate_team_stats(self, team1: Team, team2: Team, account_for_side: bool) -> pd.DataFrame:
         """Combines and modifies team stats for further processing and analysis."""
         team1_stats, team2_stats = team1.team_stats.copy(), team2.team_stats.copy()
-        self.apply_team_stat_modifications(team1_stats, team2_stats, team1.side, team2.side, account_for_side)
+        self.apply_stat_modifications(team1_stats, team2_stats, team1.side, team2.side, account_for_side)
         team2_stats.index = [f"opp_{col}" for col in team2_stats.index]
         return pd.concat([team1_stats.to_frame().T, team2_stats.to_frame().T], axis=1)
 
@@ -271,14 +275,14 @@ class MatchPredictor:
 
     def keep_necessary_columns(self, final_stats: pd.DataFrame) -> pd.DataFrame:
         """Keeps only the necessary columns for the prediction model."""
-        with open(LIGHTGBM_FINAL_FEATURES, "rb") as f:
+        with open(OUTCOME_PREDICTION_FINAL_FEATURES, "rb") as f:
             final_features = pickle.load(f)
         final_stats = final_stats[final_features]
         return self.convert_data_types(final_stats)
 
     def convert_data_types(self, final_stats: pd.DataFrame) -> pd.DataFrame:
         """Converts columns to numeric where possible, otherwise converts to category type."""
-        with open(LIGHTGBM_CATEGORICAL_FEATURES, "rb") as f:
+        with open(OUTCOME_PREDICTION_CATEGORICAL_FEATURES, "rb") as f:
             categorical_features = pickle.load(f)
 
         final_stats = final_stats.copy()
@@ -295,7 +299,7 @@ class MatchPredictor:
         final_stats = GradientBoostingModel.process_players_likelihood_columns(final_stats)
         final_stats = GradientBoostingModel.fuse_opposing_team_features(final_stats)
         final_stats = self.keep_necessary_columns(final_stats)
-        return self.prediction_model.predict_proba(final_stats).round(PREDICTION_PRECISION)
+        return self.outcome_prediction_model.predict_proba(final_stats).round(PREDICTION_PRECISION)
 
     def predict_match(self, team1: Team, team2: Team, account_for_side: bool = True) -> dict:
         """Main method to predict the outcome of a match between two teams."""

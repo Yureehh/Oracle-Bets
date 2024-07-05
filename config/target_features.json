@@ -1,0 +1,3 @@
+{
+  "targets": ["result", "gamelength", "total_kills", "total_towers"]
+}

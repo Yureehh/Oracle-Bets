@@ -1,3 +1,10 @@
+"""
+PandaScore Schedule Fetcher.
+
+This script fetches and stores the schedule data from the PandaScore API.
+It retrieves the schedule for a specified range of days and exports it to a parquet file.
+"""
+
 import datetime as dt
 from os import getenv
 
@@ -17,7 +24,12 @@ PANDASCORE_API_KEY_ENV = "PANDASCORE_API_KEY"
 
 
 def main():
-    """Main function to fetch and store the schedule data."""
+    """
+    Main function to fetch and store the schedule data.
+
+    This function retrieves the current date, calculates the end date,
+    fetches the schedule from the PandaScore API, and stores it in a parquet file.
+    """
     try:
         # Get the current date and time, and calculate the end date
         start = dt.datetime.now().strftime(TIME_FORMAT)

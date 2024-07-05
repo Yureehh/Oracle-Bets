@@ -40,13 +40,6 @@ class EarlyGameStatsImputer:
     def train_models(self, train_data: pd.DataFrame, target: str) -> Dict[str, RegressorMixin]:
         """
         Train base models for the ensemble.
-
-        Args:
-            train_data (pd.DataFrame): Training data.
-            target (str): Target column to predict.
-
-        Returns:
-            Dict[str, RegressorMixin]: Trained models.
         """
         models = {
             "KNN": KNeighborsRegressor(n_neighbors=5),
@@ -61,13 +54,6 @@ class EarlyGameStatsImputer:
     def fit_meta_model(self, predictions: pd.DataFrame, target_values: pd.Series) -> LinearRegression:
         """
         Train meta-model using predictions from base models.
-
-        Args:
-            predictions (pd.DataFrame): Predictions from base models.
-            target_values (pd.Series): True target values.
-
-        Returns:
-            LinearRegression: Trained meta-model.
         """
         meta_model = LinearRegression()
         meta_model.fit(predictions, target_values)
@@ -78,14 +64,6 @@ class EarlyGameStatsImputer:
     ) -> pd.DataFrame:
         """
         Generate predictions using base models.
-
-        Args:
-            models (Dict[str, RegressorMixin]): Trained base models.
-            data (pd.DataFrame): Data for prediction.
-            features (List[str]): Feature columns.
-
-        Returns:
-            pd.DataFrame: Predictions from base models.
         """
         predictions = {name: model.predict(data[features]) for name, model in models.items()}
         return pd.DataFrame(predictions)
@@ -94,12 +72,6 @@ class EarlyGameStatsImputer:
     def clean_data(data: pd.Series) -> pd.Series:
         """
         Replace NaN or infinite values with the mean.
-
-        Args:
-            data (pd.Series): Data to clean.
-
-        Returns:
-            pd.Series: Cleaned data.
         """
         data = data.replace([np.inf, -np.inf], np.nan)
         return data.fillna(data.mean())
@@ -108,13 +80,6 @@ class EarlyGameStatsImputer:
     def safe_divide(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """
         Safely divide two arrays, replacing illegal division results with NaN.
-
-        Args:
-            a (np.ndarray): Numerator.
-            b (np.ndarray): Denominator.
-
-        Returns:
-            np.ndarray: Result of division.
         """
         with np.errstate(divide="ignore", invalid="ignore"):
             c = np.true_divide(a, b)
@@ -124,11 +89,6 @@ class EarlyGameStatsImputer:
     def log_performance(self, model_name: str, predictions: pd.Series, true_values: pd.Series) -> None:
         """
         Log performance metrics of the model.
-
-        Args:
-            model_name (str): Name of the model.
-            predictions (pd.Series): Predictions made by the model.
-            true_values (pd.Series): True values.
         """
         true_values = self.clean_data(true_values)
         predictions = self.clean_data(pd.Series(predictions))
@@ -154,25 +114,12 @@ class EarlyGameStatsImputer:
     def prepare_data(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         Prepare data for imputation by filtering out rows with missing involved columns.
-
-        Args:
-            data (pd.DataFrame): Raw data.
-
-        Returns:
-            pd.DataFrame: Filtered data.
         """
         return data.dropna(subset=self.involved_cols)
 
     def impute_data(self, data: pd.DataFrame, entity: str) -> pd.DataFrame:
         """
         Impute missing early game stats.
-
-        Args:
-            data (pd.DataFrame): Data with missing stats.
-            entity (str): Name of the entity being imputed (e.g., 'player').
-
-        Returns:
-            pd.DataFrame: Data with imputed values.
         """
         logger.info(f"Starting data imputation for {entity}...")
         data = self.prepare_data(data)

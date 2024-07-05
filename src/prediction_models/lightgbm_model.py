@@ -15,7 +15,7 @@ from sklearn.metrics import log_loss
 
 from prediction_models.gbdt_model import GradientBoostingModel
 from utils.logger import logger, models_logger
-from utils.paths import LIGHTGBM_BEST_HYPERPARAMETERS
+from utils.paths import OUTCOME_PREDICTION_BEST_HYPERPARAMETERS
 from utils.utils import load_model
 
 # Constants
@@ -25,15 +25,36 @@ TEST_SIZE = 0.2
 
 @dataclass
 class LightGBMModel(GradientBoostingModel):
-    def train_model(self):
+    """A class to train and evaluate a LightGBM model."""
+
+    def train_model(self, target_col: str):
         """Train the LightGBM model using the training data."""
-        self.training_data.sort_values(by=["date", "gameid", "side"], inplace=True)
-        X, y = self.training_data.drop(["date", "result"], axis=1), self.training_data["result"]
+        X, y, categorical_cols = self._prepare_features_and_target(target_col)
+        X_train, X_val, X_test, y_train, y_val, y_test, eval_gameids, eval_sides = self._split_data(X, y)
 
-        # Handle categorical columns
-        X, categorical_cols = self.preprocess_categorical_features(X, exclude_cols=["gameid", "side", "league"])
+        X_train, X_val, X_test = self._preprocess_features(X_train, X_val, X_test)
+        X_train, X_val, X_test = self._select_and_store_features(X_train, X_val, X_test, y_val, categorical_cols)
 
-        # Split the data into training, validation, and testing sets
+        best_params = self._get_best_hyperparameters(X_train, y_train, X_val, y_val)
+        model = self._fit_model(X_train, y_train, X_val, y_val, best_params)
+
+        return model, X_test, y_test, eval_gameids, eval_sides
+
+    def train_and_validate_model(self, target_col="result"):
+        """Train and validate the LightGBM model."""
+        model, X_test, y_test, eval_gameids, eval_sides = self.train_model(target_col)
+        self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
+        self._calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns, X_test)
+        return model
+
+    def _prepare_features_and_target(self, target_col: str):
+        """Prepare the features and target for model training."""
+        X, y = self.training_data.drop([target_col], axis=1), self.training_data[target_col]
+        X, categorical_features = self.preprocess_categorical_features(X, exclude_cols=["gameid", "side", "league"])
+        return X, y, categorical_features
+
+    def _split_data(self, X: pd.DataFrame, y: pd.Series):
+        """Split the data into training, validation, and testing sets."""
         X_train, X_val, X_test, y_train, y_val, y_test = self.grouped_stratified_train_val_test_split(
             X, y, X["gameid"], X["league"], val_size=VALIDATION_SIZE, test_size=TEST_SIZE
         )
@@ -41,71 +62,66 @@ class LightGBMModel(GradientBoostingModel):
         # Store evaluation gameids and sides
         eval_gameids, eval_sides = X_test["gameid"], X_test["side"]
 
-        # Drop specific columns
+        # Drop unnecessary columns
         X_train = X_train.drop(columns=["gameid", "side", "league"], errors="ignore")
         X_val = X_val.drop(columns=["gameid", "side", "league"], errors="ignore")
         X_test = X_test.drop(columns=["gameid", "side", "league"], errors="ignore")
+        return X_train, X_val, X_test, y_train, y_val, y_test, eval_gameids, eval_sides
 
-        # Process likelihood columns and fuse opposing team features
+    def _preprocess_features(self, X_train: pd.DataFrame, X_val: pd.DataFrame, X_test: pd.DataFrame):
+        """Process and fuse features for training, validation, and testing sets."""
         X_train = self.process_players_likelihood_columns(X_train)
         X_val = self.process_players_likelihood_columns(X_val)
         X_test = self.process_players_likelihood_columns(X_test)
         X_train = self.fuse_opposing_team_features(X_train)
         X_val = self.fuse_opposing_team_features(X_val)
         X_test = self.fuse_opposing_team_features(X_test)
+        return X_train, X_val, X_test
 
-        # Remove unnecessary columns and plot correlation matrix
+    def _select_and_store_features(
+        self, X_train: pd.DataFrame, X_val: pd.DataFrame, X_test: pd.DataFrame, y_val: pd.Series, categorical_cols: list
+    ):
+        """
+        Select features, store them, and plot the correlation matrix.
+        NOTE: I don't use RFE to further reduce features here, since the number of features is already reduced
+        """
         X_train = self.remove_unnecessary_columns(X_train)
         selected_features = X_train.columns
         X_val = X_val[selected_features]
         X_test = X_test[selected_features]
-        self.store_correlation(X_val, y_val)
 
         # Update and store categorical features
         categorical_features = [col for col in categorical_cols if col in selected_features]
+
+        self.store_correlation(X_val, y_val)
         self.store_model_features(selected_features)
         self.store_categorical_features(categorical_features)
 
-        # * NOTE: I don't use RFE to further reduce features here, since the number of features is already reduced
+        return X_train, X_val, X_test
 
-        # Get best hyperparameters and fit the model
-        best_params = self.get_best_hyperparameters(X_train, y_train, X_val, y_val)
-        model = lgb.LGBMClassifier(**best_params, force_col_wise=True, verbosity=-1)
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
-        return model, X_test, y_test, eval_gameids, eval_sides
-
-    def train_and_validate_model(self):
-        """Train and validate the LightGBM model."""
-        model, X_test, y_test, eval_gameids, eval_sides = self.train_model()
-        self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
-        self.calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns, X_test)
-
-    def validate_only(self, model, X_test, y_test, eval_gameids, eval_sides):
-        """Validate an existing model."""
-        self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
-        self.calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns, X_test)
-
-    def calculate_and_plot_feature_importances(self, model, X_test, y_test, selected_features, X_train):
-        """Calculate and plot feature importances."""
-        logger.info("Calculating and plotting feature importances...")
-        self.store_feature_importance(model, selected_features)
-        self.calculate_permutation_importance(model, X_test, y_test, selected_features)
-        self.calculate_and_plot_shap(model, X_train, selected_features)
-        logger.info("Finished calculating and plotting feature importances.\n")
-
-    def get_best_hyperparameters(self, X_train, y_train, X_val, y_val):
+    def _get_best_hyperparameters(
+        self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series
+    ):
         """Retrieve the best hyperparameters for the LightGBM model."""
-        if LIGHTGBM_BEST_HYPERPARAMETERS.exists():
-            best_params = load_model(LIGHTGBM_BEST_HYPERPARAMETERS)
+        if OUTCOME_PREDICTION_BEST_HYPERPARAMETERS.exists():
+            best_params = load_model(OUTCOME_PREDICTION_BEST_HYPERPARAMETERS)
             logger.info(f"Found best hyperparameters: {best_params}\n")
-            models_logger.info(f"Found best hyperparameters: {best_params}\n")
+            models_logger.info(f"Found best hyperparameters: {best_params}")
         else:
-            best_params = self.optimize_hyperparameters(X_train, y_train, X_val, y_val)
+            best_params = self._optimize_hyperparameters(X_train, y_train, X_val, y_val)
         return best_params
 
-    def optimize_hyperparameters(
+    def _fit_model(
+        self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series, best_params: dict
+    ):
+        """Fit the LightGBM model using the best hyperparameters."""
+        model = lgb.LGBMClassifier(**best_params, force_col_wise=True, verbosity=-1)
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
+        return model
+
+    def _optimize_hyperparameters(
         self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series
-    ) -> dict:
+    ):
         """Optimize hyperparameters for the LightGBM model using Optuna."""
 
         def objective(trial):
@@ -136,5 +152,13 @@ class LightGBMModel(GradientBoostingModel):
         logger.info(f"Best hyperparameters: {study.best_params}")
         logger.info(f"Best log loss: {study.best_value:.4f}\n")
         models_logger.info(f"Best hyperparameters: {study.best_params}")
-        models_logger.info(f"Best log loss: {study.best_value:.4f}\n")
+        models_logger.info(f"Best log loss: {study.best_value:.4f}")
         return study.best_params
+
+    def _calculate_and_plot_feature_importances(self, model, X_test, y_test, selected_features, X_train):
+        """Calculate and plot feature importances."""
+        logger.info("Calculating and plotting feature importances...")
+        self.store_feature_importance(model, selected_features)
+        self.calculate_permutation_importance(model, X_test, y_test, selected_features)
+        self.calculate_and_plot_shap(model, X_train, selected_features)
+        logger.info("Finished calculating and plotting feature importances\n")

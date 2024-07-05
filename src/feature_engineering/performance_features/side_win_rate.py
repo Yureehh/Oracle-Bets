@@ -7,20 +7,19 @@ using an Exponentially Weighted Mean (EWM) model.
 
 from typing import Union
 
-import numpy as np
 import pandas as pd
 
 import src.ingestion.oracles_elixir as oe
 from utils.paths import DEFAULT_MODELS_PARAMETERS
 from utils.utils import get_identity, get_sorting_keys, json_loader
 
-# Load configuration parameters
+# Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)
 HALF_LIFE = config_params["half_life"]
 EPSILON = 1e-8  # Small constant to prevent division by zero
 
 
-def compute_ema_side(df: pd.DataFrame, side: str, identity: str) -> pd.DataFrame:
+def compute_ema_side(df: pd.DataFrame, side: str, identity: str, half_life: float) -> pd.DataFrame:
     """
     Compute Exponentially Weighted Mean (EWM) for a specific side (Red or Blue).
 
@@ -28,6 +27,7 @@ def compute_ema_side(df: pd.DataFrame, side: str, identity: str) -> pd.DataFrame
         df (pd.DataFrame): The input DataFrame containing match data.
         side (str): The side to compute EWM for ('Red' or 'Blue').
         identity (str): The identity column to group by (e.g., 'player' or 'team').
+        half_life (float): The half-life for the EWM calculation.
 
     Returns:
         pd.DataFrame: DataFrame with computed EWM for the specified side.
@@ -35,23 +35,24 @@ def compute_ema_side(df: pd.DataFrame, side: str, identity: str) -> pd.DataFrame
     side_df = df[df["side"] == side].copy()
     ema_col = f"ema_{side.lower()}_side"
     side_df[f"{ema_col}_before"] = side_df.groupby(identity)["result"].transform(
-        lambda x: x.ewm(halflife=HALF_LIFE, ignore_na=True).mean().shift().bfill()
+        lambda x: x.ewm(halflife=half_life, ignore_na=True).mean().shift().bfill()
     )
     side_df[f"{ema_col}_after"] = side_df.groupby(identity)["result"].transform(
-        lambda x: x.ewm(halflife=HALF_LIFE, ignore_na=True).mean()
+        lambda x: x.ewm(halflife=half_life, ignore_na=True).mean()
     )
     return side_df
 
 
-def calculate_ema_side_win_likelihood(row: pd.Series) -> Union[float, np.nan]:
+def calculate_side_win_likelihood(row: pd.Series, epsilon: float = EPSILON) -> Union[float, None]:
     """
     Calculate the EMA side win percentage.
 
     Parameters:
         row (pd.Series): A row from the DataFrame containing match data.
+        epsilon (float): A small constant to prevent division by zero.
 
     Returns:
-        Union[float, np.nan]: Calculated EMA side win likelihood, or NaN if not computable.
+        Union[float, None]: Calculated EMA side win likelihood, or None if not computable.
     """
     side = row["side"].lower()  # Ensure the side value is lowercase for consistency.
     opposite_side = "red" if side == "blue" else "blue"  # Determine the opposite side.
@@ -62,8 +63,8 @@ def calculate_ema_side_win_likelihood(row: pd.Series) -> Union[float, np.nan]:
     # Check if the required columns have non-null values.
     if pd.notnull(row[ema_side_col]) and pd.notnull(row[ema_opp_side_col]):
         # Calculate the EMA side win percentage with epsilon to avoid division by zero.
-        return round(row[ema_side_col] / (row[ema_side_col] + row[ema_opp_side_col] + EPSILON), 3)
-    return np.nan
+        return round(row[ema_side_col] / (row[ema_side_col] + row[ema_opp_side_col] + epsilon), 3)
+    return None
 
 
 def side_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFrame:
@@ -87,8 +88,8 @@ def side_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFrame
     identity = get_identity(entity)
 
     # Compute EMA for both Red and Blue sides
-    red_side = compute_ema_side(df, "Red", identity)
-    blue_side = compute_ema_side(df, "Blue", identity)
+    red_side = compute_ema_side(df, "Red", identity, HALF_LIFE)
+    blue_side = compute_ema_side(df, "Blue", identity, HALF_LIFE)
 
     # Merge and process
     merged = pd.concat([red_side, blue_side], ignore_index=True)
@@ -114,6 +115,7 @@ def side_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFrame
         # It will basically use last value of the opponent EMA  before the current row.
         merged[f"opp_ema_{color}_side_before"] = oe.get_opponent(merged[f"ema_{color}_side_before"].to_list(), entity)
 
-    # Predict Win Probability By Side Win Rate averaging player side win rate and opponent side win rate
-    merged["ema_side_win_likelihood"] = merged.apply(calculate_ema_side_win_likelihood, axis=1)
-    return merged
+    # Calculate win likelihood based on EMA
+    merged["side_win_likelihood"] = merged.apply(lambda row: calculate_side_win_likelihood(row), axis=1)
+
+    return merged.reset_index(drop=True)

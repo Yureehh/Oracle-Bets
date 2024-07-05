@@ -1,9 +1,3 @@
-"""
-Wrapper class for rating models
-
-This script contains a dataclass that serves as a wrapper for various rating models.
-"""
-
 from dataclasses import dataclass
 from typing import Any, Dict
 
@@ -21,93 +15,108 @@ class Ratings:
     A dataclass that serves as a wrapper for various rating models.
     """
 
-    def _prepare_args(self, df: Any, entity: str) -> Dict[str, Any]:
+    def _prepare_args(self, match_data: Any, entity_type: str) -> Dict[str, Any]:
         """
         Prepare arguments for rating calculation functions.
 
         Parameters:
-            df (Any): The input dataframe containing match data.
-            entity (str): The type of entity, e.g., 'team' or 'player'.
+            match_data (Any): The input dataframe containing match data.
+            entity_type (str): The type of entity, e.g., 'team' or 'player'.
 
         Returns:
             Dict[str, Any]: A dictionary of filtered arguments.
         """
-        return {"df": df, "entity": entity}
+        return {"df": match_data, "entity": entity_type}
 
-    def compute_elo(self, df: Any, entity: str) -> Any:
+    def _compute_rating(self, match_data: Any, entity_type: str, rating_function: Any) -> Any:
+        """
+        Generic method to compute ratings using the specified rating function.
+
+        Parameters:
+            match_data (Any): The input dataframe containing match data.
+            entity_type (str): The type of entity, e.g., 'team' or 'player'.
+            rating_function (Any): The rating calculation function to use.
+
+        Returns:
+            Any: The dataframe with computed ratings.
+        """
+        args = self._prepare_args(match_data, entity_type)
+        return rating_function(**args)
+
+    def compute_elo(self, match_data: Any, entity_type: str) -> Any:
         """
         Computes the ELO rating for the given dataframe and entity.
 
         Parameters:
-            df (Any): The input dataframe containing match data.
-            entity (str): The type of entity, e.g., 'team' or 'player'.
+            match_data (Any): The input dataframe containing match data.
+            entity_type (str): The type of entity, e.g., 'team' or 'player'.
 
         Returns:
             Any: The dataframe with computed ELO ratings.
         """
-        return calculate_elo(**self._prepare_args(df, entity))
+        return self._compute_rating(match_data, entity_type, calculate_elo)
 
-    def compute_glicko2(self, df: Any, entity: str) -> Any:
+    def compute_glicko2(self, match_data: Any, entity_type: str) -> Any:
         """
         Computes the Glicko-2 rating for the given dataframe and entity.
 
         Parameters:
-            df (Any): The input dataframe containing match data.
-            entity (str): The type of entity, e.g., 'team' or 'player'.
+            match_data (Any): The input dataframe containing match data.
+            entity_type (str): The type of entity, e.g., 'team' or 'player'.
 
         Returns:
             Any: The dataframe with computed Glicko-2 ratings.
         """
-        return calculate_glicko2(**self._prepare_args(df, entity))
+        return self._compute_rating(match_data, entity_type, calculate_glicko2)
 
-    def compute_plackett_luce(self, df: Any, entity: str) -> Any:
+    def compute_plackett_luce(self, match_data: Any, entity_type: str) -> Any:
         """
         Computes the Plackett-Luce rating for the given dataframe and entity.
 
         Parameters:
-            df (Any): The input dataframe containing match data.
-            entity (str): The type of entity, e.g., 'team' or 'player'.
+            match_data (Any): The input dataframe containing match data.
+            entity_type (str): The type of entity, e.g., 'team' or 'player'.
 
         Returns:
             Any: The dataframe with computed Plackett-Luce ratings.
         """
-        return calculate_plackett_luce(**self._prepare_args(df, entity))
+        return self._compute_rating(match_data, entity_type, calculate_plackett_luce)
 
-    def compute_trueskill(self, df: Any, entity: str) -> Any:
+    def compute_trueskill(self, match_data: Any, entity_type: str) -> Any:
         """
         Computes the TrueSkill rating for the given dataframe and entity.
 
         Parameters:
-            df (Any): The input dataframe containing match data.
-            entity (str): The type of entity, e.g., 'team' or 'player'.
+            match_data (Any): The input dataframe containing match data.
+            entity_type (str): The type of entity, e.g., 'team' or 'player'.
 
         Returns:
             Any: The dataframe with computed TrueSkill ratings.
         """
-        return calculate_trueskill(**self._prepare_args(df, entity))
+        return self._compute_rating(match_data, entity_type, calculate_trueskill)
 
-    def compute_whr(self, df: Any, entity: str) -> Any:
+    def compute_whr(self, match_data: Any, entity_type: str) -> Any:
         """
         Computes the Whole History Rating for the given dataframe and entity.
 
         Parameters:
-            df (Any): The input dataframe containing match data.
-            entity (str): The type of entity, e.g., 'team' or 'player'.
+            match_data (Any): The input dataframe containing match data.
+            entity_type (str): The type of entity, e.g., 'team' or 'player'.
 
         Returns:
             Any: The dataframe with computed Whole History Ratings.
         """
-        return calculate_whr(**self._prepare_args(df, entity))
+        return self._compute_rating(match_data, entity_type, calculate_whr)
 
-    def compute_leagues_elo(self, df: Any, entity: str) -> Any:
+    def compute_leagues_elo(self, match_data: Any, entity_type: str) -> Any:
         """
         Computes the ELO rating for leagues based on the given dataframe and entity.
 
         Parameters:
-            df (Any): The input dataframe containing match data.
-            entity (str): The type of entity, e.g., 'team' or 'player'.
+            match_data (Any): The input dataframe containing match data.
+            entity_type (str): The type of entity, e.g., 'team' or 'player'.
 
         Returns:
             Any: The dataframe with computed league ELO ratings.
         """
-        return calculate_leagues_elo(**self._prepare_args(df, entity))
+        return self._compute_rating(match_data, entity_type, calculate_leagues_elo)

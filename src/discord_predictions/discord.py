@@ -128,6 +128,19 @@ def get_team_data(entity_name: str, teams_path: Path) -> Optional[pd.DataFrame]:
         raise ValueError(f"Error processing team data: {e}") from e
 
 
+def format_profile(data: pd.DataFrame, stats_names: List[str], truncate: bool = False) -> str:
+    """Formats the profile data into a Discord-friendly Markdown format."""
+    stats_values = [f"{data[stat.lower()].iloc[0]}" for stat in stats_names]
+
+    profile_df = pd.DataFrame(
+        {
+            "Stat": stats_names if not truncate else stats_names[:9],
+            "Value": stats_values if not truncate else stats_values[:9],
+        }
+    )
+    return convert_to_discord_markdown(profile_df)
+
+
 def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
     """Formats the player profile data into a Discord-friendly Markdown format."""
     stats_names = [
