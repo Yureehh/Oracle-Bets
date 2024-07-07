@@ -139,8 +139,8 @@ class DataGenerator:
         self.team_data.sort_values(get_sorting_keys("team"), inplace=True)
         self.player_data.sort_values(get_sorting_keys("player"), inplace=True)
 
-        self.team_data.to_parquet(INTERIM_TEAM_DATA, index=False)
-        self.player_data.to_parquet(INTERIM_PLAYER_DATA, index=False)
+        safe_store_df_as_parquet(self.team_data, INTERIM_TEAM_DATA, logger)
+        safe_store_df_as_parquet(self.player_data, INTERIM_PLAYER_DATA, logger)
         logger.info("Cleaned and stored interim data.\n")
 
     def ingest_data_from_s3(self):
@@ -149,7 +149,7 @@ class DataGenerator:
             logger.info("Starting data ingestion from S3...")
             years = self.get_years_to_process()
             data = self.oracle.ingest_data(years=years)
-            data.to_parquet(RAW_DATA, index=False)
+            safe_store_df_as_parquet(data, RAW_DATA, logger)
             logger.info("Data ingestion completed and stored.\n")
             return data
         except Exception as e:
@@ -176,14 +176,14 @@ class DataGenerator:
         self.player_data = self.rating_models.compute_trueskill(df=self.player_data, entity="player")
         logger.info("Enriched data with trueskill.")
 
-        # If i want to add whr it should go here.
+        # If i wanted to add whr it should go here.
 
         self.team_data, belonging_league, league_elos = self.rating_models.compute_leagues_elo(
             df=self.team_data, entity="team"
         )
 
-        league_elos.to_parquet(LEAGUE_ELO, index=False)
-        belonging_league.to_parquet(TEAM_LEAGUES_MAPPING, index=False)
+        safe_store_df_as_parquet(league_elos, LEAGUE_ELO, logger)
+        safe_store_df_as_parquet(belonging_league, TEAM_LEAGUES_MAPPING, logger)
         logger.info("Enriched team data with leagues elo and stored the ratings.")
 
         logger.info("Completed enriching data with all ratings.\n")
@@ -191,9 +191,11 @@ class DataGenerator:
     def _enrich_data_with_performance_metrics(self):
         """Enrich data with performance metrics."""
         logger.info("Enriching data with performance metrics...")
+
         self.team_data = PerformanceMetrics.add_entity_ema_statistics(self.team_data, entity="team")
         self.player_data = PerformanceMetrics.add_entity_ema_statistics(self.player_data, entity="player")
         logger.info("Enriched data with EMA statistics.")
+
         self.team_data = PerformanceMetrics.add_side_win_rate_ewm(self.team_data, entity="team")
         self.team_data = PerformanceMetrics.add_patch_win_rate_ewm(self.team_data, entity="team")
         self.team_data = PerformanceMetrics.add_season_win_rate_ewm(self.team_data, entity="team")
@@ -216,7 +218,6 @@ class DataGenerator:
             # Store the enriched data
             self.store_enriched_data()
 
-            return self.team_data, self.player_data
         except Exception:
             raise RuntimeError("Failed to enrich datasets.") from None
 
@@ -255,10 +256,9 @@ class DataGenerator:
         """General method to extract inference data based on the specified configuration."""
         training_cols = config[f"{entity_type}_features"]
         before_cols = [col for col in training_cols if "_before" in col]
-        inference_data = data[training_cols]
-        inference_data = inference_data.rename(columns={col: col.replace("_before", "") for col in before_cols})
+        inference_data = data[training_cols].rename(columns={col: col.replace("_before", "") for col in before_cols})
 
-        inference_data.to_parquet(PROCESSED_DIR / f"training_{entity_type}_data.parquet", index=False)
+        safe_store_df_as_parquet(inference_data, PROCESSED_DIR / f"inference_{entity_type}_data.parquet", logger)
         logger.info(f"Stored training {entity_type} data.")
 
     def extract_training_data(self):
@@ -319,8 +319,6 @@ class DataGenerator:
             logger.info("Starting data generation process.\n")
             self.clean_and_store_data(self.ingest_data_from_s3())
             self.enrich_datasets()
-            # self.team_data = pd.read_parquet(PROCESSED_TEAMS)
-            # self.player_data = pd.read_parquet(PROCESSED_PLAYERS)
             self.extract_training_data()
             self.flatten_inference_data()
             logger.info("Data generation process completed successfully.")
