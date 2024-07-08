@@ -45,6 +45,8 @@ def select_columns_for_entity(entity: str) -> List[str]:
         "ema_patch_win_rate_after",
         "ema_season_win_rate_after",
         "patch_avg_gamelength",
+        "total_kills",
+        "total_towers",
     ]
 
     return [
