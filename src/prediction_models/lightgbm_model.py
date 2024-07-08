@@ -31,13 +31,10 @@ class LightGBMModel(GradientBoostingModel):
         """Train the LightGBM model using the training data."""
         X, y, categorical_cols = self._prepare_features_and_target(target_col)
         X_train, X_val, X_test, y_train, y_val, y_test, eval_gameids, eval_sides = self._split_data(X, y)
-
         X_train, X_val, X_test = self._preprocess_features(X_train, X_val, X_test)
         X_train, X_val, X_test = self._select_and_store_features(X_train, X_val, X_test, y_val, categorical_cols)
-
         best_params = self._get_best_hyperparameters(X_train, y_train, X_val, y_val)
         model = self._fit_model(X_train, y_train, X_val, y_val, best_params)
-
         return model, X_test, y_test, eval_gameids, eval_sides
 
     def train_and_validate_model(self, target_col="result"):
@@ -49,7 +46,8 @@ class LightGBMModel(GradientBoostingModel):
 
     def _prepare_features_and_target(self, target_col: str):
         """Prepare the features and target for model training."""
-        X, y = self.training_data.drop([target_col], axis=1), self.training_data[target_col]
+        X = self.training_data.drop([target_col], axis=1)
+        y = self.training_data[target_col]
         X, categorical_features = self.preprocess_categorical_features(X, exclude_cols=["gameid", "side", "league"])
         return X, y, categorical_features
 
@@ -70,12 +68,10 @@ class LightGBMModel(GradientBoostingModel):
 
     def _preprocess_features(self, X_train: pd.DataFrame, X_val: pd.DataFrame, X_test: pd.DataFrame):
         """Process and fuse features for training, validation, and testing sets."""
-        X_train = self.process_players_likelihood_columns(X_train)
-        X_val = self.process_players_likelihood_columns(X_val)
-        X_test = self.process_players_likelihood_columns(X_test)
-        X_train = self.fuse_opposing_team_features(X_train)
-        X_val = self.fuse_opposing_team_features(X_val)
-        X_test = self.fuse_opposing_team_features(X_test)
+        for func in [self.process_players_likelihood_columns, self.fuse_opposing_team_features]:
+            X_train = func(X_train)
+            X_val = func(X_val)
+            X_test = func(X_test)
         return X_train, X_val, X_test
 
     def _select_and_store_features(
@@ -90,7 +86,6 @@ class LightGBMModel(GradientBoostingModel):
         X_val = X_val[selected_features]
         X_test = X_test[selected_features]
 
-        # Update and store categorical features
         categorical_features = [col for col in categorical_cols if col in selected_features]
 
         self.store_correlation(X_val, y_val)
@@ -143,7 +138,6 @@ class LightGBMModel(GradientBoostingModel):
             clf.fit(X_train, y_train, eval_set=[(X_val, y_val)])
             pred_proba = clf.predict_proba(X_val)[:, 1]
             logloss_score = log_loss(y_val, pred_proba)
-
             return logloss_score
 
         study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler())

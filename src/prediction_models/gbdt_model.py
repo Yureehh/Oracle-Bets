@@ -54,9 +54,13 @@ class GradientBoostingModel(ABC):
 
     def remove_other_targets(self, target_col: str) -> None:
         """Remove other target columns from the dataset."""
-        target_cols = json_loader(TARGET_FEATURES)["targets"]
-        target_cols.remove(target_col)
-        self.team_data.drop(columns=target_cols, inplace=True)
+        try:
+            target_cols = json_loader(TARGET_FEATURES)["targets"]
+            if target_col in target_cols:
+                target_cols.remove(target_col)
+            self.team_data.drop(columns=target_cols, inplace=True)
+        except KeyError as e:
+            logger.error(f"Error removing target columns: {e}")
 
     def pivot_player_data(self) -> None:
         """Pivot player data to create features for each position."""
@@ -145,12 +149,14 @@ class GradientBoostingModel(ABC):
     @staticmethod
     def fuse_opposing_team_features(X: pd.DataFrame) -> pd.DataFrame:
         """Fuses opposing team features by subtracting the opposing stats from the original stats."""
+        # Process columns with 'opp_' prefix
         for col in X.filter(like="opp_").columns:
-            original_col = col[4:]
+            original_col = col[4:]  # Remove 'opp_' prefix
             if original_col in X.columns:
                 X[original_col] -= X[col]
                 X.drop(columns=[col], inplace=True)
 
+        # Process role-specific columns with '{role}_opp_' prefix
         roles = ["top", "jng", "mid", "bot", "sup"]
         for role in roles:
             for col in X.filter(like=f"{role}_opp_").columns:
@@ -177,10 +183,12 @@ class GradientBoostingModel(ABC):
     def remove_unnecessary_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Removes columns that are unnecessary or degrade model performance."""
         df = df.loc[:, ~df.columns.str.contains("_std")]
-        # df = df.loc[:, ~df.columns.str.contains("season_win_likelihood")]
-        # df = df.loc[:, ~df.columns.str.contains("patch_win_likelihood")]
         df = GradientBoostingModel.drop_low_std_columns(df, LOW_STD_THRESHOLD)
         df = GradientBoostingModel.drop_highly_correlated_features(df, HIGH_CORR_THRESHOLD)
+        # df = df.loc[:, ~df.columns.str.contains("ema_season_win_rate")]
+        df = df.loc[:, ~df.columns.str.contains("ema_total_towers")]
+        df = df.loc[:, ~df.columns.str.contains("ema_total_kills")]
+        # TODO: id like to drop all columns whose importance is below a certain threshold like score 5
         return df
 
     @staticmethod
