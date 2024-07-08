@@ -31,6 +31,7 @@ def initialize_and_train_model(
     """
     Initialize and train the LightGBM model.
     """
+    print(f"Initializing {problem_type} model...")
     model = LightGBMModel(model_name, training_team_data, training_player_data, problem_type)
 
     logger.info(f"Initialized {model_name} model. Starting training process...\n")
@@ -57,19 +58,19 @@ def main():
         models_logger.info("Starting the training process...\n")
         training_team_data, training_player_data = load_training_data(TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA, logger)
 
-        # Initialize and train the outcome prediction model
-        outcome_prediction_model = initialize_and_train_model(
-            OUTCOME_MODEL_NAME, training_team_data, training_player_data, "result", "classification"
-        )
-        model_path = MODELS_DIR / f"{OUTCOME_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
-        store_model(model_path, outcome_prediction_model, OUTCOME_MODEL_NAME, logger, models_logger)
-
-        # # Initialize and train the gamelength prediction model
-        # gamelength_prediction_model = initialize_and_train_model(
-        #     GAMELENGTH_MODEL_NAME, training_team_data, training_player_data, "gamelength", "regression"
+        # # Initialize and train the outcome prediction model
+        # outcome_prediction_model = initialize_and_train_model(
+        #     OUTCOME_MODEL_NAME, training_team_data.copy(), training_player_data.copy(), "result", "classification"
         # )
-        # model_path = MODELS_DIR / f"{GAMELENGTH_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
-        # store_model(model_path, gamelength_prediction_model, GAMELENGTH_MODEL_NAME, logger, models_logger)
+        # model_path = MODELS_DIR / f"{OUTCOME_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
+        # store_model(model_path, outcome_prediction_model, OUTCOME_MODEL_NAME, logger, models_logger)
+
+        # Initialize and train the gamelength prediction model
+        gamelength_prediction_model = initialize_and_train_model(
+            GAMELENGTH_MODEL_NAME, training_team_data.copy(), training_player_data.copy(), "gamelength", "regression"
+        )
+        model_path = MODELS_DIR / f"{GAMELENGTH_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
+        store_model(model_path, gamelength_prediction_model, GAMELENGTH_MODEL_NAME, logger, models_logger)
 
         logger.info("Training process completed successfully.\n")
         models_logger.info("Training process completed successfully.\n\n\n")

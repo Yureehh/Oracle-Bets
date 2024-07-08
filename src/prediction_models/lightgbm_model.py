@@ -16,7 +16,7 @@ from sklearn.metrics import log_loss, mean_absolute_error
 
 from prediction_models.gbdt_model import GradientBoostingModel
 from utils.logger import logger, models_logger
-from utils.paths import OUTCOME_PREDICTION_BEST_HYPERPARAMETERS
+from utils.paths import GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS, OUTCOME_PREDICTION_BEST_HYPERPARAMETERS
 from utils.utils import load_model
 
 # Constants
@@ -28,15 +28,13 @@ TEST_SIZE = 0.2
 class LightGBMModel(GradientBoostingModel):
     """A class to train and evaluate a LightGBM model."""
 
-    problem_type: str
-
     def train_model(self, target_col: str) -> Tuple[lgb.LGBMModel, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
         """Train the LightGBM model using the training data."""
         X, y, categorical_cols = self._prepare_features_and_target(target_col)
         X_train, X_val, X_test, y_train, y_val, y_test, eval_gameids, eval_sides = self._split_data(X, y)
         X_train, X_val, X_test = self._preprocess_features(X_train, X_val, X_test)
         X_train, X_val, X_test = self._select_and_store_features(X_train, X_val, X_test, y_val, categorical_cols)
-        best_params = self._get_best_hyperparameters(X_train, y_train, X_val, y_val)
+        best_params = self._get_best_hyperparameters(X_train, y_train, X_val, y_val, target_col)
         model = self._fit_model(X_train, y_train, X_val, y_val, best_params)
         return model, X_test, y_test, eval_gameids, eval_sides
 
@@ -102,11 +100,15 @@ class LightGBMModel(GradientBoostingModel):
         return X_train, X_val, X_test
 
     def _get_best_hyperparameters(
-        self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series
+        self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series, target_col: str
     ) -> dict:
         """Retrieve the best hyperparameters for the LightGBM model."""
-        if OUTCOME_PREDICTION_BEST_HYPERPARAMETERS.exists():
-            best_params = load_model(OUTCOME_PREDICTION_BEST_HYPERPARAMETERS)
+        best_hyperparams_map = {
+            "result": OUTCOME_PREDICTION_BEST_HYPERPARAMETERS,
+            "gamelength": GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS,
+        }
+        if best_hyperparams_map[target_col].exists():
+            best_params = load_model(best_hyperparams_map[target_col])
             logger.info(f"Found best hyperparameters: {best_params}\n")
             models_logger.info(f"Found best hyperparameters: {best_params}")
         else:

@@ -76,6 +76,10 @@ OUTCOME_PREDICTION_MODEL_PATH = MODELS_DIR / "OutcomePrediction.pkl"
 OUTCOME_PREDICTION_CATEGORICAL_FEATURES = MODELS_DIR / "OutcomePrediction_categorical_features.pkl"
 OUTCOME_PREDICTION_FINAL_FEATURES = MODELS_DIR / "OutcomePrediction_final_features.pkl"
 OUTCOME_PREDICTION_BEST_HYPERPARAMETERS = MODELS_DIR / "OutcomePrediction_best_hyperparameters.pkl"
+GAMELENGTH_PREDICTION_MODEL_PATH = MODELS_DIR / "GamelengthPrediction.pkl"
+GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES = MODELS_DIR / "GamelengthPrediction_categorical_features.pkl"
+GAMELENGTH_PREDICTION_FINAL_FEATURES = MODELS_DIR / "GamelengthPrediction_final_features.pkl"
+GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS = MODELS_DIR / "GamelengthPrediction_best_hyperparameters.pkl"
 
 # Reports storage
 LOGS_DIR = REPORTS_DIR / "logs"

@@ -42,9 +42,10 @@ class GradientBoostingModel(ABC):
     model_name: str = field(default="")
     team_data: pd.DataFrame = field(default_factory=pd.DataFrame)
     player_data: pd.DataFrame = field(default_factory=pd.DataFrame)
-    training_data: pd.DataFrame = field(default_factory=pd.DataFrame)
+    problem_type: str = field(default_factory=str)
     trials: int = field(default=DEFAULT_TRIALS)
     directory: Path = field(default=FIGURES_DIR)
+    training_data: pd.DataFrame = field(init=False)
 
     def preprocess_data(self, target_col) -> pd.DataFrame:
         """Preprocess the data by pivoting player data and merging datasets."""
@@ -226,8 +227,8 @@ class GradientBoostingModel(ABC):
 
         df_dropped = df.drop(columns=to_drop)
 
-        logger.info(f"Dropped columns due to high correlation: {list(to_drop)}")
-        models_logger.info(f"Dropped columns due to high correlation: {list(to_drop)}")
+        logger.info(f"Dropped columns due to high correlation: {list(to_drop)}\n")
+        models_logger.info(f"Dropped columns due to high correlation: {list(to_drop)}\n")
 
         return df_dropped
 
@@ -290,6 +291,7 @@ class GradientBoostingModel(ABC):
         except Exception as e:
             logger.error(f"Failed to store prediction insights: {e}")
 
+    # TODO: fix this for regression models
     def validate_model(
         self, model, X_test: pd.DataFrame, y_test: pd.Series, eval_gameids: pd.Series, eval_sides: pd.Series
     ) -> None:
