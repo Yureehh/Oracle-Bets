@@ -137,8 +137,8 @@ def store_model(path: Path, model, model_name: str, logger: logging.Logger, mode
         with open(path, "wb") as f:
             pickle.dump(model, f)
 
-        logger.info(f"Stored {model_name} model to {path}")
-        models_logger.info(f"Stored {model_name} model to {path}")
+        logger.info(f"Stored {model_name} model to {path}\n")
+        models_logger.info(f"Stored {model_name} model to {path}\n")
     except Exception as e:
         logger.error(f"Failed to store the model: {e}")
         models_logger.error(f"Failed to store the model: {e}\n")

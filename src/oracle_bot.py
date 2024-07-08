@@ -29,9 +29,9 @@ from src.discord_predictions.discord import (
     send_validation_result,
 )
 from src.ingestion.schedule import PandaScoreSchedule
-from utils.logger import logger
-from utils.paths import SCHEDULE
-from utils.team import Team
+from src.utils.logger import logger
+from src.utils.paths import SCHEDULE
+from src.utils.team import Team
 
 # Load environment variables from .env file
 load_dotenv()

@@ -10,7 +10,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from utils.paths import EARLY_GAME_INPUTING_LOGS, MODELS_LOGS
+from src.utils.paths import EARLY_GAME_INPUTING_LOGS, MODELS_LOGS
 
 # Load environment variables from .env file
 load_dotenv()

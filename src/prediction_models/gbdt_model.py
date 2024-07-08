@@ -23,9 +23,9 @@ from sklearn.inspection import permutation_importance
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 from sklearn.model_selection import StratifiedGroupKFold
 
-from utils.logger import logger, models_logger
-from utils.paths import FEATURE_IMP_DIR, FIGURES_DIR, INSIGHTS_DIR, MODELS_DIR, PROCESSED_TEAMS, TARGET_FEATURES
-from utils.utils import json_loader
+from src.utils.logger import logger, models_logger
+from src.utils.paths import FEATURE_IMP_DIR, FIGURES_DIR, INSIGHTS_DIR, MODELS_DIR, PROCESSED_TEAMS, TARGET_FEATURES
+from src.utils.utils import json_loader
 
 sns.set_style("darkgrid")
 
@@ -291,7 +291,7 @@ class GradientBoostingModel(ABC):
         except Exception as e:
             logger.error(f"Failed to store prediction insights: {e}")
 
-    # TODO: fix this for regression models
+    # TODO: fix this for regression models to validate correctly
     def validate_model(
         self, model, X_test: pd.DataFrame, y_test: pd.Series, eval_gameids: pd.Series, eval_sides: pd.Series
     ) -> None:

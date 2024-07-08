@@ -11,8 +11,8 @@ from os import getenv
 from dotenv import load_dotenv
 
 from ingestion.schedule import PandaScoreSchedule
-from utils.logger import logger
-from utils.paths import SCHEDULE
+from src.utils.logger import logger
+from src.utils.paths import SCHEDULE
 
 # Load environment variables from .env file
 load_dotenv()

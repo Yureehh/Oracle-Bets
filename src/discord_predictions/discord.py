@@ -14,9 +14,9 @@ from discord import File
 
 import discord_predictions.match_predictor as mp
 from discord_predictions.best_ofs import BestOfs
-from utils.paths import DISCORD_CONFIG, FIGURES_DIR, FLATTENED_PLAYERS, FLATTENED_TEAMS, INSIGHTS_DIR
-from utils.team import Team
-from utils.utils import json_loader, parquet_loader
+from src.utils.paths import DISCORD_CONFIG, FIGURES_DIR, FLATTENED_PLAYERS, FLATTENED_TEAMS, INSIGHTS_DIR
+from src.utils.team import Team
+from src.utils.utils import json_loader, parquet_loader
 
 config = json_loader(DISCORD_CONFIG)  # TODO: fix the names
 match_predictor = mp.MatchPredictor()

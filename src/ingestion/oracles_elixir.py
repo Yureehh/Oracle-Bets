@@ -20,9 +20,9 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
-from utils.logger import logger
-from utils.paths import CONSIDERED_LEAGUES, IMPORT_COLUMNS, TEAM_REPLACEMENTS
-from utils.utils import get_sorting_keys, json_loader
+from src.utils.logger import logger
+from src.utils.paths import CONSIDERED_LEAGUES, IMPORT_COLUMNS, TEAM_REPLACEMENTS
+from src.utils.utils import get_sorting_keys, json_loader
 
 # Load environment variables from .env file
 load_dotenv()

@@ -11,8 +11,8 @@ from typing import Dict, Tuple, Union
 import pandas as pd
 from tqdm import tqdm
 
-from utils.paths import DEFAULT_MODELS_PARAMETERS
-from utils.utils import get_sorting_keys, json_loader
+from src.utils.paths import DEFAULT_MODELS_PARAMETERS
+from src.utils.utils import get_sorting_keys, json_loader
 
 # Load configuration parameters
 config = json_loader(DEFAULT_MODELS_PARAMETERS)

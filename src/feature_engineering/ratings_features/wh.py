@@ -9,8 +9,8 @@ import sys
 from tqdm import tqdm
 from whr import whole_history_rating
 
-from utils.paths import DEFAULT_MODELS_PARAMETERS, WHOLE_HISTORY_RATING_PATH
-from utils.utils import get_sorting_keys, json_loader
+from src.utils.paths import DEFAULT_MODELS_PARAMETERS, WHOLE_HISTORY_RATING_PATH
+from src.utils.utils import get_sorting_keys, json_loader
 
 # Load configuration parameters
 config = json_loader(DEFAULT_MODELS_PARAMETERS)

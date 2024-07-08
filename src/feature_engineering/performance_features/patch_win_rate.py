@@ -10,8 +10,8 @@ from typing import Union
 import pandas as pd
 
 import src.ingestion.oracles_elixir as oe
-from utils.paths import DEFAULT_MODELS_PARAMETERS
-from utils.utils import get_identity, get_sorting_keys, json_loader
+from src.utils.paths import DEFAULT_MODELS_PARAMETERS
+from src.utils.utils import get_identity, get_sorting_keys, json_loader
 
 # Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)

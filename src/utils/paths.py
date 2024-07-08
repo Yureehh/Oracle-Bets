@@ -14,7 +14,6 @@ BASE_DIR = Path(os.getcwd())
 # Directories for data storage
 DATA_DIR = BASE_DIR / "data"
 MODELS_DIR = BASE_DIR / "models"
-CONFIG_DIR = BASE_DIR / "config"
 REPORTS_DIR = BASE_DIR / "reports"
 
 # Data storage directories
@@ -24,7 +23,7 @@ PROCESSED_DIR = DATA_DIR / "processed"
 EXTERNAL_DIR = DATA_DIR / "external"
 
 # Config file path
-
+CONFIG_DIR = BASE_DIR / "src" / "config"
 DISCORD_CONFIG = CONFIG_DIR / "discord_config.json"
 DATA_INGESTION_DIR = CONFIG_DIR / "data_ingestion"
 DEFAULT_MODELS_PARAMETERS = CONFIG_DIR / "default_models_parameters.json"

@@ -18,9 +18,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.tree import DecisionTreeRegressor
 
-from utils.logger import early_game_metrics_logger, logger
-from utils.paths import FEATURES_TO_IMPUTE
-from utils.utils import json_loader
+from src.utils.logger import early_game_metrics_logger, logger
+from src.utils.paths import FEATURES_TO_IMPUTE
+from src.utils.utils import json_loader
 
 
 def load_features() -> List[str]:

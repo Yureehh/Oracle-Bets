@@ -15,9 +15,9 @@ import pandas as pd
 from sklearn.metrics import log_loss, mean_absolute_error
 
 from prediction_models.gbdt_model import GradientBoostingModel
-from utils.logger import logger, models_logger
-from utils.paths import GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS, OUTCOME_PREDICTION_BEST_HYPERPARAMETERS
-from utils.utils import load_model
+from src.utils.logger import logger, models_logger
+from src.utils.paths import GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS, OUTCOME_PREDICTION_BEST_HYPERPARAMETERS
+from src.utils.utils import load_model
 
 # Constants
 VALIDATION_SIZE = 0.25
@@ -38,10 +38,11 @@ class LightGBMModel(GradientBoostingModel):
         model = self._fit_model(X_train, y_train, X_val, y_val, best_params)
         return model, X_test, y_test, eval_gameids, eval_sides
 
-    def train_and_validate_model(self, target_col: str = "result") -> lgb.LGBMModel:
+    def train_and_validate_model(self, target_col: str = "result", validate: bool = True) -> lgb.LGBMModel:
         """Train and validate the LightGBM model."""
         model, X_test, y_test, eval_gameids, eval_sides = self.train_model(target_col)
-        self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
+        if validate:
+            self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
         self._calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns, X_test)
         return model
 

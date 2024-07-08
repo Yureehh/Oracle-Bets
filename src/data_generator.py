@@ -25,8 +25,8 @@ from src.feature_engineering.impute_early_game_metrics import EarlyGameStatsImpu
 from src.feature_engineering.performance_features.performance_metrics import PerformanceMetrics
 from src.feature_engineering.ratings_features.rating_models import Ratings
 from src.ingestion.oracles_elixir import OraclesElixir
-from utils.logger import logger
-from utils.paths import (
+from src.utils.logger import logger
+from src.utils.paths import (
     FLATTENED_PLAYER_CONFIG,
     FLATTENED_TEAM_CONFIG,
     INTERIM_PLAYER_DATA,
@@ -42,7 +42,7 @@ from utils.paths import (
     TRAINING_TEAM_CONFIG,
     YEARS_RANGE_PATH,
 )
-from utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
+from src.utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
 
 # Load environment variables from .env file
 load_dotenv()

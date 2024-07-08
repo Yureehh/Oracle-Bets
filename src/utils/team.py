@@ -11,8 +11,8 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from utils.logger import logger
-from utils.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
+from src.utils.logger import logger
+from src.utils.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
 
 
 @dataclass
