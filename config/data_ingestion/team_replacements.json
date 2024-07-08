@@ -19,6 +19,16 @@
         "name": "Alior Bank Team",
         "teamid": "oe:team:d8a52396ce9f51227ffeb4106759347"
       }
+    ],
+    [
+      {
+        "name": "UCAM Esports",
+        "teamid": "oe:team:746e6715fc4295c54954be5efc385af"
+      },
+      {
+        "name": "UCAM Tokiers",
+        "teamid": "oe:team:4521d75a62eec4d83cf9dfeba436f41"
+      }
     ]
   ]
 }

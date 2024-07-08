@@ -91,6 +91,7 @@ class BestOfs:
             f"Overall likelihoods of each team winning at least 1 game:\n\n"
             f"\tProbability {t1name} wins at least 1 game: {(t1_win_at_least_one * 100):.2f}%\n"
             f"\tProbability {t2name} wins at least 1 game: {(t2_win_at_least_one * 100):.2f}%\n\n"
+            f"Overall Likelihood Of Exactly 3 games: {((t1_30 + t2_30) * 100):.2f}%\n\n"
             f"Overall Likelihood Of At Least 4 Games: {(at_least_four_games * 100):.2f}%\n\n"
             f"Overall Likelihood Of Exactly 5 Games: {(exactly_five_games * 100):.2f}%```"
         )

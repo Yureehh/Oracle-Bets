@@ -17,6 +17,7 @@ from utils.utils import load_training_data, store_model
 
 # Constants
 OUTCOME_MODEL_NAME = "OutcomePrediction"
+GAMELENGTH_MODEL_NAME = "GamelengthPrediction"
 MODEL_FILE_EXTENSION = "pkl"
 
 
@@ -24,18 +25,19 @@ def initialize_and_train_model(
     model_name: str,
     training_team_data: pd.DataFrame,
     training_player_data: pd.DataFrame,
-    target_column_name: str = "result",
+    target_column_name: str,
+    problem_type: str,
 ) -> LightGBMModel:
     """
     Initialize and train the LightGBM model.
     """
-    lightgbm_model = LightGBMModel(model_name, training_team_data, training_player_data)
+    model = LightGBMModel(model_name, training_team_data, training_player_data, problem_type)
 
     logger.info(f"Initialized {model_name} model. Starting training process...\n")
     start = dt.datetime.now()
 
-    lightgbm_model.preprocess_data(target_column_name)
-    trained_model = lightgbm_model.train_and_validate_model(target_column_name)
+    model.preprocess_data(target_column_name)
+    trained_model = model.train_and_validate_model(target_column_name)
 
     end = dt.datetime.now()
     elapsed_time = end - start
@@ -54,11 +56,20 @@ def main():
         logger.info("Starting the training process...\n")
         models_logger.info("Starting the training process...\n")
         training_team_data, training_player_data = load_training_data(TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA, logger)
+
+        # Initialize and train the outcome prediction model
         outcome_prediction_model = initialize_and_train_model(
-            OUTCOME_MODEL_NAME, training_team_data, training_player_data, "result"
+            OUTCOME_MODEL_NAME, training_team_data, training_player_data, "result", "classification"
         )
         model_path = MODELS_DIR / f"{OUTCOME_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
         store_model(model_path, outcome_prediction_model, OUTCOME_MODEL_NAME, logger, models_logger)
+
+        # # Initialize and train the gamelength prediction model
+        # gamelength_prediction_model = initialize_and_train_model(
+        #     GAMELENGTH_MODEL_NAME, training_team_data, training_player_data, "gamelength", "regression"
+        # )
+        # model_path = MODELS_DIR / f"{GAMELENGTH_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
+        # store_model(model_path, gamelength_prediction_model, GAMELENGTH_MODEL_NAME, logger, models_logger)
 
         logger.info("Training process completed successfully.\n")
         models_logger.info("Training process completed successfully.\n\n\n")

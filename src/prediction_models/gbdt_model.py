@@ -185,7 +185,6 @@ class GradientBoostingModel(ABC):
         df = df.loc[:, ~df.columns.str.contains("_std")]
         df = GradientBoostingModel.drop_low_std_columns(df, LOW_STD_THRESHOLD)
         df = GradientBoostingModel.drop_highly_correlated_features(df, HIGH_CORR_THRESHOLD)
-        # df = df.loc[:, ~df.columns.str.contains("ema_season_win_rate")]
         df = df.loc[:, ~df.columns.str.contains("ema_total_towers")]
         df = df.loc[:, ~df.columns.str.contains("ema_total_kills")]
         # TODO: id like to drop all columns whose importance is below a certain threshold like score 5

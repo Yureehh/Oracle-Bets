@@ -18,7 +18,7 @@ from utils.paths import DISCORD_CONFIG, FIGURES_DIR, FLATTENED_PLAYERS, FLATTENE
 from utils.team import Team
 from utils.utils import json_loader, parquet_loader
 
-config = json_loader(DISCORD_CONFIG)
+config = json_loader(DISCORD_CONFIG)  # TODO: fix the names
 match_predictor = mp.MatchPredictor()
 
 # Constants

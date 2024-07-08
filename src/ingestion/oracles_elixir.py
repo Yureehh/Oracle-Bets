@@ -26,7 +26,6 @@ from utils.utils import get_sorting_keys, json_loader
 
 # Load environment variables from .env file
 load_dotenv()
-pd.set_option("future.no_silent_downcasting", True)  # TODO: Remove this line after fixing the warning
 
 # Constants for the gap between players/teams for getting opponent data
 GAP_PLAYER = 5
@@ -64,13 +63,14 @@ class OraclesElixir:
     def format_data_types(oe_data: pd.DataFrame) -> pd.DataFrame:
         """Format and clean data types, handling dates, null values, and game lengths."""
         logger.info("Formatting data types...")
+        pd.set_option("future.no_silent_downcasting", True)
         oe_data.loc[:, "date"] = pd.to_datetime(oe_data["date"], errors="coerce")
 
         # Normalize string columns by stripping whitespace and replacing null values
         id_cols = ["gameid", "playerid", "teamid", "league", "teamname", "playername"]
         oe_data.loc[:, id_cols] = oe_data[id_cols].apply(lambda x: x.str.strip()).replace("", np.nan)
         oe_data = oe_data.replace(NULL_REPLACEMENTS, pd.NA)
-        oe_data.loc[:, "gamelength"] = oe_data["gamelength"].astype(float).div(60)
+        oe_data["gamelength"] = oe_data["gamelength"].astype(float).div(60)
         logger.info("Data formatting completed.")
         return oe_data
 
@@ -163,7 +163,6 @@ class OraclesElixir:
             "teamid": oe_data["teamid"].fillna(oe_data["teamname"]),
             "opponentteam": get_opponent(oe_data["teamname"].to_list(), split_on),
             "opponentteamid": get_opponent(oe_data["teamid"].to_list(), split_on),
-            "opp_egpm": get_opponent(oe_data["egpm"].to_list(), split_on),
         }
         # If split_on is "player", update metrics
         if split_on == "player":

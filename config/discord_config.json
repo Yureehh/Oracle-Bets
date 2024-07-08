@@ -1,10 +1,10 @@
 {
   "MODEL_FILES": {
     "lightgbm": [
-      "LightGBM_metrics.json",
-      "LightGBM_Confusion_Matrix.png",
-      "LightGBM_Historical_Accuracy.png",
-      "LightGBM_Accuracy_Over_Samples.png"
+      "OutcomePrediction_metrics.json",
+      "OutcomePrediction_Confusion_Matrix.png",
+      "OutcomePrediction_Historical_Accuracy.png",
+      "OutcomePrediction_Accuracy_Over_Samples.png"
     ],
     "xgboost": [
       "XGBoost_metrics.json",
