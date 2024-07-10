@@ -10,7 +10,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from src.utils.paths import EARLY_GAME_INPUTING_LOGS, MODELS_LOGS
+from src.utils.paths import MODELS_LOGS
 
 # Load environment variables from .env file
 load_dotenv()
@@ -76,11 +76,6 @@ class ConfigurableLogger:
 
 # Initialize loggers with various configurations
 logger = ConfigurableLogger("GeneralLogger").get_logger()
-early_game_metrics_logger = ConfigurableLogger(
-    "EarlyGameMetricsLogger",
-    EARLY_GAME_INPUTING_LOGS,
-    format_string="%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s",
-).get_logger()
 models_logger = ConfigurableLogger(
     "ModelsLogger", MODELS_LOGS, format_string="%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s"
 ).get_logger()

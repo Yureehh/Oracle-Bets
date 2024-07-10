@@ -21,7 +21,6 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from src.feature_engineering.features_generator import FeatureGenerator
-from src.feature_engineering.impute_early_game_metrics import EarlyGameStatsImputer
 from src.feature_engineering.performance_features.performance_metrics import PerformanceMetrics
 from src.feature_engineering.ratings_features.rating_models import Ratings
 from src.ingestion.oracles_elixir import OraclesElixir
@@ -70,7 +69,6 @@ class DataGenerator:
             raise ValueError("BUCKET_NAME environment variable not set.")
         self.s3_session = self.create_s3_session()
         self.oracle = OraclesElixir(session=self.s3_session, bucket=self.bucket_name)
-        self.imputer = EarlyGameStatsImputer()
         self.feature_generator = FeatureGenerator()
         self.rating_models = Ratings()
 
@@ -209,7 +207,7 @@ class DataGenerator:
             self.load_and_sort_data()
 
             # Impute missing data and generate new features
-            self.generate_features_and_impute_data()
+            self.generate_features()
 
             # Enrich data with ratings and performance metrics
             self._enrich_data_with_ratings()
@@ -223,18 +221,16 @@ class DataGenerator:
 
     def load_and_sort_data(self):
         """Load data from parquet and sort it based on predefined keys."""
-        self.team_data = pd.read_parquet(INTERIM_TEAM_DATA)
-        self.player_data = pd.read_parquet(INTERIM_PLAYER_DATA)
+        self.team_data = pd.read_parquet(INTERIM_TEAM_DATA, engine="fastparquet")
+        self.player_data = pd.read_parquet(INTERIM_PLAYER_DATA, engine="fastparquet")
         self.team_data.sort_values(get_sorting_keys("team"), inplace=True)
         self.player_data.sort_values(get_sorting_keys("player"), inplace=True)
 
-    def generate_features_and_impute_data(self):
-        """Generate new features for team and player data and impute missing values where necessary."""
+    def generate_features(self):
+        """Generate new features for team and player data based on the feature generator."""
         self.team_data = self.feature_generator.generate_new_team_features(self.team_data)
-        self.team_data = self.imputer.impute_data(self.team_data, "Team")
 
         self.player_data = self.feature_generator.generate_new_player_features(self.player_data)
-        self.player_data = self.imputer.impute_data(self.player_data, "Player")
 
     def store_enriched_data(self):
         """Store enriched team and player data to parquet files."""
@@ -258,7 +254,7 @@ class DataGenerator:
         before_cols = [col for col in training_cols if "_before" in col]
         inference_data = data[training_cols].rename(columns={col: col.replace("_before", "") for col in before_cols})
 
-        safe_store_df_as_parquet(inference_data, PROCESSED_DIR / f"inference_{entity_type}_data.parquet", logger)
+        safe_store_df_as_parquet(inference_data, PROCESSED_DIR / f"training_{entity_type}_data.parquet", logger)
         logger.info(f"Stored training {entity_type} data.")
 
     def extract_training_data(self):

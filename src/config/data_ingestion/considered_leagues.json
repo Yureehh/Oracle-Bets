@@ -2,25 +2,24 @@
   "considered_leagues": [
     "AL",
     "CBLOL",
-    "CBLOLA",
+    "CDF",
     "DCup",
     "EBL",
     "EM",
+    "EPL",
     "ESLOL",
+    "EWC",
     "GLL",
     "HM",
+    "IC",
     "LCK",
     "LCKC",
-    "LCO",
     "LCS",
     "LDL",
     "LEC",
     "LFL",
-    "LFL2",
     "LIT",
     "LJL",
-    "LJLA",
-    "LLA",
     "LPL",
     "LPLOL",
     "LVP SL",
@@ -34,5 +33,14 @@
     "VCS",
     "WLDs"
   ],
-  "cross_league_competitions": ["MSI", "WLDs", "DCup", "EM", "IC", "CDF"]
+  "cross_league_competitions": [
+    "CDF",
+    "DCup",
+    "EM",
+    "EPL",
+    "EWC",
+    "MSI",
+    "IC",
+    "WLDs"
+  ]
 }

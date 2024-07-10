@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from ingestion.schedule import PandaScoreSchedule
 from src.utils.logger import logger
 from src.utils.paths import SCHEDULE
+from utils.utils import safe_store_df_as_parquet
 
 # Load environment variables from .env file
 load_dotenv()
@@ -47,7 +48,7 @@ def main():
         )
 
         # Export the schedule to a parquet file
-        schedule.to_parquet(SCHEDULE, index=False)
+        safe_store_df_as_parquet(schedule, SCHEDULE, logger)
         logger.info(f"Schedule stored to {SCHEDULE}")
 
     except Exception as e:

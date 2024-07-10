@@ -47,7 +47,12 @@ def calculate_patch_win_likelihood(ema_win_rate: float, opp_ema_win_rate: float)
     """
     Calculate the EMA patch win likelihood.
 
+    Parameters:
+        ema_win_rate (float): The EMA win rate for the entity.
+        opp_ema_win_rate (float): The EMA win rate for the opponent.
 
+    Returns:
+        float: The calculated patch win likelihood.
     """
     if pd.notnull(ema_win_rate) and pd.notnull(opp_ema_win_rate):
         return round(ema_win_rate / (ema_win_rate + opp_ema_win_rate + EPSILON), 3)

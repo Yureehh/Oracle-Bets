@@ -158,13 +158,13 @@ class GradientBoostingModel(ABC):
                 X.drop(columns=[col], inplace=True)
 
         # Process role-specific columns with '{role}_opp_' prefix
-        roles = ["top", "jng", "mid", "bot", "sup"]
-        for role in roles:
+        for role in ["top", "jng", "mid", "bot", "sup"]:
             for col in X.filter(like=f"{role}_opp_").columns:
                 original_col = col.replace(f"{role}_opp_", f"{role}_")
                 if original_col in X.columns:
                     X[original_col] -= X[col]
-                    X.drop(columns=[col], inplace=True)
+                    if col in X.columns:
+                        X.drop(columns=[col], inplace=True)
 
         return X
 
@@ -188,7 +188,6 @@ class GradientBoostingModel(ABC):
         df = GradientBoostingModel.drop_highly_correlated_features(df, HIGH_CORR_THRESHOLD)
         df = df.loc[:, ~df.columns.str.contains("ema_total_towers")]
         df = df.loc[:, ~df.columns.str.contains("ema_total_kills")]
-        # TODO: id like to drop all columns whose importance is below a certain threshold like score 5
         return df
 
     @staticmethod
@@ -286,7 +285,9 @@ class GradientBoostingModel(ABC):
         """Store prediction insights to a CSV file."""
         insights = pd.DataFrame({"prediction": predictions, "gameid": eval_gameids, "side": eval_sides})
         try:
-            insights.to_parquet(INSIGHTS_DIR / f"{self.model_name}_predictions.parquet", index=False)
+            insights.to_parquet(
+                INSIGHTS_DIR / f"{self.model_name}_predictions.parquet", index=False, compression="gzip"
+            )
             logger.info(f"Prediction insights for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to store prediction insights: {e}")
@@ -371,15 +372,28 @@ class GradientBoostingModel(ABC):
         X_val["gameid"] = eval_gameids
 
         if "date" not in X_val.columns:
-            team_data = pd.read_parquet(PROCESSED_TEAMS)[["gameid", "date"]].drop_duplicates()
+            team_data = pd.read_parquet(PROCESSED_TEAMS, engine="fastparquet")[["gameid", "date"]].drop_duplicates()
             X_val = (
                 pd.merge(X_val, team_data, on="gameid", how="left", validate="many_to_many")
-                .drop("gameid", axis=1)
+                # .drop("gameid", axis=1)
                 .reset_index(drop=True)
             )
-
         df = pd.DataFrame({"date": X_val["date"].values, "correct": (y_val == predictions).astype(int)})
-        df["date"] = pd.to_datetime(df["date"]).dt.to_period("W").apply(lambda r: r.start_time)
+
+        # Drop rows where date is NaT
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+        # Store rows with NaT date
+        na_dates = X_val[X_val["date"].isna()]
+        na_dates.to_csv("_na_dates.csv", index=False)
+        df = df.dropna(subset=["date"])
+
+        try:
+            df["date"] = df["date"].dt.to_period("W").apply(lambda r: r.start_time)
+        except Exception as e:
+            logger.error(f"Failed to convert date to weekly timespans: {e}")
+            return  # Early exit if date conversion fails
+
         df = df.sort_values(by="date")
         df_grouped = df.groupby("date")["correct"].mean().reset_index(name="accuracy")
         df_grouped["date"] = pd.to_datetime(df_grouped["date"])
@@ -427,7 +441,7 @@ class GradientBoostingModel(ABC):
 
         data = [{"Feature": name, "Importance": importance} for name, importance in sorted_importances]
         df = pd.DataFrame(data)
-        df.to_parquet(INSIGHTS_DIR / f"{self.model_name}_feature_importances.parquet", index=False)
+        df.to_parquet(INSIGHTS_DIR / f"{self.model_name}_feature_importances.parquet", index=False, compression="gzip")
 
         self.plot_feature_importance(sorted_importances)
 

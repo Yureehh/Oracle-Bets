@@ -80,7 +80,7 @@ class PandaScoreSchedule:
     def load_schedule(schedule_path: str, leagues: Optional[str] = None) -> pd.DataFrame:
         """Load the schedule from a parquet file and optionally filter by leagues."""
         try:
-            schedule_df = pd.read_parquet(schedule_path)
+            schedule_df = pd.read_parquet(schedule_path, engine="fastparquet")
             if leagues:
                 schedule_df = schedule_df[schedule_df["league"].isin(leagues.split(","))]
             return schedule_df

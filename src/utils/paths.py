@@ -36,7 +36,6 @@ INVALID_GAMES = DATA_INGESTION_DIR / "invalid_games.json"
 IMPORT_COLUMNS = DATA_INGESTION_DIR / "import_columns.json"
 TEAM_REPLACEMENTS = DATA_INGESTION_DIR / "team_replacements.json"
 CONSIDERED_LEAGUES = DATA_INGESTION_DIR / "considered_leagues.json"
-FEATURES_TO_IMPUTE = DATA_INGESTION_DIR / "features_to_impute.json"
 
 # External Bets
 EXTERNAL_BETS = EXTERNAL_DIR / "bets.csv"
@@ -92,7 +91,6 @@ NOTEBOOKS_DIR = BASE_DIR / "notebooks"
 
 # Logs storage
 MODELS_LOGS = LOGS_DIR / "gbdt_models.log"
-EARLY_GAME_INPUTING_LOGS = LOGS_DIR / "early_game_inputing.log"
 
 # for every directory, check if it exists, if not, create it
 for directory in [

@@ -10,15 +10,14 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from discord import File
 
 import discord_predictions.match_predictor as mp
 from discord_predictions.best_ofs import BestOfs
-from src.utils.paths import DISCORD_CONFIG, FIGURES_DIR, FLATTENED_PLAYERS, FLATTENED_TEAMS, INSIGHTS_DIR
+from src.utils.paths import DISCORD_CONFIG, FLATTENED_PLAYERS, FLATTENED_TEAMS
 from src.utils.team import Team
 from src.utils.utils import json_loader, parquet_loader
 
-config = json_loader(DISCORD_CONFIG)  # TODO: fix the names
+config = json_loader(DISCORD_CONFIG)
 match_predictor = mp.MatchPredictor()
 
 # Constants
@@ -26,19 +25,12 @@ MESSAGE_LIMIT = config.get("MESSAGE_LIMIT", 2000)
 EMPTY_ROSTER = config["EMPTY_ROSTER"].copy()
 VALID_MATCH_TYPES = ["bo1", "bo3", "bo5"]
 POSITIONS = ["top", "jng", "mid", "bot", "sup"]
-MODEL_FILES = config["MODEL_FILES"]
 WEEKS_FOR_DELAY = config.get("WEEKS_FOR_DELAY", 3)
 
 
 def get_empty_roster() -> Dict[str, str]:
     """Returns a copy of the empty roster configuration."""
     return EMPTY_ROSTER.copy()
-
-
-def read_discord_image(image_path: Path, filename: str = "image.png") -> File:
-    """Reads an image from the given path and returns a discord File object."""
-    with image_path.open("rb") as file:
-        return File(file, filename=filename)
 
 
 def handle_command_error(error: Exception, additional_info: str = "") -> str:
@@ -82,32 +74,6 @@ def format_league(df: pd.DataFrame, league: str) -> str:
     return f"Upcoming {league} Games (Next 5 Matches Within 7 Days):\n```{clean_markdown}```\n\n"
 
 
-def get_validation_metrics(model: str, get_graph: bool = False) -> Tuple[str, List[File]]:
-    """Retrieves validation metrics and optional graphs for the specified model."""
-    if model not in MODEL_FILES:
-        raise ValueError(f"Model '{model}' is not supported.")
-
-    metrics_filename, cf_graph_filename, ha_graph_filename, aot_graph_filename = MODEL_FILES[model]
-    metrics_file_path = INSIGHTS_DIR / metrics_filename
-    graph_file_path, ha_graph_file_path, aot_graph_file_path = (
-        FIGURES_DIR / cf_graph_filename,
-        FIGURES_DIR / ha_graph_filename,
-        FIGURES_DIR / aot_graph_filename,
-    )
-
-    metrics = json_loader(metrics_file_path)
-    metrics_df = pd.DataFrame(metrics, index=[0]).round(2)
-    metrics_md = convert_to_discord_markdown(metrics_df)
-
-    if get_graph:
-        validation_graph = read_discord_image(graph_file_path, cf_graph_filename)
-        historical_accuracy_graph = read_discord_image(ha_graph_file_path, ha_graph_filename)
-        accuracy_over_samples_graph = read_discord_image(aot_graph_file_path, aot_graph_filename)
-        return metrics_md, [validation_graph, historical_accuracy_graph, accuracy_over_samples_graph]
-
-    return metrics_md, None
-
-
 def get_player_data(entity_name: str, players_path: Path) -> Optional[pd.DataFrame]:
     """Retrieves player data from the specified file path."""
     try:
@@ -146,11 +112,9 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
     stats_names = [
         "Position",
         "Team",
-        "League",
         "Elo",
-        "Plackett-Luce Score",
+        "Glicko2 Score" "Plackett-Luce Score",
         "TrueSkill Score",
-        "EGPM Dominance",
         "Blue Side Win Rate",
         "Red Side Win Rate",
         "K/D/A Ratio",
@@ -158,7 +122,6 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
         "Gold Diff At 15",
         "CS Diff At 15",
         "XP Diff At 15",
-        "Avg. Game Time",
         "CSPM",
         "DPM",
         "EGPM",
@@ -171,7 +134,6 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
     stats_values = [
         data["position"].iloc[0].capitalize(),
         data["teamname"].iloc[0],
-        data["league"].iloc[0],
         f"{data['elo'].iloc[0]:.2f}",
         f"{data['gl2_mu'].iloc[0]:.2f}",
         f"{data['pl_mu'].iloc[0]:.2f}",
@@ -183,7 +145,6 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
         f"{data['ema_golddiffat15'].iloc[0]:.2f}",
         f"{data['ema_csdiffat15'].iloc[0]:.2f}",
         f"{data['ema_xpdiffat15'].iloc[0]:.2f}",
-        f"{data['ema_gamelength'].iloc[0]:.2f} mins",
         f"{data['ema_cspm'].iloc[0]:.2f}",
         f"{data['ema_dpm'].iloc[0]:.2f}",
         f"{data['ema_egpm'].iloc[0]:.2f}",
@@ -196,8 +157,8 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
 
     player_profile_df = pd.DataFrame(
         {
-            "Stat": stats_names if not truncate else stats_names[:9],
-            "Value": stats_values if not truncate else stats_values[:9],
+            "Stat": stats_names if not truncate else stats_names[:8],
+            "Value": stats_values if not truncate else stats_values[:8],
         }
     )
     return convert_to_discord_markdown(player_profile_df)
@@ -212,8 +173,10 @@ def format_team_profile(data: pd.DataFrame, truncate: bool = False) -> str:
         "TrueSkill Score",
         "League Elo",
         "Patch Win Rate",
+        "Season Win Rate",
         "Blue Side Win Rate",
         "Red Side Win Rate",
+        "AVG Gamelength in Minutes",
     ]
     stats_values = [
         f"{data['elo'].iloc[0]:.2f}",
@@ -222,14 +185,16 @@ def format_team_profile(data: pd.DataFrame, truncate: bool = False) -> str:
         f"{data['trueskill_mu'].iloc[0]:.2f}",
         f"{data['league_elo'].iloc[0]:.2f}",
         f"{data['ema_patch_win_rate'].iloc[0] * 100:.2f}%",
+        f"{data['ema_season_win_rate'].iloc[0] * 100:.2f}%",
         f"{data['ema_blue_side'].iloc[0] * 100:.2f}%",
         f"{data['ema_red_side'].iloc[0] * 100:.2f}%",
+        f"{data['ema_gamelength'].iloc[0]:.2f}%",
     ]
 
     team_profile_df = pd.DataFrame(
         {
-            "Stat": stats_names if not truncate else stats_names[:9],
-            "Value": stats_values if not truncate else stats_values[:9],
+            "Stat": stats_names if not truncate else stats_names,
+            "Value": stats_values if not truncate else stats_values,
         }
     )
     return convert_to_discord_markdown(team_profile_df)
@@ -267,17 +232,6 @@ async def get_formatted_player_profile(player_name: str, truncate: bool = False)
         return None, f"Data for player {player_name} not found in database."
     except Exception as e:
         return None, handle_command_error(e, additional_info="Player profile retrieval failed.")
-
-
-async def send_validation_result(ctx, metrics: str, images: Optional[List[File]] = None):
-    """Sends the validation result to the context. Optionally sends images if provided."""
-    try:
-        if images:
-            await ctx.send(content=metrics, files=images)
-        else:
-            await ctx.send(content=metrics)
-    except Exception as e:
-        await ctx.send(content=f"Failed to send validation result: {e}")
 
 
 async def predict_and_format_result(
@@ -353,14 +307,6 @@ def process_roster(roster_str: str, positions: Optional[List[str]] = None) -> Di
         )
 
     return dict(zip(positions, players))
-
-
-def get_allowed_models() -> List[str]:
-    """Retrieves a list of allowed models from the configuration."""
-    try:
-        return list(MODEL_FILES.keys())
-    except KeyError:
-        raise KeyError("MODEL_FILES configuration is missing or corrupt.") from None
 
 
 def calculate_odds(win_probability: float, to_decimal: bool) -> float:

@@ -35,8 +35,8 @@ class Team:
         """
         Initialize the team data and player data, and set the team stats and roster.
         """
-        self.team_data = pd.read_parquet(FLATTENED_TEAMS)
-        self.player_data = pd.read_parquet(FLATTENED_PLAYERS)
+        self.team_data = pd.read_parquet(FLATTENED_TEAMS, engine="fastparquet")
+        self.player_data = pd.read_parquet(FLATTENED_PLAYERS, engine="fastparquet")
         self.team_stats = self._get_team_stats()
         self.update_roster(self.roster if all(self.roster.values()) else self._get_last_roster())
 
@@ -129,10 +129,10 @@ class Team:
         Returns:
             pd.DataFrame: DataFrame containing the team information.
         """
-        team_info = {"Role": ["Team"], "Name": [self.name]}
+        team_info = {"ROLE": ["Team"], "NAME": [self.name]}
 
         for position, player in self.roster.items():
-            team_info["Role"].append(position.title())
-            team_info["Name"].append(player)
+            team_info["ROLE"].append(position.title())
+            team_info["NAME"].append(player)
 
         return pd.DataFrame(team_info)

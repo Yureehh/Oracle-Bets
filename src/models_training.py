@@ -66,16 +66,16 @@ def main():
         store_model(model_path, outcome_prediction_model, OUTCOME_MODEL_NAME, logger, models_logger)
 
         # Initialize and train the gamelength prediction model
-        gamelength_prediction_model = initialize_and_train_model(
-            GAMELENGTH_MODEL_NAME,
-            training_team_data.copy(),
-            training_player_data.copy(),
-            "gamelength",
-            "regression",
-            False,
-        )
-        model_path = MODELS_DIR / f"{GAMELENGTH_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
-        store_model(model_path, gamelength_prediction_model, GAMELENGTH_MODEL_NAME, logger, models_logger)
+        # gamelength_prediction_model = initialize_and_train_model(
+        #     GAMELENGTH_MODEL_NAME,
+        #     training_team_data.copy(),
+        #     training_player_data.copy(),
+        #     "gamelength",
+        #     "regression",
+        #     False,
+        # )
+        # model_path = MODELS_DIR / f"{GAMELENGTH_MODEL_NAME}.{MODEL_FILE_EXTENSION}"
+        # store_model(model_path, gamelength_prediction_model, GAMELENGTH_MODEL_NAME, logger, models_logger)
 
         logger.info("Training process completed successfully.\n")
         models_logger.info("Training process completed successfully.\n\n\n")

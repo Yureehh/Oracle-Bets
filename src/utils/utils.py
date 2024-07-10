@@ -6,12 +6,12 @@ This script defines utility functions for the project.
 
 import json
 import logging
-import os
 import pickle
 from pathlib import Path
 from typing import Any, List, Tuple, Union
 
 import pandas as pd
+from fastparquet import write
 
 
 def get_sorting_keys(entity: str) -> List[str]:
@@ -65,7 +65,7 @@ def parquet_loader(file_path: str) -> pd.DataFrame:
     Returns:
         pd.DataFrame: The loaded parquet data.
     """
-    return pd.read_parquet(file_path)
+    return pd.read_parquet(file_path, engine="fastparquet")
 
 
 def load_file(file_path: str, file_type: str = "json") -> Union[Any, pd.DataFrame]:
@@ -86,7 +86,7 @@ def load_file(file_path: str, file_type: str = "json") -> Union[Any, pd.DataFram
         elif file_type == "csv":
             return pd.read_csv(file_path)
         elif file_type == "parquet":
-            return pd.read_parquet(file_path)
+            return pd.read_parquet(file_path, engine="fastparquet")
         else:
             raise ValueError(f"Unsupported file type: '{file_type}'")
     except FileNotFoundError:
@@ -150,8 +150,8 @@ def load_training_data(
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load training data for the model."""
     try:
-        training_team_data = pd.read_parquet(training_team_data)
-        training_player_data = pd.read_parquet(training_player_data)
+        training_team_data = pd.read_parquet(training_team_data, engine="fastparquet")
+        training_player_data = pd.read_parquet(training_player_data, engine="fastparquet")
         logger.info("Training data loaded successfully.")
         return training_team_data, training_player_data
     except Exception as e:
@@ -161,15 +161,10 @@ def load_training_data(
 
 def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Path, logger: logging.Logger):
     """
-    Store a DataFrame to Parquet format with a fallback to CSV if an error occurs.
-    # TODO!: find a way to avoid needing the fallback to CSV
+    Store a DataFrame to Parquet format with a fallback to fastparquet engine if pyarrow fails.
     """
     try:
-        df.to_parquet(output_path, index=False, engine="pyarrow")
+        df.to_parquet(output_path, index=False, engine="pyarrow", compression="gzip")
     except Exception:
-        logger.warning("Failed to save to Parquet. Fallback to CSV and re-read.")
-        fallback_csv_path = output_path.with_suffix(".csv")
-        df.to_csv(fallback_csv_path, index=False)
-        read_back_data = pd.read_csv(fallback_csv_path)
-        read_back_data.to_parquet(output_path, index=False, engine="pyarrow")
-        os.remove(fallback_csv_path)
+        logger.warning("Failed to save to Parquet. Fallback to fastparquet engine.")
+        write(output_path, df, compression="GZIP")

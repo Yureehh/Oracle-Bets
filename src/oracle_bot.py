@@ -20,13 +20,10 @@ from src.discord_predictions.discord import (
     convert_to_discord_markdown,
     format_leagues_message,
     format_schedule_message,
-    get_allowed_models,
     get_formatted_player_profile,
     get_formatted_team_profile,
-    get_validation_metrics,
     handle_command_error,
     predict_and_format_result,
-    send_validation_result,
 )
 from src.ingestion.schedule import PandaScoreSchedule
 from src.utils.logger import logger
@@ -108,6 +105,25 @@ async def roster(ctx, team=None):
     await message.edit(content=output)
 
 
+@bot.command(name="team_rosters", aliases=["rosters"])
+async def rosters(ctx, teams=None):
+    """Displays the roster for the specified teams."""
+    if not teams:
+        await ctx.send("Please provide a list of team names separated by commas.")
+        return
+    message = await ctx.send(content="```Extracting...```")
+    try:
+        teams = teams.split(",")
+        output = ""
+        for team in teams:
+            team = team.strip()
+            team_data = Team(name=team).get_team_info()
+            output += convert_to_discord_markdown(team_data)
+    except Exception as e:
+        output = handle_command_error(e, additional_info="Could not extract roster information.")
+    await message.edit(content=output)
+
+
 @bot.command(name="team_profile", aliases=["team"])
 async def team_profile(ctx, team_name: str = None, verbose: bool = False):
     """Displays the profile for the specified team."""
@@ -138,23 +154,6 @@ async def player_profile(ctx, player_name: str = None, verbose: bool = False):
     except Exception as e:
         response = handle_command_error(e, additional_info="Could not retrieve player profile.")
     await ctx.send(response)
-
-
-@bot.command(name="validate", aliases=["validation"])
-async def validate(ctx, model: str = None, graph: bool = False):
-    """Validates the specified model and displays the metrics."""
-    if model is None:
-        await ctx.send("Please provide a model to validate.")
-        return
-    try:
-        all_models = get_allowed_models()
-        if model not in all_models:
-            await ctx.send(content=f"Model must be one of: {' | '.join(all_models)}")
-            return
-        metrics, images = get_validation_metrics(model, graph)
-        await send_validation_result(ctx, metrics, images)
-    except Exception as e:
-        await ctx.send(handle_command_error(e, "Validation failed."))
 
 
 @bot.command(name="bo1", aliases=["predict", "prediction", "match"])
@@ -233,7 +232,7 @@ async def convert_win_probability_to_odds(ctx, win_probability: str = None, to_d
     await ctx.send(f"The {odds_type} odds for a win probability of {win_probability * 100:.2f}% are {odds}.")
 
 
-@bot.command(name="to_prob", aliases=["odds_to_prob", "odds_to_win_probability"])
+@bot.command(name="prob", aliases=["odds_to_prob", "odds_to_win_probability"])
 async def convert_odds_to_win_probability(ctx, odds: str = None):
     """Converts decimal odds to a win probability."""
     if not odds:

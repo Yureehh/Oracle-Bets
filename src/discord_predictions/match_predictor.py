@@ -50,9 +50,9 @@ class MatchPredictor:
         if self.outcome_prediction_model is None:
             self.outcome_prediction_model = load_model(OUTCOME_PREDICTION_MODEL_PATH)
         if self.team_to_league is None:
-            self.team_to_league = pd.read_parquet(TEAM_LEAGUES_MAPPING)
+            self.team_to_league = pd.read_parquet(TEAM_LEAGUES_MAPPING, engine="fastparquet")
         if self.league_to_elo is None:
-            self.league_to_elo = pd.read_parquet(LEAGUE_ELO)
+            self.league_to_elo = pd.read_parquet(LEAGUE_ELO, engine="fastparquet")
 
     @staticmethod
     def is_iterable(obj: Any) -> bool:

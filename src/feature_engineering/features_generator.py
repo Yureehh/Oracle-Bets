@@ -144,7 +144,7 @@ class FeatureGenerator:
         # Calculate total game kills and total tower kills
         game_stats = (
             data.groupby("gameid").agg(total_kills=("kills", "sum"), total_towers=("towers", "sum")).reset_index()
-        )
+        )[["gameid", "total_kills", "total_towers"]]
 
         # Merge aggregated stats back to the original data
         data = data.merge(game_stats, on="gameid", how="left")

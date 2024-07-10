@@ -1,24 +1,4 @@
 {
-  "MODEL_FILES": {
-    "lightgbm": [
-      "OutcomePrediction_metrics.json",
-      "OutcomePrediction_Confusion_Matrix.png",
-      "OutcomePrediction_Historical_Accuracy.png",
-      "OutcomePrediction_Accuracy_Over_Samples.png"
-    ],
-    "xgboost": [
-      "XGBoost_metrics.json",
-      "XGBoost_Confusion_Matrix.png",
-      "XGBoost_Historical_Accuracy.png",
-      "XGBoost_Accuracy_Over_Samples.png"
-    ],
-    "catboost": [
-      "CatBoost_metrics.json",
-      "CatBoost_Confusion_Matrix.png",
-      "CatBoost_Historical_Accuracy.png",
-      "CatBoost_Accuracy_Over_Samples.png"
-    ]
-  },
   "EMPTY_ROSTER": {
     "top": null,
     "jng": null,
