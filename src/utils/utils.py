@@ -6,12 +6,12 @@ This script defines utility functions for the project.
 
 import json
 import logging
+import os
 import pickle
 from pathlib import Path
 from typing import Any, List, Tuple, Union
 
 import pandas as pd
-from fastparquet import write
 
 
 def get_sorting_keys(entity: str) -> List[str]:
@@ -161,10 +161,28 @@ def load_training_data(
 
 def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Path, logger: logging.Logger):
     """
-    Store a DataFrame to Parquet format with a fallback to fastparquet engine if pyarrow fails.
+    Store a DataFrame to Parquet format with a fallback to CSV if an error occurs.
     """
     try:
         df.to_parquet(output_path, index=False, engine="pyarrow", compression="gzip")
-    except Exception:
-        logger.warning("Failed to save to Parquet. Fallback to fastparquet engine.")
-        write(output_path, df, compression="GZIP")
+        logger.info(f"Successfully saved DataFrame to Parquet at {output_path}")
+    except (ImportError, ValueError, OSError):
+        logger.warning("Failed to save to Parquet. Attempting fallback to CSV.")
+
+        fallback_csv_path = output_path.with_suffix(".csv")
+
+        try:
+            df.to_csv(fallback_csv_path, index=False)
+            logger.info(f"Successfully saved DataFrame to CSV at {fallback_csv_path}")
+
+            read_back_data = pd.read_csv(fallback_csv_path)
+            read_back_data.to_parquet(output_path, index=False, engine="pyarrow", compression="gzip")
+            logger.info(f"Successfully converted CSV back to Parquet at {output_path}")
+
+            os.remove(fallback_csv_path)
+            logger.info(f"Removed fallback CSV file at {fallback_csv_path}")
+
+        except (ImportError, ValueError, OSError) as fallback_error:
+            logger.error(f"Failed to fallback to CSV due to {fallback_error}. Cleanup might be required.")
+            # Optional: Reraise the exception or handle it as needed
+            raise
