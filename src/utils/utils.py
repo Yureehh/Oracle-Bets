@@ -166,7 +166,7 @@ def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Path, logger: loggin
     try:
         df.to_parquet(output_path, index=False, engine="pyarrow", compression="gzip")
         logger.info(f"Successfully saved DataFrame to Parquet at {output_path}")
-    except (ImportError, ValueError, OSError):
+    except Exception:
         logger.warning("Failed to save to Parquet. Attempting fallback to CSV.")
 
         fallback_csv_path = output_path.with_suffix(".csv")
