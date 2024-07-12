@@ -92,7 +92,7 @@ target/
 *.pyc
 
 # Poetry lock file
-poetry.lock
+# poetry.lock
 
 # All csv files
 *.csv
