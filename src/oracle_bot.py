@@ -24,6 +24,7 @@ from src.discord_predictions.discord import (
     get_formatted_team_profile,
     handle_command_error,
     predict_and_format_result,
+    strip_team_names,
 )
 from src.ingestion.schedule import PandaScoreSchedule
 from src.utils.logger import logger
@@ -125,15 +126,13 @@ async def rosters(ctx, teams=None):
 
 
 @bot.command(name="team_profile", aliases=["team"])
-async def team_profile(ctx, team_name: str = None, verbose: bool = False):
+async def team_profile(ctx, team_name: str = None):
     """Displays the profile for the specified team."""
     if team_name is None:
         await ctx.send("Please provide a team name.")
         return
-    if not isinstance(verbose, bool):
-        verbose = verbose.lower() in ["true", "1", "t", "y", "yes"]
     try:
-        profile, error = await get_formatted_team_profile(team_name, verbose)
+        profile, error = await get_formatted_team_profile(team_name)
         response = profile if profile else error
     except Exception as e:
         response = handle_command_error(e, additional_info="Could not retrieve team profile.")
@@ -156,11 +155,12 @@ async def player_profile(ctx, player_name: str = None, verbose: bool = False):
     await ctx.send(response)
 
 
-@bot.command(name="bo1", aliases=["predict", "prediction", "match"])
+@bot.command(name="bo1", aliases=["predict", "prediction", "match", "BO1"])
 async def bo1(
     ctx, blue_team_name: str = None, red_team_name: str = None, blue_roster_str: str = None, red_roster_str: str = None
 ):
     """Predicts the outcome of a best-of-one match between two teams."""
+    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
     if not blue_team_name or not red_team_name:
         await ctx.send(PLEASE_PROVIDE)
         return
@@ -170,11 +170,12 @@ async def bo1(
     await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", False)
 
 
-@bot.command(name="sided_bo1", aliases=["sided_predict", "sided_prediction", "sided_match"])
+@bot.command(name="sided_bo1", aliases=["sided_predict", "sided_prediction", "sided_match", "sided_BO1"])
 async def sided_bo1(
     ctx, blue_team_name: str = None, red_team_name: str = None, blue_roster_str: str = None, red_roster_str: str = None
 ):
     """Predicts the outcome of a best-of-one match between two teams with side considerations."""
+    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
     if not blue_team_name or not red_team_name:
         await ctx.send(PLEASE_PROVIDE)
         return
@@ -184,11 +185,12 @@ async def sided_bo1(
     await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", True)
 
 
-@bot.command(name="bo3")
+@bot.command(name="bo3", aliases=["BO3"])
 async def bo3(
     ctx, blue_team_name: str = None, red_team_name: str = None, blue_roster_str: str = None, red_roster_str: str = None
 ):
     """Predicts the outcome of a best-of-three match between two teams."""
+    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
     if not blue_team_name or not red_team_name:
         await ctx.send(PLEASE_PROVIDE)
         return
@@ -198,11 +200,12 @@ async def bo3(
     await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo3", False)
 
 
-@bot.command(name="bo5")
+@bot.command(name="bo5", aliases=["BO5"])
 async def bo5(
     ctx, blue_team_name: str = None, red_team_name: str = None, blue_roster_str: str = None, red_roster_str: str = None
 ):
     """Predicts the outcome of a best-of-five match between two teams."""
+    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
     if not (blue_team_name or red_team_name):
         await ctx.send(PLEASE_PROVIDE)
         return

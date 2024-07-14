@@ -383,11 +383,6 @@ class GradientBoostingModel(ABC):
         # Drop rows where date is NaT
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-        # Store rows with NaT date
-        na_dates = X_val[X_val["date"].isna()]
-        na_dates.to_csv("_na_dates.csv", index=False)
-        df = df.dropna(subset=["date"])
-
         try:
             df["date"] = df["date"].dt.to_period("W").apply(lambda r: r.start_time)
         except Exception as e:

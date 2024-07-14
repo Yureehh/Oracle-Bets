@@ -11,7 +11,7 @@ from typing import Any, Dict, Union
 import pandas as pd
 from tqdm import tqdm
 
-from src.utils.paths import DEFAULT_MODELS_PARAMETERS
+from src.utils.paths import CONSIDERED_LEAGUES, DEFAULT_MODELS_PARAMETERS, LEAGUE_ELO
 from src.utils.utils import get_sorting_keys, json_loader
 
 # Load configuration parameters
@@ -57,7 +57,25 @@ def handle_player_swap(
     player_id: Union[int, str], new_league: str, elo_ratings: Dict[Union[int, str], Dict[str, Any]], baseline_elo: float
 ) -> None:
     """Handle player swap between leagues and reset Elo rating."""
-    elo_ratings[player_id]["elo"] = baseline_elo
+    league_elo_dict = {}
+    major_leagues = json_loader(CONSIDERED_LEAGUES)["major_leagues"]
+    current_league = elo_ratings[player_id]["league"]
+
+    # Check if LEAGUE_ELO parquet file exists
+    if LEAGUE_ELO.exists():
+        league_elo_df = pd.read_parquet(LEAGUE_ELO)
+        league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
+
+    if league_elo_dict and new_league in major_leagues and current_league in major_leagues:
+        current_league_elo = league_elo_dict.get(current_league, baseline_elo)
+        new_league_elo = league_elo_dict.get(new_league, baseline_elo)
+        elo_increment = (
+            max(0, current_league_elo - new_league_elo) / 2
+        )  # Ensure increment is non-negative and divide by 2
+        elo_ratings[player_id]["elo"] = baseline_elo + elo_increment
+    else:
+        elo_ratings[player_id]["elo"] = baseline_elo
+
     elo_ratings[player_id]["league"] = new_league
 
 
@@ -72,6 +90,7 @@ def process_game(
 ) -> None:
     """Process each game and update Elo ratings for both sides."""
     current_season = game_group.iloc[0]["season"]
+    cross_competition_leagues = json_loader(CONSIDERED_LEAGUES)["cross_league_competitions"]
     dynamic_percentage_reset(elo_ratings, baseline_elo, current_season)
 
     # Get the player IDs involved in the current game group
@@ -81,7 +100,7 @@ def process_game(
     for player_id in player_ids:
         player_data = elo_ratings[player_id]
         new_league = game_group[game_group[entity_key] == player_id]["league"].iloc[0]
-        if player_data["league"] != new_league:
+        if player_data["league"] != new_league and new_league not in cross_competition_leagues:
             handle_player_swap(player_id, new_league, elo_ratings, baseline_elo)
 
     blue_rows = (

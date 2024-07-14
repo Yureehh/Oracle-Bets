@@ -4,9 +4,9 @@ Utility functions
 This script defines utility functions for the project.
 """
 
+import io
 import json
 import logging
-import os
 import pickle
 from pathlib import Path
 from typing import Any, List, Tuple, Union
@@ -169,18 +169,16 @@ def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Path, logger: loggin
     except Exception:
         logger.warning("Failed to save to Parquet. Attempting fallback to CSV.")
 
-        fallback_csv_path = output_path.with_suffix(".csv")
-
         try:
-            df.to_csv(fallback_csv_path, index=False)
-            logger.info(f"Successfully saved DataFrame to CSV at {fallback_csv_path}")
-
-            read_back_data = pd.read_csv(fallback_csv_path)
+            # Use BytesIO to store the CSV data in memory
+            csv_buffer = io.BytesIO()
+            df.to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)  # Reset buffer position to the beginning
+            # Read the CSV data from the buffer
+            read_back_data = pd.read_csv(csv_buffer)
+            # Store the read data back to Parquet
             read_back_data.to_parquet(output_path, index=False, engine="pyarrow", compression="gzip")
-            logger.info(f"Successfully converted CSV back to Parquet at {output_path}")
-
-            os.remove(fallback_csv_path)
-            logger.info(f"Removed fallback CSV file at {fallback_csv_path}")
+            logger.info(f"Successfully converted in-memory CSV back to Parquet at {output_path}")
 
         except (ImportError, ValueError, OSError) as fallback_error:
             logger.error(f"Failed to fallback to CSV due to {fallback_error}. Cleanup might be required.")

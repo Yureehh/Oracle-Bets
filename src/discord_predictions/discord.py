@@ -113,7 +113,8 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
         "Position",
         "Team",
         "Elo",
-        "Glicko2 Score" "Plackett-Luce Score",
+        "Glicko2 Score",
+        "Plackett-Luce Score",
         "TrueSkill Score",
         "Blue Side Win Rate",
         "Red Side Win Rate",
@@ -164,7 +165,7 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
     return convert_to_discord_markdown(player_profile_df)
 
 
-def format_team_profile(data: pd.DataFrame, truncate: bool = False) -> str:
+def format_team_profile(data: pd.DataFrame) -> str:
     """Formats the team profile data into a Discord-friendly Markdown format."""
     stats_names = [
         "Elo",
@@ -191,12 +192,7 @@ def format_team_profile(data: pd.DataFrame, truncate: bool = False) -> str:
         f"{data['ema_gamelength'].iloc[0]:.2f}%",
     ]
 
-    team_profile_df = pd.DataFrame(
-        {
-            "Stat": stats_names if not truncate else stats_names,
-            "Value": stats_values if not truncate else stats_values,
-        }
-    )
+    team_profile_df = pd.DataFrame({"Stat": stats_names, "Value": stats_values})
     return convert_to_discord_markdown(team_profile_df)
 
 
@@ -210,12 +206,12 @@ def convert_to_discord_markdown(df: pd.DataFrame) -> str:
         raise ValueError(f"Error converting DataFrame to Markdown: {e}") from e
 
 
-async def get_formatted_team_profile(team_name: str, truncate: bool = False) -> Tuple[Optional[str], Optional[str]]:
+async def get_formatted_team_profile(team_name: str) -> Tuple[Optional[str], Optional[str]]:
     """Retrieves and formats the team profile."""
     try:
         team_profile = get_team_data(team_name, FLATTENED_TEAMS)
         if team_profile is not None and not team_profile.empty:
-            profile_md = format_team_profile(team_profile, truncate)
+            profile_md = format_team_profile(team_profile)
             return profile_md, None
         return None, f"Data for team {team_name} not found in database."
     except Exception as e:
@@ -335,3 +331,8 @@ def calculate_kelly_criterion(bookmaker_odds: float, win_probability: float) -> 
     loss_probability = 1 - win_probability
     net_odds = bookmaker_odds - 1
     return (net_odds * win_probability - loss_probability) / net_odds / 4
+
+
+def strip_team_names(team1: str, team2: str) -> Tuple[str, str]:
+    """Strips team names of any special characters."""
+    return team1.strip(), team2.strip()

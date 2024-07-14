@@ -42,5 +42,6 @@
     "MSI",
     "IC",
     "WLDs"
-  ]
+  ],
+  "major_leagues": ["AL", "LCK", "LCS", "LEC", "LPL"]
 }

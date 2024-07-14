@@ -11,7 +11,7 @@ import pandas as pd
 from glicko2 import Glicko2, Rating
 from tqdm import tqdm
 
-from src.utils.paths import DEFAULT_MODELS_PARAMETERS
+from src.utils.paths import CONSIDERED_LEAGUES, DEFAULT_MODELS_PARAMETERS, LEAGUE_ELO
 from src.utils.utils import get_sorting_keys, json_loader
 
 # Load configuration
@@ -92,11 +92,28 @@ def handle_player_swap(
     baseline_phi: float,
     model: Glicko2,
 ) -> None:
-    """
-    Handle player swap between leagues and reset Glicko-2 rating.
-    """
+    """Handle player swap between leagues and reset Glicko-2 rating."""
+    league_elo_dict = {}
+    major_leagues = json_loader(CONSIDERED_LEAGUES)["major_leagues"]
+    current_league = ratings[player_id]["league"]
+
+    # Check if LEAGUE_ELO parquet file exists
+    if LEAGUE_ELO.exists():
+        league_elo_df = pd.read_parquet(LEAGUE_ELO)
+        league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
+
+    if league_elo_dict and new_league in major_leagues and current_league in major_leagues:
+        current_league_elo = league_elo_dict.get(current_league, baseline_mu)
+        new_league_elo = league_elo_dict.get(new_league, baseline_mu)
+        elo_increment = (
+            max(0, current_league_elo - new_league_elo) / 2
+        )  # Ensure increment is non-negative and divide by 2
+        new_mu = baseline_mu + elo_increment
+    else:
+        new_mu = baseline_mu
+
     ratings[player_id]["rating"] = model.create_rating(
-        mu=baseline_mu, phi=baseline_phi, sigma=ratings[player_id]["rating"].sigma
+        mu=new_mu, phi=baseline_phi, sigma=ratings[player_id]["rating"].sigma
     )
     ratings[player_id]["league"] = new_league
 
@@ -115,6 +132,7 @@ def process_game(
     Process each game and update Glicko-2 ratings for both sides.
     """
     current_season = game_group.iloc[0]["season"]
+    cross_competition_leagues = json_loader(CONSIDERED_LEAGUES)["cross_league_competitions"]
     dynamic_percentage_reset_glicko2(ratings, baseline_mu, baseline_phi, current_season)
 
     # Get the player IDs involved in the current game group
@@ -124,7 +142,7 @@ def process_game(
     for player_id in player_ids:
         player_data = ratings[player_id]
         new_league = game_group[game_group[entity_key] == player_id]["league"].iloc[0]
-        if player_data["league"] != new_league:
+        if player_data["league"] != new_league and new_league not in cross_competition_leagues:
             handle_player_swap(player_id, new_league, ratings, baseline_mu, baseline_phi, model)
 
     blue_rows, red_rows = split_teams_by_side(game_group, entity)
