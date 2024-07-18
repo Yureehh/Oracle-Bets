@@ -167,7 +167,7 @@ def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Path, logger: loggin
         df.to_parquet(output_path, index=False, engine="pyarrow", compression="gzip")
         logger.info(f"Successfully saved DataFrame to Parquet at {output_path}")
     except Exception:
-        logger.warning("Failed to save to Parquet. Attempting fallback to CSV.")
+        logger.warning("Failed to save to Parquet. Attempting fallback to CSV buffer.")
 
         try:
             # Use BytesIO to store the CSV data in memory
