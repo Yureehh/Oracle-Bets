@@ -64,7 +64,7 @@ def train_models() -> None:
     """Train all models."""
     logger.info("Loading training data...")
     models_logger.info("Loading training data...")
-    training_team_data, training_player_data = load_training_data(TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA)
+    training_team_data, training_player_data = load_training_data(TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA, logger)
 
     # Train the outcome prediction model (classification)
     initialize_and_train_model(
@@ -75,19 +75,19 @@ def train_models() -> None:
         problem_type="classification",
     )
 
-    # Train regression models
-    for model_name, target_column in [
-        (GAMELENGTH_MODEL_NAME, "gamelength"),
-        (TOTAL_KILLS_MODEL_NAME, "total_kills"),
-        (TOTAL_TOWERS_MODEL_NAME, "total_towers"),
-    ]:
-        initialize_and_train_model(
-            model_name=model_name,
-            training_team_data=training_team_data,
-            training_player_data=training_player_data,
-            target_column_name=target_column,
-            problem_type="regression",
-        )
+    # # Train regression models
+    # for model_name, target_column in [
+    #     (GAMELENGTH_MODEL_NAME, "gamelength"),
+    #     (TOTAL_KILLS_MODEL_NAME, "total_kills"),
+    #     (TOTAL_TOWERS_MODEL_NAME, "total_towers"),
+    # ]:
+    #     initialize_and_train_model(
+    #         model_name=model_name,
+    #         training_team_data=training_team_data,
+    #         training_player_data=training_player_data,
+    #         target_column_name=target_column,
+    #         problem_type="regression",
+    #     )
 
     logger.info("All models trained and validated.")
     models_logger.info("All models trained and validated.")
