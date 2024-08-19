@@ -291,19 +291,26 @@ class GradientBoostingModel(ABC):
         self, model, X_test: pd.DataFrame, y_test: pd.Series, eval_gameids: pd.Series, eval_sides: pd.Series
     ) -> None:
         """Validate the model and store evaluation metrics."""
+
         logger.info("Validating the model...")
         predictions = model.predict(X_test)
+
         if self.problem_type == "classification":
             metrics = self.compute_classification_metrics(y_test, predictions)
             self.plot_confusion_matrix(metrics["cm"])
+            self.plot_accuracy_over_samples(y_test, predictions)
+            self.plot_historical_accuracy(X_test, y_test, predictions, eval_gameids)
+
         elif self.problem_type == "regression":
             metrics = self.compute_regression_metrics(y_test, predictions)
             self.plot_regression_results(y_test, predictions)
+            self.plot_regression_error_over_samples(y_test, predictions)
+            self.plot_regression_error_over_time(X_test, y_test, predictions, eval_gameids)  # Plot MAE over time
+
         self.log_evaluation_metrics(metrics)
         self.store_evaluation_metrics(metrics)
         self.store_predictions(predictions, eval_gameids, eval_sides)
-        self.plot_accuracy_over_samples(y_test, predictions)
-        self.plot_historical_accuracy(X_test, y_test, predictions, eval_gameids)
+
         logger.info(f"Model {self.model_name} validated and insights stored.\n")
 
     def compute_classification_metrics(self, y_val: pd.Series, predictions: np.ndarray) -> Dict[str, Any]:
@@ -315,10 +322,11 @@ class GradientBoostingModel(ABC):
 
     def compute_regression_metrics(self, y_val: pd.Series, predictions: np.ndarray) -> Dict[str, Any]:
         """Compute evaluation metrics for regression models."""
+        mae = np.mean(np.abs(y_val - predictions))
         mse = mean_squared_error(y_val, predictions)
         rmse = np.sqrt(mse)
         r2 = r2_score(y_val, predictions)
-        return {"mse": mse, "rmse": rmse, "r2": r2}
+        return {"mae": mae, "mse": mse, "rmse": rmse, "r2": r2}
 
     def store_evaluation_metrics(self, metrics: Dict[str, Any]) -> None:
         """Store evaluation metrics to a JSON file."""
@@ -341,10 +349,10 @@ class GradientBoostingModel(ABC):
             )
         elif self.problem_type == "regression":
             logger.info(
-                f"Evaluation Metrics - MSE: {metrics['mse']:.4f}, RMSE: {metrics['rmse']:.4f}, R2: {metrics['r2']:.4f}\n"
+                f"Evaluation Metrics - MAE: {metrics['mae']:.4f}, MSE: {metrics['mse']:.4f}, RMSE: {metrics['rmse']:.4f}, R2: {metrics['r2']:.4f}\n"
             )
             models_logger.info(
-                f"Evaluation Metrics - MSE: {metrics['mse']:.4f}, RMSE: {metrics['rmse']:.4f}, R2: {metrics['r2']:.4f}\n"
+                f"Evaluation Metrics - MAE: {metrics['mae']:.4f}, MSE: {metrics['mse']:.4f}, RMSE: {metrics['rmse']:.4f}, R2: {metrics['r2']:.4f}\n"
             )
 
     def plot_confusion_matrix(self, cm: np.ndarray) -> None:
@@ -390,6 +398,50 @@ class GradientBoostingModel(ABC):
         plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"), dpi=300, transparent=True)
         plt.close()
         logger.info(f"Accuracy over samples plot for {self.model_name} stored.")
+
+    def plot_regression_error_over_samples(
+        self, y_val: pd.Series, predictions: np.ndarray, metric: str = "mae"
+    ) -> None:
+        """
+        Plots the regression error over samples using the specified error metric.
+
+        Parameters:
+        y_val (numpy array or pd.Series): Array of true values.
+        predictions (numpy array or pd.Series): Array of predicted values.
+        metric (str): The error metric to use, either 'mae' for Mean Absolute Error or 'mse' for Mean Squared Error.
+
+        Returns:
+        None
+        """
+        # Convert to numpy array if they are pandas Series
+        if isinstance(y_val, pd.Series):
+            y_val = y_val.values
+        if isinstance(predictions, pd.Series):
+            predictions = predictions.values
+
+        # Calculate the errors based on the chosen metric
+        if metric == "mae":
+            errors = np.abs(y_val - predictions)
+        elif metric == "mse":
+            errors = (y_val - predictions) ** 2
+        else:
+            raise ValueError(
+                "Invalid metric specified. Use 'mae' for Mean Absolute Error or 'mse' for Mean Squared Error."
+            )
+
+        # Calculate the cumulative average error for each sample
+        cumulative_error_timeline = [np.mean(errors[:i]) for i in range(1, len(y_val) + 1)]
+
+        # Plotting the cumulative average error over samples
+        plt.plot(range(1, len(y_val) + 1), cumulative_error_timeline, marker="o")
+        plt.title(f"Cumulative {metric.upper()} Over Samples")
+        plt.xlabel("Number of Samples")
+        plt.ylabel(f"Cumulative {metric.upper()}")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(self.directory.joinpath(f"{self.model_name}_Cumulative_{metric.upper()}_Over_Samples.png"), dpi=300)
+        plt.close()
+        logger.info(f"Cumulative {metric.upper()} over samples plot for {self.model_name} stored.")
 
     def plot_historical_accuracy(
         self, X_val: pd.DataFrame, y_val: pd.Series, predictions: np.ndarray, eval_gameids: pd.Series
@@ -450,6 +502,86 @@ class GradientBoostingModel(ABC):
         plt.savefig(self.directory.joinpath(f"{self.model_name}_Historical_Accuracy.png"), dpi=300, transparent=True)
         plt.close()
         logger.info(f"Historical accuracy plot for {self.model_name} stored.")
+
+    def plot_regression_error_over_time(
+        self, X_val: pd.DataFrame, y_val: pd.Series, predictions: np.ndarray, eval_gameids: pd.Series
+    ) -> None:
+        """
+        Plots the regression error (MAE) over time.
+
+        Parameters:
+        X_val (pd.DataFrame): DataFrame of the features used for validation.
+        y_val (pd.Series): Series of true values.
+        predictions (np.ndarray): Array of predicted values.
+        eval_gameids (pd.Series): Series containing game IDs, used to associate predictions with dates.
+
+        Returns:
+        None
+        """
+        X_val = pd.DataFrame(X_val.copy())
+        X_val["gameid"] = eval_gameids
+
+        if "date" not in X_val.columns:
+            team_data = pd.read_parquet(PROCESSED_TEAMS, engine="fastparquet")[["gameid", "date"]].drop_duplicates()
+            X_val = pd.merge(X_val, team_data, on="gameid", how="left", validate="many_to_many").reset_index(drop=True)
+
+        df = pd.DataFrame({"date": X_val["date"].values, "true": y_val.values, "predicted": predictions})
+
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+        try:
+            df["date"] = df["date"].dt.to_period("W").apply(lambda r: r.start_time)
+        except Exception as e:
+            logger.error(f"Failed to convert date to weekly timespans: {e}")
+            return  # Early exit if date conversion fails
+
+        df = df.sort_values(by="date")
+
+        # Calculate the MAE for each date
+        df["mae"] = np.abs(df["true"] - df["predicted"])
+
+        # Group by date and calculate mean MAE for each week
+        df_grouped = df.groupby("date")["mae"].mean().reset_index(name="mae")
+        df_grouped["date"] = pd.to_datetime(df_grouped["date"])
+
+        # Plotting the MAE over time
+        _, ax = plt.subplots(figsize=(15, 8))
+        sns.lineplot(
+            data=df_grouped,
+            x="date",
+            y="mae",
+            marker="o",
+            linestyle="--",
+            ax=ax,
+            label="Weekly MAE",
+            color="#84C3FA",
+        )
+
+        plt.axhline(y=df_grouped["mae"].mean(), color="gray", linestyle="--", label="Average MAE")
+
+        polynomial_degree = 3
+        z = np.polyfit(mdates.date2num(df_grouped["date"]), df_grouped["mae"], polynomial_degree)
+        p = np.poly1d(z)
+        plt.plot(df_grouped["date"], p(mdates.date2num(df_grouped["date"])), "r--", label="Trend Line")
+
+        ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+        plt.xticks(rotation=90, color="white")
+        ax.set_xlabel("Date", color="white")
+        ax.set_ylabel("MAE", color="white")
+        ax.grid(True, linestyle="--", alpha=0.6, axis="y")
+        ax.grid(False, axis="x")
+        plt.gca().set_facecolor("none")
+        plt.legend(facecolor="white", edgecolor="none")
+        plt.tight_layout()
+        ax.tick_params(axis="x", colors="white")
+        ax.tick_params(axis="y", colors="white")
+
+        plt.savefig(
+            self.directory.joinpath(f"{self.model_name}_Historical_MAE_Over_Time.png"), dpi=300, transparent=True
+        )
+        plt.close()
+        logger.info(f"Historical MAE over time plot for {self.model_name} stored.")
 
     def store_feature_importance(self, model, feature_names: List[str]) -> None:
         """Store feature importance to a CSV and plot as a PNG file."""
