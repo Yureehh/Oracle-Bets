@@ -246,8 +246,8 @@ class MatchPredictor:
         numeric_cols = player_data.select_dtypes(include=["number"]).columns
         non_numeric_cols = player_data.columns.difference(numeric_cols)
 
-        agg_funcs = {col: "mean" for col in numeric_cols}
-        agg_funcs.update({col: "first" for col in non_numeric_cols if col not in ["position", "side"]})
+        agg_funcs = dict.fromkeys(numeric_cols, "mean")
+        agg_funcs.update(dict.fromkeys([col for col in non_numeric_cols if col not in ["position", "side"]], "first"))
 
         player_data_pivoted = player_data.pivot_table(
             index=["gameid", "teamname"], columns="position", aggfunc=agg_funcs, fill_value=0

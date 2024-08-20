@@ -1,13 +1,15 @@
 """
-LightGBM model class
+LightGBM model and model factory classes.
 
 This module contains the LightGBMModel class, a subclass of GradientBoostingModel.
 It is used to train and evaluate a LightGBM model, optimize hyperparameters using Optuna,
 and log feature importances and model metrics.
+
+The ModelFactory class is used to create a LightGBMModel based on the problem type.
 """
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import List, Tuple
 
 import lightgbm as lgb
 import optuna
@@ -43,12 +45,12 @@ class LightGBMModel(GradientBoostingModel):
         model, X_test, y_test, eval_gameids, eval_sides = self.train_model(target_col)
         if validate:
             self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
-        self._calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns, X_test)
+        self._calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns)
         return model
 
-    def _prepare_features_and_target(self, target_col: str) -> Tuple[pd.DataFrame, pd.Series, list]:
+    def _prepare_features_and_target(self, target_col: str) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
         """Prepare the features and target for model training."""
-        X = self.training_data.drop([target_col], axis=1)
+        X = self.training_data.drop(columns=[target_col])
         y = self.training_data[target_col]
         X, categorical_features = self.preprocess_categorical_features(X, exclude_cols=["gameid", "side", "league"])
         return X, y, categorical_features
@@ -61,10 +63,8 @@ class LightGBMModel(GradientBoostingModel):
             X, y, X["gameid"], X["league"], val_size=VALIDATION_SIZE, test_size=TEST_SIZE
         )
 
-        # Store evaluation gameids and sides
         eval_gameids, eval_sides = X_test["gameid"], X_test["side"]
 
-        # Drop unnecessary columns
         X_train = X_train.drop(columns=["gameid", "side", "league"], errors="ignore")
         X_val = X_val.drop(columns=["gameid", "side", "league"], errors="ignore")
         X_test = X_test.drop(columns=["gameid", "side", "league"], errors="ignore")
@@ -81,7 +81,12 @@ class LightGBMModel(GradientBoostingModel):
         return X_train, X_val, X_test
 
     def _select_and_store_features(
-        self, X_train: pd.DataFrame, X_val: pd.DataFrame, X_test: pd.DataFrame, y_val: pd.Series, categorical_cols: list
+        self,
+        X_train: pd.DataFrame,
+        X_val: pd.DataFrame,
+        X_test: pd.DataFrame,
+        y_val: pd.Series,
+        categorical_cols: List[str],
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Select features, store them, and plot the correlation matrix.
@@ -120,10 +125,11 @@ class LightGBMModel(GradientBoostingModel):
         self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series, best_params: dict
     ) -> lgb.LGBMModel:
         """Fit the LightGBM model using the best hyperparameters."""
-        if self.problem_type == "classification":
-            model = lgb.LGBMClassifier(**best_params, force_col_wise=True, verbosity=-1)
-        elif self.problem_type == "regression":
-            model = lgb.LGBMRegressor(**best_params, force_col_wise=True, verbosity=-1)
+        model = (
+            lgb.LGBMClassifier(**best_params, force_col_wise=True, verbosity=-1)
+            if self.problem_type == "classification"
+            else lgb.LGBMRegressor(**best_params, force_col_wise=True, verbosity=-1)
+        )
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
         return model
 
@@ -147,17 +153,17 @@ class LightGBMModel(GradientBoostingModel):
                 "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 10),
             }
 
-            if self.problem_type == "classification":
-                clf = lgb.LGBMClassifier(**params, force_col_wise=True, verbosity=-1)
-                clf.fit(X_train, y_train, eval_set=[(X_val, y_val)])
-                pred_proba = clf.predict_proba(X_val)[:, 1]
-                score = log_loss(y_val, pred_proba)
-            elif self.problem_type == "regression":
-                clf = lgb.LGBMRegressor(**params, force_col_wise=True, verbosity=-1)
-                clf.fit(X_train, y_train, eval_set=[(X_val, y_val)])
-                pred = clf.predict(X_val)
-                score = mean_absolute_error(y_val, pred)
-
+            clf = (
+                lgb.LGBMClassifier(**params, force_col_wise=True, verbosity=-1)
+                if self.problem_type == "classification"
+                else lgb.LGBMRegressor(**params, force_col_wise=True, verbosity=-1)
+            )
+            clf.fit(X_train, y_train, eval_set=[(X_val, y_val)])
+            score = (
+                log_loss(y_val, clf.predict_proba(X_val)[:, 1])
+                if self.problem_type == "classification"
+                else mean_absolute_error(y_val, clf.predict(X_val))
+            )
             return score
 
         study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler())
@@ -170,11 +176,28 @@ class LightGBMModel(GradientBoostingModel):
         return study.best_params
 
     def _calculate_and_plot_feature_importances(
-        self, model, X_test: pd.DataFrame, y_test: pd.Series, selected_features: list, X_train: pd.DataFrame
+        self, model, X_test: pd.DataFrame, y_test: pd.Series, selected_features: List[str]
     ):
         """Calculate and plot feature importances."""
         logger.info("Calculating and plotting feature importances...")
         self.store_feature_importance(model, selected_features)
         self.calculate_permutation_importance(model, X_test, y_test, selected_features)
-        self.calculate_and_plot_shap(model, X_train, selected_features)
+        self.calculate_and_plot_shap(model, X_test, selected_features)
         logger.info("Finished calculating and plotting feature importances\n")
+
+
+class ModelFactory:
+    @staticmethod
+    def create_model(
+        model_name: str, problem_type: str, training_team_data: pd.DataFrame, training_player_data: pd.DataFrame
+    ) -> LightGBMModel:
+        """Factory method to create a LightGBMModel based on the problem type."""
+        if problem_type not in ["classification", "regression"]:
+            raise ValueError(f"Unsupported problem type: {problem_type}")
+
+        return LightGBMModel(
+            model_name=model_name,
+            problem_type=problem_type,
+            team_data=training_team_data,
+            player_data=training_player_data,
+        )
