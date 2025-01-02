@@ -1,3 +1,4 @@
+---
 name: Python package
 
 on:
@@ -11,7 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11"] # Adjust based on your project needs
+        python-version: ["3.11"]
+
     steps:
     - name: Checkout Code
       uses: actions/checkout@v3
@@ -20,6 +22,13 @@ jobs:
       uses: actions/setup-python@v3
       with:
         python-version: ${{ matrix.python-version }}
+
+    - name: Cache Poetry Binary
+      uses: actions/cache@v3
+      with:
+        path: ~/.poetry
+        key: poetry-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+        restore-keys: poetry-${{ runner.os }}-
 
     - name: Install Poetry
       run: |
@@ -31,8 +40,7 @@ jobs:
       with:
         path: |
           ~/.cache/pypoetry
-          ~/.poetry
-        key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
+        key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock', '**/pyproject.toml') }}
         restore-keys: ${{ runner.os }}-poetry-
 
     - name: Install Dependencies with Poetry
@@ -42,13 +50,18 @@ jobs:
       run: pip install pre-commit
 
     - name: Run Pre-commit Hooks
-      run: pre-commit run --all-files
+      run: pre-commit run --config .pre-commit-config.yaml --all-files
 
     - name: Run Linting and Formatting Checks
       run: |
-        poetry run black --check src
-        poetry run isort --check-only src
-        poetry run flake8 src
+        poetry run black --check .
+        poetry run isort --check-only .
+        poetry run flake8 . \
+          --max-line-length=120 \
+          --max-complexity=10 \
+          --exclude=.git,__pycache__,docs/source/conf.py,build,dist,tests,src/prediction_bot.py \
+          --ignore=B905,B907,N803,N806,W503,C420,D205,D400,D401 \
+          --select=B,C,D,E,F,N,W,B9
 
     - name: Run Tests with Coverage
       continue-on-error: true
@@ -60,3 +73,9 @@ jobs:
       with:
         name: coverage-report
         path: coverage.xml
+
+    - name: Build MkDocs
+      run: mkdocs build
+
+    - name: Deploy MkDocs
+      run: mkdocs gh-deploy --force

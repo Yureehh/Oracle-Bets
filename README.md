@@ -29,47 +29,9 @@ For example, some models were highly sensitive to player substitutions, roster s
 
 Furthermore, I wanted to stay up to date on methods that were considered effective by the consensus of minds in the field. This lead me to investigate elo models, and eventually look at more proprietary ideas like TrueSkill.
 
-Thus, the current model is comprised of four major models:
+Thus, the current model is comprised of these major models:
 
-### Team-Based Elo
-
-[Elo documentation](https://medium.com/purple-theory/what-is-elo-rating-c4eb7a9061e0). This model looks at a shorter period of data. The K value was set by a lot of iterative trial and error, testing until I found the best fit.
-
-**Current Tested Accuracy: 61.79%, Log Loss: 0.6498, Brier Score: 0.2290 - on Feb 24, 2021**
-
-### Player Based Elo
-
-This model looks at the performance of each individual player. This model is more resistant to players changing teams, or moving back and forth between academy and main leagues. However, this model also has the issue of incorporating the effects of the other 4 players on the team into the player's elo.
-
-**Most Recent Tested Accuracy: 62.60%, Log Loss: 0.6423, Brier Score: 0.2257 - on Feb 24, 2021**
-
-### TrueSkill
-
-[TrueSkill documentation](https://www.microsoft.com/en-us/research/project/trueskill-ranking-system/). TrueSkill is calculated on a player-basis for the past two years. TrueSkill is much better oriented to monitor player-level effects and skill, and also uses mu and sigma values to capture a player's mean and variance in their performance.
-
-**Most Recent Tested Accuracy: 62.48%, Log Loss: 0.6404, Brier: 0.2250 - on Feb 24, 2021**
-
-### TrueSkill-Normalized EGPM Dominance
-
-This model is one that I developed myself, and is slightly more difficult to explain.
-
-According to relative importance and multiple regression analysis, Gold is by far the most individually significant stat to monitor in League of Legends as an esport. This model looks at a team's gold lead over their opponent, and uses that as a proxy to measure the "strength of the win". EGPM stands for "Earned Gold Per Minute" and is a stat measured in the Oracle's Elixir data. The intent is to monitor a team's Earned Gold Per Minute over their opponent, relative to each team's average EGPM value. The way this is set up is that if the 1st place team in the league loses to the 10th place team in the league, where the 10th place team has a much higher EGPM statistic, the 1st place team is penalized significantly more than if they lost in a close game to the 2nd place team in the league. This is similar to elo, but the EGPM statistic is used to quantify the "strength of the win".
-
-**Most Recent Tested Accuracy: 59.53%, Log Loss: 0.6637, Brier Score: 0.2357 - on Feb 24, 2021**
-
-### Side Win Rate (Exponential Moving Average)
-
-This model uses an exponentially-weighted moving average to examine recent side win rate data in an attempt to quantify a team's drafting style and success. The way the exponential moving average works is that the most recent 9 games (one round robin, for LCS/LEC) are weighted at 100% weight, and then the 9 games prior to those are weighted at 50%, and so on and so forth.
-
-**Most Recent Tested Accuracy: 51.93%, Log Loss: 1.6623, Brier: 0.2700 - on Feb 24, 2021**
-
-### How It Gets Ensembled
-
-It is essentially a weighted average, where each model is weighted based on its historical accuracy. Each of the models' predictions is output in the document, so you can see the individual performance. This output also comes with an average that's calculated by weighting each model's accuracy into an average of all model probability scores. A standard deviation value is also computed, so you get the ensemble model's weighted average, and standard deviation, alongside each of the four individual model probability scores as well.
-
-**Ensemble Tested Accuracy: 63.66%, Log Loss: 0.6425, Brier Score: 0.2255 - on Feb 24, 2021**
-
-**Experimental ML Model Accuracy: 65.601% - on Dec 28, 2021** - this is still experimental and under development.
+TBD
 
 
 ## Structure
@@ -78,20 +40,4 @@ This project has taken its structure and some of its core architectural philosop
 
 Within the src directory -
 
-The "oracles_elixir" module represents a series of functions designed to pull down data from the Oracle's Elixir site. That code will subset, format and clean that data, and is capable of handling file management around storing the data locally so as to minimize the volume of pulls against the Oracle's Elixir site. It is intended that the code in that module be a respectful steward of data, but also a consistent core of information for use in additional analytics.
-
-The "lol_modeling" module represents an ensemble of tools and modeling functions built around predicting game or match win probabilities (sometimes referred to as "moneyline" bets) and computing player and team performance statistics.
-
-"data_generator" is the primary function intended to leverage oracles_elixir and lol_modeling to download, clean, and enrich the data.
-
-The "dfs_optimizer" module contains a series of tools designed to take the output of lolmodeling metrics and help build out Daily Fantasy Sport (dfs) rosters. There are a wide variety of DFS sites, some free and some paid, with many variations of rules. Currently, this code supports two variants, one for "EsportsOne" (free) and another for "DraftKings" (paid). It is again strongly emphasized that this script comes with no expectation or guarantee of performance, and that the user is fully responsible for however they choose to use this script.
-
-"match_predictor" is the function built to predict future matches based on the outputs of the data_generator.
-
-"prediction_bot" is the Discord adaptation of the match_predictor, and enables Discord users to call down the match_predictor for custom combinations of players/teams.
-
-"team" contains a Dataclass definition for the components of teams.
-
-"schedule_generator" is intended to leverage a private API to pull down a list of upcoming matches, and serves as a helper for the "match_predictor".
-
-"model validator" represents a series of tests to help demonstrate accuracy and validate performance metrics.
+TBD

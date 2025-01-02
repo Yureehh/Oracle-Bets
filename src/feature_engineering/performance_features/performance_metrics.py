@@ -1,10 +1,14 @@
 """
-Wrapper class for in-game performance metric models
+Wrapper Class for In-Game Performance Metric Models
+
+This module contains a wrapper class for performance metrics calculations related to various game statistics.
+It provides static methods to enrich game data with statistical features such as exponentially weighted
+moving averages (EMA) for entities like players or teams.
 """
 
 from dataclasses import dataclass
 
-import pandas as pd
+import fireducks.pandas as pd
 
 # Import necessary modules for performance metrics calculation.
 from src.feature_engineering.performance_features.entity_stats import enrich_entity_ema_statistics
@@ -26,27 +30,28 @@ class PerformanceMetrics:
         """
         Validates the input DataFrame and entity type.
 
-        Parameters:
+        Args:
             df (pd.DataFrame): The DataFrame containing game data.
             entity (str): The type of entity, e.g., 'player' or 'team'.
 
         Raises:
             ValueError: If the entity is not 'player' or 'team' or if the DataFrame is invalid.
         """
-        if entity not in ["player", "team"]:
+        if entity not in {"player", "team"}:
             raise ValueError("Entity must be either 'player' or 'team'.")
         if df.empty or not isinstance(df, pd.DataFrame):
             raise ValueError("Input data must be a non-empty DataFrame.")
         required_columns = ["result", "patch"]  # Example required columns
-        if not all(column in df.columns for column in required_columns):
-            raise ValueError(f"Input data must contain the following columns: {required_columns}")
+        missing_columns = set(required_columns) - set(df.columns)
+        if missing_columns:
+            raise ValueError(f"Input data must contain the following columns: {missing_columns}")
 
     @staticmethod
     def add_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:
         """
         Enriches the DataFrame with entity-specific exponentially weighted moving average statistics.
 
-        Parameters:
+        Args:
             df (pd.DataFrame): The DataFrame containing game data.
             entity (str): The type of entity, e.g., 'player' or 'team'.
 
@@ -61,7 +66,7 @@ class PerformanceMetrics:
         """
         Calculates and appends side win rate statistics using an exponentially weighted mean model.
 
-        Parameters:
+        Args:
             df (pd.DataFrame): The DataFrame containing game data.
             entity (str): The type of entity, e.g., 'player' or 'team'.
 
@@ -76,7 +81,7 @@ class PerformanceMetrics:
         """
         Computes and integrates the season win rate EWM model into the DataFrame.
 
-        Parameters:
+        Args:
             df (pd.DataFrame): The DataFrame containing game data.
             entity (str): The type of entity, e.g., 'player' or 'team'.
 
@@ -91,7 +96,7 @@ class PerformanceMetrics:
         """
         Computes and integrates the patch win rate EWM model into the DataFrame.
 
-        Parameters:
+        Args:
             df (pd.DataFrame): The DataFrame containing game data.
             entity (str): The type of entity, e.g., 'player' or 'team'.
 

@@ -105,3 +105,9 @@ catboost_info/
 
 # All models folder
 models/
+
+# Site packages
+site-packages/
+
+# Site folder
+site/

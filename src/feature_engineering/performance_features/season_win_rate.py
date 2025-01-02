@@ -1,15 +1,13 @@
 """
-Season win rate
+Season Win Rate Module
 
 This module provides functionality to compute the season games count and win rate for a given entity,
 using an Exponentially Weighted Mean (EWM) model.
 """
 
-from typing import Union
+import fireducks.pandas as pd
 
-import pandas as pd
-
-import src.ingestion.oracles_elixir as oe
+from ingestion.oracles_elixir import get_opponent
 from src.utils.paths import DEFAULT_MODELS_PARAMETERS
 from src.utils.utils import get_identity, get_sorting_keys, json_loader
 
@@ -21,45 +19,69 @@ EPSILON = 1e-8  # Small constant to prevent division by zero
 
 def compute_ema_season(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     """
-    Compute total games, wins, win rate, and EWM for win rates grouped by season.
+    Compute Exponentially Weighted Mean (EWM) for season win rates grouped by identity and season.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame containing match data.
+        identity (str): The identity column to group by (e.g., 'playerid' or 'teamid').
+
+    Returns:
+        pd.DataFrame: DataFrame with computed EWM for season win rates.
     """
-    # Adding total games and wins calculation directly in the EMA computation
-    grouped = df.groupby([identity, "season"])
+    df = df.copy()
+    grouped = df.groupby([identity, "season"])["result"]
 
     # Compute EMA before and after for win rate
-    df["ema_season_win_rate_before"] = grouped["result"].transform(
-        lambda x: x.ewm(halflife=HALF_LIFE, ignore_na=True).mean().shift().bfill()
+    df["ema_season_win_rate_before"] = grouped.transform(
+        lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True).mean().shift().bfill()
     )
-    df["ema_season_win_rate_after"] = grouped["result"].transform(
-        lambda x: x.ewm(halflife=HALF_LIFE, ignore_na=True).mean()
+    df["ema_season_win_rate_after"] = grouped.transform(
+        lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True).mean()
     )
     return df
 
 
-def calculate_season_win_likelihood(ema_win_rate: float, opp_ema_win_rate: float) -> Union[float, None]:
+def calculate_season_win_likelihood(ema_win_rate: pd.Series, opp_ema_win_rate: pd.Series) -> pd.Series:
     """
     Calculate the EMA season win likelihood.
+
+    Args:
+        ema_win_rate (pd.Series): The EMA win rate for the entity.
+        opp_ema_win_rate (pd.Series): The EMA win rate for the opponent.
+
+    Returns:
+        pd.Series: The calculated season win likelihood.
     """
-    if pd.notnull(ema_win_rate) and pd.notnull(opp_ema_win_rate):
-        return round(ema_win_rate / (ema_win_rate + opp_ema_win_rate + EPSILON), 3)
-    return None
+    total_win_rate = ema_win_rate + opp_ema_win_rate + EPSILON
+    win_likelihood = ema_win_rate / total_win_rate
+    return round(win_likelihood, 3)
 
 
 def season_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
     Compute season-wise EWM computation integrated with games count and win rates.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame containing match data.
+        entity (str): The entity type ('player' or 'team').
+
+    Returns:
+        pd.DataFrame: DataFrame with computed season win rates and EWM.
+
+    Raises:
+        ValueError: If the entity is not 'player' or 'team'.
     """
-    if entity.lower() not in ["player", "team"]:
+    if entity.lower() not in {"player", "team"}:
         raise ValueError("Entity must be either 'player' or 'team'.")
 
     identity = get_identity(entity)
-    df.sort_values(get_sorting_keys(entity), inplace=True)
+    df = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
 
     # Compute EMA along with games and win rates
     df = compute_ema_season(df, identity)
 
     # Compute Opponent Columns
-    df["opp_ema_season_win_rate_before"] = oe.get_opponent(df["ema_season_win_rate_before"].tolist(), entity)
+    df["opp_ema_season_win_rate_before"] = get_opponent(df["ema_season_win_rate_before"].tolist(), entity=entity)
 
     # Calculate win likelihood based on EMA
     df["season_win_likelihood"] = df.apply(
@@ -69,4 +91,5 @@ def season_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFra
         axis=1,
     )
 
-    return df.reset_index(drop=True)
+    df = df.reset_index(drop=True)
+    return df

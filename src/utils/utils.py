@@ -1,53 +1,92 @@
 """
-Utility functions
+Utility functions.
 
-This script defines utility functions for the project.
+This script defines utility functions for the project, including file loaders, model handlers,
+and data storage utilities. These functions facilitate tasks such as loading various file types,
+managing entity-specific operations, and handling model serialization/deserialization.
 """
 
-import io
 import json
 import logging
 import pickle
 from pathlib import Path
-from typing import Any, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
-import pandas as pd
+import fireducks.pandas as pd
 
 
 def get_sorting_keys(entity: str) -> List[str]:
     """
     Get sorting keys for the specified entity.
 
-    Parameters:
+    Args:
         entity (str): The entity type, either 'team' or 'player'.
 
     Returns:
         List[str]: A list of sorting keys.
     """
-    keys = {
+    SORTING_KEYS: Dict[str, List[str]] = {
         "team": ["date", "league", "gameid", "side"],
-        "player": ["date", "league", "gameid", "side", "teamid", "position"],
+        "player": ["date", "league", "gameid", "side", "position"],
     }
     entity_lower = entity.lower()
-    if entity_lower in keys:
-        return keys[entity_lower]
+    if entity_lower in SORTING_KEYS:
+        return SORTING_KEYS[entity_lower]
     else:
         raise ValueError(f"Entity must be either 'player' or 'team', not '{entity}'.")
 
 
-def json_loader(file_path: str) -> Any:
+def load_file(file_path: Union[str, Path], file_type: str = "json") -> Union[Any, pd.DataFrame]:
     """
-    Load the JSON file from the specified file path.
+    File loading function to handle JSON, CSV, and Parquet files.
+
+    Args:
+        file_path (Union[str, Path]): The path to the file.
+        file_type (str): The type of the file ('json', 'csv', 'parquet').
+
+    Returns:
+        Union[Any, pd.DataFrame]: The loaded file data.
+    """
+    file_path = Path(file_path)
+    try:
+        if file_type == "json":
+            with file_path.open("r", encoding="utf-8") as file:
+                return json.load(file)
+        elif file_type == "csv":
+            return pd.read_csv(file_path)
+        elif file_type == "parquet":
+            return pd.read_parquet(file_path)
+        else:
+            raise ValueError(f"Unsupported file type: '{file_type}'. " "Supported types are 'json', 'csv', 'parquet'.")
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"No such file: '{file_path}'") from e
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Error parsing JSON file '{file_path}': {e}") from e
+    except ValueError as e:
+        raise ValueError(f"Error parsing Parquet file '{file_path}': {e}") from e
+    except Exception as e:
+        raise ValueError(f"Unexpected error loading file '{file_path}': {e}") from e
+
+
+def json_loader(file_path: Union[str, Path]) -> Any:
+    """
+    Load a JSON file from the specified file path.
+
+    Args:
+        file_path (Union[str, Path]): The path to the JSON file.
+
+    Returns:
+        Any: The loaded JSON data.
     """
     return load_file(file_path, file_type="json")
 
 
-def csv_loader(file_path: str) -> pd.DataFrame:
+def csv_loader(file_path: Union[str, Path]) -> pd.DataFrame:
     """
-    Load the CSV file from the specified file path.
+    Load a CSV file from the specified file path.
 
-    Parameters:
-        file_path (str): The path to the CSV file.
+    Args:
+        file_path (Union[str, Path]): The path to the CSV file.
 
     Returns:
         pd.DataFrame: The loaded CSV data.
@@ -55,132 +94,120 @@ def csv_loader(file_path: str) -> pd.DataFrame:
     return load_file(file_path, file_type="csv")
 
 
-def parquet_loader(file_path: str) -> pd.DataFrame:
+def parquet_loader(file_path: Union[str, Path]) -> pd.DataFrame:
     """
-    Load the parquet file from the specified file path.
+    Load a Parquet file from the specified file path.
 
-    Parameters:
-        file_path (str): The path to the parquet file.
+    Args:
+        file_path (Union[str, Path]): The path to the Parquet file.
 
     Returns:
-        pd.DataFrame: The loaded parquet data.
+        pd.DataFrame: The loaded Parquet data.
     """
-    return pd.read_parquet(file_path, engine="fastparquet")
-
-
-def load_file(file_path: str, file_type: str = "json") -> Union[Any, pd.DataFrame]:
-    """
-    Generic file loading function to handle JSON, CSV, and parquet files.
-
-    Parameters:
-        file_path (str): The path to the file.
-        file_type (str): The type of the file ('json', 'csv', 'parquet').
-
-    Returns:
-        Union[Any, pd.DataFrame]: The loaded file data.
-    """
-    try:
-        if file_type == "json":
-            with open(file_path) as file:
-                return json.load(file)
-        elif file_type == "csv":
-            return pd.read_csv(file_path)
-        elif file_type == "parquet":
-            return pd.read_parquet(file_path, engine="fastparquet")
-        else:
-            raise ValueError(f"Unsupported file type: '{file_type}'")
-    except FileNotFoundError:
-        raise FileNotFoundError(f"No such file: '{file_path}'") from None
-    except (json.JSONDecodeError, pd.errors.ParserError) as e:
-        error_msg = "JSON" if file_type == "json" else "CSV"
-        raise type(e)(f"Error parsing {error_msg} file: '{file_path}'. {e}") from e
+    return load_file(file_path, file_type="parquet")
 
 
 def get_identity(entity: str) -> str:
     """
     Get the identity column name based on the entity type.
 
-    Parameters:
+    Args:
         entity (str): The entity type, either 'player' or 'team'.
 
     Returns:
-        str: The identity column name.
+        str: The identity column name (e.g., 'playerid' or 'teamid').
     """
     entity_lower = entity.lower()
-    if entity_lower in ["player", "team"]:
+    if entity_lower in {"player", "team"}:
         return f"{entity_lower}id"
-    raise ValueError("Entity must be either 'player' or 'team'.")
+    else:
+        raise ValueError("Entity must be either 'player' or 'team'.")
 
 
-def load_model(filepath: str) -> Any:
+def load_model(filepath: Union[str, Path]) -> Any:
     """
-    Load a machine learning model from a file.
+    Load a machine learning model from a file using pickle.
 
-    Parameters:
-        filepath (str): The path to the model file.
+    Args:
+        filepath (Union[str, Path]): The path to the model file.
 
     Returns:
         Any: The loaded model.
     """
+    filepath = Path(filepath)
     try:
-        with open(filepath, "rb") as file:
+        with filepath.open("rb") as file:
             return pickle.load(file)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Model file not found: '{filepath}'") from None
-    except pickle.PickleError as e:
-        raise pickle.PickleError(f"Error loading model from '{filepath}': {e}") from e
-
-
-def store_model(path: Path, model, model_name: str, logger: logging.Logger, models_logger: logging.Logger):
-    """Store the trained model to a file."""
-    try:
-        with open(path, "wb") as f:
-            pickle.dump(model, f)
-
-        logger.info(f"Stored {model_name} model to {path}\n")
-        models_logger.info(f"Stored {model_name} model to {path}\n")
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"Model file not found: '{filepath}'") from e
+    except pickle.UnpicklingError as e:
+        raise pickle.UnpicklingError(f"Error loading model from '{filepath}': {e}") from e
     except Exception as e:
-        logger.error(f"Failed to store the model: {e}")
-        models_logger.error(f"Failed to store the model: {e}\n")
-        raise
+        raise ValueError(f"Unexpected error loading model from '{filepath}': {e}") from e
+
+
+def store_model(path: Union[str, Path], model: Any, model_name: str, logger: logging.Logger) -> None:
+    """
+    Store the trained model to a file using pickle.
+
+    Args:
+        path (Union[str, Path]): The file path to store the model.
+        model (Any): The trained model to be stored.
+        model_name (str): The name of the model (for logging purposes).
+        logger (logging.Logger): The logger for logging messages.
+    """
+    path = Path(path)
+    try:
+        with path.open("wb") as f:
+            pickle.dump(model, f)
+        logger.info(f"Stored '{model_name}' model to '{path}'.")
+    except pickle.PicklingError as e:
+        logger.exception(f"Failed to store the model '{model_name}' at '{path}': {e}")
+        raise pickle.PicklingError(f"Error storing model '{model_name}' at '{path}': {e}") from e
+    except Exception as e:
+        logger.exception(f"Unexpected error storing the model '{model_name}' at '{path}': {e}")
+        raise ValueError(f"Unexpected error storing model '{model_name}' at '{path}': {e}") from e
 
 
 def load_training_data(
-    training_team_data: str, training_player_data: str, logger: logging.Logger
+    training_team_data: Union[str, Path], training_player_data: Union[str, Path], logger: logging.Logger
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Load training data for the model."""
+    """
+    Load training data for the model from Parquet files.
+
+    Args:
+        training_team_data (Union[str, Path]): The path to the team's training data Parquet file.
+        training_player_data (Union[str, Path]): The path to the player's training data Parquet file.
+        logger (logging.Logger): The logger for logging messages.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: A tuple containing the team and player training DataFrames.
+    """
     try:
-        training_team_data = pd.read_parquet(training_team_data, engine="fastparquet")
-        training_player_data = pd.read_parquet(training_player_data, engine="fastparquet")
+        team_df = parquet_loader(training_team_data)
+        player_df = parquet_loader(training_player_data)
         logger.info("Training data loaded successfully.")
-        return training_team_data, training_player_data
+        return team_df, player_df
     except Exception as e:
-        logger.error(f"Failed to load training data: {e}")
-        raise
+        logger.exception(f"Failed to load training data: {e}")
+        raise ValueError(f"Error loading training data: {e}") from e
 
 
-def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Path, logger: logging.Logger):
+def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Union[str, Path], logger: logging.Logger) -> None:
     """
-    Store a DataFrame to Parquet format with a fallback to CSV if an error occurs.
+    Store a Pandas DataFrame to Parquet format.
+
+    Args:
+        df (pd.DataFrame): The DataFrame to be stored.
+        output_path (Union[str, Path]): The file path to store the Parquet file.
+        logger (logging.Logger): The logger for logging messages.
     """
+    output_path = Path(output_path)
     try:
-        df.to_parquet(output_path, index=False, engine="pyarrow", compression="gzip")
-        logger.info(f"Successfully saved DataFrame to Parquet at {output_path}")
-    except Exception:
-        logger.warning("Failed to save to Parquet. Attempting fallback to CSV buffer.")
-
-        try:
-            # Use BytesIO to store the CSV data in memory
-            csv_buffer = io.BytesIO()
-            df.to_csv(csv_buffer, index=False)
-            csv_buffer.seek(0)  # Reset buffer position to the beginning
-            # Read the CSV data from the buffer
-            read_back_data = pd.read_csv(csv_buffer)
-            # Store the read data back to Parquet
-            read_back_data.to_parquet(output_path, index=False, engine="pyarrow", compression="gzip")
-            logger.info(f"Successfully converted in-memory CSV back to Parquet at {output_path}")
-
-        except (ImportError, ValueError, OSError) as fallback_error:
-            logger.error(f"Failed to fallback to CSV due to {fallback_error}. Cleanup might be required.")
-            # Optional: Reraise the exception or handle it as needed
-            raise
+        if not isinstance(df, pd.DataFrame):
+            df = pd.DataFrame(df)
+        df.to_parquet(output_path, compression="gzip")
+        logger.info(f"Successfully saved DataFrame to Parquet at '{output_path}'.")
+    except Exception as e:
+        logger.error(f"Failed to save DataFrame to Parquet: {e}.")
+        raise ValueError(f"Failed to store DataFrame as Parquet at '{output_path}': {e}") from e

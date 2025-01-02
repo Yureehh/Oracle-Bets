@@ -1,5 +1,5 @@
 """
-Trueskill rating model.
+Trueskill Rating Model
 
 This module provides functionality to rate teams or players using the TrueSkill model.
 """
@@ -7,9 +7,9 @@ This module provides functionality to rate teams or players using the TrueSkill 
 import itertools
 import math
 from copy import deepcopy
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
-import pandas as pd
+import fireducks.pandas as pd
 import trueskill
 from tqdm import tqdm
 from trueskill import Rating, TrueSkill
@@ -24,17 +24,19 @@ DEFAULT_SIGMA = config["trueskill"]["sigma"]
 DEFAULT_BETA = DEFAULT_SIGMA / 2  # Define a constant for beta
 
 
-def initialize_ratings(df: pd.DataFrame, entity_key: str, model: TrueSkill) -> Dict[str, Dict[str, Rating]]:
+def initialize_ratings(
+    df: pd.DataFrame, entity_key: str, model: TrueSkill
+) -> Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]:
     """
     Initialize ratings for all entities identified by unique IDs in the DataFrame.
 
-    Parameters:
+    Args:
         df (pd.DataFrame): DataFrame containing the match data.
         entity_key (str): Key to identify entities (e.g., 'teamid' or 'playerid').
         model (TrueSkill): TrueSkill model instance.
 
     Returns:
-        Dict[str, Dict[str, Rating]]: Initialized ratings for each entity.
+        Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]: Initialized ratings for each entity.
     """
     unique_entities = df[entity_key].unique()
     initial_mu = model.mu
@@ -55,7 +57,7 @@ def update_ratings(
     """
     Rate entities based on match outcomes and update their ratings.
 
-    Parameters:
+    Args:
         model (TrueSkill): TrueSkill model instance.
         entities_ratings (Tuple[List[Rating], List[Rating]]): Current ratings of the entities.
         ranks (List[int]): Ranks based on match results.
@@ -66,11 +68,11 @@ def update_ratings(
     return model.rate(deepcopy(entities_ratings), ranks=ranks)
 
 
-def win_probability(team1: List[Rating], team2: List[Rating], beta: float = DEFAULT_BETA) -> float:
+def win_probability(team1: List[Rating], team2: List[Rating], beta: float) -> float:
     """
     Calculate the win probability of team1 against team2 based on their ratings.
 
-    Parameters:
+    Args:
         team1 (List[Rating]): Ratings of the first team.
         team2 (List[Rating]): Ratings of the second team.
         beta (float): Skill variance parameter.
@@ -87,9 +89,10 @@ def win_probability(team1: List[Rating], team2: List[Rating], beta: float = DEFA
 
 def split_teams_by_side(game_group: pd.DataFrame, entity_key: str, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Split game data into separate teams based on the side ('Blue' or 'Red') and sort by position if entity type is 'player'.
+    Split game data into separate teams based on the side ('Blue' or 'Red')
+    and sort by position if entity type is 'player'.
 
-    Parameters:
+    Args:
         game_group (pd.DataFrame): DataFrame containing the match data for a game.
         entity_key (str): Key to identify entities (e.g., 'teamid' or 'playerid').
         entity (str): Type of entity, 'team' or 'player'.
@@ -97,36 +100,35 @@ def split_teams_by_side(game_group: pd.DataFrame, entity_key: str, entity: str) 
     Returns:
         Tuple[pd.DataFrame, pd.DataFrame]: DataFrames for the Blue and Red teams.
     """
-    blue_team = (
-        game_group[game_group["side"] == "Blue"].sort_values(by="position")
-        if entity == "player"
-        else game_group[game_group["side"] == "Blue"]
-    )
-    red_team = (
-        game_group[game_group["side"] == "Red"].sort_values(by="position")
-        if entity == "player"
-        else game_group[game_group["side"] == "Red"]
-    )
+    if entity == "player":
+        blue_team = game_group[game_group["side"] == "Blue"].sort_values(by="position")
+        red_team = game_group[game_group["side"] == "Red"].sort_values(by="position")
+    else:
+        blue_team = game_group[game_group["side"] == "Blue"]
+        red_team = game_group[game_group["side"] == "Red"]
     return blue_team, red_team
 
 
 def extract_ratings(
-    blue_team: pd.DataFrame, red_team: pd.DataFrame, ratings: Dict[str, Dict[str, Rating]], entity_key: str
+    blue_team: pd.DataFrame,
+    red_team: pd.DataFrame,
+    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, str]]],
+    entity_key: str,
 ) -> Tuple[List[Rating], List[Rating]]:
     """
     Extract ratings for players or teams from the ratings dictionary.
 
-    Parameters:
+    Args:
         blue_team (pd.DataFrame): DataFrame for the Blue team.
         red_team (pd.DataFrame): DataFrame for the Red team.
-        ratings (Dict[str, Dict[str, Rating]]): Current ratings for all entities.
+        ratings (Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]): Current ratings for all entities.
         entity_key (str): Key to identify entities (e.g., 'teamid' or 'playerid').
 
     Returns:
         Tuple[List[Rating], List[Rating]]: Ratings for the Blue and Red teams.
     """
-    blue_ratings = [ratings[player]["rating"] for player in blue_team[entity_key]]
-    red_ratings = [ratings[player]["rating"] for player in red_team[entity_key]]
+    blue_ratings = [ratings[entity]["rating"] for entity in blue_team[entity_key]]
+    red_ratings = [ratings[entity]["rating"] for entity in red_team[entity_key]]
     return blue_ratings, red_ratings
 
 
@@ -134,7 +136,7 @@ def determine_game_result(team_data: pd.DataFrame) -> List[int]:
     """
     Determine game results based on the 'result' column where a value of 1 indicates a win for the team.
 
-    Parameters:
+    Args:
         team_data (pd.DataFrame): DataFrame containing the match data for a team.
 
     Returns:
@@ -144,18 +146,21 @@ def determine_game_result(team_data: pd.DataFrame) -> List[int]:
 
 
 def dynamic_percentage_reset_trueskill(
-    ratings: Dict[str, Dict[str, Rating]], baseline_mu: float, baseline_sigma: float, current_season: int
-):
+    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, str]]],
+    baseline_mu: float,
+    baseline_sigma: float,
+    current_season: int,
+) -> None:
     """
     Apply dynamic percentage reset to TrueSkill ratings at the beginning of a new season.
 
-    Parameters:
-        ratings (Dict[str, Dict[str, Rating]]): Current ratings for all entities.
+    Args:
+        ratings (Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]): Current ratings for all entities.
         baseline_mu (float): Baseline value for the rating mean.
         baseline_sigma (float): Baseline value for the rating deviation.
         current_season (int): Current season number.
     """
-    for entity, data in ratings.items():
+    for data in ratings.values():
         if data["season"] < current_season:
             rating = data["rating"]
             delta_mu = abs(rating.mu - baseline_mu)
@@ -164,32 +169,35 @@ def dynamic_percentage_reset_trueskill(
             reset_factor_sigma = 1 / (math.log2(delta_sigma + 1) + 1)
             new_mu = baseline_mu + (rating.mu - baseline_mu) * reset_factor_mu
             new_sigma = baseline_sigma + (rating.sigma - baseline_sigma) * reset_factor_sigma
-            ratings[entity]["rating"] = trueskill.Rating(mu=new_mu, sigma=new_sigma)
-            ratings[entity]["season"] = current_season
+            data["rating"] = trueskill.Rating(mu=new_mu, sigma=new_sigma)
+            data["season"] = current_season
 
 
-def handle_player_swap(
-    player_id: str,
+def handle_entity_swap(
+    entity_id: Union[int, str],
     new_league: str,
-    ratings: Dict[str, Dict[str, Rating]],
+    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, str]]],
     baseline_mu: float,
     baseline_sigma: float,
-):
+) -> None:
     """
-    Handle the rating reset for players who swap leagues.
+    Handle the rating reset for entities who swap leagues.
 
-    Parameters:
-        player_id (str): The ID of the player.
-        new_league (str): The new league of the player.
-        ratings (Dict[str, Dict[str, Rating]]): Current ratings for all entities.
+    Args:
+        entity_id (Union[int, str]): The ID of the entity.
+        new_league (str): The new league of the entity.
+        ratings (Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]): Current ratings for all entities.
         baseline_mu (float): Baseline value for the rating mean.
         baseline_sigma (float): Baseline value for the rating deviation.
     """
-    league_elo_dict = {}
     major_leagues = json_loader(CONSIDERED_LEAGUES)["major_leagues"]
-    current_league = ratings[player_id]["league"]
+    cross_competition_leagues = json_loader(CONSIDERED_LEAGUES)["cross_league_competitions"]
+    current_league = ratings[entity_id].get("league")
 
-    # Check if LEAGUE_ELO parquet file exists
+    if new_league == current_league or new_league in cross_competition_leagues:
+        return  # No action needed
+
+    league_elo_dict = {}
     if LEAGUE_ELO.exists():
         league_elo_df = pd.read_parquet(LEAGUE_ELO)
         league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
@@ -197,34 +205,32 @@ def handle_player_swap(
     if league_elo_dict and new_league in major_leagues and current_league in major_leagues:
         current_league_elo = league_elo_dict.get(current_league, baseline_mu)
         new_league_elo = league_elo_dict.get(new_league, baseline_mu)
-        elo_increment = (
-            max(0, current_league_elo - new_league_elo) / 2
-        )  # Ensure increment is non-negative and divide by 2
+        elo_increment = max(0, current_league_elo - new_league_elo) / 2
         new_mu = baseline_mu + elo_increment
     else:
         new_mu = baseline_mu
 
-    ratings[player_id]["rating"] = trueskill.Rating(mu=new_mu, sigma=baseline_sigma)
-    ratings[player_id]["league"] = new_league
+    ratings[entity_id]["rating"] = trueskill.Rating(mu=new_mu, sigma=baseline_sigma)
+    ratings[entity_id]["league"] = new_league
 
 
 def process_game(
     df_sorted: pd.DataFrame,
     game_group: pd.DataFrame,
-    ratings: Dict[str, Dict[str, Rating]],
+    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, str]]],
     model: TrueSkill,
     entity: str,
     entity_key: str,
     baseline_mu: float,
     baseline_sigma: float,
-):
+) -> None:
     """
     Process each game and update TrueSkill ratings for both sides.
 
-    Parameters:
+    Args:
         df_sorted (pd.DataFrame): Sorted DataFrame containing the match data.
         game_group (pd.DataFrame): DataFrame for a specific game group.
-        ratings (Dict[str, Dict[str, Rating]]): Current ratings for all entities.
+        ratings (Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]): Current ratings for all entities.
         model (TrueSkill): TrueSkill model instance.
         entity (str): Type of entity, 'team' or 'player'.
         entity_key (str): Key to identify entities (e.g., 'teamid' or 'playerid').
@@ -232,27 +238,31 @@ def process_game(
         baseline_sigma (float): Baseline value for the rating deviation.
     """
     current_season = game_group.iloc[0]["season"]
-    cross_competition_leagues = json_loader(CONSIDERED_LEAGUES)["cross_league_competitions"]
     dynamic_percentage_reset_trueskill(ratings, baseline_mu, baseline_sigma, current_season)
 
-    # Get the player IDs involved in the current game group
-    player_ids = game_group[entity_key].unique()
+    # Get the entity IDs involved in the current game group
+    entity_ids = game_group[entity_key].unique()
 
-    # Handle player swaps before processing game ratings
-    for player_id in player_ids:
-        player_data = ratings[player_id]
-        new_league = game_group[game_group[entity_key] == player_id]["league"].iloc[0]
-        if player_data["league"] != new_league and new_league not in cross_competition_leagues:
-            handle_player_swap(player_id, new_league, ratings, baseline_mu, baseline_sigma)
+    # Handle entity swaps before processing game ratings
+    for entity_id in entity_ids:
+        if entity_id not in ratings:
+            ratings[entity_id] = {
+                "rating": trueskill.Rating(mu=baseline_mu, sigma=baseline_sigma),
+                "season": current_season,
+                "league": None,
+            }
+        new_league = game_group[game_group[entity_key] == entity_id]["league"].iloc[0]
+        handle_entity_swap(entity_id, new_league, ratings, baseline_mu, baseline_sigma)
 
     blue_team, red_team = split_teams_by_side(game_group, entity_key, entity)
     blue_ratings, red_ratings = extract_ratings(blue_team, red_team, ratings, entity_key)
     ranks = determine_game_result(blue_team)
-    win_probs = win_probability(blue_ratings, red_ratings, beta=model.beta)  # Use model.beta for consistency
+    win_prob = win_probability(blue_ratings, red_ratings, beta=model.beta)
     updated_ratings = update_ratings(model, (blue_ratings, red_ratings), ranks)
 
     for i, player in enumerate(blue_team.itertuples()):
-        ratings[getattr(player, entity_key)]["rating"] = updated_ratings[0][i]
+        entity_id = getattr(player, entity_key)
+        ratings[entity_id]["rating"] = updated_ratings[0][i]
         df_sorted.loc[
             player.Index,
             [
@@ -267,7 +277,7 @@ def process_game(
         ] = [
             blue_ratings[i].mu,
             blue_ratings[i].sigma,
-            win_probs,
+            win_prob,
             updated_ratings[0][i].mu,
             updated_ratings[0][i].sigma,
             red_ratings[i].mu,
@@ -275,7 +285,8 @@ def process_game(
         ]
 
     for i, player in enumerate(red_team.itertuples()):
-        ratings[getattr(player, entity_key)]["rating"] = updated_ratings[1][i]
+        entity_id = getattr(player, entity_key)
+        ratings[entity_id]["rating"] = updated_ratings[1][i]
         df_sorted.loc[
             player.Index,
             [
@@ -290,7 +301,7 @@ def process_game(
         ] = [
             red_ratings[i].mu,
             red_ratings[i].sigma,
-            1 - win_probs,
+            1 - win_prob,
             updated_ratings[1][i].mu,
             updated_ratings[1][i].sigma,
             blue_ratings[i].mu,
@@ -302,19 +313,50 @@ def calculate_trueskill(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
     Calculate and update TrueSkill ratings for entities within a DataFrame.
 
-    Parameters:
+    Args:
         df (pd.DataFrame): DataFrame containing the match data.
         entity (str): Type of entity, 'team' or 'player'.
 
     Returns:
         pd.DataFrame: DataFrame with updated TrueSkill ratings.
     """
+    if entity.lower() not in ["team", "player"]:
+        raise ValueError("Entity must be 'team' or 'player'")
+
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
+
+    required_columns = ["season", "date", "gameid", entity_key, "league", "side", "result"]
+    if entity == "player":
+        required_columns.append("position")
+
+    missing_columns = set(required_columns) - set(df.columns)
+    if missing_columns:
+        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+
     df_sorted = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
-    model = TrueSkill(mu=DEFAULT_MU, sigma=DEFAULT_SIGMA, draw_probability=0.0, beta=DEFAULT_BETA)  # Add beta to model
+    model = TrueSkill(mu=DEFAULT_MU, sigma=DEFAULT_SIGMA, draw_probability=0.0, beta=DEFAULT_BETA)
     ratings = initialize_ratings(df_sorted, entity_key, model)
 
-    for _, game_group in tqdm(df_sorted.groupby(["date", "gameid"])):
-        process_game(df_sorted, game_group, ratings, model, entity, entity_key, DEFAULT_MU, DEFAULT_SIGMA)
+    # Initialize columns for TrueSkill ratings
+    for col in [
+        "trueskill_mu_before",
+        "trueskill_sigma_before",
+        "trueskill_win_likelihood",
+        "trueskill_mu_after",
+        "trueskill_sigma_after",
+    ]:
+        df_sorted[col] = None
+
+    for _, game_group in tqdm(df_sorted.groupby(["date", "gameid"]), desc="Processing games"):
+        process_game(
+            df_sorted,
+            game_group,
+            ratings,
+            model,
+            entity,
+            entity_key,
+            DEFAULT_MU,
+            DEFAULT_SIGMA,
+        )
 
     return df_sorted
