@@ -39,19 +39,19 @@ repos:
           "--select=B,C,D,E,F,N,W,B9"
         ]
 
-  # # General purpose pre-commit hooks
-  # - repo: https://github.com/pre-commit/pre-commit-hooks
-  #   rev: v5.0.0
-  #   hooks:
-  #     - id: check-docstring-first      # Enforce docstrings at the start
-  #     - id: check-json                 # Validate JSON files
-  #     - id: check-merge-conflict       # Prevent merge conflicts
-  #     - id: check-yaml                 # Validate YAML files
-  #     - id: debug-statements           # Remove debug statements (e.g., pdb)
-  #     - id: end-of-file-fixer          # Ensure newline at EOF
-  #     - id: trailing-whitespace        # Remove trailing whitespaces
-  #     - id: requirements-txt-fixer     # Fix requirements.txt formatting
-  #     - id: check-added-large-files    # Warn about large files
+  # General purpose pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-docstring-first      # Enforce docstrings at the start
+      - id: check-json                 # Validate JSON files
+      - id: check-merge-conflict       # Prevent merge conflicts
+      - id: check-yaml                 # Validate YAML files
+      - id: debug-statements           # Remove debug statements (e.g., pdb)
+      - id: end-of-file-fixer          # Ensure newline at EOF
+      - id: trailing-whitespace        # Remove trailing whitespaces
+      - id: requirements-txt-fixer     # Fix requirements.txt formatting
+      # - id: check-added-large-files    # Warn about large files
 
   # Detect secrets in code
   - repo: https://github.com/Yelp/detect-secrets
