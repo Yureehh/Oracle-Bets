@@ -10,7 +10,6 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
-urllib3= "1.26.16"
 awswrangler = "^3.7.1"
 boto3 = "^1.34.66"
 discord = "^2.3.2"
@@ -29,7 +28,6 @@ flake8 = "^7.0.0"
 black = {extras = ["jupyter"], version = "^24.4.2"}
 isort = "^5.13.2"
 optuna = "^3.6.1"
-tabulate = "^0.9.0"
 glicko2 = {git = "https://github.com/sublee/glicko2.git"}
 tdqm = "^0.0.1"
 ipykernel = "^6.29.4"
