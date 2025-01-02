@@ -51,7 +51,7 @@ repos:
       - id: end-of-file-fixer          # Ensure newline at EOF
       - id: trailing-whitespace        # Remove trailing whitespaces
       - id: requirements-txt-fixer     # Fix requirements.txt formatting
-      # - id: check-added-large-files    # Warn about large files
+      - id: check-added-large-files    # Warn about large files
 
   # Detect secrets in code
   - repo: https://github.com/Yelp/detect-secrets
