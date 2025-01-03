@@ -28,9 +28,7 @@ def create_directory(directory: Path) -> None:
     try:
         if not directory.exists():
             directory.mkdir(parents=True, exist_ok=True)
-            print(f"Created directory: {directory}")
     except OSError as e:
-        print(f"Failed to create directory '{directory}': {e}")
         raise e
 
 

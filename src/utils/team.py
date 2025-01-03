@@ -9,7 +9,7 @@ It also provides functionalities to update the roster and retrieve team informat
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-import fireducks.pandas as pd
+import pandas as pd
 
 from src.utils.logger import logger
 from src.utils.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS

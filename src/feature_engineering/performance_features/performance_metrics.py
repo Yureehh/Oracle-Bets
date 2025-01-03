@@ -8,7 +8,7 @@ moving averages (EMA) for entities like players or teams.
 
 from dataclasses import dataclass
 
-import fireducks.pandas as pd
+import pandas as pd
 
 # Import necessary modules for performance metrics calculation.
 from src.feature_engineering.performance_features.entity_stats import enrich_entity_ema_statistics

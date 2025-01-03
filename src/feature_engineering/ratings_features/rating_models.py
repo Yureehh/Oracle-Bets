@@ -12,7 +12,8 @@ from src.feature_engineering.ratings_features.glicko import calculate_glicko2
 from src.feature_engineering.ratings_features.leagues_elo import calculate_leagues_elo
 from src.feature_engineering.ratings_features.plackett_luce import calculate_plackett_luce
 from src.feature_engineering.ratings_features.trueskill import calculate_trueskill
-from src.feature_engineering.ratings_features.wh import calculate_whr
+
+# from src.feature_engineering.ratings_features.wh import calculate_whr
 
 
 @dataclass
@@ -82,7 +83,7 @@ class Ratings:
         Returns:
             Any: The DataFrame with computed Whole History Ratings.
         """
-        return calculate_whr(df, entity)
+        return  # calculate_whr(df, entity)
 
     def compute_leagues_elo(self, df: Any) -> Any:
         """

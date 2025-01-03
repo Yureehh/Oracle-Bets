@@ -9,8 +9,8 @@ import os
 from collections import defaultdict
 from typing import Dict, Tuple, Union
 
-import fireducks.pandas as pd
 import optuna
+import pandas as pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 

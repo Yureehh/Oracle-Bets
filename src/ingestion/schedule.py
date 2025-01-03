@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Iterator, List, Optional, Union
 
 # Replace polars with fireducks.pandas (identical to pandas syntax)
-import fireducks.pandas as pd
+import pandas as pd
 import requests
 from dateutil import parser
 from dotenv import load_dotenv

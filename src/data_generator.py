@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import List, Set
 
 import boto3
-import fireducks.pandas as pd
+import pandas as pd
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
@@ -68,10 +68,10 @@ def log_function_call(logger_instance):
             logger_instance.info(f"Starting {func.__name__}...")
             try:
                 result = func(*args, **kwargs)
-                logger_instance.info(f"Completed {func.__name__}.")
+                logger_instance.info(f"Completed {func.__name__}.\n")
                 return result
-            except Exception as ex:
-                logger_instance.error(f"Error in {func.__name__}: {ex}")
+            except Exception:
+                logger_instance.error(f"Error in {func.__name__}")
                 raise
 
         return wrapper
@@ -96,7 +96,18 @@ def parallelize_enrichment(func, df_team: pd.DataFrame, df_player: pd.DataFrame,
 
 
 # -------------------------------------------------------------------------------------------
-# 5. Main DataGenerator Class
+# 5. Helper: Check Missing Columns
+# -------------------------------------------------------------------------------------------
+def check_missing_columns(data: pd.DataFrame, required_columns: List[str], entity_type: str) -> None:
+    """Checks if the required columns are present in the DataFrame. Raises ValueError if columns are missing."""
+    missing_cols = [col for col in required_columns if col not in data.columns]
+    if missing_cols:
+        logger.error(f"Missing columns for {entity_type}: {missing_cols}")
+        raise ValueError(f"Missing columns in data for {entity_type}: {missing_cols}")
+
+
+# -------------------------------------------------------------------------------------------
+# 6. Main DataGenerator Class
 # -------------------------------------------------------------------------------------------
 @dataclass
 class DataGenerator:
@@ -113,7 +124,7 @@ class DataGenerator:
     def __post_init__(self):
         """Initialize DataGenerator with S3 session and feature generation components."""
         try:
-            self.load_config()
+            self.load_bucket()
             self.s3_session = self.create_s3_session()
             self.oracle = OraclesElixir(session=self.s3_session, bucket=self.bucket_name)
             self.feature_generator = FeatureGenerator()
@@ -123,7 +134,7 @@ class DataGenerator:
             logger.error(f"Failed to initialize DataGenerator: {e}")
             raise
 
-    def load_config(self) -> None:
+    def load_bucket(self) -> None:
         """Load configuration from environment variables."""
         self.bucket_name = os.getenv(BUCKET_NAME_ENV)
         if not self.bucket_name:
@@ -174,7 +185,7 @@ class DataGenerator:
             logger.error(f"Error loading years range configuration: {e}")
             raise ValueError(f"Failed to load years range configuration: {e}") from e
 
-    @staticmethod  # TODO: check if it is the same
+    @staticmethod
     def _detect_buggy_games(data: pd.DataFrame) -> Set[str]:
         """
         Identify buggy games within the dataset using vectorized logic
@@ -227,18 +238,15 @@ class DataGenerator:
         cleaned_data = self.remove_buggy_games(data)
 
         # Oracle clean_data method
-        self.team_data = self.oracle.clean_data(cleaned_data, split_on="team")
-        self.player_data = self.oracle.clean_data(cleaned_data, split_on="player")
-
-        # Sort in place to reduce overhead
-        self.team_data.sort_values(get_sorting_keys("team"), inplace=True)
-        self.player_data.sort_values(get_sorting_keys("player"), inplace=True)
+        self.team_data = self.oracle.clean_data(cleaned_data, split_on="team").sort_values(get_sorting_keys("team"))
+        self.player_data = self.oracle.clean_data(cleaned_data, split_on="player").sort_values(
+            get_sorting_keys("player")
+        )
 
         safe_store_df_as_parquet(self.team_data, INTERIM_TEAM_DATA, logger)
         safe_store_df_as_parquet(self.player_data, INTERIM_PLAYER_DATA, logger)
         logger.info("Cleaned and stored interim data.")
 
-    @log_function_call(logger)
     def ingest_data_from_s3(self) -> pd.DataFrame:
         """Ingest data from S3 bucket and return the raw data."""
         try:
@@ -262,12 +270,12 @@ class DataGenerator:
             # Some rating computations depend on others (e.g. compute_leagues_elo first),
             # so we run them sequentially where needed, then parallelize others.
 
-            # 1) League ELO
+            # (1) League ELO
             self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
-            logger.info("Completed enriching data with league ELO.")
-            data_pipeline_logger.info("Completed enriching data with league ELO.")
+            logger.info("Completed enriching data with Leagues ELO.")
+            data_pipeline_logger.info("Completed enriching data with Leagues ELO.")
 
-            # 2) ELO
+            # (2) ELO
             self.team_data, self.player_data = parallelize_enrichment(
                 self.rating_models.compute_elo,
                 self.team_data,
@@ -278,7 +286,7 @@ class DataGenerator:
             logger.info("Completed enriching data with ELO.")
             data_pipeline_logger.info("Completed enriching data with ELO.")
 
-            # 3) Glicko2
+            # (3) Glicko2
             self.team_data, self.player_data = parallelize_enrichment(
                 self.rating_models.compute_glicko2,
                 self.team_data,
@@ -289,7 +297,7 @@ class DataGenerator:
             logger.info("Completed enriching data with Glicko2.")
             data_pipeline_logger.info("Completed enriching data with Glicko2.")
 
-            # 4) Plackett-Luce
+            # (4) Plackett-Luce
             self.team_data, self.player_data = parallelize_enrichment(
                 self.rating_models.compute_plackett_luce,
                 self.team_data,
@@ -300,7 +308,7 @@ class DataGenerator:
             logger.info("Completed enriching data with Plackett-Luce.")
             data_pipeline_logger.info("Completed enriching data with Plackett-Luce.")
 
-            # 5) TrueSkill
+            # (5) TrueSkill
             self.team_data, self.player_data = parallelize_enrichment(
                 self.rating_models.compute_trueskill,
                 self.team_data,
@@ -370,7 +378,7 @@ class DataGenerator:
         try:
             self.team_data = self.feature_generator.generate_new_team_features(self.team_data)
             self.player_data = self.feature_generator.generate_new_player_features(self.player_data)
-            logger.info("Generated new features for team and player data.")
+            logger.info("Generated new features for team and player data.\n")
         except Exception as e:
             logger.error(f"Failed to generate features: {e}")
             raise
@@ -385,68 +393,74 @@ class DataGenerator:
             logger.error(f"Failed to store enriched data: {e}")
             raise
 
-    def extract_inference_data(self, data: pd.DataFrame, config_path: Path, entity_type: str) -> None:
-        """Extract inference data based on the specified configuration."""
+    # -------------------------------------------------------
+    # Combined Logic for Extracting Training / Flattening Data
+    # -------------------------------------------------------
+    def extract_inference_data(
+        self, data: pd.DataFrame, config_path: Path, entity_type: str, output_prefix: str
+    ) -> None:
+        """
+        Extract or flatten data based on the specified configuration file.
+        Use 'output_prefix' to define where to store the resulting parquet.
+        """
         try:
             config = json_loader(config_path)
-            training_cols = config[f"{entity_type}_features"]
-            missing_cols = [col for col in training_cols if col not in data.columns]
-            if missing_cols:
-                logger.error(f"Missing columns for {entity_type}: {missing_cols}")
-                raise ValueError(f"Missing columns in data: {missing_cols}")
 
-            before_cols = [col for col in training_cols if "_before" in col]
-            inference_data = data[training_cols].copy()
-            inference_data = inference_data.rename(
-                columns={col: col.replace("_before", "") for col in before_cols}, inplace=False
-            )
+            # Decide which columns we want: training or flattened
+            required_cols_key = "flattened_cols" if "flattened" in output_prefix else f"{entity_type}_features"
+            required_cols = config[required_cols_key]
 
-            output_path = PROCESSED_DIR / f"training_{entity_type}_data.parquet"
-            safe_store_df_as_parquet(inference_data, output_path, logger)
-            logger.info(f"Stored training {entity_type} data.")
+            # Check for missing columns
+            check_missing_columns(data, required_cols, entity_type)
+
+            # Distinguish between "flatten" vs "training" logic
+            if "flattened" in output_prefix:
+                # Flatten approach
+                after_cols = [col for col in required_cols if "_after" in col]
+                # Sort and group to get the most recent
+                flattened = (
+                    data.sort_values([f"{entity_type}id", "date"])
+                    .groupby(f"{entity_type}id")
+                    .tail(1)
+                    .reset_index(drop=True)[required_cols]
+                )
+                # Rename columns to remove "_after"
+                flattened = flattened.rename(columns={col: col.replace("_after", "") for col in after_cols})
+                output_path = PROCESSED_DIR / f"{output_prefix}_{entity_type}s.parquet"
+                safe_store_df_as_parquet(flattened, output_path, logger)
+                logger.info(f"Stored flattened {entity_type} data.")
+            else:
+                # Training approach
+                before_cols = [col for col in required_cols if "_before" in col]
+                inference_data = data[required_cols].copy()
+                inference_data = inference_data.rename(columns={col: col.replace("_before", "") for col in before_cols})
+                output_path = PROCESSED_DIR / f"{output_prefix}_{entity_type}_data.parquet"
+                safe_store_df_as_parquet(inference_data, output_path, logger)
+                logger.info(f"Stored training {entity_type} data.")
+
         except Exception as e:
-            logger.error(f"Failed to extract inference data for {entity_type}: {e}")
+            logger.error(f"Failed to process inference data for {entity_type}: {e}")
             raise
 
     @log_function_call(logger)
-    def extract_training_data(self) -> None:
-        """Extract training data for teams and players."""
-        self.extract_inference_data(self.team_data, TRAINING_TEAM_CONFIG, "team")
-        self.extract_inference_data(self.player_data, TRAINING_PLAYER_CONFIG, "player")
-
-    def flatten_data(self, data: pd.DataFrame, config_path: Path, entity_type: str) -> None:
-        """Flatten the data to get the most recent record per entity."""
-        try:
-            flattened_entity_config = json_loader(config_path)
-            flattened_cols = flattened_entity_config["flattened_cols"]
-
-            missing_cols = [col for col in flattened_cols if col not in data.columns]
-            if missing_cols:
-                logger.error(f"Missing columns for {entity_type}: {missing_cols}")
-                raise ValueError(f"Missing columns in data: {missing_cols}")
-
-            flattened_entities = (
-                data.sort_values([f"{entity_type}id", "date"])
-                .groupby(f"{entity_type}id")
-                .tail(1)
-                .reset_index(drop=True)[flattened_cols]
-            )
-
-            after_cols = [col for col in flattened_cols if "_after" in col]
-            flattened_entities.rename(columns={col: col.replace("_after", "") for col in after_cols}, inplace=True)
-
-            output_path = PROCESSED_DIR / f"flattened_{entity_type}s.parquet"
-            safe_store_df_as_parquet(flattened_entities, output_path, logger)
-            logger.info(f"Stored flattened {entity_type} data.")
-        except Exception as e:
-            logger.error(f"Failed to flatten data for {entity_type}: {e}")
-            raise
+    def extract_both_training_data(self) -> None:
+        """Extract training data for both teams and players."""
+        self.extract_inference_data(
+            data=self.team_data, config_path=TRAINING_TEAM_CONFIG, entity_type="team", output_prefix="training"
+        )
+        self.extract_inference_data(
+            data=self.player_data, config_path=TRAINING_PLAYER_CONFIG, entity_type="player", output_prefix="training"
+        )
 
     @log_function_call(logger)
-    def flatten_inference_data(self) -> None:
+    def flatten_both_inference_data(self) -> None:
         """Flatten both the team and player dataframes to get the most recent records."""
-        self.flatten_data(self.team_data, FLATTENED_TEAM_CONFIG, "team")
-        self.flatten_data(self.player_data, FLATTENED_PLAYER_CONFIG, "player")
+        self.extract_inference_data(
+            data=self.team_data, config_path=FLATTENED_TEAM_CONFIG, entity_type="team", output_prefix="flattened"
+        )
+        self.extract_inference_data(
+            data=self.player_data, config_path=FLATTENED_PLAYER_CONFIG, entity_type="player", output_prefix="flattened"
+        )
 
     @log_function_call(logger)
     def run(self) -> None:
@@ -454,17 +468,17 @@ class DataGenerator:
         Run the complete data generation process including data ingestion, cleaning,
         enrichment, training data extraction, and inference data flattening.
         """
-        raw_data = self.ingest_data_from_s3()
+        # raw_data = self.ingest_data_from_s3()
+        raw_data = pd.read_parquet(RAW_DATA, engine="fastparquet")
         self.clean_and_store_data(raw_data)
         self.enrich_datasets()
-        self.extract_training_data()
-        self.flatten_inference_data()
+        self.extract_both_training_data()
+        self.flatten_both_inference_data()
         logger.info("Data generation process completed successfully.")
 
 
 # -------------------------------------------------------------------------------------------
-# 6. Entry Point: Optionally Integrate cProfile or memory_profiler if needed
-#    Usage example: python -m cProfile -o output.prof refactored_data_generator.py
+# 7. Entry Point: Optionally Integrate cProfile or memory_profiler if needed
 # -------------------------------------------------------------------------------------------
 if __name__ == "__main__":
     generator = DataGenerator()

@@ -7,7 +7,7 @@ It uses Exponential Moving Average (EMA) to calculate statistics for 'before' an
 
 from typing import List
 
-import fireducks.pandas as pd
+import pandas as pd
 from tqdm import tqdm
 
 from ingestion.oracles_elixir import get_opponent

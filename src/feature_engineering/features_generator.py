@@ -6,8 +6,8 @@ This script contains the `FeatureGenerator` class, which is used to generate new
 
 from dataclasses import dataclass
 
-import fireducks.pandas as pd
 import numpy as np
+import pandas as pd
 
 from src.utils.logger import logger
 
@@ -279,7 +279,7 @@ class FeatureGenerator:
         # Concatenate position dummies
         data = pd.concat([data, position_dummies], axis=1)
 
-        logger.info("Player features generation completed.\n")
+        logger.info("Player features generation completed.")
         return data
 
     @staticmethod

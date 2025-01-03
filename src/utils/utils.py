@@ -12,7 +12,7 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
-import fireducks.pandas as pd
+import pandas as pd
 
 
 def get_sorting_keys(entity: str) -> List[str]:
@@ -208,6 +208,14 @@ def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Union[str, Path], lo
             df = pd.DataFrame(df)
         df.to_parquet(output_path, compression="gzip")
         logger.info(f"Successfully saved DataFrame to Parquet at '{output_path}'.")
-    except Exception as e:
-        logger.error(f"Failed to save DataFrame to Parquet: {e}.")
-        raise ValueError(f"Failed to store DataFrame as Parquet at '{output_path}': {e}") from e
+    except Exception:
+        logger.error("Failed to save DataFrame to Parquet. Falling back to Polar")
+        try:
+            import polars as pl
+
+            pl_df = pl.DataFrame(df)
+            pl_df.write_parquet(output_path, compression="gzip")
+            logger.info(f"Successfully saved DataFrame to Parquet at '{output_path}'.")
+        except Exception as e:
+            logger.exception(f"Failed to store DataFrame as Parquet at '{output_path}': {e}")
+            raise ValueError(f"Failed to store DataFrame as Parquet at '{output_path}': {e}") from e
