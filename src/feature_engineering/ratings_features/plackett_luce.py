@@ -8,7 +8,7 @@ import math
 from copy import deepcopy
 from typing import Dict, List, Tuple, Union
 
-import pandas as pd
+import fireducks.pandas as pd
 from openskill.models import PlackettLuce
 from tqdm import tqdm
 

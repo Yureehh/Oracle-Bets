@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional
 
-import pandas as pd
+import fireducks.pandas as pd
 
 from src.utils.logger import logger
 from src.utils.paths import TARGET_FEATURES

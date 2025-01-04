@@ -9,7 +9,7 @@ import math
 from copy import deepcopy
 from typing import Dict, List, Tuple, Union
 
-import pandas as pd
+import fireducks.pandas as pd
 import trueskill
 from tqdm import tqdm
 from trueskill import Rating, TrueSkill

@@ -6,8 +6,8 @@ This script contains the `FeatureGenerator` class, which is used to generate new
 
 from dataclasses import dataclass
 
+import fireducks.pandas as pd
 import numpy as np
-import pandas as pd
 
 from src.utils.logger import logger
 
@@ -157,55 +157,94 @@ class FeatureGenerator:
 
         data = data.copy()
 
-        # Apply the function per player and season
-        data = data.set_index(["playerid", "season"])
+        # Group wins by (playerid, season)
+        win_season = (
+            data.loc[data["result"] == 1]
+            .groupby(["playerid", "season"], sort=True)
+            .agg(
+                kills_per_season_win=("kills", "mean"),
+                deaths_per_season_win=("deaths", "mean"),
+                avg_gamelength_season_win=("gamelength", "mean"),
+            )
+        )
 
-        def compute_metrics(group):
-            result = group["result"]
-            kills = group["kills"]
-            deaths = group["deaths"]
-            gamelength = group["gamelength"]
+        # Group losses by (playerid, season)
+        loss_season = (
+            data.loc[data["result"] == 0]
+            .groupby(["playerid", "season"], sort=True)
+            .agg(
+                kills_per_season_loss=("kills", "mean"),
+                deaths_per_season_loss=("deaths", "mean"),
+                avg_gamelength_season_loss=("gamelength", "mean"),
+            )
+        )
 
-            # Compute metrics for wins
-            win_mask = result == 1
-            group["kills_per_season_win"] = kills[win_mask].mean() if win_mask.any() else np.nan
-            group["deaths_per_season_win"] = deaths[win_mask].mean() if win_mask.any() else np.nan
-            group["avg_gamelength_season_win"] = gamelength[win_mask].mean() if win_mask.any() else np.nan
+        season_metrics = win_season.join(loss_season, how="outer")
 
-            # Compute metrics for losses
-            loss_mask = result == 0
-            group["kills_per_season_loss"] = kills[loss_mask].mean() if loss_mask.any() else np.nan
-            group["deaths_per_season_loss"] = deaths[loss_mask].mean() if loss_mask.any() else np.nan
-            group["avg_gamelength_season_loss"] = gamelength[loss_mask].mean() if loss_mask.any() else np.nan
+        # Match original indexing approach for season
+        # (original code: set_index(["playerid","season"]) then apply, then reset)
+        season_metrics = season_metrics.reset_index()
 
-            return group
+        data = data.set_index(["playerid", "season"], drop=False)  # mimic original
+        data = data.join(season_metrics.set_index(["playerid", "season"]), how="left")
+        data = data.reset_index(drop=True)  # get rid of the newly created multi-index
 
-        data = data.groupby(["playerid", "season"], group_keys=False).apply(compute_metrics).reset_index()
+        # Group wins by (playerid, patch)
+        win_patch = (
+            data.loc[data["result"] == 1]
+            .groupby(["playerid", "patch"], sort=True)
+            .agg(
+                kills_per_patch_win=("kills", "mean"),
+                deaths_per_patch_win=("deaths", "mean"),
+                avg_gamelength_patch_win=("gamelength", "mean"),
+            )
+        )
 
-        # Repeat the process for patches
-        data = data.set_index(["playerid", "patch"])
+        # Group losses by (playerid, patch)
+        loss_patch = (
+            data.loc[data["result"] == 0]
+            .groupby(["playerid", "patch"], sort=True)
+            .agg(
+                kills_per_patch_loss=("kills", "mean"),
+                deaths_per_patch_loss=("deaths", "mean"),
+                avg_gamelength_patch_loss=("gamelength", "mean"),
+            )
+        )
 
-        def compute_metrics_patch(group):
-            result = group["result"]
-            kills = group["kills"]
-            deaths = group["deaths"]
-            gamelength = group["gamelength"]
+        patch_metrics = win_patch.join(loss_patch, how="outer")
 
-            # Compute metrics for wins
-            win_mask = result == 1
-            group["kills_per_patch_win"] = kills[win_mask].mean() if win_mask.any() else np.nan
-            group["deaths_per_patch_win"] = deaths[win_mask].mean() if win_mask.any() else np.nan
-            group["avg_gamelength_patch_win"] = gamelength[win_mask].mean() if win_mask.any() else np.nan
+        # Match original indexing approach for patch
+        patch_metrics = patch_metrics.reset_index()
 
-            # Compute metrics for losses
-            loss_mask = result == 0
-            group["kills_per_patch_loss"] = kills[loss_mask].mean() if loss_mask.any() else np.nan
-            group["deaths_per_patch_loss"] = deaths[loss_mask].mean() if loss_mask.any() else np.nan
-            group["avg_gamelength_patch_loss"] = gamelength[loss_mask].mean() if loss_mask.any() else np.nan
+        data = data.set_index(["playerid", "patch"], drop=False)
+        data = data.join(patch_metrics.set_index(["playerid", "patch"]), how="left")
+        data = data.reset_index(drop=True)
 
-            return group
+        # We'll place the new columns at the end in the same order they were added in the apply() code:
+        metric_cols = [
+            "kills_per_season_win",
+            "deaths_per_season_win",
+            "avg_gamelength_season_win",
+            "kills_per_season_loss",
+            "deaths_per_season_loss",
+            "avg_gamelength_season_loss",
+            "kills_per_patch_win",
+            "deaths_per_patch_win",
+            "avg_gamelength_patch_win",
+            "kills_per_patch_loss",
+            "deaths_per_patch_loss",
+            "avg_gamelength_patch_loss",
+        ]
+        # Ensure only columns that actually exist remain in the list
+        metric_cols = [c for c in metric_cols if c in data.columns]
 
-        data = data.groupby(["playerid", "patch"], group_keys=False).apply(compute_metrics_patch).reset_index()
+        # Move metric_cols to the end in the correct order
+        non_metric_cols = [c for c in data.columns if c not in metric_cols]
+        final_col_order = non_metric_cols + metric_cols
+
+        # Sort the rows by (playerid, season, patch) to mimic the apply() row order
+        data = data.sort_values(by=["playerid", "season", "patch"], ascending=True)
+        data = data.loc[:, final_col_order].reset_index(drop=True)
 
         logger.info("Win/loss metrics computation by season and patch completed.")
         return data

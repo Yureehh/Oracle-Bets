@@ -9,8 +9,8 @@ import pickle
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Union
 
+import fireducks.pandas as pd
 import numpy as np
-import pandas as pd
 
 from feature_engineering.ratings_features.glicko import DEFAULT_MU, DEFAULT_PHI, DEFAULT_SIGMA, Glicko2
 from feature_engineering.ratings_features.glicko import Rating as GlickoRating

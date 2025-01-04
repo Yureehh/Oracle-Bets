@@ -7,10 +7,10 @@ This script calculates league Elo ratings and uses Optuna to optimize hyperparam
 import json
 import os
 from collections import defaultdict
-from typing import Dict, Tuple, Union
+from typing import Dict, Union, List, Tuple
 
+import fireducks.pandas as pd
 import optuna
-import pandas as pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
@@ -21,6 +21,44 @@ from src.utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parq
 # Load considered leagues configuration
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 CROSS_LEAGUE_COMPETITIONS = set(considered_leagues_config["cross_league_competitions"])
+
+
+def preprocess_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
+    """
+    Perform all necessary preprocessing on the input DataFrame, ensuring it's clean and ready for tuning or computation.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame with match data.
+        entity (str): The type of entity, e.g., 'player' or 'team'.
+
+    Returns:
+        pd.DataFrame: Preprocessed DataFrame.
+    """
+    required_columns = ["season", "date", "gameid", "teamid", "league", "side", "result"]
+    missing_columns = set(required_columns) - set(df.columns)
+    if missing_columns:
+        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+
+    # Ensure 'date' is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df["date"]):
+        try:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            if df["date"].isnull().any():
+                n_missing_dates = df["date"].isnull().sum()
+                logger.warning(f"{n_missing_dates} 'date' entries could not be converted and are NaT. Dropping these.")
+                df = df.dropna(subset=["date"])
+        except Exception as e:
+            logger.error(f"Error converting 'date' to datetime: {e}")
+            raise
+
+    if df["league"].isna().any() or df["result"].isna().any():
+        n_missing_leagues = df["league"].isnull().sum()
+        n_missing_results = df["result"].isnull().sum()
+        logger.warning(f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing. Dropping.")
+        df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
+
+    df = df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
+    return df
 
 
 def map_team_to_league(df: pd.DataFrame, team_column: str) -> Dict[str, str]:
@@ -37,7 +75,7 @@ def map_team_to_league(df: pd.DataFrame, team_column: str) -> Dict[str, str]:
     # Filter out cross-league competitions
     df_filtered = df[~df["league"].isin(CROSS_LEAGUE_COMPETITIONS)].copy()
 
-    # Ensure the DataFrame is sorted by date to get the last league played
+    # Sort by date to get last league
     df_filtered.sort_values(by=["date"], inplace=True)
 
     # Group by team and get the last league they played in
@@ -79,110 +117,116 @@ def update_elo_rating(old_elo: float, expected: float, actual_result: float, k_f
     return old_elo + adjustment
 
 
-def linear_decay_reset_league_elo(
+def linear_decay_reset_leagues_elo(
     elo_ratings: Dict[str, Dict[str, Union[float, int]]],
     baseline: float,
     current_season: int,
     decay_factor: float,
-) -> None:
+) -> Dict[str, Dict[str, Union[float, int]]]:
     """
     Apply linear decay reset to league Elo ratings at the beginning of a new season.
 
-    Args:
-        elo_ratings (Dict[str, Dict[str, Union[float, int]]]): Dictionary of league Elo ratings.
-        baseline (float): Baseline Elo rating.
-        current_season (int): Current season number.
-        decay_factor (float): Decay factor for Elo rating adjustment.
+    Returns a new dictionary with the updated Elo ratings.
     """
-    for data in elo_ratings.values():
+    updated_elo_ratings = {}
+    for league, data in elo_ratings.items():
+        updated_data = data.copy()
         if data["season"] < current_season:
-            data["elo"] = baseline + (data["elo"] - baseline) * decay_factor
-            data["season"] = current_season
+            updated_data["elo"] = baseline + (data["elo"] - baseline) * decay_factor
+            updated_data["season"] = current_season
+        updated_elo_ratings[league] = updated_data
+    return updated_elo_ratings
 
 
-def process_game(
-    df_sorted: pd.DataFrame,
-    game_group: pd.DataFrame,
-    elo_ratings: Dict[str, Dict[str, Union[float, int]]],
-    k_factor: float,
-    entity_key: str,
-    belonging_league: Dict[str, str],
-    baseline_elo: float,
-    decay_factor: float,
-    elo_divisor: float,
-) -> None:
+def pivot_games_to_wide(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Process each game and update Elo ratings for both sides.
-
-    Args:
-        df_sorted (pd.DataFrame): The main DataFrame being processed.
-        game_group (pd.DataFrame): Grouped DataFrame for a single game.
-        elo_ratings (Dict[str, Dict[str, Union[float, int]]]): Dictionary of league Elo ratings.
-        k_factor (float): K-factor for Elo rating adjustment.
-        entity_key (str): Column name representing the team ID.
-        belonging_league (Dict[str, str]): Dictionary mapping team IDs to leagues.
-        baseline_elo (float): Baseline Elo rating.
-        decay_factor (float): Decay factor for Elo rating adjustment.
-        elo_divisor (float): Divisor used in the Elo expected outcome calculation.
+    Pivot the original DataFrame so that each game is a single row:
+      - 'Blue' columns => e.g. teamid_Blue, league_Blue, result_Blue
+      - 'Red' columns => e.g. teamid_Red,  league_Red,  result_Red
+    This cuts the row count in half (2 rows per game -> 1 row per game).
     """
-    current_season = game_group.iloc[0]["season"]
-    linear_decay_reset_league_elo(elo_ratings, baseline_elo, current_season, decay_factor)
+    # Validate that each game has exactly 2 rows for pivot to work
+    counts = df.groupby(["gameid"]).size()
+    if not (counts == 2).all():
+        logger.warning("Some gameid groups do not have exactly 2 rows. Pivot will fail or skip those.")
+        df = df[df["gameid"].isin(counts[counts == 2].index)]
 
-    blue_rows = game_group[game_group["side"] == "Blue"]
-    red_rows = game_group[game_group["side"] == "Red"]
+    # Move side to columns; the pivoted columns become multi-index
+    df_wide = df.pivot(
+        index=["date", "gameid", "season"],
+        columns="side",
+        values=["teamid", "league", "result"],
+    ).reset_index()
 
-    if blue_rows.empty or red_rows.empty:
-        logger.warning(f"Skipping game {game_group.iloc[0]['gameid']} due to missing side information.")
-        return
-
-    blue_row = blue_rows.iloc[0]
-    red_row = red_rows.iloc[0]
-
-    blue_entity_id = blue_row[entity_key]
-    red_entity_id = red_row[entity_key]
-
-    blue_league = belonging_league.get(blue_entity_id)
-    red_league = belonging_league.get(red_entity_id)
-
-    if blue_league is None or red_league is None:
-        return
-
-    # Initialize leagues in elo_ratings if not already present
-    if blue_league not in elo_ratings:
-        elo_ratings[blue_league] = {"elo": baseline_elo, "season": current_season}
-    if red_league not in elo_ratings:
-        elo_ratings[red_league] = {"elo": baseline_elo, "season": current_season}
-
-    blue_league_elo = elo_ratings[blue_league]["elo"]
-    red_league_elo = elo_ratings[red_league]["elo"]
-
-    if blue_league != red_league:
-        blue_expected = expected_outcome(blue_league_elo, red_league_elo, elo_divisor)
-        blue_result = blue_row["result"]
-        red_result = 1 - blue_result
-
-        blue_new_league_elo = update_elo_rating(blue_league_elo, blue_expected, blue_result, k_factor)
-        red_new_league_elo = update_elo_rating(red_league_elo, 1 - blue_expected, red_result, k_factor)
-
-        elo_ratings[blue_league]["elo"] = blue_new_league_elo
-        elo_ratings[red_league]["elo"] = red_new_league_elo
-    else:
-        # No update to Elo ratings since both teams are from the same league
-        blue_expected = 0.5  # Expected outcome is neutral
-
-    # Update DataFrame with league Elo information
-    df_sorted.at[blue_row.name, "league_elo_before"] = blue_league_elo
-    df_sorted.at[blue_row.name, "opp_league_elo_before"] = red_league_elo
-    df_sorted.at[blue_row.name, "league_elo_win_likelihood"] = blue_expected
-    df_sorted.at[blue_row.name, "league_elo_after"] = elo_ratings[blue_league]["elo"]
-
-    df_sorted.at[red_row.name, "league_elo_before"] = red_league_elo
-    df_sorted.at[red_row.name, "opp_league_elo_before"] = blue_league_elo
-    df_sorted.at[red_row.name, "league_elo_win_likelihood"] = 1 - blue_expected
-    df_sorted.at[red_row.name, "league_elo_after"] = elo_ratings[red_league]["elo"]
+    # Flatten multi-index column names: (('teamid','Blue'), ...) -> teamid_Blue
+    df_wide.columns = [f"{col[0]}_{col[1]}" if col[1] else col[0] for col in df_wide.columns.to_flat_index()]
+    return df_wide
 
 
-def tune_hyperparameters(df: pd.DataFrame, entity: str, hyperparameters_path: str) -> Dict[str, float]:
+def merge_wide_results_back(
+    df: pd.DataFrame,
+    df_wide: pd.DataFrame,
+    columns_to_add: Dict[str, str],
+) -> pd.DataFrame:
+    """
+    After computing Elo in the wide pivot, each row corresponds to a single game (blue vs red).
+    We hold new columns for 'blue' or 'red' side Elo.
+    This function merges those results back to the original shape (two rows per game).
+
+    columns_to_add is a dict of { "league_elo_before_blue": "league_elo_before", ... }
+    indicating how to rename wide columns back into standard columns in the tall shape.
+    """
+    # We’ll pivot df_wide back to tall shape so it lines up with the original df again.
+    # Example approach:
+    #   1) For each side in ['Blue', 'Red'], rename columns + side => base column name
+    #   2) stack them or concatenate them
+    #   3) combine with original
+    #
+    # A simpler route is to keep the pivoted df_wide as our final results if your pipeline
+    # doesn’t absolutely need two rows per game. But here we show how to revert if required.
+
+    # Re-split into a 'blue' sub-dataframe and a 'red' sub-dataframe
+    # Then unify them with 'side' info
+    df_blue = df_wide.copy()
+    df_blue["side"] = "Blue"
+    df_red = df_wide.copy()
+    df_red["side"] = "Red"
+
+    # Drop irrelevant columns from each side's DataFrame
+    drop_cols_blue = [c for c in df_blue.columns if c.endswith("_Red") or c.endswith("_red")]
+    drop_cols_red = [c for c in df_red.columns if c.endswith("_Blue") or c.endswith("_blue")]
+    df_blue.drop(columns=drop_cols_blue, inplace=True)
+    df_red.drop(columns=drop_cols_red, inplace=True)
+
+    # Rename Elo-related columns to their final names based on side
+    for wide_col, final_col in columns_to_add.items():
+        df_blue.rename(columns={wide_col: final_col}, inplace=True)
+        df_red.rename(columns={wide_col: final_col}, inplace=True)
+
+    # Combine back into a single tall DataFrame
+    df_tall = pd.concat([df_blue, df_red], ignore_index=True)
+
+    # Merge back with the original DataFrame
+    merge_cols = ["date", "gameid", "season", "side"]
+    merged = pd.merge(
+        df,
+        df_tall[
+            merge_cols + ["league_elo_before", "opp_league_elo_before", "league_elo_win_likelihood", "league_elo_after"]
+        ],
+        on=merge_cols,
+        how="left",
+    )
+
+    # Retain only original columns and Elo-related columns
+    required_columns = set(df.columns).union(set(columns_to_add.values()))
+    merged = merged[[col for col in merged.columns if col in required_columns]]
+
+    return merged
+
+
+def tune_hyperparameters(
+    df: pd.DataFrame, entity: str, belonging_league: Dict[str, str], hyperparameters_path: str
+) -> Dict[str, float]:
     """
     Perform hyperparameter tuning using Optuna and return the best parameters.
     Check if hyperparameters exist at the specified path; if so, load them, otherwise compute and store.
@@ -195,40 +239,17 @@ def tune_hyperparameters(df: pd.DataFrame, entity: str, hyperparameters_path: st
     Returns:
         Dict[str, float]: Dictionary of best hyperparameters.
     """
-    # Check if the hyperparameters file exists
-    if os.path.exists(hyperparameters_path):
-        logger.info(f"Loading hyperparameters from {hyperparameters_path}")
-        with open(hyperparameters_path) as file:
-            best_params = json.load(file)
-        logger.info(f"Loaded hyperparameters: {best_params}")
-        return best_params
-
-    logger.info(f"No hyperparameters found at {hyperparameters_path}. Starting tuning process...")
+    df_cross = df.copy()
+    df_cross = df[df["league"].isin(CROSS_LEAGUE_COMPETITIONS)].copy()
 
     def objective(trial: optuna.trial.Trial) -> float:
-        # Suggest hyperparameters
         k_factor = trial.suggest_float("k_factor", 16, 96, step=8)
         initial_elo = trial.suggest_float("initial_elo", 1200, 1800, step=100)
         elo_divisor = trial.suggest_float("elo_divisor", 100, 500, step=50)
         decay_factor = trial.suggest_float("decay_factor", 0.5, 1.0, step=0.05)
 
-        # Sort the DataFrame by date, gameid, and side
-        df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
-
-        # Ensure 'date' column is datetime
-        if not pd.api.types.is_datetime64_any_dtype(df_sorted["date"]):
-            try:
-                df_sorted["date"] = pd.to_datetime(df_sorted["date"], errors="coerce")
-                if df_sorted["date"].isnull().any():
-                    # Count and drop NaT entries
-                    n_missing_dates = df_sorted["date"].isnull().sum()
-                    logger.warning(
-                        f"{n_missing_dates} 'date' entries could not be converted and are NaT. Dropping these entries."
-                    )
-                    df_sorted = df_sorted.dropna(subset=["date"])
-            except Exception as e:
-                logger.error(f"Error converting 'date' to datetime: {e}")
-                return float("inf")
+        # Sort DataFrame
+        df_sorted = df_cross.sort_values(by=["date", "gameid"]).reset_index(drop=True)
 
         # Evaluate ratings on the last year of data
         try:
@@ -238,86 +259,93 @@ def tune_hyperparameters(df: pd.DataFrame, entity: str, hyperparameters_path: st
             return float("inf")
         split_date = pd.to_datetime(f"{split_year}-01-01")
 
-        # Split data into training and validation sets based on the split date
+        # Split data
         df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
         df_valid = df_sorted[df_sorted["date"] >= split_date].reset_index(drop=True)
 
-        # Validate that each gameid has exactly two teams
-        if len(df_train) > 0:
-            if not (df_train.groupby("gameid").size() == 2).all():
-                logger.warning("Training data has gameids with != 2 teams.")
-                return float("inf")
-        if len(df_valid) > 0:
-            if not (df_valid.groupby("gameid").size() == 2).all():
-                logger.warning("Validation data has gameids with != 2 teams.")
-                return float("inf")
+        # Check if each game is present as 2 rows
+        if df_train.empty or not (df_train.groupby("gameid").size() == 2).all():
+            logger.warning("Training data is insufficient or improperly structured. Skipping trial.")
+            return float("inf")
 
-        # Calculate Elo ratings on the training data
         try:
-            df_with_elo_train = calculate_leagues_elo(
+            # Compute Elo ratings on training data
+            df_with_elo_train = leagues_elo_computation(
                 df_train.copy(),
                 entity=entity,
+                belonging_league=belonging_league,
                 initial_elo=initial_elo,
                 k_factor=k_factor,
                 elo_divisor=elo_divisor,
                 decay_factor=decay_factor,
-                perform_tuning=False,  # Avoid recursive tuning
+                performing_tuning=True,
             )
         except Exception as e:
-            logger.error(f"Error during Elo calculation in trial: {e}")
+            logger.error(f"Elo calculation error in trial: {e}")
             return float("inf")
 
-        # Use the last Elo ratings from the training data
-        last_elo_ratings = df_with_elo_train.groupby("league")["league_elo_after"].last().to_dict()
+        # Grab final league Elo from training
+        last_elo_ratings = df_with_elo_train.groupby("league")["league_elo_after"].last().dropna().to_dict()
 
-        # Prepare validation data
-        df_valid = df_valid.copy()
-        df_valid["league_elo_before"] = df_valid["league"].map(last_elo_ratings)
-        df_valid["league_elo_before"].fillna(initial_elo, inplace=True)
+        # Initialize Elo ratings for validation
+        validation_elo_ratings = defaultdict(lambda: {"elo": initial_elo, "season": split_year})
+        validation_elo_ratings.update(last_elo_ratings)  # Use trained Elo ratings as the starting point
 
-        # Map opponent league Elo ratings using shift
-        opponent_league = df_valid.groupby("gameid")["league"].shift(-1)
-        df_valid["opp_league"] = opponent_league
-        df_valid["opp_league_elo_before"] = df_valid["opp_league"].map(last_elo_ratings)
-        df_valid["opp_league_elo_before"].fillna(initial_elo, inplace=True)
+        # Map validation teams to their original leagues using belonging_league
+        df_valid["league"] = df_valid["teamid"].map(belonging_league)
+        df_valid["opp_league"] = df_valid.groupby("gameid")["league"].shift(-1)
 
-        # Calculate expected outcomes for validation data
-        df_valid["expected"] = expected_outcome(
-            df_valid["league_elo_before"], df_valid["opp_league_elo_before"], elo_divisor
-        )
+        # Initialize Elo simulation for validation
+        df_valid = df_valid.sort_values(by=["date", "gameid"]).reset_index(drop=True)
+        expected_probabilities = []
 
-        # Compute log loss on the validation set
+        for _, row in df_valid.iterrows():
+            blue_league = row["league"]
+            red_league = row["opp_league"]
+            blue_result = row["result"]
+
+            # Retrieve current Elo ratings
+            blue_elo = validation_elo_ratings[blue_league]["elo"]
+            red_elo = validation_elo_ratings[red_league]["elo"]
+
+            # Calculate expected outcome
+            expected = expected_outcome(blue_elo, red_elo, elo_divisor)
+            expected_probabilities.append(expected)
+
+            # Update Elo ratings based on the actual result
+            red_result = 1 - blue_result
+            validation_elo_ratings[blue_league]["elo"] = update_elo_rating(blue_elo, expected, blue_result, k_factor)
+            validation_elo_ratings[red_league]["elo"] = update_elo_rating(red_elo, 1 - expected, red_result, k_factor)
+
+        # Compute log loss
         y_true = df_valid["result"]
-        y_pred = df_valid["expected"].clip(0.0001, 0.9999)  # Avoid log loss errors
+        y_pred = pd.Series(expected_probabilities).clip(0.0001, 0.9999)
+        return log_loss(y_true, y_pred)
 
-        loss = log_loss(y_true, y_pred)
-
-        return loss
-
-    # Create and optimize the study
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=100, timeout=None, show_progress_bar=True)
-
+    # Create and optimize study
+    pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
+    study = optuna.create_study(direction="minimize", pruner=pruner)
+    study.optimize(objective, n_trials=50, timeout=None, show_progress_bar=True)
     best_params = study.best_params
     logger.info(f"Best hyperparameters: {best_params}")
 
-    # Store the best hyperparameters
+    # Store best hyperparameters
     logger.info(f"Storing hyperparameters to {hyperparameters_path}")
-    with open(hyperparameters_path, "w") as file:
-        json.dump(best_params, file)
-
+    with open(hyperparameters_path, "w") as f:
+        json.dump(best_params, f)
     return best_params
 
 
-def calculate_leagues_elo(
+def leagues_elo_computation(
     df: pd.DataFrame,
     entity: str,
+    belonging_league: Dict[str, str],
     initial_elo: float = None,
     k_factor: float = None,
     elo_divisor: float = None,
     decay_factor: float = None,
-    perform_tuning: bool = True,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    performing_tuning: bool = False,
+) -> pd.DataFrame:
     """
     Calculate and update Elo ratings for leagues based on match results.
     Performs hyperparameter tuning if parameters are not provided.
@@ -329,86 +357,190 @@ def calculate_leagues_elo(
         k_factor (float): K-factor for Elo rating adjustment.
         elo_divisor (float): Divisor used in the Elo expected outcome calculation.
         decay_factor (float): Decay factor for Elo rating adjustment.
-        perform_tuning (bool): Whether to perform hyperparameter tuning.
+        performing_tuning (bool): Whether hyperparameter tuning is being performed.
 
     Returns:
-        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: Updated DataFrame with league Elo information,
-        DataFrame mapping teams to leagues, and DataFrame of league Elo ratings.
+        pd.DataFrame: DataFrame with updated Elo ratings for leagues.
     """
-    if perform_tuning:
-        # Perform hyperparameter tuning
-        best_params = tune_hyperparameters(df, entity, LEAGUES_ELO_HYPERPARAMETERS)
-        initial_elo = best_params["initial_elo"]
-        k_factor = best_params["k_factor"]
-        elo_divisor = best_params["elo_divisor"]
-        decay_factor = best_params["decay_factor"]
-    else:
-        # Ensure all parameters are provided
-        if initial_elo is None or k_factor is None or elo_divisor is None or decay_factor is None:
-            raise ValueError("All hyperparameters must be provided if perform_tuning is False")
+    if any(p is None for p in [initial_elo, k_factor, elo_divisor, decay_factor]):
+        raise ValueError("All hyperparameters must be provided")
 
-    required_columns = ["season", "date", "gameid", "teamid", "league", "side", "result"]
+    df_wide = pivot_games_to_wide(df)
+    league_elo_ratings = defaultdict(lambda: {"elo": initial_elo, "season": df_wide["season"].min()})
 
-    missing_columns = set(required_columns) - set(df.columns)
-    if missing_columns:
-        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+    wide_columns = {
+        "league_elo_before_blue": [],
+        "league_elo_before_red": [],
+        "opp_league_elo_before_blue": [],
+        "opp_league_elo_before_red": [],
+        "league_elo_win_likelihood_blue": [],
+        "league_elo_win_likelihood_red": [],
+        "league_elo_after_blue": [],
+        "league_elo_after_red": [],
+    }
 
-    entity_key = "teamid"
+    if not performing_tuning:
+        logger.info("Calculating Elo")
+    df_wide_iter = tqdm(df_wide.itertuples(index=True), total=len(df_wide))
 
-    # Sort the DataFrame by sorting keys
-    df_sorted = df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
-
-    # Ensure 'date' column is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df_sorted["date"]):
-        try:
-            df_sorted["date"] = pd.to_datetime(df_sorted["date"], errors="coerce")
-            if df_sorted["date"].isnull().any():
-                # Count and drop NaT entries
-                n_missing_dates = df_sorted["date"].isnull().sum()
-                logger.warning(
-                    f"{n_missing_dates} 'date' entries could not be converted and are NaT. Dropping these entries."
-                )
-                df_sorted = df_sorted.dropna(subset=["date"])
-        except Exception as e:
-            logger.error(f"Error converting 'date' to datetime: {e}")
-            raise
-
-    league_elo_ratings = defaultdict(lambda: {"elo": initial_elo, "season": df_sorted["season"].min()})
-    belonging_league = map_team_to_league(df_sorted, entity_key)
-
-    # Initialize columns for Elo ratings
-    for col in ["league_elo_before", "opp_league_elo_before", "league_elo_win_likelihood", "league_elo_after"]:
-        df_sorted[col] = None
-
-    # Use tqdm only when perform_tuning is False
-    games_iterator = df_sorted.groupby(["date", "gameid"])
-    if perform_tuning:
-        games_iterator = tqdm(games_iterator, desc="Processing games")
-
-    for _, game_group in games_iterator:
-        process_game(
-            df_sorted,
-            game_group,
-            elo_ratings=league_elo_ratings,
-            k_factor=k_factor,
-            entity_key=entity_key,
-            belonging_league=belonging_league,
-            baseline_elo=initial_elo,
-            decay_factor=decay_factor,
-            elo_divisor=elo_divisor,
+    for row in df_wide_iter:
+        wide_columns, league_elo_ratings = process_elo_for_row(
+            row,
+            league_elo_ratings,
+            belonging_league,
+            wide_columns,
+            initial_elo,
+            k_factor,
+            elo_divisor,
+            decay_factor,
         )
 
-    belonging_league_df = pd.DataFrame(belonging_league.items(), columns=[entity_key, "league"])
+    update_wide_dataframe(df_wide, wide_columns)
 
-    # Convert league Elo ratings to DataFrame
-    league_elo_df = pd.DataFrame(
-        [(league, data["elo"]) for league, data in league_elo_ratings.items()],
-        columns=["league", "elo"],
+    df_final = finalize_dataframe(df, df_wide, entity)
+
+    if not performing_tuning:
+        store_results(belonging_league, league_elo_ratings)
+
+    return df_final
+
+
+def process_elo_for_row(
+    row,
+    league_elo_ratings,
+    belonging_league,
+    wide_columns,
+    initial_elo,
+    k_factor,
+    elo_divisor,
+    decay_factor,
+) -> Tuple[Dict[str, List[Union[float, int]]], Dict[str, Dict[str, Union[float, int]]]]:
+    """Process a single row to calculate and update Elo ratings for leagues."""
+    current_season = row.season
+    league_elo_ratings = linear_decay_reset_leagues_elo(league_elo_ratings, initial_elo, current_season, decay_factor)
+
+    blue_league = belonging_league.get(row.teamid_Blue, None)
+    red_league = belonging_league.get(row.teamid_Red, None)
+    blue_result = getattr(row, "result_Blue", None)
+    red_result = getattr(row, "result_Red", None)
+
+    if blue_result is None or red_result is None:
+        for c in wide_columns:
+            logger.warning(f"Missing result for gameid {row.gameid}. Filling with None.")
+            wide_columns[c].append(None)
+            return
+
+    # Initialize if not present
+    if blue_league not in league_elo_ratings:
+        league_elo_ratings[blue_league] = {"elo": initial_elo, "season": current_season}
+    if red_league not in league_elo_ratings:
+        league_elo_ratings[red_league] = {"elo": initial_elo, "season": current_season}
+
+    blue_league_elo_before = league_elo_ratings[blue_league]["elo"]
+    red_league_elo_before = league_elo_ratings[red_league]["elo"]
+
+    if blue_league != red_league:
+        blue_expected = expected_outcome(blue_league_elo_before, red_league_elo_before, elo_divisor)
+        red_expected = 1 - blue_expected
+        new_blue_elo = update_elo_rating(blue_league_elo_before, blue_expected, blue_result, k_factor)
+        new_red_elo = update_elo_rating(red_league_elo_before, red_expected, red_result, k_factor)
+    else:
+        blue_expected = 0.5
+        new_blue_elo = blue_league_elo_before
+        new_red_elo = red_league_elo_before
+
+    league_elo_ratings[blue_league]["elo"] = new_blue_elo
+    league_elo_ratings[red_league]["elo"] = new_red_elo
+
+    wide_columns["league_elo_before_blue"].append(blue_league_elo_before)
+    wide_columns["league_elo_before_red"].append(red_league_elo_before)
+    wide_columns["opp_league_elo_before_blue"].append(red_league_elo_before)
+    wide_columns["opp_league_elo_before_red"].append(blue_league_elo_before)
+    wide_columns["league_elo_win_likelihood_blue"].append(blue_expected)
+    wide_columns["league_elo_win_likelihood_red"].append(1 - blue_expected)
+    wide_columns["league_elo_after_blue"].append(new_blue_elo)
+    wide_columns["league_elo_after_red"].append(new_red_elo)
+
+    return wide_columns, league_elo_ratings
+
+
+def update_wide_dataframe(df_wide, wide_columns):
+    """Update the wide dataframe with the computed columns."""
+    for col_name, col_values in wide_columns.items():
+        df_wide[col_name] = col_values
+
+
+def finalize_dataframe(df, df_wide, entity):
+    """Finalize the dataframe by pivoting back and sorting."""
+    # Now pivot back to tall form so it matches the original shape (one row per side).
+    # We'll map columns from wide to final tall columns:
+    columns_map = {
+        "league_elo_before_blue": "league_elo_before",
+        "league_elo_before_red": "league_elo_before",
+        "opp_league_elo_before_blue": "opp_league_elo_before",
+        "opp_league_elo_before_red": "opp_league_elo_before",
+        "league_elo_win_likelihood_blue": "league_elo_win_likelihood",
+        "league_elo_win_likelihood_red": "league_elo_win_likelihood",
+        "league_elo_after_blue": "league_elo_after",
+        "league_elo_after_red": "league_elo_after",
+    }
+    df_final = merge_wide_results_back(df, df_wide, columns_map)
+    df_final.sort_values(by=get_sorting_keys(entity), inplace=True)
+    df_final.reset_index(drop=True, inplace=True)
+
+    return df_final
+
+
+def store_results(belonging_league, league_elo_ratings):
+    """Store belonging leagues and league Elo ratings."""
+    store_belonging_leagues(belonging_league)
+    store_leagues_elo(league_elo_ratings)
+
+
+def store_belonging_leagues(belonging_league: Dict[str, str]) -> None:
+    """Store the mapping of teams to leagues."""
+    belonging_league_df = pd.DataFrame(belonging_league.items(), columns=["teamid", "league"])
+    safe_store_df_as_parquet(belonging_league_df, TEAM_LEAGUES_MAPPING, logger)
+
+
+def store_leagues_elo(league_elo_ratings: Dict[str, Dict[str, Union[float, int]]]) -> None:
+    """Store the Elo ratings for leagues."""
+    league_elo_df = (
+        pd.DataFrame(
+            [(lg, dat["elo"]) for lg, dat in league_elo_ratings.items()],
+            columns=["league", "elo"],
+        )
+        .sort_values(by="elo", ascending=False)
+        .reset_index(drop=True)
     )
-    league_elo_df = league_elo_df.sort_values(by="elo", ascending=False).reset_index(drop=True)
+    safe_store_df_as_parquet(league_elo_df, LEAGUE_ELO, logger)
 
-    if perform_tuning:
-        safe_store_df_as_parquet(belonging_league_df, TEAM_LEAGUES_MAPPING, logger)
-        safe_store_df_as_parquet(league_elo_df, LEAGUE_ELO, logger)
 
-    return df_sorted
+def calculate_leagues_elo(
+    df: pd.DataFrame, entity: str, hyperparameters_path: str = LEAGUES_ELO_HYPERPARAMETERS
+) -> pd.DataFrame:
+    """Run the Leagues Elo pipeline with hyperparameter tuning."""
+    df_preprocessed = preprocess_dataframe(df, entity)
+
+    # Precompute the belonging league mapping
+    belonging_league = map_team_to_league(df_preprocessed, "teamid")
+
+    if os.path.exists(hyperparameters_path):
+        logger.info(f"Hyperparameters file found at {hyperparameters_path}")
+        with open(hyperparameters_path) as f:
+            best_params = json.load(f)
+        logger.info(f"Loaded hyperparameters: {best_params}")
+    else:
+        logger.info("No hyperparameters found; starting tuning.")
+        best_params = tune_hyperparameters(df_preprocessed, entity, belonging_league, hyperparameters_path)
+
+    df_final = leagues_elo_computation(
+        df_preprocessed,
+        entity=entity,
+        belonging_league=belonging_league,
+        initial_elo=best_params["initial_elo"],
+        k_factor=best_params["k_factor"],
+        elo_divisor=best_params["elo_divisor"],
+        decay_factor=best_params["decay_factor"],
+    )
+    return df_final

@@ -7,7 +7,7 @@ This module provides functionality to rate teams or players using the Glicko-2 m
 import math
 from typing import Dict, List, Tuple, Union
 
-import pandas as pd
+import fireducks.pandas as pd
 from glicko2 import Glicko2, Rating
 from tqdm import tqdm
 

@@ -12,7 +12,7 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
-import pandas as pd
+import fireducks.pandas as pd
 
 
 def get_sorting_keys(entity: str) -> List[str]:

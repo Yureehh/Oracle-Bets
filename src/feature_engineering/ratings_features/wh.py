@@ -7,7 +7,7 @@ This module calculates Whole History Ratings (WHR) for teams or players based on
 import sys
 from typing import List, Union
 
-import pandas as pd
+import fireducks.pandas as pd
 from tqdm import tqdm
 from whr import whole_history_rating
 

@@ -12,11 +12,11 @@
     "EWC",
     "GLL",
     "HM",
+    "HW",
     "IC",
     "KeSPA",
     "LCK",
     "LCKC",
-    "LCO",
     "LCS",
     "LDL",
     "LEC",
@@ -30,7 +30,6 @@
     "MSI",
     "NLC",
     "PCS",
-    "PGN",
     "PRM",
     "TCL",
     "UL",
@@ -44,8 +43,9 @@
     "EPL",
     "EUM",
     "EWC",
-    "MSI",
     "IC",
+    "KeSPA",
+    "MSI",
     "WLDs"
   ],
   "major_leagues": [
@@ -56,7 +56,6 @@
     "LPL",
     "PCS",
     "LJL",
-    "LCO",
     "VCS",
     "CBLOL"
   ]

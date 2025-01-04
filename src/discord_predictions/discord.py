@@ -8,8 +8,8 @@ It includes functions for handling commands, formatting messages, and sending pr
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+import fireducks.pandas as pd
 import numpy as np
-import pandas as pd
 
 import discord_predictions.match_predictor as match_predictor_module
 from discord_predictions.best_ofs import BestOfs

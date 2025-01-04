@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import List, Set
 
 import boto3
-import pandas as pd
+import fireducks.pandas as pd
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 

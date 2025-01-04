@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Union
 
 import awswrangler as wr
 import boto3
-import pandas as pd
+import fireducks.pandas as pd
 from dotenv import load_dotenv
 
 from src.utils.logger import logger
@@ -64,7 +64,7 @@ class OraclesElixir:
 
         # TODO: Remove this once the data is available for 2025
         YEAR_REPLACEMENTS = {"2025": "2022"}
-        years = [YEAR_REPLACEMENTS.get(year, year) for year in years]
+        years = sorted([YEAR_REPLACEMENTS.get(year, year) for year in years], reverse=True)
         file_paths = [f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv" for year in years]
 
         logger.info("Connecting to S3 bucket")
@@ -226,6 +226,21 @@ class OraclesElixir:
         return oracles_elixir_data
 
     @staticmethod
+    def fill_null_patch_value(oracles_elixir_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Fill null patch values with the previous patch value.
+
+        Args:
+            oracles_elixir_data (pd.DataFrame): DataFrame to update.
+
+        Returns:
+            pd.DataFrame: Updated DataFrame with filled patch values.
+        """
+        oracles_elixir_data["patch"] = oracles_elixir_data["patch"].fillna(method="ffill")
+        logger.info("Filled null patch values with the previous patch value.")
+        return oracles_elixir_data
+
+    @staticmethod
     def subset_data(
         oracles_elixir_data: pd.DataFrame, split_on: str, columns: Optional[Dict[str, List[str]]] = None
     ) -> pd.DataFrame:
@@ -381,6 +396,7 @@ class OraclesElixir:
         oracles_elixir_data = self.replace_team_names(oracles_elixir_data)
         oracles_elixir_data = self.sort_data(oracles_elixir_data, split_on)
         oracles_elixir_data = self.fill_null_team_ids(oracles_elixir_data)
+        oracles_elixir_data = self.fill_null_patch_value(oracles_elixir_data)
         oracles_elixir_data = self.subset_data(oracles_elixir_data, split_on)
         oracles_elixir_data = self.remove_inconsistent_games(oracles_elixir_data, split_on)
         oracles_elixir_data = self.enrich_opponent_metrics(oracles_elixir_data, split_on)

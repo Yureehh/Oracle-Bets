@@ -10,8 +10,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Union
 
+import fireducks.pandas as pd
 import optuna
-import pandas as pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 

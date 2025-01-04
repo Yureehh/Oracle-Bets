@@ -104,10 +104,13 @@ poetry.lock
 catboost_info/
 
 # All models folder
-models/
+models/artifacts/
 
 # Site packages
 site-packages/
 
 # Site folder
 site/
+
+# Testing script
+test.py
