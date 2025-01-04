@@ -7,7 +7,7 @@ This script calculates league Elo ratings and uses Optuna to optimize hyperparam
 import json
 import os
 from collections import defaultdict
-from typing import Dict, Union, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import fireducks.pandas as pd
 import optuna
@@ -428,7 +428,7 @@ def process_elo_for_row(
         for c in wide_columns:
             logger.warning(f"Missing result for gameid {row.gameid}. Filling with None.")
             wide_columns[c].append(None)
-            return
+            return wide_columns, league_elo_ratings
 
     # Initialize if not present
     if blue_league not in league_elo_ratings:
