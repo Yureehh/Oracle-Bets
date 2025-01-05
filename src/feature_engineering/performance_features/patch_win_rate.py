@@ -5,7 +5,7 @@ This module provides functionality to compute the patch games count and win rate
 using an Exponentially Weighted Mean (EWM) model.
 """
 
-import fireducks.pandas as pd
+import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
 from src.utils.paths import DEFAULT_MODELS_PARAMETERS

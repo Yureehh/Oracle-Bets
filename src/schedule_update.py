@@ -10,7 +10,7 @@ import os
 import sys
 from typing import Optional
 
-import fireducks.pandas as pd
+import pandas as pd
 from dotenv import load_dotenv
 
 from ingestion.schedule import PandaScoreSchedule, schedule_generation_logger

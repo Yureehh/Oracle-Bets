@@ -9,8 +9,8 @@ import os
 from collections import defaultdict
 from typing import Dict, List, Tuple, Union
 
-import fireducks.pandas as pd
 import optuna
+import pandas as pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
@@ -325,7 +325,7 @@ def tune_hyperparameters(
     # Create and optimize study
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
     study = optuna.create_study(direction="minimize", pruner=pruner)
-    study.optimize(objective, n_trials=50, timeout=None, show_progress_bar=True)
+    study.optimize(objective, n_trials=100, timeout=None, show_progress_bar=True)
     best_params = study.best_params
     logger.info(f"Best hyperparameters: {best_params}")
 

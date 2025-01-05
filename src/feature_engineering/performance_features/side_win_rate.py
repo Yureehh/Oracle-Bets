@@ -7,7 +7,7 @@ using an Exponentially Weighted Mean (EWM) model.
 
 from typing import Optional
 
-import fireducks.pandas as pd
+import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
 from src.utils.paths import DEFAULT_MODELS_PARAMETERS

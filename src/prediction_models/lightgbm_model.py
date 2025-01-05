@@ -11,9 +11,9 @@ The `ModelFactory` class is used to create a `LightGBMModel` instance based on t
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Union
 
-import fireducks.pandas as pd
 import lightgbm as lgb
 import optuna
+import pandas as pd
 from sklearn.metrics import log_loss, mean_absolute_error
 
 from prediction_models.gbdt_model import GradientBoostingModel

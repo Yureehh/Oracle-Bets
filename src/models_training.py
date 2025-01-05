@@ -8,7 +8,7 @@ The models are outcome prediction, game length prediction, total kills predictio
 
 import datetime as dt
 
-import fireducks.pandas as pd
+import pandas as pd
 
 from prediction_models.lightgbm_model import ModelFactory
 from src.utils.logger import logger

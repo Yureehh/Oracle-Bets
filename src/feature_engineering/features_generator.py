@@ -6,8 +6,8 @@ This script contains the `FeatureGenerator` class, which is used to generate new
 
 from dataclasses import dataclass
 
-import fireducks.pandas as pd
 import numpy as np
+import pandas as pd
 
 from src.utils.logger import logger
 
@@ -283,7 +283,8 @@ class FeatureGenerator:
             logger.error(f"Missing required columns for player feature generation: {missing_columns}")
             raise ValueError(f"Missing required columns: {missing_columns}")
 
-        data = data.copy()  # Avoid modifying the original DataFrame
+        # Work with a copy to avoid altering the original DataFrame
+        data = data.copy()
 
         # Extract season from patch number
         data["season"] = data["patch"].astype(str).str.split(".").str[0]
@@ -293,6 +294,10 @@ class FeatureGenerator:
 
         # Create dummies for position
         position_dummies = pd.get_dummies(data["position"], prefix="position")
+
+        # Align indices before any concatenation
+        position_dummies = position_dummies.reset_index(drop=True)
+        data = data.reset_index(drop=True)
 
         # Calculate KDA ratio
         data["kda"] = (data["kills"] + data["assists"]) / data["deaths"].replace(0, 1)
@@ -306,7 +311,7 @@ class FeatureGenerator:
         # Calculate Kill Participation
         data["kill_participation"] = (data["kills"] + data["assists"]) / data["team_kills"].replace(0, np.nan)
 
-        # Extract season from patch number
+        # Extract season again (if needed, avoid unnecessary recomputation)
         data["season"] = data["patch"].astype(str).str.split(".").str[0]
 
         # Compute key statistics
@@ -315,9 +320,8 @@ class FeatureGenerator:
         # Compute kills and deaths per win and loss
         data = FeatureGenerator.compute_win_loss_metrics(data)
 
-        # Concatenate position dummies
+        # Concatenate position dummies with the main DataFrame
         data = pd.concat([data, position_dummies], axis=1)
-
         logger.info("Player features generation completed.")
         return data
 

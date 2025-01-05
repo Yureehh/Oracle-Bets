@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Union
 
 import awswrangler as wr
 import boto3
-import fireducks.pandas as pd
+import pandas as pd
 from dotenv import load_dotenv
 
 from src.utils.logger import logger

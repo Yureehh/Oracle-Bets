@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import List, Set
 
 import boto3
-import fireducks.pandas as pd
+import pandas as pd
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
@@ -272,8 +272,8 @@ class DataGenerator:
 
             # (1) League ELO
             self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
-            logger.info("Completed enriching data with Leagues ELO.")
-            data_pipeline_logger.info("Completed enriching data with Leagues ELO.")
+            logger.info("Completed enriching data with Leagues ELO.\n")
+            data_pipeline_logger.info("Completed enriching data with Leagues ELO.\n")
 
             # (2) ELO
             self.team_data, self.player_data = parallelize_enrichment(
@@ -468,8 +468,7 @@ class DataGenerator:
         Run the complete data generation process including data ingestion, cleaning,
         enrichment, training data extraction, and inference data flattening.
         """
-        # raw_data = self.ingest_data_from_s3()
-        raw_data = pd.read_parquet(RAW_DATA, engine="fastparquet")
+        raw_data = self.ingest_data_from_s3()
         self.clean_and_store_data(raw_data)
         self.enrich_datasets()
         self.extract_both_training_data()
