@@ -9,7 +9,7 @@ import json
 import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import optuna
 import pandas as pd
@@ -364,117 +364,204 @@ def tune_elo_hyperparameters(
     Either load hyperparameters if they exist, or compute them via Optuna.
     Returns the best parameters for subsequent Elo calculations.
     """
-    if os.path.exists(hyperparameters_path):
-        logger.info(f"Loading hyperparameters from {hyperparameters_path}")
-        with open(hyperparameters_path) as f:
-            loaded_params = json.load(f)
-        return loaded_params
+    # Attempt to load existing hyperparameters
+    best_params = load_hyperparameters(hyperparameters_path)
+    if best_params:
+        return best_params
 
     logger.info(f"No hyperparameters found at {hyperparameters_path}. Starting tuning process...")
 
+    # Define the objective function for Optuna
     def objective(trial: optuna.trial.Trial) -> float:
-        k_factor = trial.suggest_float("k_factor", 16, 64, step=8)
-        initial_elo = trial.suggest_float("initial_elo", 1200, 1800, step=100)
-        elo_divisor = trial.suggest_float("elo_divisor", 100, 500, step=100)
-        decay_factor = trial.suggest_float("decay_factor", 0.5, 1.0, step=0.05)
-        transfer_factor = trial.suggest_float("transfer_factor", 0.1, 1.0, step=0.1)
-        init_adjust = trial.suggest_float("initial_elo_adjustment_factor", 0.0, 1.0, step=0.1)
-        position_reset_factor = trial.suggest_float("position_reset_factor", 0.0, 1.0, step=0.1)
+        # Suggest hyperparameters
+        hyperparams = suggest_hyperparameters(trial)
 
-        # Sort DataFrame
-        df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
-        if df_sorted.empty:
-            return float("inf")
-
-        try:
-            split_year = df_sorted["date"].dt.year.max()
-        except AttributeError as e:
-            logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
-            return float("inf")
-        split_date = pd.to_datetime(f"{split_year}-01-01")
-
-        df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
-        df_valid = df_sorted[df_sorted["date"] >= split_date].reset_index(drop=True)
-
+        # Split data into training and validation sets
+        df_train, df_valid = split_and_validate_data(df, entity)
         if df_train.empty or df_valid.empty:
+            logger.warning("Training or validation DataFrame is empty after splitting.")
             return float("inf")
 
-        # Quick group-size check
-        expected_count = 10 if entity.lower() == "player" else 2
-        if len(df_train) > 0 and not (df_train.groupby("gameid").size() == expected_count).all():
-            logger.warning("Training data has gameids with incorrect number of entities.")
-            return float("inf")
-        if len(df_valid) > 0 and not (df_valid.groupby("gameid").size() == expected_count).all():
-            logger.warning("Validation data has gameids with incorrect number of entities.")
-            return float("inf")
-
-        # Train
+        # Run Elo computation on training data
         try:
             df_train_res = run_elo_computation(
                 df=df_train.copy(),
                 entity=entity,
-                initial_elo=initial_elo,
-                k_factor=k_factor,
-                decay_factor=decay_factor,
-                elo_divisor=elo_divisor,
-                transfer_factor=transfer_factor,
-                initial_elo_adjustment_factor=init_adjust,
-                position_reset_factor=position_reset_factor,
+                initial_elo=hyperparams["initial_elo"],
+                k_factor=hyperparams["k_factor"],
+                decay_factor=hyperparams["decay_factor"],
+                elo_divisor=hyperparams["elo_divisor"],
+                transfer_factor=hyperparams["transfer_factor"],
+                initial_elo_adjustment_factor=hyperparams["initial_elo_adjustment_factor"],
+                position_reset_factor=hyperparams["position_reset_factor"],
                 league_elo_dict=league_elo_dict,
                 show_progress=True,
             )
         except Exception as err:
-            logger.error(f"Error in training phase of trial: {err}")
+            logger.error(f"Error during Elo computation in training phase: {err}")
             return float("inf")
 
-        # Prepare validation: initialize ratings from training's final Elo
-        entity_key = "teamid" if entity.lower() == "team" else "playerid"
-        last_elo_map = df_train_res.groupby(entity_key)["elo_after"].last().to_dict()
+        # Initialize validation ratings based on training results
+        val_ratings = initialize_validation_ratings(df_train_res, entity, hyperparams["initial_elo"])
 
-        val_ratings = defaultdict(lambda: {"elo": initial_elo})
-        for e_id, final_elo in last_elo_map.items():
-            val_ratings[e_id]["elo"] = final_elo
+        # Evaluate on validation set and compute log loss
+        try:
+            loss = evaluate_validation(df_valid, val_ratings, entity, hyperparams)
+        except Exception as err:
+            logger.error(f"Error during validation phase: {err}")
+            return float("inf")
 
-        # Evaluate via log_loss
-        expected_probs = []
-        df_valid = df_valid.sort_values(by=["date", "gameid"]).reset_index(drop=True)
+        return loss
 
-        for _, grp in df_valid.groupby(["date", "gameid"]):
-            blue_side = grp[grp["side"] == "Blue"]
-            red_side = grp[grp["side"] == "Red"]
-
-            blue_elo_sum = sum(val_ratings[bid]["elo"] for bid in blue_side[entity_key])
-            red_elo_sum = sum(val_ratings[rid]["elo"] for rid in red_side[entity_key])
-
-            exp = expected_outcome(blue_elo_sum, red_elo_sum, elo_divisor)
-            result = blue_side.iloc[0]["result"]
-
-            expected_probs.append(exp)
-
-            # Update validation Elo
-            for bid in blue_side[entity_key]:
-                val_ratings[bid]["elo"] = update_elo_rating(val_ratings[bid]["elo"], exp, result, k_factor)
-            for rid in red_side[entity_key]:
-                val_ratings[rid]["elo"] = update_elo_rating(val_ratings[rid]["elo"], 1.0 - exp, 1.0 - result, k_factor)
-
-        y_true = df_valid.loc[df_valid["side"] == "Blue", "result"]
-        y_pred = pd.Series(expected_probs).clip(0.0001, 0.9999)
-
-        # Ensure y_true and y_pred lengths match before calculating log_loss
-        assert len(y_true) == len(y_pred), "Mismatch in lengths of y_true and y_pred"
-        return log_loss(y_true, y_pred)
-
+    # Create and optimize the Optuna study
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=True)
+
+    # Retrieve and log the best parameters
     best_params = study.best_params
     logger.info(f"Best hyperparameters: {best_params}")
 
-    # Save best params
-    logger.info(f"Storing hyperparameters to {hyperparameters_path}")
-    with open(hyperparameters_path, "w") as f:
-        json.dump(best_params, f)
+    # Save the best hyperparameters to the specified path
+    save_hyperparameters(best_params, hyperparameters_path)
 
     return best_params
+
+
+def load_hyperparameters(path: Path) -> Dict[str, float]:
+    """
+    Load hyperparameters from a JSON file if it exists.
+    Returns the loaded parameters or None if the file doesn't exist or loading fails.
+    """
+    if path.exists():
+        logger.info(f"Loading hyperparameters from {path}")
+        try:
+            with path.open() as f:
+                loaded_params = json.load(f)
+            return loaded_params
+        except Exception as e:
+            logger.error(f"Failed to load hyperparameters from {path}: {e}")
+    return {}
+
+
+def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
+    """
+    Save hyperparameters to a JSON file.
+    """
+    try:
+        logger.info(f"Storing hyperparameters to {path}")
+        with path.open("w") as f:
+            json.dump(params, f)
+    except Exception as e:
+        logger.error(f"Failed to save hyperparameters to {path}: {e}")
+
+
+def suggest_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, float]:
+    """
+    Suggest hyperparameters using Optuna's trial object.
+    """
+    return {
+        "k_factor": trial.suggest_float("k_factor", 16, 64, step=8),
+        "initial_elo": trial.suggest_float("initial_elo", 1200, 1800, step=100),
+        "elo_divisor": trial.suggest_float("elo_divisor", 100, 500, step=100),
+        "decay_factor": trial.suggest_float("decay_factor", 0.5, 1.0, step=0.05),
+        "transfer_factor": trial.suggest_float("transfer_factor", 0.1, 1.0, step=0.1),
+        "initial_elo_adjustment_factor": trial.suggest_float("initial_elo_adjustment_factor", 0.0, 1.0, step=0.1),
+        "position_reset_factor": trial.suggest_float("position_reset_factor", 0.0, 1.0, step=0.1),
+    }
+
+
+def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Sort, split, and validate the DataFrame into training and validation sets.
+    Returns the training and validation DataFrames.
+    """
+    # Sort the DataFrame
+    df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
+    if df_sorted.empty:
+        logger.warning("DataFrame is empty after sorting.")
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Determine split date
+    try:
+        split_year = df_sorted["date"].dt.year.max()
+        split_date = pd.to_datetime(f"{split_year}-01-01")
+    except AttributeError as e:
+        logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Split into training and validation sets
+    df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
+    df_valid = df_sorted[df_sorted["date"] >= split_date].reset_index(drop=True)
+
+    # Validate group sizes
+    expected_count = 10 if entity.lower() == "player" else 2
+    for split_df, split_name in [(df_train, "Training"), (df_valid, "Validation")]:
+        if not split_df.empty:
+            group_sizes = split_df.groupby("gameid").size()
+            if not (group_sizes == expected_count).all():
+                logger.warning(f"{split_name} data has gameids with incorrect number of entities.")
+                return pd.DataFrame(), pd.DataFrame()
+
+    return df_train, df_valid
+
+
+def initialize_validation_ratings(df_train_res: pd.DataFrame, entity: str, initial_elo: float) -> defaultdict:
+    """
+    Initialize validation ratings based on training results.
+    """
+    entity_key = "teamid" if entity.lower() == "team" else "playerid"
+    last_elo_map = df_train_res.groupby(entity_key)["elo_after"].last().to_dict()
+
+    val_ratings = defaultdict(lambda: {"elo": initial_elo})
+    for e_id, final_elo in last_elo_map.items():
+        val_ratings[e_id]["elo"] = final_elo
+    return val_ratings
+
+
+def evaluate_validation(
+    df_valid: pd.DataFrame,
+    val_ratings: defaultdict,
+    entity: str,
+    hyperparams: Dict[str, float],
+) -> float:
+    """
+    Evaluate the validation set and compute the log loss.
+    """
+    expected_probs = []
+    df_valid_sorted = df_valid.sort_values(by=["date", "gameid"]).reset_index(drop=True)
+    elo_divisor = hyperparams["elo_divisor"]
+    k_factor = hyperparams["k_factor"]
+    entity_key = "teamid" if entity.lower() == "team" else "playerid"
+
+    for _, grp in df_valid_sorted.groupby(["date", "gameid"]):
+        blue_side = grp[grp["side"] == "Blue"]
+        red_side = grp[grp["side"] == "Red"]
+
+        blue_elo_sum = sum(val_ratings[bid]["elo"] for bid in blue_side[entity_key])
+        red_elo_sum = sum(val_ratings[rid]["elo"] for rid in red_side[entity_key])
+
+        exp = expected_outcome(blue_elo_sum, red_elo_sum, elo_divisor)
+        result = blue_side.iloc[0]["result"]
+
+        expected_probs.append(exp)
+
+        # Update Elo ratings for validation
+        for bid in blue_side[entity_key]:
+            val_ratings[bid]["elo"] = update_elo_rating(val_ratings[bid]["elo"], exp, result, k_factor)
+        for rid in red_side[entity_key]:
+            val_ratings[rid]["elo"] = update_elo_rating(val_ratings[rid]["elo"], 1.0 - exp, 1.0 - result, k_factor)
+
+    # Prepare true labels and predictions
+    y_true = df_valid_sorted.loc[df_valid_sorted["side"] == "Blue", "result"]
+    y_pred = pd.Series(expected_probs).clip(0.0001, 0.9999)
+
+    # Ensure matching lengths
+    if len(y_true) != len(y_pred):
+        logger.error("Mismatch in lengths of y_true and y_pred.")
+        return float("inf")
+
+    # Compute log loss
+    return log_loss(y_true, y_pred)
 
 
 # ------------------------------------------------------------------------------
