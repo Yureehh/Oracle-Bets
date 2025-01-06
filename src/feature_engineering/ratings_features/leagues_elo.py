@@ -513,6 +513,7 @@ def store_leagues_elo(league_elo_ratings: Dict[str, Dict[str, Union[float, int]]
         .sort_values(by="elo", ascending=False)
         .reset_index(drop=True)
     )
+    league_elo_df = league_elo_df.dropna(subset=["league"]).reset_index(drop=True)
     safe_store_df_as_parquet(league_elo_df, LEAGUE_ELO, logger)
 
 

@@ -73,8 +73,6 @@ INTERIM_PLAYER_DATA: Path = INTERIM_DIR / "player_data.parquet"
 # Processed data
 PROCESSED_TEAMS: Path = PROCESSED_TEAMS_DIR / "team_data.parquet"
 PROCESSED_PLAYERS: Path = PROCESSED_PLAYERS_DIR / "player_data.parquet"
-TEAM_LEAGUES_MAPPING: Path = PROCESSED_DIR / "team_league_mapping.parquet"
-LEAGUE_ELO: Path = PROCESSED_DIR / "league_elo.parquet"
 SCHEDULE: Path = PROCESSED_DIR / "schedule.parquet"
 
 # Flattened data
@@ -93,6 +91,8 @@ FLATTENED_PLAYER_CONFIG: Path = TRAINING_AND_INPUT_COLS_DIR / "flattened_player_
 
 # Artifacts storage
 MODEL_ARTIFACTS: Path = MODELS_DIR / "artifacts"
+LEAGUE_ELO: Path = MODEL_ARTIFACTS / "league_elo.parquet"
+TEAM_LEAGUES_MAPPING: Path = MODEL_ARTIFACTS / "team_league_mapping.parquet"
 WHOLE_HISTORY_RATING_PATH: Path = MODEL_ARTIFACTS / "whr.pkl"
 OUTCOME_PREDICTION_MODEL_PATH: Path = MODEL_ARTIFACTS / "OutcomePrediction.pkl"
 OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Path = MODEL_ARTIFACTS / "OutcomePrediction_categorical_features.pkl"

@@ -283,8 +283,8 @@ class DataGenerator:
                 "team",
                 "player",
             )
-            logger.info("Completed enriching data with ELO.")
-            data_pipeline_logger.info("Completed enriching data with ELO.")
+            logger.info("Completed enriching data with ELO.\n")
+            data_pipeline_logger.info("Completed enriching data with ELO.\n")
 
             # (3) Glicko2
             self.team_data, self.player_data = parallelize_enrichment(
@@ -294,8 +294,8 @@ class DataGenerator:
                 "team",
                 "player",
             )
-            logger.info("Completed enriching data with Glicko2.")
-            data_pipeline_logger.info("Completed enriching data with Glicko2.")
+            logger.info("Completed enriching data with Glicko2.\n")
+            data_pipeline_logger.info("Completed enriching data with Glicko2.\n")
 
             # (4) Plackett-Luce
             self.team_data, self.player_data = parallelize_enrichment(
@@ -305,8 +305,8 @@ class DataGenerator:
                 "team",
                 "player",
             )
-            logger.info("Completed enriching data with Plackett-Luce.")
-            data_pipeline_logger.info("Completed enriching data with Plackett-Luce.")
+            logger.info("Completed enriching data with Plackett-Luce.\n")
+            data_pipeline_logger.info("Completed enriching data with Plackett-Luce.\n")
 
             # (5) TrueSkill
             self.team_data, self.player_data = parallelize_enrichment(
@@ -316,8 +316,8 @@ class DataGenerator:
                 "team",
                 "player",
             )
-            logger.info("Completed enriching data with TrueSkill.")
-            data_pipeline_logger.info("Completed enriching data with TrueSkill.")
+            logger.info("Completed enriching data with TrueSkill.\n")
+            data_pipeline_logger.info("Completed enriching data with TrueSkill.\n")
 
             logger.info("Completed enriching data with all ratings.")
         except Exception as e:

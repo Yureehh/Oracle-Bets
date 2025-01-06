@@ -22,10 +22,12 @@
     "LEC",
     "LFL",
     "LIT",
+    "LCP",
     "LJL",
     "LLA",
     "LPL",
     "LPLOL",
+    "LTA",
     "LVP SL",
     "MSI",
     "NLC",
@@ -48,15 +50,5 @@
     "MSI",
     "WLDs"
   ],
-  "major_leagues": [
-    "LCK",
-    "LCS",
-    "LEC",
-    "LLA",
-    "LPL",
-    "PCS",
-    "LJL",
-    "VCS",
-    "CBLOL"
-  ]
+  "major_leagues": ["LCP", "LCK", "LCS", "LEC", "LPL", "LTA"]
 }
