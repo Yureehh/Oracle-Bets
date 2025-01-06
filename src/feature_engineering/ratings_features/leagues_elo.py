@@ -380,7 +380,7 @@ def leagues_elo_computation(
     }
 
     if not performing_tuning:
-        logger.info("Calculating Elo")
+        logger.info("Calculating Leagues Elo")
     df_wide_iter = tqdm(df_wide.itertuples(index=True), total=len(df_wide))
 
     for row in df_wide_iter:
