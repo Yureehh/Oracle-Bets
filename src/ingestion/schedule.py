@@ -174,8 +174,8 @@ class PandaScoreSchedule:
         schedule["league"] = schedule["league"].astype(str).str.strip().str.lower()
 
         filtered_schedule = schedule[schedule["league"].isin(league_list)]
-        logger.info("Filtered schedule by leagues: %s", league_list)
-        schedule_generation_logger.info("Filtered schedule by leagues: %s", league_list)
+        logger.info(f"Filtered schedule by leagues: {league_list}")
+        schedule_generation_logger.info(f"Filtered schedule by leagues: {league_list}")
         return filtered_schedule
 
     @staticmethod
@@ -248,10 +248,8 @@ class PandaScoreSchedule:
         if leagues:
             schedule_df = self.filter_by_league(schedule_df, leagues)
 
-        logger.info(f"Completed fetching and processing the schedule. Total matches collected: {schedule_df.shape[0]}")
-        schedule_generation_logger.info(
-            f"Completed fetching and processing the schedule. Total matches collected: {schedule_df.shape[0]}"
-        )
+        logger.info("Completed fetching and processing the schedule.")
+        schedule_generation_logger.info("Completed fetching and processing the schedule.")
         return schedule_df
 
     def _validate_and_parse_dates(

@@ -66,6 +66,7 @@ def fetch_schedule_data(
         pd.DataFrame: DataFrame containing schedule data.
     """
     logger.info("Initializing PandaScoreSchedule...")
+    schedule_generation_logger.info("Initializing PandaScoreSchedule...")
     panda_schedule = PandaScoreSchedule(api_key=api_key)
     return panda_schedule.get_schedule(
         start_datetime=start_datetime, end_datetime=end_datetime, max_day_range=max_day_range, time_format=time_format
@@ -84,7 +85,6 @@ def fetch_and_store_schedule(
         api_key (str): PandaScore API key.
         output_file_path (str): Path where fetched data will be stored as Parquet.
     """
-    logger.info(f"Fetching schedule data from {start_datetime} to {end_datetime}")
     schedule_df = fetch_schedule_data(start_datetime, end_datetime, api_key)
 
     if schedule_df.empty:
@@ -120,12 +120,13 @@ def main(start_datetime: Optional[dt.datetime] = None, end_datetime: Optional[dt
         start_datetime (Optional[dt.datetime]): Start datetime (UTC). Defaults to current time.
         end_datetime (Optional[dt.datetime]): End datetime (UTC). Defaults to start + MAX_DAYS_RANGE days.
     """
+    logger.info("Schedule Generation process initialized.")
     schedule_generation_logger.info("Schedule Generation process initialized.")
     load_dotenv()  # Load environment variables
 
     # Determine the date range if not provided
     if start_datetime is None:
-        start_datetime = dt.datetime.now()
+        start_datetime = dt.datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
     if end_datetime is None:
         end_datetime = start_datetime + dt.timedelta(days=MAX_DAYS_RANGE)
 
