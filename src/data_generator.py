@@ -466,8 +466,8 @@ class DataGenerator:
         """
         raw_data = self.ingest_data_from_s3()
         self.clean_and_store_data(raw_data)
-        return
         self.enrich_datasets()
+        return
         self.extract_both_training_data()
         self.flatten_both_inference_data()
         double_logging_call("Data generation process completed successfully.")
