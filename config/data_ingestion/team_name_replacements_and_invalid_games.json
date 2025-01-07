@@ -1,4 +1,18 @@
 {
+  "invalid_games": [
+    "ESPORTSTMNT02_1932895",
+    "NA1/3754344502",
+    "8479-8479_game_1",
+    "NA1/3754345055",
+    "ESPORTSTMNT02/1890848",
+    "ESPORTSTMNT02_1932914",
+    "ESPORTSTMNT02/1890835",
+    "NA1/3669211958",
+    "NA1/3669212337",
+    "10623-10623_game_1",
+    "10624-10624_game_1",
+    "10626-10626_game_1"
+  ],
   "team_name_replacements": [
     [
       {

@@ -6,7 +6,6 @@ with FireDucks-based performance optimizations.
 """
 
 import json
-import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
@@ -444,9 +443,7 @@ def load_hyperparameters(path: Path) -> Dict[str, float]:
 
 
 def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
-    """
-    Save hyperparameters to a JSON file.
-    """
+    """Save hyperparameters to a JSON file."""
     try:
         logger.info(f"Storing hyperparameters to {path}")
         with path.open("w") as f:
@@ -456,9 +453,7 @@ def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
 
 
 def suggest_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, float]:
-    """
-    Suggest hyperparameters using Optuna's trial object.
-    """
+    """Suggest hyperparameters using Optuna's trial object."""
     return {
         "k_factor": trial.suggest_float("k_factor", 16, 64, step=8),
         "initial_elo": trial.suggest_float("initial_elo", 1200, 1800, step=100),
@@ -506,9 +501,7 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
 
 
 def initialize_validation_ratings(df_train_res: pd.DataFrame, entity: str, initial_elo: float) -> defaultdict:
-    """
-    Initialize validation ratings based on training results.
-    """
+    """Initialize validation ratings based on training results."""
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
     last_elo_map = df_train_res.groupby(entity_key)["elo_after"].last().to_dict()
 
@@ -524,9 +517,7 @@ def evaluate_validation(
     entity: str,
     hyperparams: Dict[str, float],
 ) -> float:
-    """
-    Evaluate the validation set and compute the log loss.
-    """
+    """Evaluate the validation set and compute the log loss."""
     expected_probs = []
     df_valid_sorted = df_valid.sort_values(by=["date", "gameid"]).reset_index(drop=True)
     elo_divisor = hyperparams["elo_divisor"]

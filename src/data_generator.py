@@ -29,14 +29,13 @@ from src.utils.paths import (
     FLATTENED_TEAM_CONFIG,
     INTERIM_PLAYER_DATA,
     INTERIM_TEAM_DATA,
-    INVALID_GAMES,
     PROCESSED_DIR,
     PROCESSED_PLAYERS,
     PROCESSED_TEAMS,
     RAW_DATA,
+    TEAM_REPLACEMENTS_AND_INVALID_GAMES,
     TRAINING_PLAYER_CONFIG,
     TRAINING_TEAM_CONFIG,
-    YEARS_RANGE_PATH,
 )
 from src.utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
 
@@ -54,6 +53,7 @@ SECRET_ID_ENV = "SECRET_ID"  # pragma: allowlist secret
 MAX_EXPECTED_PLAYERS = 10
 MAX_EXPECTED_TEAMS = 2
 MAX_EXPECTED_ROWS = 12
+YEARS_RANGE = 3
 data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 
 
@@ -79,6 +79,12 @@ def log_function_call(logger_instance):
     return decorator
 
 
+def double_logging_call(text: str):
+    """Function to log the same text to both loggers."""
+    logger.info(text)
+    data_pipeline_logger.info(text)
+
+
 # -------------------------------------------------------------------------------------------
 # 4. Parallel Enrichment Helper
 # -------------------------------------------------------------------------------------------
@@ -102,7 +108,7 @@ def check_missing_columns(data: pd.DataFrame, required_columns: List[str], entit
     """Checks if the required columns are present in the DataFrame. Raises ValueError if columns are missing."""
     missing_cols = [col for col in required_columns if col not in data.columns]
     if missing_cols:
-        logger.error(f"Missing columns for {entity_type}: {missing_cols}")
+        double_logging_call(f"Missing columns for {entity_type}: {missing_cols}")
         raise ValueError(f"Missing columns in data for {entity_type}: {missing_cols}")
 
 
@@ -129,18 +135,18 @@ class DataGenerator:
             self.oracle = OraclesElixir(session=self.s3_session, bucket=self.bucket_name)
             self.feature_generator = FeatureGenerator()
             self.rating_models = Ratings()
-            logger.info("DataGenerator initialized successfully.\n")
+            double_logging_call("DataGenerator initialized successfully.\n")
         except Exception as e:
-            logger.error(f"Failed to initialize DataGenerator: {e}")
+            double_logging_call(f"Failed to initialize DataGenerator: {e}")
             raise
 
     def load_bucket(self) -> None:
         """Load configuration from environment variables."""
         self.bucket_name = os.getenv(BUCKET_NAME_ENV)
         if not self.bucket_name:
-            logger.error("Bucket name not specified in environment variables.")
+            double_logging_call("Bucket name not specified in environment variables.")
             raise ValueError("BUCKET_NAME environment variable not set.")
-        logger.info(f"Loaded bucket name: {self.bucket_name}")
+        double_logging_call(f"Loaded bucket name: {self.bucket_name}")
 
     @staticmethod
     def create_s3_session() -> boto3.Session:
@@ -153,14 +159,14 @@ class DataGenerator:
         access_key = os.getenv(ACCESS_ID_ENV)
         secret_key = os.getenv(SECRET_ID_ENV)
         if not access_key or not secret_key:
-            logger.error("AWS access credentials are not set in environment variables.")
+            double_logging_call("AWS access credentials are not set in environment variables.")
             raise RuntimeError("Missing AWS credentials in environment variables.")
 
         session = boto3.Session(
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
         )
-        logger.info("Created AWS S3 session successfully.")
+        double_logging_call("Created AWS S3 session successfully.")
         return session
 
     @staticmethod
@@ -175,14 +181,12 @@ class DataGenerator:
             Exception: If years range configuration fails to load.
         """
         try:
-            years_config = json_loader(YEARS_RANGE_PATH)
-            years_range = years_config["years_range"]
             current_year = dt.date.today().year
-            years = [str(year) for year in range(current_year, current_year - years_range, -1)]
-            logger.info(f"Years to process: {years}")
+            years = [str(year) for year in range(current_year, current_year - YEARS_RANGE, -1)]
+            double_logging_call(f"Years to process: {years}")
             return years
         except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Error loading years range configuration: {e}")
+            double_logging_call(f"Failed to load years range configuration: {e}")
             raise ValueError(f"Failed to load years range configuration: {e}") from e
 
     @staticmethod
@@ -204,10 +208,10 @@ class DataGenerator:
                     )
                 )["gameid"].unique()
             )
-            logger.info(f"Detected {len(buggy_games)} buggy games.")
+            double_logging_call(f"Detected {len(buggy_games)} buggy games.")
             return buggy_games
         except Exception as e:
-            logger.error(f"Error detecting buggy games: {e}")
+            double_logging_call(f"Error detecting buggy games: {e}")
             raise
 
     @staticmethod
@@ -219,17 +223,17 @@ class DataGenerator:
             Exception: If the invalid games configuration fails to load.
         """
         try:
-            invalid_config = json_loader(INVALID_GAMES)
+            invalid_config = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
             invalid_games = set(invalid_config["invalid_games"])
         except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Error loading configuration file {INVALID_GAMES}: {e}")
+            double_logging_call(f"Error loading configuration file {TEAM_REPLACEMENTS_AND_INVALID_GAMES}: {e}")
             raise KeyError(f"Failed to load invalid games configuration: {e}") from e
 
         other_invalid_games = DataGenerator._detect_buggy_games(data)
         all_invalid_games = invalid_games.union(other_invalid_games)
         cleaned_data = data[~data["gameid"].isin(all_invalid_games)].reset_index(drop=True)
 
-        logger.info(f"Removed {len(all_invalid_games)} invalid games. Remaining rows: {len(cleaned_data)}")
+        double_logging_call(f"Removed {len(all_invalid_games)} invalid games. Remaining rows: {len(cleaned_data)}")
         return cleaned_data
 
     @log_function_call(logger)
@@ -242,38 +246,36 @@ class DataGenerator:
         self.player_data = self.oracle.clean_data(cleaned_data, split_on="player").sort_values(
             get_sorting_keys("player")
         )
-
         safe_store_df_as_parquet(self.team_data, INTERIM_TEAM_DATA, logger)
         safe_store_df_as_parquet(self.player_data, INTERIM_PLAYER_DATA, logger)
-        logger.info("Cleaned and stored interim data.")
+        double_logging_call("Cleaned and stored interim data.")
 
     def ingest_data_from_s3(self) -> pd.DataFrame:
         """Ingest data from S3 bucket and return the raw data."""
         try:
-            logger.info("Starting data ingestion from S3...")
+            double_logging_call("Starting data ingestion from S3...")
             years = self.get_years_to_process()
             data = self.oracle.ingest_data(years=years)
             safe_store_df_as_parquet(data, RAW_DATA, logger)
-            logger.info("Data ingestion completed and stored.\n")
+            double_logging_call("Data ingestion completed and raw data stored.\n")
             return data
         except (BotoCoreError, ClientError) as e:
-            logger.error(f"AWS S3 error during data ingestion: {e}")
+            double_logging_call(f"Failed to ingest data from S3 due to AWS error: {e}")
             raise ClientError(f"Failed to ingest data from S3 due to AWS error: {e}") from e
         except Exception as e:
-            logger.error(f"Failed to ingest data from S3: {e}")
+            double_logging_call(f"Failed to ingest data from S3: {e}")
             raise
 
     def _enrich_data_with_ratings(self) -> None:
         """Enrich data with all the associated ratings in parallel where possible."""
         try:
-            logger.info("Enriching data with ratings...")
+            double_logging_call("Enriching data with ratings...")
             # Some rating computations depend on others (e.g. compute_leagues_elo first),
             # so we run them sequentially where needed, then parallelize others.
 
             # (1) League ELO
             self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
-            logger.info("Completed enriching data with Leagues ELO.\n")
-            data_pipeline_logger.info("Completed enriching data with Leagues ELO.\n")
+            double_logging_call("Completed enriching data with Leagues ELO\n")
 
             # (2) ELO
             self.team_data, self.player_data = parallelize_enrichment(
@@ -283,8 +285,7 @@ class DataGenerator:
                 "team",
                 "player",
             )
-            logger.info("Completed enriching data with ELO.\n")
-            data_pipeline_logger.info("Completed enriching data with ELO.\n")
+            double_logging_call("Completed enriching data with ELO.\n")
 
             # (3) Glicko2
             self.team_data, self.player_data = parallelize_enrichment(
@@ -294,8 +295,7 @@ class DataGenerator:
                 "team",
                 "player",
             )
-            logger.info("Completed enriching data with Glicko2.\n")
-            data_pipeline_logger.info("Completed enriching data with Glicko2.\n")
+            double_logging_call("Completed enriching data with Glicko2.\n")
 
             # (4) Plackett-Luce
             self.team_data, self.player_data = parallelize_enrichment(
@@ -305,8 +305,7 @@ class DataGenerator:
                 "team",
                 "player",
             )
-            logger.info("Completed enriching data with Plackett-Luce.\n")
-            data_pipeline_logger.info("Completed enriching data with Plackett-Luce.\n")
+            double_logging_call("Completed enriching data with Plackett-Luce.\n")
 
             # (5) TrueSkill
             self.team_data, self.player_data = parallelize_enrichment(
@@ -316,36 +315,33 @@ class DataGenerator:
                 "team",
                 "player",
             )
-            logger.info("Completed enriching data with TrueSkill.\n")
-            data_pipeline_logger.info("Completed enriching data with TrueSkill.\n")
+            double_logging_call("Completed enriching data with TrueSkill.\n")
 
-            logger.info("Completed enriching data with all ratings.")
+            double_logging_call("Completed enriching data with ratings.")
         except Exception as e:
-            logger.error(f"Failed to enrich data with ratings: {e}")
+            double_logging_call(f"Failed to enrich data with ratings: {e}")
             raise
 
     def _enrich_data_with_performance_metrics(self) -> None:
         """Enrich data with performance metrics in parallel where possible."""
         try:
-            logger.info("Enriching data with performance metrics...")
+            double_logging_call("Enriching data with performance metrics...")
 
             # Example of parallelizing the same function calls
             self.team_data, self.player_data = parallelize_enrichment(
                 PerformanceMetrics.add_entity_ema_statistics, self.team_data, self.player_data, "team", "player"
             )
-            logger.info("Completed enriching data with EMA statistics.")
-            data_pipeline_logger.info("Completed enriching data with EMA statistics.")
+            double_logging_call("Completed enriching data with EMA statistics.\n")
 
             # Some metrics are only for teams in this example
             self.team_data = PerformanceMetrics.add_side_win_rate_ewm(self.team_data, entity="team")
             self.team_data = PerformanceMetrics.add_patch_win_rate_ewm(self.team_data, entity="team")
             self.team_data = PerformanceMetrics.add_season_win_rate_ewm(self.team_data, entity="team")
-            logger.info("Completed enriching data with win rate EWM metrics.")
-            data_pipeline_logger.info("Completed enriching data with win rate EWM metrics.")
+            double_logging_call("Completed enriching data with win rate EWM metrics for teams.\n")
 
-            logger.info("Completed enriching data with performance metrics.")
+            double_logging_call("Completed enriching data with performance metrics.")
         except Exception as e:
-            logger.error(f"Failed to enrich data with performance metrics: {e}")
+            double_logging_call(f"Failed to enrich data with performance metrics: {e}")
             raise
 
     @log_function_call(logger)
@@ -368,9 +364,9 @@ class DataGenerator:
 
             self.team_data.sort_values(get_sorting_keys("team"), inplace=True)
             self.player_data.sort_values(get_sorting_keys("player"), inplace=True)
-            logger.info("Loaded and sorted interim data.")
+            double_logging_call("Loaded and sorted interim data.")
         except Exception as e:
-            logger.error(f"Failed to load and sort data: {e}")
+            double_logging_call(f"Failed to load and sort data: {e}")
             raise
 
     def generate_features(self) -> None:
@@ -378,9 +374,9 @@ class DataGenerator:
         try:
             self.team_data = self.feature_generator.generate_new_team_features(self.team_data)
             self.player_data = self.feature_generator.generate_new_player_features(self.player_data)
-            logger.info("Generated new features for team and player data.\n")
+            double_logging_call("Generated new features for team and player data.\n")
         except Exception as e:
-            logger.error(f"Failed to generate features: {e}")
+            double_logging_call(f"Failed to generate features: {e}")
             raise
 
     def store_enriched_data(self) -> None:
@@ -388,9 +384,9 @@ class DataGenerator:
         try:
             safe_store_df_as_parquet(self.team_data, PROCESSED_TEAMS, logger)
             safe_store_df_as_parquet(self.player_data, PROCESSED_PLAYERS, logger)
-            logger.info("Stored enriched data.")
+            double_logging_call("Stored enriched data.")
         except Exception as e:
-            logger.error(f"Failed to store enriched data: {e}")
+            double_logging_call(f"Failed to store enriched data: {e}")
             raise
 
     # -------------------------------------------------------
@@ -428,7 +424,7 @@ class DataGenerator:
                 flattened = flattened.rename(columns={col: col.replace("_after", "") for col in after_cols})
                 output_path = PROCESSED_DIR / f"{output_prefix}_{entity_type}s.parquet"
                 safe_store_df_as_parquet(flattened, output_path, logger)
-                logger.info(f"Stored flattened {entity_type} data.")
+                double_logging_call(f"Stored flattened {entity_type} data.")
             else:
                 # Training approach
                 before_cols = [col for col in required_cols if "_before" in col]
@@ -436,10 +432,10 @@ class DataGenerator:
                 inference_data = inference_data.rename(columns={col: col.replace("_before", "") for col in before_cols})
                 output_path = PROCESSED_DIR / f"{output_prefix}_{entity_type}_data.parquet"
                 safe_store_df_as_parquet(inference_data, output_path, logger)
-                logger.info(f"Stored training {entity_type} data.")
+                double_logging_call(f"Stored training {entity_type} data.")
 
         except Exception as e:
-            logger.error(f"Failed to process inference data for {entity_type}: {e}")
+            double_logging_call(f"Failed to process inference data for {entity_type}: {e}")
             raise
 
     @log_function_call(logger)
@@ -470,10 +466,11 @@ class DataGenerator:
         """
         raw_data = self.ingest_data_from_s3()
         self.clean_and_store_data(raw_data)
+        return
         self.enrich_datasets()
         self.extract_both_training_data()
         self.flatten_both_inference_data()
-        logger.info("Data generation process completed successfully.")
+        double_logging_call("Data generation process completed successfully.")
 
 
 # -------------------------------------------------------------------------------------------
@@ -481,13 +478,13 @@ class DataGenerator:
 # -------------------------------------------------------------------------------------------
 if __name__ == "__main__":
     generator = DataGenerator()
-    data_pipeline_logger.info("Data Pipeline Logger initialized.")
+    double_logging_call("Starting data generation process...")
 
     start_time = dt.datetime.now()
     try:
         generator.run()
     except Exception:
-        logger.error("Data generation process failed")
+        double_logging_call("Data generation failed.")
     else:
         elapsed_time = (dt.datetime.now() - start_time).total_seconds()
-        logger.info(f"Data generation took {elapsed_time:.2f} seconds.\n")
+        double_logging_call(f"Data generation took {elapsed_time:.2f} seconds.\n")

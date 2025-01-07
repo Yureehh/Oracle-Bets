@@ -57,9 +57,8 @@ TRAINING_AND_INPUT_COLS_DIR: Path = CONFIG_DIR / "training"
 
 # Data Ingestion paths
 YEARS_RANGE_PATH: Path = DATA_INGESTION_DIR / "years_range.json"
-INVALID_GAMES: Path = DATA_INGESTION_DIR / "invalid_games.json"
 IMPORT_COLUMNS: Path = DATA_INGESTION_DIR / "import_columns.json"
-TEAM_REPLACEMENTS: Path = DATA_INGESTION_DIR / "team_name_replacements.json"
+TEAM_REPLACEMENTS_AND_INVALID_GAMES: Path = DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
 CONSIDERED_LEAGUES: Path = DATA_INGESTION_DIR / "considered_leagues.json"
 
 # Raw data

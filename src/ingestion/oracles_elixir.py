@@ -11,7 +11,6 @@ Tim provides an invaluable service to the League community.
 
 import datetime as dt
 import json
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
@@ -21,12 +20,9 @@ import boto3
 import pandas as pd
 from dotenv import load_dotenv
 
-from src.utils.logger import logger
-from src.utils.paths import CONSIDERED_LEAGUES, IMPORT_COLUMNS, TEAM_REPLACEMENTS
+from src.utils.logger import instantiate_conf_logger, logger
+from src.utils.paths import CONSIDERED_LEAGUES, IMPORT_COLUMNS, TEAM_REPLACEMENTS_AND_INVALID_GAMES
 from src.utils.utils import get_sorting_keys, json_loader
-
-warnings.simplefilter(action="ignore", category=FutureWarning)
-
 
 # Load environment variables from .env file
 load_dotenv()
@@ -37,6 +33,9 @@ GAP_TEAM = 1
 
 # Null value replacements
 NULL_REPLACEMENTS = ["nan", "null", "unknown", "Unknown", "N/A"]
+
+# Logging
+data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 
 
 @dataclass
@@ -64,10 +63,11 @@ class OraclesElixir:
 
         # TODO: Remove this once the data is available for 2025
         YEAR_REPLACEMENTS = {"2025": "2022"}
-        years = sorted([YEAR_REPLACEMENTS.get(year, year) for year in years], reverse=True)
+        years = sorted([int(YEAR_REPLACEMENTS.get(str(year), year)) for year in years])
         file_paths = [f"s3://{self.bucket}/{year}_LoL_esports_match_data_from_OraclesElixir.csv" for year in years]
 
         logger.info("Connecting to S3 bucket")
+        data_pipeline_logger.info("Connecting to S3 bucket")
         try:
             with ThreadPoolExecutor() as executor:
                 dataframes = list(
@@ -77,9 +77,12 @@ class OraclesElixir:
                 )
             oracles_elixir_data = pd.concat(dataframes, ignore_index=True)
             logger.info(f"Successfully ingested data for years: {years}")
+            data_pipeline_logger.info(f"Successfully ingested data for years: {years}")
         except Exception as e:
             logger.error(f"Failed to ingest data for years: {years}")
-            logger.error(e)
+            data_pipeline_logger.error(f"Failed to ingest data for years: {years}")
+            raise e  # or return pd.DataFrame()
+
         return oracles_elixir_data
 
     @staticmethod
@@ -94,6 +97,7 @@ class OraclesElixir:
             pd.DataFrame: Formatted and cleaned data.
         """
         logger.info("Formatting data types...")
+        data_pipeline_logger.info("Formatting data types...")
 
         # Ensure we are working on the original DataFrame
         oracles_elixir_data.loc[:, "date"] = pd.to_datetime(oracles_elixir_data["date"], errors="coerce")
@@ -105,14 +109,17 @@ class OraclesElixir:
         )
 
         # Replace NULL_REPLACEMENTS safely
-        oracles_elixir_data.loc[:, :] = oracles_elixir_data.replace(NULL_REPLACEMENTS, pd.NA)
+        with pd.option_context("future.no_silent_downcasting", True):
+            oracles_elixir_data.loc[:, :] = oracles_elixir_data.replace(NULL_REPLACEMENTS, pd.NA)
 
         # Convert gamelength to minutes
-        oracles_elixir_data.loc[:, "gamelength"] = (
-            pd.to_numeric(oracles_elixir_data["gamelength"], errors="coerce") / 60
-        ).astype(float)
+        oracles_elixir_data["gamelength"] = pd.to_numeric(oracles_elixir_data["gamelength"], errors="coerce").astype(
+            float
+        )
+        oracles_elixir_data.loc[:, "gamelength"] = oracles_elixir_data["gamelength"] / 60
 
         logger.info("Data formatting completed.")
+        data_pipeline_logger.info("Data formatting completed.")
         return oracles_elixir_data
 
     @staticmethod
@@ -133,6 +140,7 @@ class OraclesElixir:
         cleaned_data = oracles_elixir_data.dropna(subset=["gameid"])
         removed_count = initial_count - cleaned_data.shape[0]
         logger.info(f"Removed {removed_count} rows with null 'gameid'.")
+        data_pipeline_logger.info(f"Removed {removed_count} rows with null 'gameid'.")
         return cleaned_data
 
     @staticmethod
@@ -151,12 +159,16 @@ class OraclesElixir:
             if column not in oracles_elixir_data.columns:
                 raise ValueError(f"Missing '{column}' in dataframe.")
 
+        # Count unique gameids previously
+        initial_count = oracles_elixir_data.shape[0]
         oracles_elixir_data = oracles_elixir_data[
             ~oracles_elixir_data["playername"].fillna("").str.lower().isin(["unknown player"])
             & ~oracles_elixir_data["teamname"].fillna("").str.lower().isin(["unknown team"])
         ]
+        removed_count = initial_count - oracles_elixir_data.shape[0]
 
-        logger.info("Removed rows with unknown player or team names.")
+        logger.info(f"Removed {removed_count} rows with unknown player or team names.")
+        data_pipeline_logger.info("Removed {removed_count} rows with unknown player or team names.")
         return oracles_elixir_data
 
     @staticmethod
@@ -171,13 +183,15 @@ class OraclesElixir:
             pd.DataFrame: DataFrame with replaced team names.
         """
         try:
-            with open(TEAM_REPLACEMENTS) as file:
+            with open(TEAM_REPLACEMENTS_AND_INVALID_GAMES) as file:
                 team_name_replacements = json.load(file)["team_name_replacements"]
         except FileNotFoundError:
-            logger.error(f"Team replacements file not found at {TEAM_REPLACEMENTS}.")
+            logger.error(f"Team replacements file not found at {TEAM_REPLACEMENTS_AND_INVALID_GAMES}.")
+            data_pipeline_logger.error(f"Team replacements file not found at {TEAM_REPLACEMENTS_AND_INVALID_GAMES}.")
             raise
         except json.JSONDecodeError as e:
-            logger.error(f"Error decoding JSON from {TEAM_REPLACEMENTS}: {e}")
+            logger.error(f"Error decoding JSON from {TEAM_REPLACEMENTS_AND_INVALID_GAMES}: {e}")
+            data_pipeline_logger.error(f"Error decoding JSON from {TEAM_REPLACEMENTS_AND_INVALID_GAMES}: {e}")
             raise
 
         for old, replacement in team_name_replacements:
@@ -185,6 +199,7 @@ class OraclesElixir:
             oracles_elixir_data["teamid"] = oracles_elixir_data["teamid"].replace(old["teamid"], replacement["teamid"])
 
         logger.info("Replaced incorrect team names with correct ones.")
+        data_pipeline_logger.info("Replaced incorrect team names with correct ones.")
         return oracles_elixir_data
 
     @staticmethod
@@ -205,6 +220,7 @@ class OraclesElixir:
         sorting_keys = get_sorting_keys(split_on)
         oracles_elixir_data = oracles_elixir_data.sort_values(by=sorting_keys).reset_index(drop=True)
         logger.info(f"Sorted data by {sorting_keys}.")
+        data_pipeline_logger.info(f"Sorted data by {sorting_keys}.")
         return oracles_elixir_data
 
     @staticmethod
@@ -222,7 +238,9 @@ class OraclesElixir:
         oracles_elixir_data["teamid"] = (
             oracles_elixir_data["teamid"].astype(str).fillna(oracles_elixir_data["teamname"])
         )
+        oracles_elixir_data = oracles_elixir_data[oracles_elixir_data["teamid"] != ""]
         logger.info("Filled null team IDs with team names.")
+        data_pipeline_logger.info("Filled null team IDs with team names.")
         return oracles_elixir_data
 
     @staticmethod
@@ -236,8 +254,9 @@ class OraclesElixir:
         Returns:
             pd.DataFrame: Updated DataFrame with filled patch values.
         """
-        oracles_elixir_data["patch"] = oracles_elixir_data["patch"].fillna(method="ffill")
+        oracles_elixir_data["patch"] = oracles_elixir_data["patch"].ffill()
         logger.info("Filled null patch values with the previous patch value.")
+        data_pipeline_logger.info("Filled null patch values with the previous patch value.")
         return oracles_elixir_data
 
     @staticmethod
@@ -339,6 +358,7 @@ class OraclesElixir:
         # Assign new opponent metrics to the DataFrame
         oracles_elixir_data = oracles_elixir_data.assign(**metrics)
         logger.info("Enriched data with opponent metrics.")
+        data_pipeline_logger.info("Enriched data with opponent metrics.")
         return oracles_elixir_data
 
     @staticmethod
@@ -353,15 +373,18 @@ class OraclesElixir:
             pd.DataFrame: Filtered DataFrame with relevant leagues.
         """
         logger.info("Filtering data for relevant leagues...")
+        data_pipeline_logger.info("Filtering data for relevant leagues...")
         try:
             considered_leagues = json_loader(CONSIDERED_LEAGUES)["considered_leagues"]
             if not considered_leagues:
                 raise ValueError("No leagues specified in the considered leagues list.")
         except KeyError:
             logger.error("Incorrect or missing 'considered_leagues' key in JSON configuration.")
+            data_pipeline_logger.error("Incorrect or missing 'considered_leagues' key in JSON configuration.")
             raise
         except FileNotFoundError:
             logger.error("League configuration file not found.")
+            data_pipeline_logger.error("League configuration file not found.")
             raise
         return oracles_elixir_data[oracles_elixir_data["league"].isin(considered_leagues)]
 
@@ -390,6 +413,7 @@ class OraclesElixir:
             pd.DataFrame: Cleaned and formatted data.
         """
         logger.info(f"Cleaning data for {split_on}s...")
+        data_pipeline_logger.info(f"Cleaning data for {split_on}s...")
         oracles_elixir_data = self.format_data_length_types(oracles_elixir_data)
         oracles_elixir_data = self.remove_null_games(oracles_elixir_data)
         oracles_elixir_data = self.drop_unknown_entities(oracles_elixir_data)
@@ -402,6 +426,7 @@ class OraclesElixir:
         oracles_elixir_data = self.enrich_opponent_metrics(oracles_elixir_data, split_on)
         oracles_elixir_data = self.filter_leagues(oracles_elixir_data)
         logger.info(f"Data cleaning for {split_on}s completed.\n")
+        data_pipeline_logger.info(f"Data cleaning for {split_on}s completed.\n")
         return oracles_elixir_data
 
 
