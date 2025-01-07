@@ -213,6 +213,7 @@ def merge_wide_results_back(
         df_tall[
             merge_cols + ["league_elo_before", "opp_league_elo_before", "league_elo_win_likelihood", "league_elo_after"]
         ],
+        validate="many_to_many",
         on=merge_cols,
         how="left",
     )

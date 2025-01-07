@@ -147,16 +147,19 @@ def linear_decay_reset(
     current_season: int,
     baseline_elo: float,
     decay_factor: float,
-) -> None:
+) -> Dict[Union[int, str], Dict[str, Any]]:
     """
     Apply a seasonal decay to each entity if stored season < current_season.
     Elo is partially reset toward baseline by decay_factor.
     """
+    update_elo_ratings = {}
     for data in elo_ratings.values():
+        updated_data = data.copy()
         if data["season"] < current_season:
-            old_elo = data["elo"]
-            data["elo"] = baseline_elo + (old_elo - baseline_elo) * decay_factor
-            data["season"] = current_season
+            updated_data["elo"] = baseline_elo + (data["elo"] - baseline_elo) * decay_factor
+            updated_data["season"] = current_season
+        update_elo_ratings[data["entity_id"]] = updated_data
+    return update_elo_ratings
 
 
 def handle_new_entity(
@@ -262,7 +265,7 @@ def process_game(
     current_season = game_group.iloc[0]["season"]
 
     # Seasonal decay reset if the season changed
-    linear_decay_reset(
+    elo_ratings = linear_decay_reset(
         elo_ratings=elo_ratings,
         current_season=current_season,
         baseline_elo=baseline_elo,
@@ -319,7 +322,7 @@ def process_game(
 
     # Calculate expected outcomes
     blue_expected = expected_outcome(blue_elo_sum, red_elo_sum, elo_divisor)
-    blue_result = blue_rows.iloc[0]["result"]  # 1 if Blue side won, 0 if not
+    blue_result = blue_rows.iloc[0]["result"]
     red_result = 1.0 - blue_result
 
     # Retrieve old Elos for logging
@@ -534,7 +537,7 @@ def evaluate_validation(
         exp = expected_outcome(blue_elo_sum, red_elo_sum, elo_divisor)
         result = blue_side.iloc[0]["result"]
 
-        expected_probs.append(exp)
+        expected_probs.extend([exp] * len(blue_side))
 
         # Update Elo ratings for validation
         for bid in blue_side[entity_key]:
@@ -621,10 +624,6 @@ def calculate_elo(
 ) -> pd.DataFrame:
     """Main entry point for Elo computation"""
     df_pre = preprocess_elo_dataframe(df, entity)
-
-    # 2) If no league Elo dict is given, default to empty
-    if league_elo_dict is None:
-        league_elo_dict = {}
 
     # Attempt to load league Elo if not provided
     if league_elo_dict is None:
