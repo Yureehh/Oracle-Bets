@@ -9,7 +9,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.utils.logger import logger
+from src.utils.logger import instantiate_conf_logger, logger
+
+data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 
 
 @dataclass
@@ -28,6 +30,7 @@ class FeatureGenerator:
             pd.DataFrame: The player data with key statistics added.
         """
         logger.info("Computing key statistics...")
+        data_pipeline_logger.info("Computing key statistics...")
         required_columns = {
             "gameid",
             "side",
@@ -46,6 +49,7 @@ class FeatureGenerator:
         missing_columns = required_columns - set(data.columns)
         if missing_columns:
             logger.error(f"Missing required columns: {missing_columns}")
+            data_pipeline_logger.error(f"Missing required columns: {missing_columns}")
             raise ValueError(f"Missing required columns: {missing_columns}")
 
         data = data.copy()
@@ -56,6 +60,7 @@ class FeatureGenerator:
         data = FeatureGenerator._calculate_ratios(data)
 
         logger.info("Key statistics computation completed.")
+        data_pipeline_logger.info("Key statistics computation completed.")
         return data
 
     @staticmethod
@@ -70,6 +75,7 @@ class FeatureGenerator:
             pd.DataFrame: Aggregated enemy team statistics.
         """
         logger.info("Aggregating enemy team statistics...")
+        data_pipeline_logger.info("Aggregating enemy team statistics...")
         enemy_team_stats = (
             data.groupby(["gameid", "side"])
             .agg(
@@ -89,6 +95,7 @@ class FeatureGenerator:
 
         if enemy_team_stats["side"].isnull().any():
             logger.error("Duplicate rows found after mapping side values.")
+            data_pipeline_logger.error("Duplicate rows found after mapping side values.")
             enemy_team_stats.dropna(subset=["side"], inplace=True)
 
         return enemy_team_stats
@@ -105,6 +112,7 @@ class FeatureGenerator:
             pd.DataFrame: DataFrame with ratio features added.
         """
         logger.info("Calculating ratio features...")
+        data_pipeline_logger.info("Calculating ratio features...")
         zero_columns = [
             "enemyTeamKills",
             "enemyTeamDeaths",
@@ -129,6 +137,7 @@ class FeatureGenerator:
         data["wards_killed_ratio"] = (data["wcpm"] * data["gamelength"]) / data["enemyTeamWardPlaced"]
 
         logger.info(f"Ratio features computed. Data shape: {data.shape}")
+        data_pipeline_logger.info(f"Ratio features computed. Data shape: {data.shape}")
         return data
 
     @staticmethod
@@ -143,9 +152,11 @@ class FeatureGenerator:
             pd.DataFrame: DataFrame with win/loss metrics added.
         """
         logger.info("Computing win/loss metrics...")
+        data_pipeline_logger.info("Computing win/loss metrics...")
 
         if "result" not in data.columns:
             logger.error("'result' column is required to compute win/loss metrics.")
+            data_pipeline_logger.error("'result' column is required to compute win/loss metrics.")
             raise ValueError("'result' column is missing.")
 
         data = data.copy()
@@ -233,6 +244,7 @@ class FeatureGenerator:
         data = data.loc[:, final_col_order].reset_index(drop=True)
 
         logger.info("Win/loss metrics computation completed.")
+        data_pipeline_logger.info("Win/loss metrics computation completed.")
         return data
 
     @staticmethod
@@ -249,6 +261,7 @@ class FeatureGenerator:
             pd.DataFrame: The player data with new features added.
         """
         logger.info("Generating new player features...")
+        data_pipeline_logger.info("Generating new player features...")
 
         required_columns = {
             "teamid",
@@ -267,6 +280,7 @@ class FeatureGenerator:
         missing_columns = required_columns - set(data.columns)
         if missing_columns:
             logger.error(f"Missing required columns: {missing_columns}")
+            data_pipeline_logger.error(f"Missing required columns: {missing_columns}")
             raise ValueError(f"Missing required columns: {missing_columns}")
 
         data = data.copy()
@@ -287,6 +301,7 @@ class FeatureGenerator:
         data = pd.concat([data, position_dummies], axis=1)
 
         logger.info("Player features generation completed.")
+        data_pipeline_logger.info("Player features generation completed.")
         return data
 
     @staticmethod
@@ -303,6 +318,7 @@ class FeatureGenerator:
             pd.DataFrame: The team data with new features added.
         """
         logger.info("Generating new team features...")
+        data_pipeline_logger.info("Generating new team features...")
 
         required_columns = {
             "patch",
@@ -318,6 +334,7 @@ class FeatureGenerator:
         missing_columns = required_columns - set(data.columns)
         if missing_columns:
             logger.error(f"Missing required columns for team feature generation: {missing_columns}")
+            data_pipeline_logger.error(f"Missing required columns for team feature generation: {missing_columns}")
             raise ValueError(f"Missing required columns: {missing_columns}")
 
         data = data.copy()  # Avoid modifying the original DataFrame
@@ -336,6 +353,7 @@ class FeatureGenerator:
         data = data.merge(game_stats, on="gameid", how="left")
 
         logger.info("Starting game length features generation...")
+        data_pipeline_logger.info("Starting game length features generation...")
 
         # Calculate average game length per season and patch
         season_avg_gamelength = data.groupby("season")["gamelength"].mean().reset_index()
@@ -385,4 +403,5 @@ class FeatureGenerator:
         data = data.merge(team_patch_loss, on=["teamid", "patch"], how="left")
 
         logger.info("Team features generation completed.")
+        data_pipeline_logger.info("Team features generation completed.")
         return data

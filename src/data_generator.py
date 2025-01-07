@@ -60,18 +60,18 @@ data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 # -------------------------------------------------------------------------------------------
 # 3. Logging Decorator
 # -------------------------------------------------------------------------------------------
-def log_function_call(logger_instance):
+def log_function_call():
     """Decorator to wrap function calls with consistent logging before/after execution."""
 
     def decorator(func):
         def wrapper(*args, **kwargs):
-            logger_instance.info(f"Starting {func.__name__}...")
+            double_logging_call(f"Starting {func.__name__}...")
             try:
                 result = func(*args, **kwargs)
-                logger_instance.info(f"Completed {func.__name__}.\n")
+                double_logging_call(f"Completed {func.__name__}.\n")
                 return result
             except Exception:
-                logger_instance.error(f"Error in {func.__name__}")
+                double_logging_call(f"Error in {func.__name__}")
                 raise
 
         return wrapper
@@ -236,7 +236,7 @@ class DataGenerator:
         double_logging_call(f"Removed {len(all_invalid_games)} invalid games. Remaining rows: {len(cleaned_data)}")
         return cleaned_data
 
-    @log_function_call(logger)
+    @log_function_call()
     def clean_and_store_data(self, data: pd.DataFrame) -> None:
         """Clean, sort, and store team and player data in interim directory."""
         cleaned_data = self.remove_buggy_games(data)
@@ -344,7 +344,7 @@ class DataGenerator:
             double_logging_call(f"Failed to enrich data with performance metrics: {e}")
             raise
 
-    @log_function_call(logger)
+    @log_function_call()
     def enrich_datasets(self) -> None:
         """Load, enrich, and store datasets for team and player-based analytics and predictions."""
         self.load_and_sort_data()
@@ -438,7 +438,7 @@ class DataGenerator:
             double_logging_call(f"Failed to process inference data for {entity_type}: {e}")
             raise
 
-    @log_function_call(logger)
+    @log_function_call()
     def extract_both_training_data(self) -> None:
         """Extract training data for both teams and players."""
         self.extract_inference_data(
@@ -448,7 +448,7 @@ class DataGenerator:
             data=self.player_data, config_path=TRAINING_PLAYER_CONFIG, entity_type="player", output_prefix="training"
         )
 
-    @log_function_call(logger)
+    @log_function_call()
     def flatten_both_inference_data(self) -> None:
         """Flatten both the team and player dataframes to get the most recent records."""
         self.extract_inference_data(
@@ -458,7 +458,7 @@ class DataGenerator:
             data=self.player_data, config_path=FLATTENED_PLAYER_CONFIG, entity_type="player", output_prefix="flattened"
         )
 
-    @log_function_call(logger)
+    @log_function_call()
     def run(self) -> None:
         """
         Run the complete data generation process including data ingestion, cleaning,
