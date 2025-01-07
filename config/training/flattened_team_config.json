@@ -71,8 +71,6 @@
     "ema_season_win_rate_after",
     "ema_team_kpm_after",
     "ema_team_kpm_std_after",
-    "ema_teamdeaths_after",
-    "ema_teamdeaths_std_after",
     "ema_total_kills_after",
     "ema_total_kills_std_after",
     "ema_total_towers_after",
