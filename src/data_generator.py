@@ -246,8 +246,8 @@ class DataGenerator:
         self.player_data = self.oracle.clean_data(cleaned_data, split_on="player").sort_values(
             get_sorting_keys("player")
         )
-        safe_store_df_as_parquet(self.team_data, INTERIM_TEAM_DATA, logger)
-        safe_store_df_as_parquet(self.player_data, INTERIM_PLAYER_DATA, logger)
+        safe_store_df_as_parquet(self.team_data, INTERIM_TEAM_DATA, [logger, data_pipeline_logger])
+        safe_store_df_as_parquet(self.player_data, INTERIM_PLAYER_DATA, [logger, data_pipeline_logger])
         double_logging_call("Cleaned and stored interim data.")
 
     def ingest_data_from_s3(self) -> pd.DataFrame:
@@ -256,7 +256,7 @@ class DataGenerator:
             double_logging_call("Starting data ingestion from S3...")
             years = self.get_years_to_process()
             data = self.oracle.ingest_data(years=years)
-            safe_store_df_as_parquet(data, RAW_DATA, logger)
+            safe_store_df_as_parquet(data, RAW_DATA, [logger, data_pipeline_logger])
             double_logging_call("Data ingestion completed and raw data stored.\n")
             return data
         except (BotoCoreError, ClientError) as e:
@@ -275,7 +275,7 @@ class DataGenerator:
 
             # (1) League ELO
             self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
-            double_logging_call("Completed enriching data with Leagues ELO\n")
+            double_logging_call("\nCompleted enriching data with Leagues ELO\n")
 
             # (2) ELO
             self.team_data, self.player_data = parallelize_enrichment(
@@ -382,8 +382,8 @@ class DataGenerator:
     def store_enriched_data(self) -> None:
         """Store enriched team and player data to parquet files."""
         try:
-            safe_store_df_as_parquet(self.team_data, PROCESSED_TEAMS, logger)
-            safe_store_df_as_parquet(self.player_data, PROCESSED_PLAYERS, logger)
+            safe_store_df_as_parquet(self.team_data, PROCESSED_TEAMS, [logger, data_pipeline_logger])
+            safe_store_df_as_parquet(self.player_data, PROCESSED_PLAYERS, [logger, data_pipeline_logger])
             double_logging_call("Stored enriched data.")
         except Exception as e:
             double_logging_call(f"Failed to store enriched data: {e}")
@@ -423,7 +423,7 @@ class DataGenerator:
                 # Rename columns to remove "_after"
                 flattened = flattened.rename(columns={col: col.replace("_after", "") for col in after_cols})
                 output_path = PROCESSED_DIR / f"{output_prefix}_{entity_type}s.parquet"
-                safe_store_df_as_parquet(flattened, output_path, logger)
+                safe_store_df_as_parquet(flattened, output_path, [logger, data_pipeline_logger])
                 double_logging_call(f"Stored flattened {entity_type} data.")
             else:
                 # Training approach
@@ -431,7 +431,7 @@ class DataGenerator:
                 inference_data = data[required_cols].copy()
                 inference_data = inference_data.rename(columns={col: col.replace("_before", "") for col in before_cols})
                 output_path = PROCESSED_DIR / f"{output_prefix}_{entity_type}_data.parquet"
-                safe_store_df_as_parquet(inference_data, output_path, logger)
+                safe_store_df_as_parquet(inference_data, output_path, [logger, data_pipeline_logger])
                 double_logging_call(f"Stored training {entity_type} data.")
 
         except Exception as e:

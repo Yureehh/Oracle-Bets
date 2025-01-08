@@ -101,7 +101,7 @@ def fetch_and_store_schedule(
     os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
 
     # Export the schedule to a Parquet file
-    safe_store_df_as_parquet(schedule_df, output_file_path, schedule_generation_logger)
+    safe_store_df_as_parquet(schedule_df, output_file_path, [logger, schedule_generation_logger])
     logger.info(f"Schedule successfully stored at {output_file_path}")
     schedule_generation_logger.info(f"Schedule successfully stored at {output_file_path}")
 

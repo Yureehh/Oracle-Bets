@@ -193,7 +193,7 @@ def load_training_data(
         raise ValueError(f"Error loading training data: {e}") from e
 
 
-def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Union[str, Path], logger: logging.Logger) -> None:
+def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Union[str, Path], loggers: List[logging.Logger]) -> None:
     """
     Store a Pandas DataFrame to Parquet format.
 
@@ -207,9 +207,11 @@ def safe_store_df_as_parquet(df: pd.DataFrame, output_path: Union[str, Path], lo
         if not isinstance(df, pd.DataFrame):
             df = pd.DataFrame(df)
         df.to_parquet(output_path, compression="gzip")
-        logger.info(f"Successfully saved DataFrame to Parquet at '{output_path}'.")
+        for logger in loggers:
+            logger.info(f"Successfully saved DataFrame to Parquet at '{output_path}'.")
     except Exception:
-        logger.error("Failed to save DataFrame to Parquet. Falling back to Polar")
+        for logger in loggers:
+            logger.error("Failed to save DataFrame to Parquet. Falling back to Polar")
         try:
             import polars as pl
 

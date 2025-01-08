@@ -16,7 +16,7 @@ from numba import njit
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
-from src.utils.logger import logger
+from src.utils.logger import instantiate_conf_logger, logger
 from src.utils.paths import CONSIDERED_LEAGUES, DEFAULT_MODELS_PARAMETERS, ENTITY_ELO_HYPERPARAMETERS, LEAGUE_ELO
 from src.utils.utils import get_sorting_keys, json_loader
 
@@ -25,6 +25,7 @@ from src.utils.utils import get_sorting_keys, json_loader
 # ------------------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
+data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
 CROSS_LEAGUE_COMPETITIONS = considered_leagues_config["cross_league_competitions"]
 TRIALS_NUM = 50
@@ -69,6 +70,7 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
         null_count = df["date"].isnull().sum()
         if null_count > 0:
             logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
+            data_pipeline_logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
             df = df.dropna(subset=["date"]).copy()
 
     # Drop rows missing 'league' or 'result'
@@ -76,6 +78,9 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
         n_missing_leagues = df["league"].isnull().sum()
         n_missing_results = df["result"].isnull().sum()
         logger.warning(f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them.")
+        data_pipeline_logger.warning(
+            f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them."
+        )
         df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
 
     # Sort keys
@@ -372,6 +377,7 @@ def tune_elo_hyperparameters(
         return best_params
 
     logger.info(f"No hyperparameters found at {hyperparameters_path}. Starting tuning process...")
+    data_pipeline_logger.info(f"No hyperparameters found at {hyperparameters_path}. Starting tuning process...")
 
     # Define the objective function for Optuna
     def objective(trial: optuna.trial.Trial) -> float:
@@ -382,6 +388,7 @@ def tune_elo_hyperparameters(
         df_train, df_valid = split_and_validate_data(df, entity)
         if df_train.empty or df_valid.empty:
             logger.warning("Training or validation DataFrame is empty after splitting.")
+            data_pipeline_logger.warning("Training or validation DataFrame is empty after splitting.")
             return float("inf")
 
         # Run Elo computation on training data
@@ -401,6 +408,7 @@ def tune_elo_hyperparameters(
             )
         except Exception as err:
             logger.error(f"Error during Elo computation in training phase: {err}")
+            data_pipeline_logger.error(f"Error during Elo computation in training phase: {err}")
             return float("inf")
 
         # Initialize validation ratings based on training results
@@ -411,6 +419,7 @@ def tune_elo_hyperparameters(
             loss = evaluate_validation(df_valid, val_ratings, entity, hyperparams)
         except Exception as err:
             logger.error(f"Error during validation phase: {err}")
+            data_pipeline_logger.error(f"Error during validation phase: {err}")
             return float("inf")
 
         return loss
@@ -422,6 +431,7 @@ def tune_elo_hyperparameters(
     # Retrieve and log the best parameters
     best_params = study.best_params
     logger.info(f"Best hyperparameters: {best_params}")
+    data_pipeline_logger.info(f"Best hyperparameters: {best_params}")
 
     # Save the best hyperparameters to the specified path
     save_hyperparameters(best_params, hyperparameters_path)
@@ -436,12 +446,14 @@ def load_hyperparameters(path: Path) -> Dict[str, float]:
     """
     if path.exists():
         logger.info(f"Loading hyperparameters from {path}")
+        data_pipeline_logger.info(f"Loading hyperparameters from {path}")
         try:
             with path.open() as f:
                 loaded_params = json.load(f)
             return loaded_params
         except Exception as e:
             logger.error(f"Failed to load hyperparameters from {path}: {e}")
+            data_pipeline_logger.error(f"Failed to load hyperparameters from {path}")
     return {}
 
 
@@ -449,10 +461,12 @@ def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
     """Save hyperparameters to a JSON file."""
     try:
         logger.info(f"Storing hyperparameters to {path}")
+        data_pipeline_logger.info(f"Storing hyperparameters to {path}")
         with path.open("w") as f:
             json.dump(params, f)
     except Exception as e:
         logger.error(f"Failed to save hyperparameters to {path}: {e}")
+        data_pipeline_logger.error(f"Failed to save hyperparameters to {path}")
 
 
 def suggest_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, float]:
@@ -477,6 +491,7 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
     df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
     if df_sorted.empty:
         logger.warning("DataFrame is empty after sorting.")
+        data_pipeline_logger.warning("DataFrame is empty after sorting.")
         return pd.DataFrame(), pd.DataFrame()
 
     # Determine split date
@@ -485,6 +500,7 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
         split_date = pd.to_datetime(f"{split_year}-01-01")
     except AttributeError as e:
         logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
+        data_pipeline_logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
     # Split into training and validation sets
@@ -498,6 +514,7 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
             group_sizes = split_df.groupby("gameid").size()
             if not (group_sizes == expected_count).all():
                 logger.warning(f"{split_name} data has gameids with incorrect number of entities.")
+                data_pipeline_logger.warning(f"{split_name} data has gameids with incorrect number of entities.")
                 return pd.DataFrame(), pd.DataFrame()
 
     return df_train, df_valid
@@ -552,6 +569,7 @@ def evaluate_validation(
     # Ensure matching lengths
     if len(y_true) != len(y_pred):
         logger.error("Mismatch in lengths of y_true and y_pred.")
+        data_pipeline_logger.error("Mismatch in lengths of y_true and y_pred.")
         return float("inf")
 
     # Compute log loss
@@ -630,6 +648,7 @@ def calculate_elo(
         league_elo_dict = {}
         if LEAGUE_ELO.exists():
             logger.info(f"Loading league Elo ratings from {LEAGUE_ELO}")
+            data_pipeline_logger.info(f"Loading league Elo ratings from {LEAGUE_ELO}")
             league_elo_df = pd.read_parquet(LEAGUE_ELO)
             league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 

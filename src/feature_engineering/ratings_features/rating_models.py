@@ -83,7 +83,7 @@ class Ratings:
         Returns:
             Any: The DataFrame with computed Whole History Ratings.
         """
-        return  # calculate_whr(df, entity)
+        pass  # calculate_whr(df, entity)
 
     def compute_leagues_elo(self, df: Any) -> Any:
         """

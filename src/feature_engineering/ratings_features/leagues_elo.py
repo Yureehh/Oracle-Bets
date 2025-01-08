@@ -14,13 +14,14 @@ import pandas as pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
-from src.utils.logger import logger
+from src.utils.logger import instantiate_conf_logger, logger
 from src.utils.paths import CONSIDERED_LEAGUES, LEAGUE_ELO, LEAGUES_ELO_HYPERPARAMETERS, TEAM_LEAGUES_MAPPING
 from src.utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
 
 # Load considered leagues configuration
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 CROSS_LEAGUE_COMPETITIONS = set(considered_leagues_config["cross_league_competitions"])
+data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 
 
 def preprocess_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
@@ -49,12 +50,16 @@ def preprocess_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
                 df = df.dropna(subset=["date"])
         except Exception as e:
             logger.error(f"Error converting 'date' to datetime: {e}")
+            data_pipeline_logger.error(f"Error converting 'date' to datetime: {e}")
             raise
 
     if df["league"].isna().any() or df["result"].isna().any():
         n_missing_leagues = df["league"].isnull().sum()
         n_missing_results = df["result"].isnull().sum()
         logger.warning(f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing. Dropping.")
+        data_pipeline_logger.warning(
+            f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing. Dropping."
+        )
         df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
 
     df = df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
@@ -149,6 +154,7 @@ def pivot_games_to_wide(df: pd.DataFrame) -> pd.DataFrame:
     counts = df.groupby(["gameid"]).size()
     if not (counts == 2).all():
         logger.warning("Some gameid groups do not have exactly 2 rows. Pivot will fail or skip those.")
+        data_pipeline_logger.warning("Some gameid groups do not have exactly 2 rows. Pivot will fail or skip those.")
         df = df[df["gameid"].isin(counts[counts == 2].index)]
 
     # Move side to columns; the pivoted columns become multi-index
@@ -257,6 +263,7 @@ def tune_hyperparameters(
             split_year = df_sorted["date"].dt.year.max()
         except AttributeError as e:
             logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
+            data_pipeline_logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
             return float("inf")
         split_date = pd.to_datetime(f"{split_year}-01-01")
 
@@ -267,6 +274,7 @@ def tune_hyperparameters(
         # Check if each game is present as 2 rows
         if df_train.empty or not (df_train.groupby("gameid").size() == 2).all():
             logger.warning("Training data is insufficient or improperly structured. Skipping trial.")
+            data_pipeline_logger.warning("Training data is insufficient or improperly structured. Skipping trial.")
             return float("inf")
 
         try:
@@ -283,6 +291,7 @@ def tune_hyperparameters(
             )
         except Exception as e:
             logger.error(f"Elo calculation error in trial: {e}")
+            data_pipeline_logger.error(f"Elo calculation error in trial: {e}")
             return float("inf")
 
         # Grab final league Elo from training
@@ -329,9 +338,11 @@ def tune_hyperparameters(
     study.optimize(objective, n_trials=100, timeout=None, show_progress_bar=True)
     best_params = study.best_params
     logger.info(f"Best hyperparameters: {best_params}")
+    data_pipeline_logger.info(f"Best hyperparameters: {best_params}")
 
     # Store best hyperparameters
     logger.info(f"Storing hyperparameters to {hyperparameters_path}")
+    data_pipeline_logger.info(f"Storing hyperparameters to {hyperparameters_path}")
     with open(hyperparameters_path, "w") as f:
         json.dump(best_params, f)
     return best_params
@@ -382,6 +393,7 @@ def leagues_elo_computation(
 
     if not performing_tuning:
         logger.info("Calculating Leagues Elo")
+        data_pipeline_logger.info("Calculating Leagues Elo")
     df_wide_iter = tqdm(df_wide.itertuples(index=True), total=len(df_wide))
 
     for row in df_wide_iter:
@@ -428,6 +440,7 @@ def process_elo_for_row(
     if blue_result is None or red_result is None:
         for c in wide_columns:
             logger.warning(f"Missing result for gameid {row.gameid}. Filling with None.")
+            data_pipeline_logger.warning(f"Missing result for gameid {row.gameid}. Filling with None.")
             wide_columns[c].append(None)
             return wide_columns, league_elo_ratings
 
@@ -501,7 +514,7 @@ def store_results(belonging_league, league_elo_ratings):
 def store_belonging_leagues(belonging_league: Dict[str, str]) -> None:
     """Store the mapping of teams to leagues."""
     belonging_league_df = pd.DataFrame(belonging_league.items(), columns=["teamid", "league"])
-    safe_store_df_as_parquet(belonging_league_df, TEAM_LEAGUES_MAPPING, logger)
+    safe_store_df_as_parquet(belonging_league_df, TEAM_LEAGUES_MAPPING, [logger, data_pipeline_logger])
 
 
 def store_leagues_elo(league_elo_ratings: Dict[str, Dict[str, Union[float, int]]]) -> None:
@@ -515,7 +528,7 @@ def store_leagues_elo(league_elo_ratings: Dict[str, Dict[str, Union[float, int]]
         .reset_index(drop=True)
     )
     league_elo_df = league_elo_df.dropna(subset=["league"]).reset_index(drop=True)
-    safe_store_df_as_parquet(league_elo_df, LEAGUE_ELO, logger)
+    safe_store_df_as_parquet(league_elo_df, LEAGUE_ELO, [logger, data_pipeline_logger])
 
 
 def calculate_leagues_elo(
@@ -529,11 +542,14 @@ def calculate_leagues_elo(
 
     if os.path.exists(hyperparameters_path):
         logger.info(f"Hyperparameters file found at {hyperparameters_path}")
+        data_pipeline_logger.info(f"Hyperparameters file found at {hyperparameters_path}")
         with open(hyperparameters_path) as f:
             best_params = json.load(f)
         logger.info(f"Loaded hyperparameters: {best_params}")
+        data_pipeline_logger.info(f"Loaded hyperparameters: {best_params}")
     else:
         logger.info("No hyperparameters found; starting tuning.")
+        data_pipeline_logger.info("No hyperparameters found; starting tuning.")
         best_params = tune_hyperparameters(df_preprocessed, entity, belonging_league, hyperparameters_path)
 
     df_final = leagues_elo_computation(

@@ -122,9 +122,16 @@ class LightGBMModel(GradientBoostingModel):
         X, categorical_features = self.preprocess_categorical_features(X, exclude_cols=["gameid", "side", "league"])
         return X, y, categorical_features
 
-    def _split_data(
-        self, X: pd.DataFrame, y: pd.Series
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series,]:
+    def _split_data(self, X: pd.DataFrame, y: pd.Series) -> Tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+    ]:
         """
         Split the data into training, validation, and testing sets.
 
@@ -145,7 +152,14 @@ class LightGBMModel(GradientBoostingModel):
             logger.error(f"Missing required columns in X: {missing_columns}")
             raise ValueError(f"Missing required columns in X: {missing_columns}")
         try:
-            (X_train, X_val, X_test, y_train, y_val, y_test,) = self.grouped_stratified_train_val_test_split(
+            (
+                X_train,
+                X_val,
+                X_test,
+                y_train,
+                y_val,
+                y_test,
+            ) = self.grouped_stratified_train_val_test_split(
                 X,
                 y,
                 groups=X["gameid"],
