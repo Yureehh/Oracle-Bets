@@ -1,5 +1,5 @@
 """
-Glicko-2 rating model
+Glicko-2 Rating Model
 
 This module provides functionality to rate teams or players using the Glicko-2 model.
 """
@@ -26,9 +26,18 @@ WIN = 1
 
 def initialize_ratings(
     df: pd.DataFrame, entity_key: str, model: Glicko2
-) -> Dict[Union[int, str], Dict[str, Union[Rating, int, None]]]:
+) -> Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]:
     """
     Initialize ratings for all entities identified by unique IDs in the DataFrame using provided Glicko-2 parameters.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing match data.
+        entity_key (str): Column name representing the entity ID.
+        model (Glicko2): Glicko2 model instance with default parameters.
+
+    Returns:
+        Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]:
+            Dictionary mapping entity IDs to their ratings and metadata.
     """
     unique_entities = df[entity_key].unique()
     return {
@@ -44,13 +53,17 @@ def initialize_ratings(
 def calculate_mean_rating(ratings: List[Rating]) -> Rating:
     """
     Calculate the mean rating for a team.
+
+    Args:
+        ratings (List[Rating]): List of Glicko2 ratings for team members.
+
+    Returns:
+        Rating: The mean rating of the team.
     """
-    mean_values = {
-        "mu": sum(r.mu for r in ratings) / len(ratings),
-        "phi": sum(r.phi for r in ratings) / len(ratings),
-        "sigma": sum(r.sigma for r in ratings) / len(ratings),
-    }
-    return Rating(mean_values["mu"], mean_values["phi"], mean_values["sigma"])
+    mean_mu = sum(r.mu for r in ratings) / len(ratings)
+    mean_phi = sum(r.phi for r in ratings) / len(ratings)
+    mean_sigma = sum(r.sigma for r in ratings) / len(ratings)
+    return Rating(mean_mu, mean_phi, mean_sigma)
 
 
 def rate_match_using_mean(
@@ -58,20 +71,42 @@ def rate_match_using_mean(
 ) -> List[Rating]:
     """
     Rate each player in a team using the team's mean rating against the opposing team's mean rating.
+
+    Args:
+        model (Glicko2): Glicko2 model instance.
+        team_ratings (List[Rating]): List of player ratings in the team.
+        opp_mean_rating (Rating): Mean rating of the opposing team.
+        result (int): Match result (1 for win, 0 for loss).
+
+    Returns:
+        List[Rating]: Updated ratings for each player in the team.
     """
-    if result == WIN:  # Team wins
-        return [model.rate_1vs1(rating, opp_mean_rating)[0] for rating in team_ratings]
-    else:  # Team loses
-        return [model.rate_1vs1(opp_mean_rating, rating)[1] for rating in team_ratings]
+    updated_ratings = []
+    for rating in team_ratings:
+        if result == WIN:
+            new_rating, _ = model.rate_1vs1(rating, opp_mean_rating)
+        else:
+            _, new_rating = model.rate_1vs1(opp_mean_rating, rating)
+        updated_ratings.append(new_rating)
+    return updated_ratings
 
 
 def dynamic_percentage_reset_glicko2(
-    ratings: Dict[str, Dict[str, Rating]], baseline_mu: float, baseline_phi: float, current_season: int
+    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, str]]],
+    baseline_mu: float,
+    baseline_phi: float,
+    current_season: int,
 ) -> None:
     """
     Apply dynamic percentage reset to Glicko-2 ratings at the beginning of a new season.
+
+    Args:
+        ratings (Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]): Ratings dictionary.
+        baseline_mu (float): Baseline mu value.
+        baseline_phi (float): Baseline phi value.
+        current_season (int): Current season number.
     """
-    for entity, data in ratings.items():
+    for data in ratings.values():
         if data["season"] < current_season:
             rating = data["rating"]
             delta_mu = abs(rating.mu - baseline_mu)
@@ -80,24 +115,37 @@ def dynamic_percentage_reset_glicko2(
             reset_factor_phi = 1 / (math.log2(delta_phi + 1) + 1)
             new_mu = baseline_mu + (rating.mu - baseline_mu) * reset_factor_mu
             new_phi = baseline_phi + (rating.phi - baseline_phi) * reset_factor_phi
-            ratings[entity]["rating"] = Rating(new_mu, new_phi, rating.sigma)
-            ratings[entity]["season"] = current_season
+            data["rating"] = Rating(new_mu, new_phi, rating.sigma)
+            data["season"] = current_season
 
 
-def handle_player_swap(
-    player_id: Union[int, str],
+def handle_entity_swap(
+    entity_id: Union[int, str],
     new_league: str,
-    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, None]]],
+    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, str]]],
     baseline_mu: float,
     baseline_phi: float,
     model: Glicko2,
 ) -> None:
-    """Handle player swap between leagues and reset Glicko-2 rating."""
-    league_elo_dict = {}
-    major_leagues = json_loader(CONSIDERED_LEAGUES)["major_leagues"]
-    current_league = ratings[player_id]["league"]
+    """
+    Handle entity (player or team) swap between leagues and reset Glicko-2 rating if necessary.
 
-    # Check if LEAGUE_ELO parquet file exists
+    Args:
+        entity_id (Union[int, str]): ID of the entity.
+        new_league (str): New league of the entity.
+        ratings (Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]): Ratings dictionary.
+        baseline_mu (float): Baseline mu value.
+        baseline_phi (float): Baseline phi value.
+        model (Glicko2): Glicko2 model instance.
+    """
+    major_leagues = json_loader(CONSIDERED_LEAGUES)["major_leagues"]
+    cross_competition_leagues = json_loader(CONSIDERED_LEAGUES)["cross_league_competitions"]
+    current_league = ratings[entity_id].get("league")
+
+    if new_league == current_league or new_league in cross_competition_leagues:
+        return  # No action needed
+
+    league_elo_dict = {}
     if LEAGUE_ELO.exists():
         league_elo_df = pd.read_parquet(LEAGUE_ELO)
         league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
@@ -105,23 +153,21 @@ def handle_player_swap(
     if league_elo_dict and new_league in major_leagues and current_league in major_leagues:
         current_league_elo = league_elo_dict.get(current_league, baseline_mu)
         new_league_elo = league_elo_dict.get(new_league, baseline_mu)
-        elo_increment = (
-            max(0, current_league_elo - new_league_elo) / 2
-        )  # Ensure increment is non-negative and divide by 2
+        elo_increment = max(0, current_league_elo - new_league_elo) / 2
         new_mu = baseline_mu + elo_increment
     else:
         new_mu = baseline_mu
 
-    ratings[player_id]["rating"] = model.create_rating(
-        mu=new_mu, phi=baseline_phi, sigma=ratings[player_id]["rating"].sigma
+    ratings[entity_id]["rating"] = model.create_rating(
+        mu=new_mu, phi=baseline_phi, sigma=ratings[entity_id]["rating"].sigma
     )
-    ratings[player_id]["league"] = new_league
+    ratings[entity_id]["league"] = new_league
 
 
 def process_game(
     df_sorted: pd.DataFrame,
     game_group: pd.DataFrame,
-    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, None]]],
+    ratings: Dict[Union[int, str], Dict[str, Union[Rating, int, str]]],
     model: Glicko2,
     entity: str,
     entity_key: str,
@@ -130,24 +176,37 @@ def process_game(
 ) -> None:
     """
     Process each game and update Glicko-2 ratings for both sides.
+
+    Args:
+        df_sorted (pd.DataFrame): The main DataFrame being processed.
+        game_group (pd.DataFrame): Grouped DataFrame for a single game.
+        ratings (Dict[Union[int, str], Dict[str, Union[Rating, int, str]]]): Ratings dictionary.
+        model (Glicko2): Glicko2 model instance.
+        entity (str): Entity type ('team' or 'player').
+        entity_key (str): Column name representing the entity ID.
+        baseline_mu (float): Baseline mu value.
+        baseline_phi (float): Baseline phi value.
     """
     current_season = game_group.iloc[0]["season"]
-    cross_competition_leagues = json_loader(CONSIDERED_LEAGUES)["cross_league_competitions"]
     dynamic_percentage_reset_glicko2(ratings, baseline_mu, baseline_phi, current_season)
 
-    # Get the player IDs involved in the current game group
-    player_ids = game_group[entity_key].unique()
+    # Get the entity IDs involved in the current game group
+    entity_ids = game_group[entity_key].unique()
 
-    # Handle player swaps before processing game ratings
-    for player_id in player_ids:
-        player_data = ratings[player_id]
-        new_league = game_group[game_group[entity_key] == player_id]["league"].iloc[0]
-        if player_data["league"] != new_league and new_league not in cross_competition_leagues:
-            handle_player_swap(player_id, new_league, ratings, baseline_mu, baseline_phi, model)
+    # Handle entity swaps before processing game ratings
+    for entity_id in entity_ids:
+        if entity_id not in ratings:
+            ratings[entity_id] = {
+                "rating": model.create_rating(model.mu, model.phi, model.sigma),
+                "season": current_season,
+                "league": None,
+            }
+        new_league = game_group[game_group[entity_key] == entity_id]["league"].iloc[0]
+        handle_entity_swap(entity_id, new_league, ratings, baseline_mu, baseline_phi, model)
 
     blue_rows, red_rows = split_teams_by_side(game_group, entity)
-    blue_ratings = [ratings[player]["rating"] for player in blue_rows[entity_key]]
-    red_ratings = [ratings[player]["rating"] for player in red_rows[entity_key]]
+    blue_ratings = [ratings[entity]["rating"] for entity in blue_rows[entity_key]]
+    red_ratings = [ratings[entity]["rating"] for entity in red_rows[entity_key]]
 
     mean_blue_rating = calculate_mean_rating(blue_ratings)
     mean_red_rating = calculate_mean_rating(red_ratings)
@@ -216,31 +275,71 @@ def process_game(
 def split_teams_by_side(game_group: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Sort game data into Blue and Red teams, ordering by 'position' if the entity type is 'player'.
+
+    Args:
+        game_group (pd.DataFrame): Grouped DataFrame for a single game.
+        entity (str): Entity type ('team' or 'player').
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: DataFrames for Blue and Red teams.
     """
-    blue_team = (
-        game_group[game_group["side"] == "Blue"].sort_values(by="position")
-        if entity == "player"
-        else game_group[game_group["side"] == "Blue"]
-    )
-    red_team = (
-        game_group[game_group["side"] == "Red"].sort_values(by="position")
-        if entity == "player"
-        else game_group[game_group["side"] == "Red"]
-    )
+    if entity == "player":
+        blue_team = game_group[game_group["side"] == "Blue"].sort_values(by="position")
+        red_team = game_group[game_group["side"] == "Red"].sort_values(by="position")
+    else:
+        blue_team = game_group[game_group["side"] == "Blue"]
+        red_team = game_group[game_group["side"] == "Red"]
     return blue_team, red_team
 
 
 def calculate_glicko2(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
     Calculate and update Glicko-2 ratings for entities within a DataFrame.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing match data.
+        entity (str): Entity type ('team' or 'player').
+
+    Returns:
+        pd.DataFrame: DataFrame with updated Glicko-2 ratings.
     """
+    if entity.lower() not in ["team", "player"]:
+        raise ValueError("Entity must be 'team' or 'player'")
+
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
+
+    required_columns = ["season", "date", "gameid", entity_key, "league", "side", "result"]
+    if entity == "player":
+        required_columns.append("position")
+
+    missing_columns = set(required_columns) - set(df.columns)
+    if missing_columns:
+        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+
     sorted_matches_df = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
     model = Glicko2(mu=DEFAULT_MU, phi=DEFAULT_PHI, sigma=DEFAULT_SIGMA)
     ratings = initialize_ratings(sorted_matches_df, entity_key, model)
 
-    # Process each game once, handling both sides simultaneously
-    for _, game_group in tqdm(sorted_matches_df.groupby(["date", "gameid"])):
-        process_game(sorted_matches_df, game_group, ratings, model, entity, entity_key, DEFAULT_MU, DEFAULT_PHI)
+    # Initialize columns for Glicko-2 ratings
+    for col in [
+        "gl2_mu_before",
+        "gl2_phi_before",
+        "gl2_mu_after",
+        "gl2_phi_after",
+    ]:
+        sorted_matches_df[col] = None
+
+    # Process each game
+    for _, game_group in tqdm(sorted_matches_df.groupby(["date", "gameid"]), desc="Processing games"):
+        process_game(
+            sorted_matches_df,
+            game_group,
+            ratings,
+            model,
+            entity,
+            entity_key,
+            DEFAULT_MU,
+            DEFAULT_PHI,
+        )
 
     return sorted_matches_df

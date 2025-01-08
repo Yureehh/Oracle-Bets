@@ -1,9 +1,9 @@
 """
 League of Legends Esports Prediction Bot.
 
-This bot shows commands for a League of Legends esports prediction model.
-It allows users to call down predictions and view various information such as
-team rosters, player profiles, match schedules, and betting odds.
+This bot provides commands for a League of Legends esports prediction model.
+Users can request predictions and view information such as team rosters,
+player profiles, match schedules, and betting odds.
 """
 
 import os
@@ -23,8 +23,7 @@ from src.discord_predictions.discord import (
     get_formatted_player_profile,
     get_formatted_team_profile,
     handle_command_error,
-    predict_and_format_result,
-    strip_team_names,
+    validate_and_predict,
 )
 from src.ingestion.schedule import PandaScoreSchedule
 from src.utils.logger import logger
@@ -36,17 +35,17 @@ load_dotenv()
 
 # Constants
 DISCORD_TOKEN_ENV = "DISCORD_TOKEN"
-PANDASCORE_API_KEY_ENV = "PANDASCORE_API_KEY"
+PANDASCORE_API_KEY_ENV = "PANDASCORE_API_KEY"  # pragma: allowlist secret
 BOT_COMMAND_PREFIX = "!"
 BOT_DESCRIPTION = "A comprehensive League of Legends esports prediction bot."
-PLEASE_PROVIDE = "Please provide both a blue and red team name."
-DIFFERENT_TEAMS = "The two teams must be different."
 
 # Initialize bot with command prefix and description
+intents = discord.Intents.default()
+intents.message_content = True  # Enable message content intent
 bot = commands.Bot(
     command_prefix=BOT_COMMAND_PREFIX,
     description=BOT_DESCRIPTION,
-    intents=discord.Intents.all(),
+    intents=intents,
 )
 
 
@@ -56,16 +55,16 @@ async def on_ready():
     logger.info(f"{bot.user} has connected to Discord!")
 
 
+# Utility Commands
+
+
 @bot.command(name="code", aliases=["github", "repository", "git", "source"])
 async def code(ctx):
     """Sends a message with the GitHub repository link."""
-    try:
-        response = (
-            "This model is entirely open-source!\nWe'd love to talk about ideas or contributions!\n"
-            "Check the link at: https://github.com/MRittinghouse/esports-analytics"
-        )
-    except Exception as e:
-        response = handle_command_error(e, additional_info="Could not retrieve code information.")
+    response = (
+        "This model is entirely open-source!\nWe'd love to discuss ideas or contributions!\n"
+        "Check the link at: https://github.com/MRittinghouse/esports-analytics"
+    )
     await ctx.send(response)
 
 
@@ -91,8 +90,11 @@ async def schedule(ctx, leagues: str = None):
     await ctx.send(response)
 
 
+# Profile and Roster Commands
+
+
 @bot.command(name="team_roster", aliases=["roster"])
-async def roster(ctx, team=None):
+async def roster(ctx, team: str = None):
     """Displays the roster for the specified team."""
     if not team:
         await ctx.send("Please provide a team name.")
@@ -107,28 +109,29 @@ async def roster(ctx, team=None):
 
 
 @bot.command(name="team_rosters", aliases=["rosters"])
-async def rosters(ctx, teams=None):
+async def rosters(ctx, teams: str = None):
     """Displays the roster for the specified teams."""
     if not teams:
         await ctx.send("Please provide a list of team names separated by commas.")
         return
     message = await ctx.send(content="```Extracting...```")
-    try:
-        teams = teams.split(",")
-        output = ""
-        for team in teams:
-            team = team.strip()
-            team_data = Team(name=team).get_team_info()
+    output = ""
+    team_names = [team.strip() for team in teams.split(",")]
+    for team_name in team_names:
+        try:
+            team_data = Team(name=team_name).get_team_info()
             output += convert_to_discord_markdown(team_data)
-    except Exception as e:
-        output = handle_command_error(e, additional_info="Could not extract roster information.")
+        except Exception as e:
+            output += handle_command_error(
+                e, additional_info=f"Could not extract roster information for {team_name}.\n"
+            )
     await message.edit(content=output)
 
 
 @bot.command(name="team_profile", aliases=["team"])
 async def team_profile(ctx, team_name: str = None):
     """Displays the profile for the specified team."""
-    if team_name is None:
+    if not team_name:
         await ctx.send("Please provide a team name.")
         return
     try:
@@ -140,13 +143,12 @@ async def team_profile(ctx, team_name: str = None):
 
 
 @bot.command(name="player_profile", aliases=["player"])
-async def player_profile(ctx, player_name: str = None, verbose: bool = False):
+async def player_profile(ctx, player_name: str = None, verbose: str = "False"):
     """Displays the profile for the specified player."""
-    if player_name is None:
+    if not player_name:
         await ctx.send("Please provide a player name.")
         return
-    if not isinstance(verbose, bool):
-        verbose = verbose.lower() in ["true", "1", "t", "y", "yes"]
+    verbose = verbose.lower() in ["true", "1", "t", "y", "yes"]
     try:
         profile, error = await get_formatted_player_profile(player_name, verbose)
         response = profile if profile else error
@@ -155,84 +157,63 @@ async def player_profile(ctx, player_name: str = None, verbose: bool = False):
     await ctx.send(response)
 
 
+# Prediction Commands
+
+
 @bot.command(name="bo1", aliases=["predict", "prediction", "match", "BO1"])
-async def bo1(
-    ctx, blue_team_name: str = None, red_team_name: str = None, blue_roster_str: str = None, red_roster_str: str = None
-):
+async def bo1(ctx, blue_team_name: str = None, red_team_name: str = None, rosters: str = None):
     """Predicts the outcome of a best-of-one match between two teams."""
-    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
-    if not blue_team_name or not red_team_name:
-        await ctx.send(PLEASE_PROVIDE)
-        return
-    if blue_team_name == red_team_name:
-        await ctx.send(DIFFERENT_TEAMS)
-        return
-    await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", False)
+    blue_roster_str, red_roster_str = (rosters.split(",") + [None, None])[:2] if rosters else (None, None)
+    await validate_and_predict(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", False)
 
 
 @bot.command(name="sided_bo1", aliases=["sided_predict", "sided_prediction", "sided_match", "sided_BO1"])
-async def sided_bo1(
-    ctx, blue_team_name: str = None, red_team_name: str = None, blue_roster_str: str = None, red_roster_str: str = None
-):
+async def sided_bo1(ctx, blue_team_name: str = None, red_team_name: str = None, rosters: str = None):
     """Predicts the outcome of a best-of-one match between two teams with side considerations."""
-    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
-    if not blue_team_name or not red_team_name:
-        await ctx.send(PLEASE_PROVIDE)
-        return
-    if blue_team_name == red_team_name:
-        await ctx.send(DIFFERENT_TEAMS)
-        return
-    await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", True)
+    blue_roster_str, red_roster_str = (rosters.split(",") + [None, None])[:2] if rosters else (None, None)
+    await validate_and_predict(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", True)
+
+
+@bot.command(name="bo2", aliases=["BO2"])
+async def bo2(ctx, blue_team_name: str = None, red_team_name: str = None, rosters: str = None):
+    """Predicts the outcome of a best-of-two match between two teams."""
+    blue_roster_str, red_roster_str = (rosters.split(",") + [None, None])[:2] if rosters else (None, None)
+    await validate_and_predict(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo2", False)
 
 
 @bot.command(name="bo3", aliases=["BO3"])
-async def bo3(
-    ctx, blue_team_name: str = None, red_team_name: str = None, blue_roster_str: str = None, red_roster_str: str = None
-):
+async def bo3(ctx, blue_team_name: str = None, red_team_name: str = None, rosters: str = None):
     """Predicts the outcome of a best-of-three match between two teams."""
-    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
-    if not blue_team_name or not red_team_name:
-        await ctx.send(PLEASE_PROVIDE)
-        return
-    if blue_team_name == red_team_name:
-        await ctx.send(DIFFERENT_TEAMS)
-        return
-    await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo3", False)
+    blue_roster_str, red_roster_str = (rosters.split(",") + [None, None])[:2] if rosters else (None, None)
+    await validate_and_predict(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo3", False)
 
 
 @bot.command(name="bo5", aliases=["BO5"])
-async def bo5(
-    ctx, blue_team_name: str = None, red_team_name: str = None, blue_roster_str: str = None, red_roster_str: str = None
-):
+async def bo5(ctx, blue_team_name: str = None, red_team_name: str = None, rosters: str = None):
     """Predicts the outcome of a best-of-five match between two teams."""
-    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
-    if not (blue_team_name or red_team_name):
-        await ctx.send(PLEASE_PROVIDE)
-        return
-    if blue_team_name == red_team_name:
-        await ctx.send(DIFFERENT_TEAMS)
-        return
-    await predict_and_format_result(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo5", False)
+    blue_roster_str, red_roster_str = (rosters.split(",") + [None, None])[:2] if rosters else (None, None)
+    await validate_and_predict(ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo5", False)
+
+
+# Odds and Betting Commands
 
 
 @bot.command(name="odds", aliases=["prob_to_odds", "win_probability_to_odds"])
-async def convert_win_probability_to_odds(ctx, win_probability: str = None, to_decimal: bool = True):
+async def convert_win_probability_to_odds(ctx, win_probability: str = None, to_decimal: str = "True"):
     """Converts a win probability to odds."""
     if not win_probability:
         await ctx.send("Please provide a win probability.")
         return
-
+    to_decimal = to_decimal.lower() in ["true", "1", "t", "y", "yes"]
     try:
         win_probability = convert_odds(win_probability)
         if not (0 <= win_probability <= 1):
             raise ValueError("Win probability must be between 0% and 100%.")
+        odds = calculate_odds(win_probability, to_decimal)
+        odds_type = "decimal" if to_decimal else "fractional"
+        await ctx.send(f"The {odds_type} odds for a win probability of {win_probability * 100:.2f}% are {odds}.")
     except ValueError as ve:
         await ctx.send(str(ve))
-        return
-
-    odds = calculate_odds(win_probability, to_decimal)
-    odds_type = "decimal" if to_decimal else "fractional"
-    await ctx.send(f"The {odds_type} odds for a win probability of {win_probability * 100:.2f}% are {odds}.")
 
 
 @bot.command(name="prob", aliases=["odds_to_prob", "odds_to_win_probability"])
@@ -241,49 +222,45 @@ async def convert_odds_to_win_probability(ctx, odds: str = None):
     if not odds:
         await ctx.send("Please provide odds.")
         return
-
     try:
         odds = float(odds)
         if odds <= 1:
             raise ValueError("Odds must be greater than 1.")
+        win_probability = calculate_prob(odds)
+        await ctx.send(f"The win probability for odds of {odds} is {win_probability * 100:.2f}%.")
     except ValueError as ve:
         await ctx.send(str(ve))
-        return
-
-    win_probability = calculate_prob(odds)
-    await ctx.send(f"The win probability for odds of {odds} is {win_probability * 100:.2f}%.")
 
 
 @bot.command(name="kelly", aliases=["kelly_criterion"])
 async def kelly_criterion(ctx, bookmaker_odds: str = None, win_probability: str = None):
     """Calculates the Kelly Criterion based on the given win probability and bookmaker odds."""
-    if not win_probability or not bookmaker_odds:
-        await ctx.send("Please provide both a win probability and bookmaker odds.")
+    if not bookmaker_odds or not win_probability:
+        await ctx.send("Please provide both bookmaker odds and a win probability.")
         return
-
     try:
         bookmaker_odds = float(bookmaker_odds)
         win_probability = convert_odds(win_probability)
-
         if not (0 <= win_probability <= 1):
             raise ValueError("Win probability must be between 0% and 100%.")
         if bookmaker_odds <= 1:
             raise ValueError("Bookmaker odds must be greater than 1.")
+        kelly_fraction = calculate_kelly_criterion(bookmaker_odds, win_probability)
+        await ctx.send(
+            f"Given bookmaker odds of {bookmaker_odds} and a win probability of {win_probability * 100:.2f}%:\n"
+            f"The Kelly Criterion suggests betting {kelly_fraction * 100:.2f}% of your bankroll."
+        )
     except ValueError as ve:
         await ctx.send(str(ve))
-        return
 
-    kelly_fraction = calculate_kelly_criterion(bookmaker_odds, win_probability)
-    await ctx.send(
-        f"Given the bookmaker odds of {bookmaker_odds}, and a win probability of {win_probability * 100:.2f}%\n"
-        f"the Kelly Criterion suggests betting {kelly_fraction * 100:.2f}% of your bankroll."
-    )
+
+# Administrative Commands
 
 
 @bot.command(name="kill", aliases=["stop"])
 @commands.is_owner()
 async def kill(ctx):
-    """Kills the bot. Only the bot owner can use this command."""
+    """Shuts down the bot. Only the bot owner can use this command."""
     try:
         logger.info("Shutting down the bot...")
         await bot.close()
@@ -293,10 +270,17 @@ async def kill(ctx):
         await ctx.send("Failed to shut down the bot properly.")
 
 
+# Bot Runner
+
+
 def run_bot():
     """Runs the Discord bot."""
     try:
-        bot.run(os.getenv(DISCORD_TOKEN_ENV))
+        discord_token = os.getenv(DISCORD_TOKEN_ENV)
+        if not discord_token:
+            logger.error("Discord token is not set in environment variables.")
+            return
+        bot.run(discord_token)
     except Exception as e:
         logger.error(f"Failed to start the bot: {e}")
 

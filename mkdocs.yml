@@ -1,0 +1,52 @@
+# mkdocs.yml
+
+site_name: "Yureeh Match Modeling Documentation"  # Name of the site
+site_description: "Documentation for the Yureeh Match Modeling Project"
+site_author: "Yureeh"
+site_url: "https://github.com/MRittinghouse/esports-analytics"  # TODO: Update this URL to mine
+
+theme:
+  name: "material"  # Use the Material theme
+  palette:
+    primary: "indigo"
+    accent: "pink"
+  font:
+    text: "Roboto"
+    code: "Roboto Mono"
+
+nav:  # Navigation structure
+  - Home: index.md
+  - Getting Started:
+      - Overview: getting_started/overview.md
+      - Installation: getting_started/installation.md
+  # - Models:
+  #     - Team-Based Elo: models/team_based_elo.md
+  #     - Player-Based Elo: models/player_based_elo.md
+  #     - TrueSkill: models/trueskill.md
+  #     - EGPM Dominance: models/egpm_dominance.md
+  # - API Documentation:
+  #     - Data Generator: api/data_generator.md
+  #     - Match Predictor: api/match_predictor.md
+  # - Notebooks: notebooks.md
+  # - About: about.md
+
+markdown_extensions:  # Optional Markdown extensions
+  - toc:  # Table of contents
+      permalink: true
+  - admonition
+  - codehilite
+  - footnotes
+  - md_in_html
+  - attr_list
+
+plugins:  # Optional plugins
+  - search
+  - markdownextradata  # For passing dynamic data into markdown files
+
+extra_css:  # Optional custom CSS
+  - css/custom.css
+extra_javascript:  # Optional custom JavaScript
+  - js/custom.js
+
+# Output settings
+site_dir: "site"  # Directory where the generated static files will go
