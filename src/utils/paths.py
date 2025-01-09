@@ -29,7 +29,7 @@ def create_directory(directory: Path) -> None:
         if not directory.exists():
             directory.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        raise e
+        raise OSError(f"Error creating directory: {directory}") from e
 
 
 # Retrieve the base directory from an environment variable or default to the current working directory
@@ -108,6 +108,7 @@ DEFAULT_MODELS_PARAMETERS: Path = HYPERPARAMETERS / "default_models_parameters.j
 BEST_HYPERPARAMETERS: Path = HYPERPARAMETERS / "best_hyperparams"
 LEAGUES_ELO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "leagues_elo_hyperparameters.json"
 ENTITY_ELO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_elo_hyperparameters.json"
+ENTITY_GLICKO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_glicko_hyperparameters.json"
 
 # Reports storage
 FIGURES_DIR: Path = REPORTS_DIR / "figures"
