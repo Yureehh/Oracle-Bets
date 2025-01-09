@@ -136,8 +136,8 @@ class FeatureGenerator:
         data["wards_placed_ratio"] = (data["wpm"] * data["gamelength"]) / data["enemyTeamWardPlaced"]
         data["wards_killed_ratio"] = (data["wcpm"] * data["gamelength"]) / data["enemyTeamWardPlaced"]
 
-        logger.info(f"Ratio features computed. Data shape: {data.shape}")
-        data_pipeline_logger.info(f"Ratio features computed. Data shape: {data.shape}")
+        logger.info("Ratio features computed.")
+        data_pipeline_logger.info("Ratio features computed.")
         return data
 
     @staticmethod

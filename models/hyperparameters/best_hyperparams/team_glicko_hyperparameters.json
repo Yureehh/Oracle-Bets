@@ -1,1 +1,9 @@
-{"mu": 1700.0, "phi": 500.0, "sigma": 0.15000000000000002, "decay_factor": 0.65, "transfer_factor": 0.5, "initial_elo_adjustment_factor": 1.0, "position_reset_factor": 1.0}
+{
+  "mu": 1700.0,
+  "phi": 500.0,
+  "sigma": 0.15000000000000002,
+  "decay_factor": 0.65,
+  "transfer_factor": 0.5,
+  "initial_elo_adjustment_factor": 1.0,
+  "position_reset_factor": 1.0
+}

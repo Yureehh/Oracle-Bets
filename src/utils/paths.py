@@ -109,6 +109,8 @@ BEST_HYPERPARAMETERS: Path = HYPERPARAMETERS / "best_hyperparams"
 LEAGUES_ELO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "leagues_elo_hyperparameters.json"
 ENTITY_ELO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_elo_hyperparameters.json"
 ENTITY_GLICKO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_glicko_hyperparameters.json"
+ENTITY_PL_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_pl_hyperparameters.json"
+ENTITY_TRUESKILL_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_trueskill_hyperparameters.json"
 
 # Reports storage
 FIGURES_DIR: Path = REPORTS_DIR / "figures"

@@ -287,25 +287,25 @@ class DataGenerator:
             # )
             # double_logging_call("Completed enriching data with ELO.\n")
 
-            # (3) Glicko2
-            self.team_data, self.player_data = parallelize_enrichment(
-                self.rating_models.compute_glicko2,
-                self.team_data,
-                self.player_data,
-                "team",
-                "player",
-            )
-            double_logging_call("Completed enriching data with Glicko2.\n")
+            # # (3) Glicko2
+            # self.team_data, self.player_data = parallelize_enrichment(
+            #     self.rating_models.compute_glicko2,
+            #     self.team_data,
+            #     self.player_data,
+            #     "team",
+            #     "player",
+            # )
+            # double_logging_call("Completed enriching data with Glicko2.\n")
 
-            # (4) Plackett-Luce
-            self.team_data, self.player_data = parallelize_enrichment(
-                self.rating_models.compute_plackett_luce,
-                self.team_data,
-                self.player_data,
-                "team",
-                "player",
-            )
-            double_logging_call("Completed enriching data with Plackett-Luce.\n")
+            # # (4) Plackett-Luce
+            # self.team_data, self.player_data = parallelize_enrichment(
+            #     self.rating_models.compute_plackett_luce,
+            #     self.team_data,
+            #     self.player_data,
+            #     "team",
+            #     "player",
+            # )
+            # double_logging_call("Completed enriching data with Plackett-Luce.\n")
 
             # (5) TrueSkill
             self.team_data, self.player_data = parallelize_enrichment(

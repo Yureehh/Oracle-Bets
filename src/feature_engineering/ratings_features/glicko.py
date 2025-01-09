@@ -469,12 +469,16 @@ def process_game(
     # For clarity, we store mu/phi before & after, plus the predicted win likelihood (blue_expected).
     df.loc[blue_rows.index, "glicko2_mu_before"] = [r.mu for r in blue_old_ratings]
     df.loc[blue_rows.index, "glicko2_phi_before"] = [r.phi for r in blue_old_ratings]
+    df.loc[blue_rows.index, "opp_glicko2_mu_before"] = [r.mu for r in red_old_ratings]
+    df.loc[blue_rows.index, "opp_glicko2_phi_before"] = [r.phi for r in red_old_ratings]
     df.loc[blue_rows.index, "glicko2_win_likelihood"] = blue_expected
     df.loc[blue_rows.index, "glicko2_mu_after"] = [r.mu for r in updated_blue_ratings]
     df.loc[blue_rows.index, "glicko2_phi_after"] = [r.phi for r in updated_blue_ratings]
 
     df.loc[red_rows.index, "glicko2_mu_before"] = [r.mu for r in red_old_ratings]
     df.loc[red_rows.index, "glicko2_phi_before"] = [r.phi for r in red_old_ratings]
+    df.loc[red_rows.index, "opp_glicko2_mu_before"] = [r.mu for r in blue_old_ratings]
+    df.loc[red_rows.index, "opp_glicko2_phi_before"] = [r.phi for r in blue_old_ratings]
     df.loc[red_rows.index, "glicko2_win_likelihood"] = 1.0 - blue_expected
     df.loc[red_rows.index, "glicko2_mu_after"] = [r.mu for r in updated_red_ratings]
     df.loc[red_rows.index, "glicko2_phi_after"] = [r.phi for r in updated_red_ratings]
@@ -864,8 +868,6 @@ def calculate_glicko2(
     if league_elo_dict is None:
         league_elo_dict = {}
         if LEAGUE_ELO.exists():
-            logger.info(f"Loading league Elo ratings from {LEAGUE_ELO}")
-            data_pipeline_logger.info(f"Loading league Elo ratings from {LEAGUE_ELO}")
             league_elo_df = pd.read_parquet(LEAGUE_ELO)
             league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 

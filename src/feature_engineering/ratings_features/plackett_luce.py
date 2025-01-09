@@ -1,324 +1,714 @@
 """
-Plackett-Luce Rating Model
+Plackett-Luce Rating System with Hyperparameter Tuning using Optuna
 
-This module provides functionality to rate teams or players using the Plackett-Luce model.
+Mirrors the structure of the Elo and Glicko-2 modules, but uses the Plackett-Luce model from the `openskill` library.
 """
 
-import math
+import json
+from collections import defaultdict
 from copy import deepcopy
-from typing import Dict, List, Tuple, Union
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import optuna
 import pandas as pd
 from openskill.models import PlackettLuce
+from sklearn.metrics import log_loss
 from tqdm import tqdm
 
-from src.utils.paths import CONSIDERED_LEAGUES, DEFAULT_MODELS_PARAMETERS, LEAGUE_ELO
+from src.utils.logger import instantiate_conf_logger, logger
+from src.utils.paths import CONSIDERED_LEAGUES, DEFAULT_MODELS_PARAMETERS, ENTITY_PL_HYPERPARAMETERS, LEAGUE_ELO
 from src.utils.utils import get_sorting_keys, json_loader
 
-# Load configuration
+# ------------------------------------------------------------------------------
+# 1. Global Config / Constants
+# ------------------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
-DEFAULT_MU = config["plackett_luce"]["mu"]
-DEFAULT_SIGMA = config["plackett_luce"]["sigma"]
+pl_config = config.get("plackett_luce", {})
+DEFAULT_MU = pl_config.get("mu", 25.0)
+DEFAULT_SIGMA = pl_config.get("sigma", 8.333)
+TRIALS_NUM = 50
+
+considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
+MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
+CROSS_LEAGUE_COMPETITIONS = considered_leagues_config["cross_league_competitions"]
+
+data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 
 
-def initialize_ratings(
-    df: pd.DataFrame, entity_key: str, model: PlackettLuce
-) -> Dict[Union[int, str], Dict[str, Union[PlackettLuce.rating, int, str]]]:
+# ------------------------------------------------------------------------------
+# 2. Helper Utilities
+# ------------------------------------------------------------------------------
+def clamp(value: float, min_val: float, max_val: float) -> float:
+    """Clamp numeric `value` between `min_val` and `max_val`."""
+    return max(min_val, min(value, max_val))
+
+
+def is_major_league(league: str) -> bool:
+    """Check if league is considered major."""
+    return league in MAJOR_LEAGUES
+
+
+# ------------------------------------------------------------------------------
+# 3. Preprocessing
+# ------------------------------------------------------------------------------
+def preprocess_pl_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
-    Initialize ratings for all entities identified by unique IDs in the DataFrame using the Plackett-Luce model.
-
-    Args:
-        df (pd.DataFrame): DataFrame containing match data.
-        entity_key (str): Column name representing the entity ID.
-        model (PlackettLuce): Instance of the PlackettLuce model.
-
-    Returns:
-        Dict[Union[int, str], Dict[str, Union[PlackettLuce.rating, int, str]]]: Initialized ratings for all entities.
-    """
-    unique_entities = df[entity_key].unique()
-    return {
-        entity: {
-            "rating": model.rating(mu=DEFAULT_MU, sigma=DEFAULT_SIGMA),
-            "season": df["season"].min(),
-            "league": None,
-        }
-        for entity in unique_entities
-    }
-
-
-def update_ratings(
-    model: PlackettLuce,
-    entities_ratings: Tuple[List[PlackettLuce.rating], List[PlackettLuce.rating]],
-    ranks: List[int],
-) -> List[List[PlackettLuce.rating]]:
-    """
-    Update ratings based on the outcomes of matches using the Plackett-Luce model.
-
-    Args:
-        model (PlackettLuce): Instance of the PlackettLuce model.
-        entities_ratings (Tuple[List[PlackettLuce.rating], List[PlackettLuce.rating]]): Ratings of entities.
-        ranks (List[int]): Ranks of entities.
-
-    Returns:
-        List[List[PlackettLuce.rating]]: Updated ratings for all entities.
-    """
-    updated_entities = model.rate([deepcopy(ratings) for ratings in entities_ratings], ranks=ranks)
-    return updated_entities
-
-
-def predict_win_probability(
-    model: PlackettLuce, team1: List[PlackettLuce.rating], team2: List[PlackettLuce.rating]
-) -> List[float]:
-    """
-    Predict the win probability between two teams or players based on their current ratings.
-
-    Args:
-        model (PlackettLuce): Instance of the PlackettLuce model.
-        team1 (List[PlackettLuce.rating]): Ratings of team 1.
-        team2 (List[PlackettLuce.rating]): Ratings of team 2.
-
-    Returns:
-        List[float]: Win probabilities for each team.
-    """
-    return model.predict_win([team1, team2])
-
-
-def sort_teams_by_side(game_group: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Sort game data into Blue and Red teams, ordering by 'position' if the entity type is 'player'.
-
-    Args:
-        game_group (pd.DataFrame): DataFrame containing match data for a single game.
-        entity (str): The type of entity, e.g., 'player' or 'team'.
-
-    Returns:
-        Tuple[pd.DataFrame, pd.DataFrame]: DataFrames for Blue and Red teams.
-    """
-    if entity == "player":
-        blue_team = game_group[game_group["side"] == "Blue"].sort_values(by="position")
-        red_team = game_group[game_group["side"] == "Red"].sort_values(by="position")
-    else:
-        blue_team = game_group[game_group["side"] == "Blue"]
-        red_team = game_group[game_group["side"] == "Red"]
-    return blue_team, red_team
-
-
-def determine_match_result(team_data: pd.DataFrame) -> List[int]:
-    """
-    Determine the result of a match based on the 'result' column in the team data.
-
-    Args:
-        team_data (pd.DataFrame): DataFrame containing match data for a single team.
-
-    Returns:
-        List[int]: Match result as ranks.
-    """
-    return [0, 1] if team_data.iloc[0]["result"] == 1 else [1, 0]
-
-
-def dynamic_percentage_reset_plackett_luce(
-    ratings: Dict[Union[int, str], Dict[str, Union[PlackettLuce.rating, int, str]]],
-    baseline_mu: float,
-    baseline_sigma: float,
-    current_season: int,
-    model: PlackettLuce,
-) -> None:
-    """
-    Apply dynamic percentage reset to Plackett-Luce ratings at the beginning of a new season.
-
-    Args:
-        ratings (Dict[Union[int, str], Dict[str, Union[PlackettLuce.rating, int, str]]]): Current ratings of entities.
-        baseline_mu (float): Baseline MU value for ratings.
-        baseline_sigma (float): Baseline SIGMA value for ratings.
-        current_season (int): The current season.
-        model (PlackettLuce): Instance of the PlackettLuce model.
-    """
-    for data in ratings.values():
-        if data["season"] < current_season:
-            rating = data["rating"]
-            delta_mu = abs(rating.mu - baseline_mu)
-            delta_sigma = abs(rating.sigma - baseline_sigma)
-            reset_factor_mu = 1 / (math.log2(delta_mu + 1) + 1)
-            reset_factor_sigma = 1 / (math.log2(delta_sigma + 1) + 1)
-            new_mu = baseline_mu + (rating.mu - baseline_mu) * reset_factor_mu
-            new_sigma = baseline_sigma + (rating.sigma - baseline_sigma) * reset_factor_sigma
-            data["rating"] = model.rating(mu=new_mu, sigma=new_sigma)
-            data["season"] = current_season
-
-
-def handle_entity_swap(
-    entity_id: Union[int, str],
-    new_league: str,
-    ratings: Dict[Union[int, str], Dict[str, Union[PlackettLuce.rating, int, str]]],
-    baseline_mu: float,
-    baseline_sigma: float,
-    model: PlackettLuce,
-) -> None:
-    """
-    Handle entity swaps between leagues.
-
-    Args:
-        entity_id (Union[int, str]): ID of the entity.
-        new_league (str): New league of the entity.
-        ratings (Dict[Union[int, str], Dict[str, Union[PlackettLuce.rating, int, str]]]): Current ratings of entities.
-        baseline_mu (float): Baseline MU value for ratings.
-        baseline_sigma (float): Baseline SIGMA value for ratings.
-        model (PlackettLuce): Instance of the PlackettLuce model.
-    """
-    major_leagues = json_loader(CONSIDERED_LEAGUES)["major_leagues"]
-    cross_competition_leagues = json_loader(CONSIDERED_LEAGUES)["cross_league_competitions"]
-    current_league = ratings[entity_id].get("league")
-
-    if new_league == current_league or new_league in cross_competition_leagues:
-        return  # No action needed
-
-    league_elo_dict = {}
-    if LEAGUE_ELO.exists():
-        league_elo_df = pd.read_parquet(LEAGUE_ELO)
-        league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
-
-    if league_elo_dict and new_league in major_leagues and current_league in major_leagues:
-        current_league_elo = league_elo_dict.get(current_league, baseline_mu)
-        new_league_elo = league_elo_dict.get(new_league, baseline_mu)
-        elo_increment = max(0, current_league_elo - new_league_elo) / 2
-        new_mu = baseline_mu + elo_increment
-    else:
-        new_mu = baseline_mu
-
-    ratings[entity_id]["rating"] = model.rating(mu=new_mu, sigma=baseline_sigma)
-    ratings[entity_id]["league"] = new_league
-
-
-def process_game(
-    df_sorted: pd.DataFrame,
-    game_group: pd.DataFrame,
-    ratings: Dict[Union[int, str], Dict[str, Union[PlackettLuce.rating, int, str]]],
-    model: PlackettLuce,
-    entity: str,
-    entity_key: str,
-    baseline_mu: float,
-    baseline_sigma: float,
-) -> None:
-    """
-    Process each game and update Plackett-Luce ratings for both sides.
-
-    Args:
-        df_sorted (pd.DataFrame): The sorted DataFrame containing match data.
-        game_group (pd.DataFrame): The game group DataFrame.
-        ratings (Dict[Union[int, str], Dict[str, Union[PlackettLuce.rating, int, str]]]): Dictionary of current ratings.
-        model (PlackettLuce): Instance of the PlackettLuce model.
-        entity (str): The type of entity, e.g., 'player' or 'team'.
-        entity_key (str): The column name for the entity identifier.
-        baseline_mu (float): Baseline MU value for ratings.
-        baseline_sigma (float): Baseline SIGMA value for ratings.
-    """
-    current_season = game_group.iloc[0]["season"]
-    dynamic_percentage_reset_plackett_luce(ratings, baseline_mu, baseline_sigma, current_season, model)
-
-    # Get the entity IDs involved in the current game group
-    entity_ids = game_group[entity_key].unique()
-
-    # Handle entity swaps before processing game ratings
-    for entity_id in entity_ids:
-        if entity_id not in ratings:
-            ratings[entity_id] = {
-                "rating": model.rating(mu=baseline_mu, sigma=baseline_sigma),
-                "season": current_season,
-                "league": None,
-            }
-        new_league = game_group[game_group[entity_key] == entity_id]["league"].iloc[0]
-        handle_entity_swap(entity_id, new_league, ratings, baseline_mu, baseline_sigma, model)
-
-    blue_rows, red_rows = sort_teams_by_side(game_group, entity)
-    blue_ratings = [ratings[entity]["rating"] for entity in blue_rows[entity_key]]
-    red_ratings = [ratings[entity]["rating"] for entity in red_rows[entity_key]]
-
-    ranks = determine_match_result(blue_rows)
-    win_probs = predict_win_probability(model, blue_ratings, red_ratings)
-    updated_ratings = update_ratings(model, (blue_ratings, red_ratings), ranks)
-
-    for i, player in enumerate(blue_rows.itertuples()):
-        entity_id = getattr(player, entity_key)
-        ratings[entity_id]["rating"] = updated_ratings[0][i]
-        df_sorted.loc[
-            player.Index,
-            [
-                "pl_mu_before",
-                "pl_sigma_before",
-                "pl_win_likelihood",
-                "pl_mu_after",
-                "pl_sigma_after",
-                "opp_pl_mu_before",
-                "opp_pl_sigma_before",
-            ],
-        ] = (
-            blue_ratings[i].mu,
-            blue_ratings[i].sigma,
-            win_probs[0],
-            updated_ratings[0][i].mu,
-            updated_ratings[0][i].sigma,
-            red_ratings[i].mu,
-            red_ratings[i].sigma,
-        )
-
-    for i, player in enumerate(red_rows.itertuples()):
-        entity_id = getattr(player, entity_key)
-        ratings[entity_id]["rating"] = updated_ratings[1][i]
-        df_sorted.loc[
-            player.Index,
-            [
-                "pl_mu_before",
-                "pl_sigma_before",
-                "pl_win_likelihood",
-                "pl_mu_after",
-                "pl_sigma_after",
-                "opp_pl_mu_before",
-                "opp_pl_sigma_before",
-            ],
-        ] = (
-            red_ratings[i].mu,
-            red_ratings[i].sigma,
-            1 - win_probs[0],
-            updated_ratings[1][i].mu,
-            updated_ratings[1][i].sigma,
-            blue_ratings[i].mu,
-            blue_ratings[i].sigma,
-        )
-
-
-def calculate_plackett_luce(df: pd.DataFrame, entity: str) -> pd.DataFrame:
-    """
-    Calculate and update Plackett-Luce ratings for entities within a DataFrame.
-
-    Args:
-        df (pd.DataFrame): DataFrame containing match data.
-        entity (str): The type of entity, e.g., 'team' or 'player'.
-
-    Returns:
-        pd.DataFrame: Updated DataFrame with Plackett-Luce ratings.
+    Validate columns, convert dates, drop missing data, then sort.
+    Mirrors the approach in the Elo and Glicko modules.
     """
     if entity.lower() not in ["team", "player"]:
         raise ValueError("Entity must be 'team' or 'player'")
 
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
-
     required_columns = ["season", "date", "gameid", entity_key, "league", "side", "result"]
-    if entity == "player":
+    if entity.lower() == "player":
         required_columns.append("position")
 
-    missing_columns = set(required_columns) - set(df.columns)
-    if missing_columns:
-        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+    missing_cols = set(required_columns) - set(df.columns)
+    if missing_cols:
+        raise ValueError(f"Input DataFrame is missing required columns: {missing_cols}")
 
-    df_sorted = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
-    model = PlackettLuce(mu=DEFAULT_MU, sigma=DEFAULT_SIGMA)
-    ratings = initialize_ratings(df_sorted, entity_key, model)
+    # Convert 'date' to datetime
+    if not pd.api.types.is_datetime64_any_dtype(df["date"]):
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        null_count = df["date"].isnull().sum()
+        if null_count > 0:
+            logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
+            data_pipeline_logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
+            df = df.dropna(subset=["date"]).copy()
 
-    # Initialize columns for Plackett-Luce ratings
-    for col in ["pl_mu_before", "pl_sigma_before", "pl_win_likelihood", "pl_mu_after", "pl_sigma_after"]:
-        df_sorted[col] = None
+    # Drop rows missing league or result
+    if df["league"].isna().any() or df["result"].isna().any():
+        n_missing_league = df["league"].isnull().sum()
+        n_missing_result = df["result"].isnull().sum()
+        logger.warning(f"{n_missing_league} 'league' and {n_missing_result} 'result' missing; dropping them.")
+        data_pipeline_logger.warning(
+            f"{n_missing_league} 'league' and {n_missing_result} 'result' missing; dropping them."
+        )
+        df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
 
-    for _, game_group in tqdm(df_sorted.groupby(["date", "gameid"]), desc="Processing games"):
-        process_game(df_sorted, game_group, ratings, model, entity, entity_key, DEFAULT_MU, DEFAULT_SIGMA)
+    # Sort the DataFrame
+    df = df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
+    return df
 
-    return df_sorted
+
+# ------------------------------------------------------------------------------
+# 4. Core Plackett-Luce Functions
+# ------------------------------------------------------------------------------
+
+
+def initialize_pl_rating(mu: float, sigma: float) -> PlackettLuce.rating:
+    """Initialize a Plackett-Luce rating with specified mu and sigma."""
+    return PlackettLuce(mu=mu, sigma=sigma)
+
+
+def predict_win_probability(
+    model: PlackettLuce, team1_ratings: List[PlackettLuce.rating], team2_ratings: List[PlackettLuce.rating]
+) -> float:
+    """
+    Predict the probability that `team1` defeats `team2` using the Plackett-Luce model's
+    internal `predict_win()` method. Returns the probability of team1 winning.
+    """
+    # `model.predict_win()` returns [p_team1, p_team2]
+    probs = model.predict_win([team1_ratings, team2_ratings])
+    return probs[0]
+
+
+def update_pl_ratings(
+    model: PlackettLuce, teams_ratings: Tuple[List[PlackettLuce.rating], List[PlackettLuce.rating]], ranks: List[int]
+) -> List[List[PlackettLuce.rating]]:
+    """
+    Update the ratings for the two teams based on their ranks (0 means first place, 1 means second).
+    The function returns updated ratings for both teams in a list of lists.
+    """
+    # We must deepcopy or provide fresh rating objects because `rate()` modifies them in-place
+    updated = model.rate([deepcopy(r) for r in teams_ratings], ranks=ranks)
+    return updated
+
+
+# ------------------------------------------------------------------------------
+# 5. Seasonal, Position, League Lifecycle
+# ------------------------------------------------------------------------------
+def linear_decay_reset(
+    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
+    current_season: int,
+    baseline_mu: float,
+    baseline_sigma: float,
+    decay_factor: float,
+) -> Dict[Union[int, str], Dict[str, Any]]:
+    """
+    Partially reset mu and sigma toward the baseline if the stored season < current_season.
+    For example:
+        new_mu = baseline_mu + (old_mu - baseline_mu) * decay_factor
+    The same for sigma.
+    """
+    updated_dict = {}
+    for ent_id, data in pl_ratings.items():
+        ent_copy = data.copy()
+        if data["season"] < current_season:
+            old_rating = data["rating"]
+            new_mu = baseline_mu + (old_rating.mu - baseline_mu) * decay_factor
+            new_sigma = baseline_sigma + (old_rating.sigma - baseline_sigma) * decay_factor
+            ent_copy["rating"] = initialize_pl_rating(new_mu, new_sigma).rating(new_mu, new_sigma)
+            ent_copy["season"] = current_season
+        updated_dict[ent_id] = ent_copy
+    return updated_dict
+
+
+def handle_position_switch(
+    entity_id: Union[int, str],
+    new_position: Optional[str],
+    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
+    baseline_mu: float,
+    baseline_sigma: float,
+    position_reset_factor: float,
+) -> None:
+    """For players switching position, partially reset the rating toward baseline by `position_reset_factor`."""
+    if new_position is None:
+        return
+    last_position = pl_ratings[entity_id].get("last_position")
+    if last_position and last_position != new_position:
+        old_rating = pl_ratings[entity_id]["rating"]
+        # Move mu, sigma toward baseline
+        new_mu = baseline_mu + (old_rating.mu - baseline_mu) * (1.0 - position_reset_factor)
+        new_sigma = baseline_sigma + (old_rating.sigma - baseline_sigma) * (1.0 - position_reset_factor)
+        pl_ratings[entity_id]["rating"] = initialize_pl_rating(new_mu, new_sigma).rating(new_mu, new_sigma)
+    pl_ratings[entity_id]["last_position"] = new_position
+
+
+def handle_new_entity(
+    ent_id: Union[int, str],
+    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
+    league_elo_dict: Dict[str, float],
+    new_league: str,
+    current_season: int,
+    baseline_mu: float,
+    baseline_sigma: float,
+    init_adjust_factor: float,
+) -> None:
+    """
+    Create a new entity rating, offset by a fraction of the league difference from average.
+    Similar to Elo/Glicko, but we store a Plackett-Luce rating.
+    """
+    max_diff = 0.2 * baseline_mu
+    if league_elo_dict:
+        avg_league_elo = sum(league_elo_dict.values()) / len(league_elo_dict)
+    else:
+        avg_league_elo = baseline_mu
+    league_elo = league_elo_dict.get(new_league, baseline_mu)
+
+    # partial offset
+    init_adjust = (league_elo - avg_league_elo) * init_adjust_factor
+    initial_mu = baseline_mu + init_adjust
+
+    offset = clamp(initial_mu - baseline_mu, -max_diff, max_diff)
+    initial_mu = baseline_mu + offset
+
+    pl_ratings[ent_id] = {
+        "rating": initialize_pl_rating(initial_mu, baseline_sigma).rating(initial_mu, baseline_sigma),
+        "season": current_season,
+        "league": new_league,
+    }
+
+
+def handle_league_swap(
+    ent_id: Union[int, str],
+    new_league: str,
+    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
+    league_elo_dict: Dict[str, float],
+    baseline_mu: float,
+    transfer_factor: float,
+    transfer_factor_minor_to_major: float = 0.4,
+) -> None:
+    """
+    Handle partial rating shift when an entity changes league.
+    If minor -> major for a *player*, apply a bigger penalty. For standard changes, apply `transfer_factor`.
+    """
+    curr_league = pl_ratings[ent_id].get("league")
+    if not curr_league or curr_league == new_league:
+        pl_ratings[ent_id]["league"] = new_league
+        return
+
+    curr_is_major = is_major_league(curr_league)
+    new_is_major = is_major_league(new_league)
+    curr_elo_val = league_elo_dict.get(curr_league, baseline_mu)
+    new_elo_val = league_elo_dict.get(new_league, baseline_mu)
+    diff = new_elo_val - curr_elo_val
+
+    old_rating = pl_ratings[ent_id]["rating"]
+    old_mu, old_sigma = old_rating.mu, old_rating.sigma
+
+    # If a "player" is going minor -> major, apply bigger penalty
+    is_player_id = isinstance(ent_id, str) and "player" in ent_id.lower()
+    if is_player_id and not curr_is_major and new_is_major:
+        adjusted_diff = transfer_factor_minor_to_major * diff
+        new_mu = old_mu - adjusted_diff
+    else:
+        adjusted_diff = transfer_factor * diff
+        new_mu = old_mu + adjusted_diff
+
+    # Keep sigma the same or slightly shift if desired. Here we keep it unchanged.
+    pl_ratings[ent_id]["rating"] = initialize_pl_rating(new_mu, old_sigma).rating(new_mu, old_sigma)
+    pl_ratings[ent_id]["league"] = new_league
+
+
+# ------------------------------------------------------------------------------
+# 6. Game Processing
+# ------------------------------------------------------------------------------
+def process_game(
+    df: pd.DataFrame,
+    game_group: pd.DataFrame,
+    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
+    pl_model: PlackettLuce,
+    entity: str,
+    entity_key: str,
+    baseline_mu: float,
+    baseline_sigma: float,
+    decay_factor: float,
+    transfer_factor: float,
+    initial_elo_adjustment_factor: float,
+    position_reset_factor: float,
+    league_elo_dict: Dict[str, float],
+) -> None:
+    """
+    Process a single match, updating Plackett-Luce ratings for each entity in the match.
+    Write columns back to `df`: (pl_mu_before, pl_sigma_before, pl_mu_after, pl_sigma_after, pl_win_likelihood).
+    """
+    current_season = game_group.iloc[0]["season"]
+    # Apply seasonal decay
+    pl_ratings = linear_decay_reset(
+        pl_ratings=pl_ratings,
+        current_season=current_season,
+        baseline_mu=baseline_mu,
+        baseline_sigma=baseline_sigma,
+        decay_factor=decay_factor,
+    )
+
+    entity_ids = game_group[entity_key].unique()
+    for ent_id in entity_ids:
+        if ent_id not in pl_ratings:
+            handle_new_entity(
+                ent_id=ent_id,
+                pl_ratings=pl_ratings,
+                league_elo_dict=league_elo_dict,
+                new_league=game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0],
+                current_season=current_season,
+                baseline_mu=baseline_mu,
+                baseline_sigma=baseline_sigma,
+                init_adjust_factor=initial_elo_adjustment_factor,
+            )
+        else:
+            new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
+            handle_league_swap(
+                ent_id=ent_id,
+                new_league=new_league,
+                pl_ratings=pl_ratings,
+                league_elo_dict=league_elo_dict,
+                baseline_mu=baseline_mu,
+                transfer_factor=transfer_factor,
+            )
+
+    # If entity is "player", check for position changes
+    if entity.lower() == "player":
+        for _, row in game_group.iterrows():
+            ent_id = row[entity_key]
+            new_position = row.get("position")
+            handle_position_switch(
+                entity_id=ent_id,
+                new_position=new_position,
+                pl_ratings=pl_ratings,
+                baseline_mu=baseline_mu,
+                baseline_sigma=baseline_sigma,
+                position_reset_factor=position_reset_factor,
+            )
+
+    # Split sides
+    blue_side = game_group[game_group["side"] == "Blue"]
+    red_side = game_group[game_group["side"] == "Red"]
+
+    # Sort by position if entity=player (paralleling the approach in Glicko/Elo)
+    if entity.lower() == "player":
+        blue_side = blue_side.sort_values(by="position")
+        red_side = red_side.sort_values(by="position")
+
+    blue_ids = blue_side[entity_key].values
+    red_ids = red_side[entity_key].values
+
+    # Current ratings
+    blue_ratings_before = [pl_ratings[b]["rating"] for b in blue_ids]
+    red_ratings_before = [pl_ratings[r]["rating"] for r in red_ids]
+
+    # Determine match result for PL: [0, 1] => Blue is rank 0 (win), Red is rank 1 (loss); reversed if Red won
+    blue_result = blue_side.iloc[0]["result"]
+    if abs(blue_result - 1.0) < 1e-9:
+        # Blue wins
+        ranks = [0, 1]
+    else:
+        # Red wins
+        ranks = [1, 0]
+
+    # Predict the chance that Blue wins
+    prob_blue_wins = predict_win_probability(pl_model, blue_ratings_before, red_ratings_before)
+
+    # Update ratings
+    updated = update_pl_ratings(pl_model, (blue_ratings_before, red_ratings_before), ranks=ranks)
+    updated_blue_ratings = updated[0]
+    updated_red_ratings = updated[1]
+
+    # Write updated ratings back to dictionary and DataFrame
+    for i, idx in enumerate(blue_side.index):
+        ent_id = blue_side.loc[idx, entity_key]
+        old_rating = blue_ratings_before[i]
+        new_rating = updated_blue_ratings[i]
+        pl_ratings[ent_id]["rating"] = new_rating
+
+        df.loc[idx, "pl_mu_before"] = old_rating.mu
+        df.loc[idx, "pl_sigma_before"] = old_rating.sigma
+        df.loc[idx, "opp_pl_mu_before"] = red_ratings_before[i].mu
+        df.loc[idx, "opp_pl_sigma_before"] = red_ratings_before[i].sigma
+        df.loc[idx, "pl_win_likelihood"] = prob_blue_wins
+        df.loc[idx, "pl_mu_after"] = new_rating.mu
+        df.loc[idx, "pl_sigma_after"] = new_rating.sigma
+
+    for i, idx in enumerate(red_side.index):
+        ent_id = red_side.loc[idx, entity_key]
+        old_rating = red_ratings_before[i]
+        new_rating = updated_red_ratings[i]
+        pl_ratings[ent_id]["rating"] = new_rating
+
+        df.loc[idx, "pl_mu_before"] = old_rating.mu
+        df.loc[idx, "pl_sigma_before"] = old_rating.sigma
+        df.loc[idx, "opp_pl_mu_before"] = blue_ratings_before[i].mu
+        df.loc[idx, "opp_pl_sigma_before"] = blue_ratings_before[i].sigma
+        df.loc[idx, "pl_win_likelihood"] = 1.0 - prob_blue_wins
+        df.loc[idx, "pl_mu_after"] = new_rating.mu
+        df.loc[idx, "pl_sigma_after"] = new_rating.sigma
+
+
+# ------------------------------------------------------------------------------
+# 7. Hyperparameter Tuning
+# ------------------------------------------------------------------------------
+def tune_pl_hyperparameters(
+    df: pd.DataFrame,
+    entity: str,
+    hyperparameters_path: Path,
+    league_elo_dict: Dict[str, float],
+) -> Dict[str, float]:
+    """
+    If existing hyperparameters are found, load them. Otherwise, run Optuna to find the best
+    PL parameters that minimize validation log loss.
+    """
+    # Attempt to load existing hyperparameters
+    best_params = load_hyperparameters(hyperparameters_path)
+    if best_params:
+        return best_params
+
+    logger.info(f"No Plackett-Luce hyperparameters found at {hyperparameters_path}. Starting tuning...")
+    data_pipeline_logger.info(f"No Plackett-Luce hyperparameters found at {hyperparameters_path}. Starting tuning...")
+
+    def objective(trial: optuna.trial.Trial) -> float:
+        hyperparams = suggest_pl_hyperparameters(trial)
+        # Split data
+        df_train, df_valid = split_and_validate_data(df, entity)
+        if df_train.empty or df_valid.empty:
+            logger.warning("Training or validation data is empty after splitting.")
+            data_pipeline_logger.warning("Training or validation data is empty after splitting.")
+            return float("inf")
+
+        try:
+            df_train_res = run_pl_computation(
+                df=df_train.copy(),
+                entity=entity,
+                mu=hyperparams["mu"],
+                sigma=hyperparams["sigma"],
+                decay_factor=hyperparams["decay_factor"],
+                transfer_factor=hyperparams["transfer_factor"],
+                initial_elo_adjustment_factor=hyperparams["initial_elo_adjustment_factor"],
+                position_reset_factor=hyperparams["position_reset_factor"],
+                league_elo_dict=league_elo_dict,
+                show_progress=False,
+            )
+        except Exception as e:
+            logger.error(f"Error in training PL computation: {e}")
+            data_pipeline_logger.error(f"Error in training PL computation: {e}")
+            return float("inf")
+
+        val_ratings = initialize_validation_ratings(df_train_res, entity, hyperparams["mu"], hyperparams["sigma"])
+
+        try:
+            loss = evaluate_validation(df_valid, val_ratings, entity, hyperparams)
+        except Exception as e:
+            logger.error(f"Error in validation step: {e}")
+            data_pipeline_logger.error(f"Error in validation step: {e}")
+            return float("inf")
+
+        return loss
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=True)
+    best_params = study.best_params
+
+    logger.info(f"Best Plackett-Luce hyperparameters: {best_params}")
+    data_pipeline_logger.info(f"Best Plackett-Luce hyperparameters: {best_params}")
+
+    save_hyperparameters(best_params, hyperparameters_path)
+    return best_params
+
+
+def load_hyperparameters(path: Path) -> Dict[str, float]:
+    """Load PL hyperparameters from JSON if available."""
+    if path.exists():
+        logger.info(f"Loading PL hyperparameters from {path}")
+        data_pipeline_logger.info(f"Loading PL hyperparameters from {path}")
+        try:
+            with path.open("r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load PL hyperparameters: {e}")
+            data_pipeline_logger.error(f"Failed to load PL hyperparameters from {path}")
+    return {}
+
+
+def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
+    """Save hyperparameters to a JSON file."""
+    try:
+        logger.info(f"Storing PL hyperparameters to {path}")
+        data_pipeline_logger.info(f"Storing PL hyperparameters to {path}")
+        with path.open("w") as f:
+            json.dump(params, f)
+    except Exception as e:
+        logger.error(f"Failed to save PL hyperparameters: {e}")
+        data_pipeline_logger.error(f"Failed to save PL hyperparameters to {path}")
+
+
+def suggest_pl_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, float]:
+    """Suggest Plackett-Luce hyperparameters (mu, sigma, decay_factor, transfer_factor, etc.) via Optuna."""
+    return {
+        "mu": trial.suggest_float("mu", 15.0, 40.0, step=5.0),
+        "sigma": trial.suggest_float("sigma", 2.0, 15.0, step=1.0),
+        "decay_factor": trial.suggest_float("decay_factor", 0.5, 1.0, step=0.05),
+        "transfer_factor": trial.suggest_float("transfer_factor", 0.1, 1.0, step=0.1),
+        "initial_elo_adjustment_factor": trial.suggest_float("initial_elo_adjustment_factor", 0.0, 1.0, step=0.1),
+        "position_reset_factor": trial.suggest_float("position_reset_factor", 0.0, 1.0, step=0.1),
+    }
+
+
+def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Sort, then split into training and validation sets by year boundary, verifying group sizes."""
+    df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
+    if df_sorted.empty:
+        logger.warning("DataFrame is empty after sorting in split_and_validate_data.")
+        data_pipeline_logger.warning("DataFrame is empty after sorting in split_and_validate_data.")
+        return pd.DataFrame(), pd.DataFrame()
+
+    try:
+        split_year = df_sorted["date"].dt.year.max()
+        split_date = pd.to_datetime(f"{split_year}-01-01")
+    except AttributeError as e:
+        logger.error(f"Error accessing date column with .dt: {e}")
+        data_pipeline_logger.error(f"Error accessing date column with .dt: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+    df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
+    df_valid = df_sorted[df_sorted["date"] >= split_date].reset_index(drop=True)
+
+    # Verify group sizes
+    expected_count = 10 if entity.lower() == "player" else 2
+    for subset, name in [(df_train, "Training"), (df_valid, "Validation")]:
+        if not subset.empty:
+            group_sizes = subset.groupby("gameid").size()
+            if not (group_sizes == expected_count).all():
+                logger.warning(f"{name} data has gameids with an incorrect number of entities.")
+                data_pipeline_logger.warning(f"{name} data has gameids with an incorrect number of entities.")
+                return pd.DataFrame(), pd.DataFrame()
+
+    return df_train, df_valid
+
+
+def initialize_validation_ratings(df_train_res: pd.DataFrame, entity: str, mu: float, sigma: float) -> defaultdict:
+    """
+    After training completes, read the final 'pl_mu_after' and 'pl_sigma_after' from training data
+    to initialize validation ratings. If an entity isn't in training, it starts from (mu, sigma).
+    """
+    from collections import defaultdict
+
+    entity_key = "teamid" if entity.lower() == "team" else "playerid"
+
+    final_mu_map = df_train_res.groupby(entity_key)["pl_mu_after"].last().to_dict()
+    final_sigma_map = df_train_res.groupby(entity_key)["pl_sigma_after"].last().to_dict()
+
+    val_ratings = defaultdict(lambda: {"rating": initialize_pl_rating(mu, sigma).rating(mu, sigma)})
+    for e_id in final_mu_map:
+        if pd.notna(final_mu_map[e_id]) and pd.notna(final_sigma_map[e_id]):
+            val_ratings[e_id]["rating"] = initialize_pl_rating(final_mu_map[e_id], final_sigma_map[e_id]).rating(
+                final_mu_map[e_id], final_sigma_map[e_id]
+            )
+    return val_ratings
+
+
+def evaluate_validation(
+    df_valid: pd.DataFrame,
+    val_ratings: defaultdict,
+    entity: str,
+    hyperparams: Dict[str, float],
+) -> float:
+    """
+    Compute log loss on the validation set. For each match, we:
+      1. Retrieve the teams' PL ratings
+      2. Predict the probability that Blue wins
+      3. Compare to the actual result
+      4. Update ratings for each side in a simplified approach
+    """
+    expected_probs = []
+    df_valid_sorted = df_valid.sort_values(by=["date", "gameid"]).reset_index(drop=True)
+    pl_model = initialize_pl_rating(hyperparams["mu"], hyperparams["sigma"])
+    entity_key = "teamid" if entity.lower() == "team" else "playerid"
+
+    for _, grp in df_valid_sorted.groupby(["date", "gameid"]):
+        blue_side = grp[grp["side"] == "Blue"]
+        red_side = grp[grp["side"] == "Red"]
+        if entity.lower() == "player":
+            blue_side = blue_side.sort_values(by="position")
+            red_side = red_side.sort_values(by="position")
+
+        blue_ids = blue_side[entity_key].values
+        red_ids = red_side[entity_key].values
+
+        blue_ratings = [val_ratings[b]["rating"] for b in blue_ids]
+        red_ratings = [val_ratings[r]["rating"] for r in red_ids]
+
+        # Probability that Blue wins
+        p_blue = predict_win_probability(pl_model, blue_ratings, red_ratings)
+        result = blue_side.iloc[0]["result"]  # 1 => Blue won, 0 => Red won
+        expected_probs.extend([p_blue] * len(blue_side))
+
+        # Update ratings for validation in a simplified manner
+        if abs(result - 1.0) < 1e-9:
+            # ranks: Blue=0, Red=1
+            updated = update_pl_ratings(pl_model, (blue_ratings, red_ratings), [0, 1])
+        else:
+            # ranks: Blue=1, Red=0
+            updated = update_pl_ratings(pl_model, (blue_ratings, red_ratings), [1, 0])
+
+        for i, bid in enumerate(blue_ids):
+            val_ratings[bid]["rating"] = updated[0][i]
+        for i, rid in enumerate(red_ids):
+            val_ratings[rid]["rating"] = updated[1][i]
+
+    # Evaluate log loss
+    y_true = df_valid_sorted.loc[df_valid_sorted["side"] == "Blue", "result"]
+    y_pred = pd.Series(expected_probs).clip(0.0001, 0.9999)
+
+    if len(y_true) != len(y_pred):
+        logger.error("Mismatch in lengths of y_true and y_pred in evaluate_validation.")
+        data_pipeline_logger.error("Mismatch in lengths of y_true and y_pred in evaluate_validation.")
+        return float("inf")
+
+    return log_loss(y_true, y_pred)
+
+
+# ------------------------------------------------------------------------------
+# 8. Main Plackett-Luce Computation
+# ------------------------------------------------------------------------------
+def run_pl_computation(
+    df: pd.DataFrame,
+    entity: str,
+    mu: float,
+    sigma: float,
+    decay_factor: float,
+    transfer_factor: float,
+    initial_elo_adjustment_factor: float,
+    position_reset_factor: float,
+    league_elo_dict: Dict[str, float],
+    show_progress: bool = True,
+) -> pd.DataFrame:
+    """
+    Main procedure to update Plackett-Luce ratings across the entire DataFrame:
+      1. Group matches by (date, gameid)
+      2. For each match, call `process_game`
+      3. Return a DataFrame with new columns:
+           pl_mu_before, pl_sigma_before, pl_mu_after, pl_sigma_after, pl_win_likelihood
+    """
+    df = df.copy()
+    entity_key = "teamid" if entity.lower() == "team" else "playerid"
+
+    # Initialize a PL model. We'll do updates with a fresh instance each time or just once.
+    pl_model = initialize_pl_rating(mu, sigma)
+
+    # Build an initial ratings dict
+    pl_ratings = defaultdict(
+        lambda: {
+            "rating": initialize_pl_rating(mu, sigma).rating(mu, sigma),
+            "season": df["season"].min(),
+            "league": None,
+        }
+    )
+
+    # Pre-allocate columns
+    for col in ["pl_mu_before", "pl_sigma_before", "pl_mu_after", "pl_sigma_after", "pl_win_likelihood"]:
+        df[col] = None
+
+    grouped = df.groupby(["date", "gameid"], sort=False)
+    if show_progress:
+        grouped = tqdm(grouped, desc="Processing games", total=grouped.ngroups)
+
+    for _, game_grp in grouped:
+        process_game(
+            df=df,
+            game_group=game_grp,
+            pl_ratings=pl_ratings,
+            pl_model=pl_model,
+            entity=entity,
+            entity_key=entity_key,
+            baseline_mu=mu,
+            baseline_sigma=sigma,
+            decay_factor=decay_factor,
+            transfer_factor=transfer_factor,
+            initial_elo_adjustment_factor=initial_elo_adjustment_factor,
+            position_reset_factor=position_reset_factor,
+            league_elo_dict=league_elo_dict,
+        )
+
+    return df
+
+
+def calculate_plackett_luce(
+    df: pd.DataFrame,
+    entity: str,
+    league_elo_dict: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
+    """
+    Main entry point for Plackett-Luce rating computation, parallel to Elo and Glicko-2 modules.
+    - Preprocesses the DataFrame
+    - Loads or tunes PL hyperparameters
+    - Runs final PL computations
+    """
+    # Preprocessing
+    df_pre = preprocess_pl_dataframe(df, entity)
+
+    # Load league Elo if not provided
+    if league_elo_dict is None:
+        league_elo_dict = {}
+        if LEAGUE_ELO.exists():
+            league_elo_df = pd.read_parquet(LEAGUE_ELO)
+            league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
+
+    # Attempt to find or tune hyperparameters
+    hyperparameters_path = Path(str(ENTITY_PL_HYPERPARAMETERS).replace("entity", entity))
+    best_params = tune_pl_hyperparameters(df_pre, entity, hyperparameters_path, league_elo_dict)
+
+    # Final run with best hyperparams
+    df_final = run_pl_computation(
+        df=df_pre,
+        entity=entity,
+        mu=best_params.get("mu", DEFAULT_MU),
+        sigma=best_params.get("sigma", DEFAULT_SIGMA),
+        decay_factor=best_params.get("decay_factor", 0.9),
+        transfer_factor=best_params.get("transfer_factor", 0.5),
+        initial_elo_adjustment_factor=best_params.get("initial_elo_adjustment_factor", 0.5),
+        position_reset_factor=best_params.get("position_reset_factor", 0.2),
+        league_elo_dict=league_elo_dict,
+        show_progress=True,
+    )
+    return df_final

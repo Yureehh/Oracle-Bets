@@ -647,8 +647,6 @@ def calculate_elo(
     if league_elo_dict is None:
         league_elo_dict = {}
         if LEAGUE_ELO.exists():
-            logger.info(f"Loading league Elo ratings from {LEAGUE_ELO}")
-            data_pipeline_logger.info(f"Loading league Elo ratings from {LEAGUE_ELO}")
             league_elo_df = pd.read_parquet(LEAGUE_ELO)
             league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 
