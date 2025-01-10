@@ -144,7 +144,7 @@ def linear_decay_reset(
     for ent_id, data in ts_ratings.items():
         ent_copy = data.copy()
         if data["season"] < current_season:
-            old_rating: Rating = data["rating"]
+            old_rating = data["rating"]
             new_mu = baseline_mu + (old_rating.mu - baseline_mu) * decay_factor
             new_sigma = baseline_sigma + (old_rating.sigma - baseline_sigma) * decay_factor
             ent_copy["rating"] = create_ts_rating(new_mu, new_sigma)
@@ -166,7 +166,7 @@ def handle_position_switch(
         return
     last_position = ts_ratings[entity_id].get("last_position")
     if last_position and last_position != new_position:
-        old_rating: Rating = ts_ratings[entity_id]["rating"]
+        old_rating = ts_ratings[entity_id]["rating"]
         new_mu = baseline_mu + (old_rating.mu - baseline_mu) * (1.0 - position_reset_factor)
         new_sigma = baseline_sigma + (old_rating.sigma - baseline_sigma) * (1.0 - position_reset_factor)
         ts_ratings[entity_id]["rating"] = create_ts_rating(new_mu, new_sigma)
@@ -229,7 +229,7 @@ def handle_league_swap(
     new_elo_val = league_elo_dict.get(new_league, baseline_mu)
     diff = new_elo_val - curr_elo_val
 
-    old_rating: Rating = ts_ratings[ent_id]["rating"]
+    old_rating = ts_ratings[ent_id]["rating"]
     old_mu, old_sigma = old_rating.mu, old_rating.sigma
 
     # If a "player" is going minor->major, apply a bigger penalty

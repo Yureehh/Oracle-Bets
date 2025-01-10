@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-# Import necessary modules for performance metrics calculation.
 from src.feature_engineering.performance_features.entity_stats import enrich_entity_ema_statistics
 from src.feature_engineering.performance_features.patch_win_rate import patch_win_rate_ewm_performance
 from src.feature_engineering.performance_features.season_win_rate import season_win_rate_ewm_performance
@@ -20,43 +19,41 @@ from src.feature_engineering.performance_features.side_win_rate import side_win_
 @dataclass
 class PerformanceMetrics:
     """
-    Wrapper class for performance metrics calculations related to various game statistics.
-    This class does not maintain any state and serves purely as an organizational tool
-    for related static methods that operate on game data.
+    A stateless utility class for performance metrics calculations.
+    Groups together static methods that enrich a DataFrame with
+    various exponentially weighted statistical features.
     """
 
+    # Common columns needed for all methods (customize as needed)
+    REQUIRED_COLUMNS = {"result", "patch", "season", "side"}
+
     @staticmethod
-    def validate_input_data(df: pd.DataFrame, entity: str):
+    def validate_input_data(df: pd.DataFrame, entity: str) -> None:
         """
         Validates the input DataFrame and entity type.
 
-        Args:
-            df (pd.DataFrame): The DataFrame containing game data.
-            entity (str): The type of entity, e.g., 'player' or 'team'.
-
-        Raises:
-            ValueError: If the entity is not 'player' or 'team' or if the DataFrame is invalid.
+        :param df: A Pandas DataFrame containing game data
+        :param entity: 'player' or 'team'
+        :raises ValueError: if entity is invalid, df is empty, or required columns are missing
         """
         if entity not in {"player", "team"}:
-            raise ValueError("Entity must be either 'player' or 'team'.")
-        if df.empty or not isinstance(df, pd.DataFrame):
-            raise ValueError("Input data must be a non-empty DataFrame.")
-        required_columns = ["result", "patch"]  # Example required columns
-        missing_columns = set(required_columns) - set(df.columns)
-        if missing_columns:
-            raise ValueError(f"Input data must contain the following columns: {missing_columns}")
+            raise ValueError(f"Invalid entity '{entity}': must be either 'player' or 'team'.")
+        if df.empty:
+            raise ValueError("Input DataFrame is empty.")
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError("Input data must be a Pandas DataFrame.")
+        missing = PerformanceMetrics.REQUIRED_COLUMNS - set(df.columns)
+        if missing:
+            raise ValueError(f"DataFrame is missing required columns: {missing}")
 
     @staticmethod
     def add_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:
         """
         Enriches the DataFrame with entity-specific exponentially weighted moving average statistics.
 
-        Args:
-            df (pd.DataFrame): The DataFrame containing game data.
-            entity (str): The type of entity, e.g., 'player' or 'team'.
-
-        Returns:
-            pd.DataFrame: DataFrame enriched with EMA statistics.
+        :param df: DataFrame containing game data
+        :param entity: 'player' or 'team'
+        :return: DataFrame enriched with EMA statistics
         """
         PerformanceMetrics.validate_input_data(df, entity)
         return enrich_entity_ema_statistics(df, entity)
@@ -66,12 +63,9 @@ class PerformanceMetrics:
         """
         Calculates and appends side win rate statistics using an exponentially weighted mean model.
 
-        Args:
-            df (pd.DataFrame): The DataFrame containing game data.
-            entity (str): The type of entity, e.g., 'player' or 'team'.
-
-        Returns:
-            pd.DataFrame: DataFrame with side win rate EWM statistics.
+        :param df: DataFrame containing game data
+        :param entity: 'player' or 'team'
+        :return: DataFrame with side win rate EWM statistics
         """
         PerformanceMetrics.validate_input_data(df, entity)
         return side_win_rate_ewm_performance(df, entity)
@@ -81,12 +75,9 @@ class PerformanceMetrics:
         """
         Computes and integrates the season win rate EWM model into the DataFrame.
 
-        Args:
-            df (pd.DataFrame): The DataFrame containing game data.
-            entity (str): The type of entity, e.g., 'player' or 'team'.
-
-        Returns:
-            pd.DataFrame: DataFrame updated with season win rate EWM model calculations.
+        :param df: DataFrame containing game data
+        :param entity: 'player' or 'team'
+        :return: DataFrame updated with season win rate EWM model calculations
         """
         PerformanceMetrics.validate_input_data(df, entity)
         return season_win_rate_ewm_performance(df, entity)
@@ -96,12 +87,9 @@ class PerformanceMetrics:
         """
         Computes and integrates the patch win rate EWM model into the DataFrame.
 
-        Args:
-            df (pd.DataFrame): The DataFrame containing game data.
-            entity (str): The type of entity, e.g., 'player' or 'team'.
-
-        Returns:
-            pd.DataFrame: DataFrame updated with patch win rate EWM model calculations.
+        :param df: DataFrame containing game data
+        :param entity: 'player' or 'team'
+        :return: DataFrame updated with patch win rate EWM model calculations
         """
         PerformanceMetrics.validate_input_data(df, entity)
         return patch_win_rate_ewm_performance(df, entity)

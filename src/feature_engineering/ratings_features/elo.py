@@ -52,6 +52,9 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     Ensures the DataFrame has all required columns, that 'date' is a datetime,
     and that rows are sorted by the appropriate keys.
     """
+    if entity.lower() not in ["team", "player"]:
+        raise ValueError("Entity must be 'team' or 'player'")
+
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
     # Required columns
@@ -158,12 +161,12 @@ def linear_decay_reset(
     Elo is partially reset toward baseline by decay_factor.
     """
     update_elo_ratings = {}
-    for data in elo_ratings.values():
+    for ent_id, data in elo_ratings.items():
         updated_data = data.copy()
         if data["season"] < current_season:
             updated_data["elo"] = baseline_elo + (data["elo"] - baseline_elo) * decay_factor
             updated_data["season"] = current_season
-        update_elo_ratings[data["entity_id"]] = updated_data
+        update_elo_ratings[ent_id] = updated_data
     return update_elo_ratings
 
 

@@ -277,25 +277,25 @@ class DataGenerator:
             self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
             double_logging_call("\nCompleted enriching data with Leagues ELO\n")
 
-            # # (2) ELO
-            # self.team_data, self.player_data = parallelize_enrichment(
-            #     self.rating_models.compute_elo,
-            #     self.team_data,
-            #     self.player_data,
-            #     "team",
-            #     "player",
-            # )
-            # double_logging_call("Completed enriching data with ELO.\n")
+            # (2) ELO
+            self.team_data, self.player_data = parallelize_enrichment(
+                self.rating_models.compute_elo,
+                self.team_data,
+                self.player_data,
+                "team",
+                "player",
+            )
+            double_logging_call("Completed enriching data with ELO.\n")
 
-            # # (3) Glicko2
-            # self.team_data, self.player_data = parallelize_enrichment(
-            #     self.rating_models.compute_glicko2,
-            #     self.team_data,
-            #     self.player_data,
-            #     "team",
-            #     "player",
-            # )
-            # double_logging_call("Completed enriching data with Glicko2.\n")
+            # (3) Glicko2
+            self.team_data, self.player_data = parallelize_enrichment(
+                self.rating_models.compute_glicko2,
+                self.team_data,
+                self.player_data,
+                "team",
+                "player",
+            )
+            double_logging_call("Completed enriching data with Glicko2.\n")
 
             # (4) Plackett-Luce
             self.team_data, self.player_data = parallelize_enrichment(
@@ -307,15 +307,15 @@ class DataGenerator:
             )
             double_logging_call("Completed enriching data with Plackett-Luce.\n")
 
-            # # (5) TrueSkill
-            # self.team_data, self.player_data = parallelize_enrichment(
-            #     self.rating_models.compute_trueskill,
-            #     self.team_data,
-            #     self.player_data,
-            #     "team",
-            #     "player",
-            # )
-            # double_logging_call("Completed enriching data with TrueSkill.\n")
+            # (5) TrueSkill
+            self.team_data, self.player_data = parallelize_enrichment(
+                self.rating_models.compute_trueskill,
+                self.team_data,
+                self.player_data,
+                "team",
+                "player",
+            )
+            double_logging_call("Completed enriching data with TrueSkill.\n")
 
             double_logging_call("Completed enriching data with ratings.")
         except Exception as e:
