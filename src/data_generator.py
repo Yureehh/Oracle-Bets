@@ -467,6 +467,8 @@ class DataGenerator:
         raw_data = self.ingest_data_from_s3()
         self.clean_and_store_data(raw_data)
         self.enrich_datasets()
+        self.team_data.to_csv("team_data.csv", index=False)
+        self.player_data.to_csv("player_data.csv", index=False)
         return
         self.extract_both_training_data()
         self.flatten_both_inference_data()
