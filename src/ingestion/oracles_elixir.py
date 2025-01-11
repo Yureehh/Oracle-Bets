@@ -174,7 +174,8 @@ class OraclesElixir:
     @staticmethod
     def replace_team_names(oracles_elixir_data: pd.DataFrame) -> pd.DataFrame:
         """
-        Replace team names with consistent naming conventions.
+        Replace team names with consistent naming conventions using data from
+        TEAM_REPLACEMENTS_AND_INVALID_GAMES.
 
         Args:
             oracles_elixir_data (pd.DataFrame): DataFrame to update.
@@ -183,44 +184,64 @@ class OraclesElixir:
             pd.DataFrame: DataFrame with replaced team names.
         """
         try:
-            with open(TEAM_REPLACEMENTS_AND_INVALID_GAMES) as file:
-                team_name_replacements = json.load(file)["team_name_replacements"]
-        except FileNotFoundError:
-            logger.error(f"Team replacements file not found at {TEAM_REPLACEMENTS_AND_INVALID_GAMES}.")
-            data_pipeline_logger.error(f"Team replacements file not found at {TEAM_REPLACEMENTS_AND_INVALID_GAMES}.")
+            with open(TEAM_REPLACEMENTS_AND_INVALID_GAMES, "r", encoding="utf-8") as file:
+                file_data = json.load(file)
+        except FileNotFoundError as e:
+            logger.error(f"Team replacements file not found: {e}")
+            data_pipeline_logger.error(f"Team replacements file not found: {e}")
             raise
         except json.JSONDecodeError as e:
-            logger.error(f"Error decoding JSON from {TEAM_REPLACEMENTS_AND_INVALID_GAMES}: {e}")
-            data_pipeline_logger.error(f"Error decoding JSON from {TEAM_REPLACEMENTS_AND_INVALID_GAMES}: {e}")
+            logger.error(f"Error decoding JSON in {TEAM_REPLACEMENTS_AND_INVALID_GAMES}: {e}")
+            data_pipeline_logger.error(f"Error decoding JSON in {TEAM_REPLACEMENTS_AND_INVALID_GAMES}: {e}")
             raise
 
-        for old, replacement in team_name_replacements:
-            if "until" not in old:
-                oracles_elixir_data["teamname"] = oracles_elixir_data["teamname"].replace(
-                    old["name"], replacement["name"]
+        # Safely extract replacements
+        team_name_replacements = file_data.get("team_name_replacements", [])
+        if not isinstance(team_name_replacements, list):
+            msg = (
+                "Invalid format: 'team_name_replacements' is missing or not a list "
+                f"in {TEAM_REPLACEMENTS_AND_INVALID_GAMES}"
+            )
+            logger.error(msg)
+            data_pipeline_logger.error(msg)
+            raise ValueError(msg)
+
+        # Perform replacements
+        for entry in team_name_replacements:
+            # Expect each entry to be a 2-element list: [old_data, new_data]
+            if not isinstance(entry, list) or len(entry) != 2:
+                logger.warning(f"Skipping invalid replacement entry: {entry}")
+                data_pipeline_logger.warning(f"Skipping invalid replacement entry: {entry}")
+                continue
+
+            old_data, new_data = entry
+
+            # Safely extract the relevant fields
+            old_name = old_data.get("name")
+            old_teamid = old_data.get("teamid")
+            until_date = old_data.get("until", None)  # may be missing
+            new_name = new_data.get("name")
+            new_teamid = new_data.get("teamid")
+
+            # If we don't have minimal info, skip
+            if not (old_name and old_teamid and new_name and new_teamid):
+                logger.warning(f"Missing 'name' or 'teamid' fields in {entry}, skipping.")
+                data_pipeline_logger.warning(f"Missing 'name' or 'teamid' fields in {entry}, skipping.")
+                continue
+
+            # Apply replacements
+            if until_date:
+                mask = oracles_elixir_data["date"] < pd.to_datetime(until_date)
+                oracles_elixir_data.loc[mask, "teamname"] = oracles_elixir_data.loc[mask, "teamname"].replace(
+                    old_name, new_name
                 )
-                oracles_elixir_data["teamid"] = oracles_elixir_data["teamid"].replace(
-                    old["teamid"], replacement["teamid"]
+                oracles_elixir_data.loc[mask, "teamid"] = oracles_elixir_data.loc[mask, "teamid"].replace(
+                    old_teamid, new_teamid
                 )
             else:
-                oracles_elixir_data.loc[
-                    oracles_elixir_data["date"] < old["until"],
-                    "teamname",
-                ] = oracles_elixir_data.loc[
-                    oracles_elixir_data["date"] < old["until"],
-                    "teamname",
-                ].replace(
-                    old["name"], replacement["name"]
-                )
-                oracles_elixir_data.loc[
-                    oracles_elixir_data["date"] < old["until"],
-                    "teamid",
-                ] = oracles_elixir_data.loc[
-                    oracles_elixir_data["date"] < old["until"],
-                    "teamid",
-                ].replace(
-                    old["teamid"], replacement["teamid"]
-                )
+                # Replace in entire column
+                oracles_elixir_data["teamname"] = oracles_elixir_data["teamname"].replace(old_name, new_name)
+                oracles_elixir_data["teamid"] = oracles_elixir_data["teamid"].replace(old_teamid, new_teamid)
 
         logger.info("Replaced incorrect team names with correct ones.")
         data_pipeline_logger.info("Replaced incorrect team names with correct ones.")
