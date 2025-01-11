@@ -43,6 +43,17 @@
         "name": "UCAM Tokiers",
         "teamid": "oe:team:4521d75a62eec4d83cf9dfeba436f41"
       }
+    ],
+    [
+      {
+        "name": "Team Heretics",
+        "teamid": "oe:team:1285e1c04d54de96502f12da4d49458",
+        "last_year": "2023-01-01"
+      },
+      {
+        "name": "Los Heretics",
+        "teamid": "oe:team:2dfc66b98002c5afad2a98dbf86e350"
+      }
     ]
   ]
 }

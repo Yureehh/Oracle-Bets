@@ -195,8 +195,32 @@ class OraclesElixir:
             raise
 
         for old, replacement in team_name_replacements:
-            oracles_elixir_data["teamname"] = oracles_elixir_data["teamname"].replace(old["name"], replacement["name"])
-            oracles_elixir_data["teamid"] = oracles_elixir_data["teamid"].replace(old["teamid"], replacement["teamid"])
+            if "until" not in old:
+                oracles_elixir_data["teamname"] = oracles_elixir_data["teamname"].replace(
+                    old["name"], replacement["name"]
+                )
+                oracles_elixir_data["teamid"] = oracles_elixir_data["teamid"].replace(
+                    old["teamid"], replacement["teamid"]
+                )
+            else:
+                oracles_elixir_data.loc[
+                    oracles_elixir_data["date"] < old["until"],
+                    "teamname",
+                ] = oracles_elixir_data.loc[
+                    oracles_elixir_data["date"] < old["until"],
+                    "teamname",
+                ].replace(
+                    old["name"], replacement["name"]
+                )
+                oracles_elixir_data.loc[
+                    oracles_elixir_data["date"] < old["until"],
+                    "teamid",
+                ] = oracles_elixir_data.loc[
+                    oracles_elixir_data["date"] < old["until"],
+                    "teamid",
+                ].replace(
+                    old["teamid"], replacement["teamid"]
+                )
 
         logger.info("Replaced incorrect team names with correct ones.")
         data_pipeline_logger.info("Replaced incorrect team names with correct ones.")

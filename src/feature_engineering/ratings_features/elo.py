@@ -157,17 +157,14 @@ def linear_decay_reset(
     decay_factor: float,
 ) -> Dict[Union[int, str], Dict[str, Any]]:
     """
-    Apply a seasonal decay to each entity if stored season < current_season.
+    In-place: Apply a seasonal decay if the stored season < current_season.
     Elo is partially reset toward baseline by decay_factor.
     """
-    update_elo_ratings = {}
-    for ent_id, data in elo_ratings.items():
-        updated_data = data.copy()
+    for _, data in elo_ratings.items():
         if data["season"] < current_season:
-            updated_data["elo"] = baseline_elo + (data["elo"] - baseline_elo) * decay_factor
-            updated_data["season"] = current_season
-        update_elo_ratings[ent_id] = updated_data
-    return update_elo_ratings
+            data["elo"] = baseline_elo + (data["elo"] - baseline_elo) * decay_factor
+            data["season"] = current_season
+    return elo_ratings  # Return the *same* dict reference
 
 
 def handle_new_entity(
@@ -226,27 +223,25 @@ def handle_league_swap(
         elo_ratings[ent_id]["league"] = new_league
         return
 
-    # Determine if current and new leagues are major
     curr_is_major = is_major_league(curr_league)
     new_is_major = is_major_league(new_league)
 
-    # Retrieve current and new league Elo values
+    # Retrieve league Elo values (if you want minimal adjustments, scale down `diff`)
     curr_elo_val = league_elo_dict.get(curr_league, baseline_elo)
     new_elo_val = league_elo_dict.get(new_league, baseline_elo)
     diff = new_elo_val - curr_elo_val
 
-    # Apply Elo adjustment based on league and entity type
     old_elo = elo_ratings[ent_id]["elo"]
     if "player" in ent_id.lower() and not curr_is_major and new_is_major:
         # Minor to major transfer: penalize heavily
         adjusted_diff = transfer_factor_minor_to_major * diff
         new_elo = old_elo - adjusted_diff
     else:
-        # Normal transfer for teams
+        # Normal transfer
         adjusted_diff = transfer_factor * diff
         new_elo = old_elo + adjusted_diff
 
-    # Update Elo and league information
+    # Update Elo and league
     elo_ratings[ent_id]["elo"] = new_elo
     elo_ratings[ent_id]["league"] = new_league
 
@@ -268,12 +263,15 @@ def process_game(
     transfer_factor: float,
     initial_elo_adjustment_factor: float,
     position_reset_factor: float = 0.2,
-) -> None:
-    """Process a single game group, updating Elo for both sides and writing results to df."""
+) -> Dict[Union[int, str], Dict[str, Any]]:
+    """
+    Process a single game group, updating Elo for both sides and writing results to df.
+    Return the updated dictionary so it persists across matches.
+    """
     current_season = game_group.iloc[0]["season"]
 
-    # Seasonal decay reset if the season changed
-    elo_ratings = linear_decay_reset(
+    # Seasonal decay reset in-place
+    linear_decay_reset(
         elo_ratings=elo_ratings,
         current_season=current_season,
         baseline_elo=baseline_elo,
@@ -285,6 +283,8 @@ def process_game(
 
     # Check/initialize each entity’s Elo rating
     for ent_id in entity_ids:
+        # Optional: convert ent_id to string or int consistently
+        # ent_id = str(ent_id)
         if ent_id not in elo_ratings:
             new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
             handle_new_entity(
@@ -307,7 +307,7 @@ def process_game(
                 transfer_factor=transfer_factor,
             )
 
-    # If we're dealing with players, handle position switching
+    # If dealing with players, handle position switching
     if entity.lower() == "player":
         for _, row in game_group.iterrows():
             ent_id = row[entity_key]
@@ -359,6 +359,8 @@ def process_game(
     df.loc[red_rows.index, "opp_elo_before"] = blue_old_elos
     df.loc[red_rows.index, "elo_win_likelihood"] = 1.0 - blue_expected
     df.loc[red_rows.index, "elo_after"] = red_new_elos
+
+    return elo_ratings
 
 
 # ------------------------------------------------------------------------------
@@ -604,25 +606,30 @@ def run_elo_computation(
     df = df.copy()
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
-    # Initialize Elo ratings
-    # We'll store "league" only once they appear in a match
-    elo_ratings = defaultdict(lambda: {"elo": initial_elo, "season": df["season"].min(), "league": None})
+    # Initialize Elo ratings once
+    elo_ratings = defaultdict(
+        lambda: {
+            "elo": initial_elo,
+            "season": df["season"].min(),
+            "league": None,
+        }
+    )
 
     # Pre-allocate output columns
     for col in ["elo_before", "opp_elo_before", "elo_win_likelihood", "elo_after"]:
         df[col] = None
 
-    # Group by each unique match
     grouped = df.groupby(["date", "gameid"], sort=False)
     if show_progress:
         grouped = tqdm(grouped, desc="Processing games", total=grouped.ngroups)
 
-    # Process each match group
     for _, game_grp in grouped:
-        process_game(
+        # Always capture the returned dictionary to ensure
+        # we do not lose the updated reference
+        elo_ratings = process_game(
             df=df,
             game_group=game_grp,
-            elo_ratings=elo_ratings,
+            elo_ratings=elo_ratings,  # pass the same dict
             k_factor=k_factor,
             entity=entity,
             entity_key=entity_key,

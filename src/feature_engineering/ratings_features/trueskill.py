@@ -1,7 +1,8 @@
 """
 TrueSkill Rating System with Hyperparameter Tuning using Optuna
 
-Mirrors the structure of the Plackett-Luce (and Elo/Glicko) modules.
+Mirrors the structure of the Plackett-Luce (and Elo/Glicko) modules, but uses
+the TrueSkill library from the `trueskill` package.
 """
 
 import itertools
@@ -136,21 +137,19 @@ def linear_decay_reset(
     decay_factor: float,
 ) -> Dict[Union[int, str], Dict[str, Any]]:
     """
-    Partially reset mu/sigma toward baseline if stored season < current_season.
+    In-place: partially reset mu/sigma toward baseline if stored season < current_season.
     new_mu = baseline_mu + (old_mu - baseline_mu)*decay_factor
     new_sigma = baseline_sigma + (old_sigma - baseline_sigma)*decay_factor
     """
-    updated_dict = {}
-    for ent_id, data in ts_ratings.items():
-        ent_copy = data.copy()
+    for _, data in ts_ratings.items():
         if data["season"] < current_season:
             old_rating = data["rating"]
             new_mu = baseline_mu + (old_rating.mu - baseline_mu) * decay_factor
             new_sigma = baseline_sigma + (old_rating.sigma - baseline_sigma) * decay_factor
-            ent_copy["rating"] = create_ts_rating(new_mu, new_sigma)
-            ent_copy["season"] = current_season
-        updated_dict[ent_id] = ent_copy
-    return updated_dict
+            data["rating"] = create_ts_rating(new_mu, new_sigma)
+            data["season"] = current_season
+
+    return ts_ratings  # return same dict reference
 
 
 def handle_position_switch(
@@ -241,7 +240,6 @@ def handle_league_swap(
         adjusted_diff = transfer_factor * diff
         new_mu = old_mu + adjusted_diff
 
-    # Keep sigma unchanged or partially changed. Here we keep it unchanged for simplicity
     ts_ratings[ent_id]["rating"] = create_ts_rating(new_mu, old_sigma)
     ts_ratings[ent_id]["league"] = new_league
 
@@ -263,14 +261,15 @@ def process_game(
     initial_elo_adjustment_factor: float,
     position_reset_factor: float,
     league_elo_dict: Dict[str, float],
-) -> None:
+) -> Dict[Union[int, str], Dict[str, Any]]:
     """
     Process a single match, updating TrueSkill ratings for each entity in the match.
-    Write columns back to df.
+    Return the updated dictionary so we don't lose changes.
     """
     current_season = game_group.iloc[0]["season"]
-    # Seasonal decay
-    ts_ratings = linear_decay_reset(
+
+    # In-place seasonal decay
+    linear_decay_reset(
         ts_ratings=ts_ratings,
         current_season=current_season,
         baseline_mu=baseline_mu,
@@ -371,6 +370,9 @@ def process_game(
         df.loc[idx, "trueskill_win_likelihood"] = 1.0 - prob_blue_wins
         df.loc[idx, "trueskill_mu_after"] = new_rating.mu
         df.loc[idx, "trueskill_sigma_after"] = new_rating.sigma
+
+    # Return the updated dictionary to ensure we don't lose any changes
+    return ts_ratings
 
 
 # ------------------------------------------------------------------------------
@@ -624,10 +626,10 @@ def run_trueskill_computation(
     """
     Main procedure to update TrueSkill ratings across the entire DataFrame:
       1. Group matches by (date, gameid)
-      2. For each match, call `process_game`
+      2. For each match, call `process_game` (capture returned dictionary!)
       3. Return a DataFrame with new columns:
          trueskill_mu_before, trueskill_sigma_before, trueskill_mu_after,
-         trueskill_sigma_after, trueskill_win_likelihood
+         trueskill_sigma_after, trueskill_win_likelihood, etc.
     """
     df = df.copy()
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
@@ -653,6 +655,8 @@ def run_trueskill_computation(
     for col in [
         "trueskill_mu_before",
         "trueskill_sigma_before",
+        "opp_trueskill_mu_before",
+        "opp_trueskill_sigma_before",
         "trueskill_win_likelihood",
         "trueskill_mu_after",
         "trueskill_sigma_after",
@@ -663,9 +667,9 @@ def run_trueskill_computation(
     if show_progress:
         grouped = tqdm(grouped, desc="Processing games", total=grouped.ngroups)
 
-    # Process each match
+    # Process each match, retaining updated dictionary
     for _, game_grp in grouped:
-        process_game(
+        ts_ratings = process_game(
             df=df,
             game_group=game_grp,
             ts_ratings=ts_ratings,

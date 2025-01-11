@@ -219,20 +219,16 @@ def linear_decay_reset(
     Returns:
         Dict[Union[int, str], Dict[str, Any]]: Updated rating dict after seasonal decay.
     """
-    updated = {}
     for entity_id, data in glicko2_ratings.items():
-        copied = data.copy()
-        old = data["rating"]
-
+        old_rating = data["rating"]
         if data["season"] < current_season:
-            # We only decay mu, keep phi and sigma unchanged for simplicity
-            delta_mu = old.mu - baseline_mu
+            delta_mu = old_rating.mu - baseline_mu
             reset_mu = baseline_mu + delta_mu * decay_factor
-            copied["rating"] = Rating(mu=reset_mu, phi=old.phi, sigma=old.sigma)
-            copied["season"] = current_season
-
-        updated[entity_id] = copied
-    return updated
+            # create a new Rating with decayed mu
+            glicko2_ratings[entity_id]["rating"] = Rating(mu=reset_mu, phi=old_rating.phi, sigma=old_rating.sigma)
+            glicko2_ratings[entity_id]["season"] = current_season
+    # Return the same dict reference for chaining
+    return glicko2_ratings
 
 
 def handle_position_switch(
@@ -365,7 +361,7 @@ def process_game(
     transfer_factor: float,
     initial_elo_adjustment_factor: float,
     position_reset_factor: float = 0.2,
-) -> None:
+) -> Dict[Union[int, str], Dict[str, Any]]:
     """
     Process a single grouped game, updating Glicko-2 ratings for both sides.
 
@@ -385,18 +381,19 @@ def process_game(
     """
     current_season = game_group.iloc[0]["season"]
 
-    # Seasonal decay
-    glicko2_ratings = linear_decay_reset(
+    # In-place seasonal decay
+    linear_decay_reset(
         glicko2_ratings=glicko2_ratings,
         current_season=current_season,
         baseline_mu=baseline_mu,
         decay_factor=decay_factor,
     )
 
+    # Check / init each entity
     entity_ids = game_group[entity_key].unique()
     for ent_id in entity_ids:
+        # Optional: ent_id = str(ent_id) to unify types
         if ent_id not in glicko2_ratings:
-            # New entity
             new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
             handle_new_entity(
                 ent_id=ent_id,
@@ -418,7 +415,7 @@ def process_game(
                 transfer_factor=transfer_factor,
             )
 
-    # Handle position switching if entity is player
+    # Handle position switching if player
     if entity.lower() == "player":
         for _, row in game_group.iterrows():
             handle_position_switch(
@@ -429,29 +426,26 @@ def process_game(
                 position_reset_factor=position_reset_factor,
             )
 
-    # Split sides
+    # Split sides, gather old ratings
     blue_rows = game_group[game_group["side"] == "Blue"]
     red_rows = game_group[game_group["side"] == "Red"]
 
     blue_ids = blue_rows[entity_key].values
     red_ids = red_rows[entity_key].values
 
-    # Retrieve old ratings for logging
     blue_old_ratings = [glicko2_ratings[b]["rating"] for b in blue_ids]
     red_old_ratings = [glicko2_ratings[r]["rating"] for r in red_ids]
 
-    # Compute mean rating for each team
+    # Calculate means, expected outcome, etc.
     blue_mean_rating = calculate_mean_rating(blue_old_ratings)
     red_mean_rating = calculate_mean_rating(red_old_ratings)
-
     mean_blue_impact = glicko2_model.reduce_impact(blue_mean_rating)
 
-    # Compute expected outcome for the Blue side
     blue_expected = glicko2_model.expect_score(blue_mean_rating, red_mean_rating, mean_blue_impact)
-    result = blue_rows.iloc[0]["result"]  # 1.0 if Blue won, 0.0 if Red won
+    result = blue_rows.iloc[0]["result"]
     red_result = 1.0 - result
 
-    # Use the `rate_match_using_mean` approach
+    # Rate both sides
     updated_blue_ratings = rate_match_using_mean(
         glicko2_model, team_ratings=blue_old_ratings, opp_mean_rating=red_mean_rating, result=int(result)
     )
@@ -459,14 +453,13 @@ def process_game(
         glicko2_model, team_ratings=red_old_ratings, opp_mean_rating=blue_mean_rating, result=int(red_result)
     )
 
-    # Store updated ratings in dictionary
+    # Save updates in dictionary
     for i, bid in enumerate(blue_ids):
         glicko2_ratings[bid]["rating"] = updated_blue_ratings[i]
     for i, rid in enumerate(red_ids):
         glicko2_ratings[rid]["rating"] = updated_red_ratings[i]
 
-    # Write Glicko-2 columns back to df
-    # For clarity, we store mu/phi before & after, plus the predicted win likelihood (blue_expected).
+    # Write columns back to df
     df.loc[blue_rows.index, "glicko2_mu_before"] = [r.mu for r in blue_old_ratings]
     df.loc[blue_rows.index, "glicko2_phi_before"] = [r.phi for r in blue_old_ratings]
     df.loc[blue_rows.index, "opp_glicko2_mu_before"] = [r.mu for r in red_old_ratings]
@@ -482,6 +475,9 @@ def process_game(
     df.loc[red_rows.index, "glicko2_win_likelihood"] = 1.0 - blue_expected
     df.loc[red_rows.index, "glicko2_mu_after"] = [r.mu for r in updated_red_ratings]
     df.loc[red_rows.index, "glicko2_phi_after"] = [r.phi for r in updated_red_ratings]
+
+    # Return the dictionary so we don't lose the updated state
+    return glicko2_ratings
 
 
 # ----------------------------------------------------------------------
@@ -808,16 +804,22 @@ def run_glicko2_computation(
 
     # Build an initial rating dict
     glicko2_ratings = defaultdict(
-        lambda: {"rating": Rating(mu=mu, phi=phi, sigma=sigma), "season": df["season"].min(), "league": None}
+        lambda: {
+            "rating": Rating(mu=mu, phi=phi, sigma=sigma),
+            "season": df["season"].min(),
+            "league": None,
+        }
     )
 
     # Pre-allocate Glicko-2 columns
     for col in [
         "glicko2_mu_before",
         "glicko2_phi_before",
+        "opp_glicko2_mu_before",
+        "opp_glicko2_phi_before",
+        "glicko2_win_likelihood",
         "glicko2_mu_after",
         "glicko2_phi_after",
-        "glicko2_win_likelihood",
     ]:
         df[col] = None
 
@@ -827,7 +829,7 @@ def run_glicko2_computation(
 
     # Process each group (i.e., each match)
     for _, game_grp in grouped:
-        process_game(
+        glicko2_ratings = process_game(
             df=df,
             game_group=game_grp,
             glicko2_ratings=glicko2_ratings,
