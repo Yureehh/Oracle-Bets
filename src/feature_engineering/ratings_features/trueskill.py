@@ -209,6 +209,7 @@ def handle_league_swap(
     ts_ratings: Dict[Union[int, str], Dict[str, Any]],
     league_elo_dict: Dict[str, float],
     baseline_mu: float,
+    baseline_sigma: float,
     transfer_factor: float,
     transfer_factor_minor_to_major: float = 0.4,
 ) -> None:
@@ -229,18 +230,27 @@ def handle_league_swap(
     diff = new_elo_val - curr_elo_val
 
     old_rating = ts_ratings[ent_id]["rating"]
-    old_mu, old_sigma = old_rating.mu, old_rating.sigma
+    old_mu = old_rating.mu
 
-    # If a "player" is going minor->major, apply a bigger penalty
-    is_player_id = isinstance(ent_id, str) and "player" in ent_id.lower()
-    if is_player_id and not curr_is_major and new_is_major:
+    # Define the maximum adjustment to prevent extreme changes
+    max_diff = 0.2 * baseline_mu
+
+    # Calculate adjusted difference based on the league swap type
+    if isinstance(ent_id, str) and "player" in ent_id.lower() and not curr_is_major and new_is_major:
+        # Apply a bigger penalty for minor->major player transitions
         adjusted_diff = transfer_factor_minor_to_major * diff
-        new_mu = old_mu - adjusted_diff
     else:
+        # Standard transfer adjustment
         adjusted_diff = transfer_factor * diff
-        new_mu = old_mu + adjusted_diff
 
-    ts_ratings[ent_id]["rating"] = create_ts_rating(new_mu, old_sigma)
+    # Clamp the adjusted difference to prevent extreme changes
+    adjusted_diff = clamp(adjusted_diff, -max_diff, max_diff)
+
+    # Apply the adjusted difference to old_mu and clamp the result
+    new_mu = clamp(old_mu + adjusted_diff, -baseline_mu, 3 * baseline_mu)
+
+    # Update the rating and league
+    ts_ratings[ent_id]["rating"] = create_ts_rating(new_mu, baseline_sigma)
     ts_ratings[ent_id]["league"] = new_league
 
 
@@ -298,6 +308,7 @@ def process_game(
                 ts_ratings=ts_ratings,
                 league_elo_dict=league_elo_dict,
                 baseline_mu=baseline_mu,
+                baseline_sigma=baseline_sigma,
                 transfer_factor=transfer_factor,
             )
 
