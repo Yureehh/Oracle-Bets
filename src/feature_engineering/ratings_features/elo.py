@@ -27,7 +27,6 @@ config = json_loader(DEFAULT_MODELS_PARAMETERS)
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
-CROSS_LEAGUE_COMPETITIONS = considered_leagues_config["cross_league_competitions"]
 TRIALS_NUM = 50
 
 

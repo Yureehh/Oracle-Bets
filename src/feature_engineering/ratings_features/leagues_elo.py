@@ -66,27 +66,32 @@ def preprocess_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     return df
 
 
-def map_team_to_league(df: pd.DataFrame, team_column: str) -> Dict[str, str]:
+def map_team_to_league(df: pd.DataFrame, team_column: str) -> Dict[str, List[Tuple[pd.Timestamp, str]]]:
     """
-    Map each team to the last league it played in, excluding cross-league competitions.
+    Map each team to the leagues it played in over time, excluding cross-league competitions.
 
     Args:
         df (pd.DataFrame): DataFrame containing team and league information.
         team_column (str): Name of the column representing teams.
 
     Returns:
-        Dict[str, str]: Dictionary mapping team IDs to league names.
+        Dict[str, List[Tuple[pd.Timestamp, str]]]: Dictionary mapping team IDs to a list of (date, league).
     """
     # Filter out cross-league competitions
     df_filtered = df[~df["league"].isin(CROSS_LEAGUE_COMPETITIONS)].copy()
 
-    # Sort by date to get last league
+    # Sort by date to get the chronological order
     df_filtered.sort_values(by=["date"], inplace=True)
 
-    # Group by team and get the last league they played in
-    last_league = df_filtered.groupby(team_column)["league"].last().to_dict()
+    # Initialize an empty dictionary to store league history for each team
+    league_history = {}
 
-    return last_league
+    # Group by the team column and iterate through the groups
+    for team, group in df_filtered.groupby(team_column):
+        # Collect (date, league) pairs for the current team
+        league_history[team] = list(zip(group["date"], group["league"]))
+
+    return league_history
 
 
 def expected_outcome(elo_a: float, elo_b: float, elo_divisor: float) -> float:
@@ -432,8 +437,17 @@ def process_elo_for_row(
     current_season = row.season
     league_elo_ratings = linear_decay_reset_leagues_elo(league_elo_ratings, initial_elo, current_season, decay_factor)
 
-    blue_league = belonging_league.get(row.teamid_Blue, None)
-    red_league = belonging_league.get(row.teamid_Red, None)
+    # Replace cross-league entries using historical league data
+    def resolve_league(team_id, match_date):
+        history = belonging_league.get(team_id, [])
+        # Find the most recent league up to the match_date
+        for date, league in reversed(history):
+            if date <= match_date:
+                return league
+        return None
+
+    blue_league = resolve_league(row.teamid_Blue, row.date)
+    red_league = resolve_league(row.teamid_Red, row.date)
     blue_result = getattr(row, "result_Blue", None)
     red_result = getattr(row, "result_Red", None)
 
@@ -541,12 +555,10 @@ def calculate_leagues_elo(
     belonging_league = map_team_to_league(df_preprocessed, "teamid")
 
     if os.path.exists(hyperparameters_path):
-        logger.info(f"Hyperparameters file found at {hyperparameters_path}")
-        data_pipeline_logger.info(f"Hyperparameters file found at {hyperparameters_path}")
+        logger.info(f"Hyperparameters found at {os.path.basename(hyperparameters_path)}")
+        data_pipeline_logger.info(f"Hyperparameters found at {os.path.basename(hyperparameters_path)}")
         with open(hyperparameters_path) as f:
             best_params = json.load(f)
-        logger.info(f"Loaded hyperparameters: {best_params}")
-        data_pipeline_logger.info(f"Loaded hyperparameters: {best_params}")
     else:
         logger.info("No hyperparameters found; starting tuning.")
         data_pipeline_logger.info("No hyperparameters found; starting tuning.")

@@ -269,13 +269,13 @@ class DataGenerator:
     def _enrich_data_with_ratings(self) -> None:
         """Enrich data with all the associated ratings in parallel where possible."""
         try:
-            double_logging_call("Enriching data with ratings...")
+            double_logging_call("Enriching data with ratings...\n")
             # Some rating computations depend on others (e.g. compute_leagues_elo first),
             # so we run them sequentially where needed, then parallelize others.
 
             # (1) League ELO
             self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
-            double_logging_call("\nCompleted enriching data with Leagues ELO\n")
+            double_logging_call("Completed enriching data with Leagues ELO\n")
 
             # (2) ELO
             self.team_data, self.player_data = parallelize_enrichment(
