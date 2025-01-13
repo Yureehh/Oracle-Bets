@@ -525,10 +525,23 @@ def store_results(belonging_league, league_elo_ratings):
     store_leagues_elo(league_elo_ratings)
 
 
-def store_belonging_leagues(belonging_league: Dict[str, str]) -> None:
-    """Store the mapping of teams to leagues."""
-    belonging_league_df = pd.DataFrame(belonging_league.items(), columns=["teamid", "league"])
+def store_belonging_leagues(belonging_league: Dict[str, List[Tuple[pd.Timestamp, str]]]) -> None:
+    """
+    Store the mapping of teams to their most recent league.
+
+    Args:
+        belonging_league (Dict[str, List[Tuple[pd.Timestamp, str]]]): Dictionary where each key is a team ID, and the value
+        is a list of tuples (date, league), sorted by date.
+    """
+    # Extract the last league entry for each team
+    latest_belonging_league = {team: history[-1][1] for team, history in belonging_league.items() if history}
+
+    # Create a DataFrame from the latest belonging league mapping
+    belonging_league_df = pd.DataFrame(latest_belonging_league.items(), columns=["teamid", "league"])
+
+    # Store the resulting DataFrame as parquet
     safe_store_df_as_parquet(belonging_league_df, TEAM_LEAGUES_MAPPING, [logger, data_pipeline_logger])
+
 
 
 def store_leagues_elo(league_elo_ratings: Dict[str, Dict[str, Union[float, int]]]) -> None:
