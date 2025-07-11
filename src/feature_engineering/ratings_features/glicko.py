@@ -406,14 +406,15 @@ def process_game(
             )
         else:
             new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
-            handle_league_swap(
-                ent_id=ent_id,
-                new_league=new_league,
-                glicko2_ratings=glicko2_ratings,
-                league_elo_dict=league_elo_dict,
-                baseline_mu=baseline_mu,
-                transfer_factor=transfer_factor,
-            )
+            if new_league not in CROSS_LEAGUE_COMPETITIONS:
+                handle_league_swap(
+                    ent_id=ent_id,
+                    new_league=new_league,
+                    glicko2_ratings=glicko2_ratings,
+                    league_elo_dict=league_elo_dict,
+                    baseline_mu=baseline_mu,
+                    transfer_factor=transfer_factor,
+                )
 
     # Handle position switching if player
     if entity.lower() == "player":

@@ -26,6 +26,7 @@ from src.utils.utils import get_sorting_keys, json_loader
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 data_pipeline_logger = instantiate_conf_logger("data_pipeline")
+CROSS_COMPETITION_LEAGUES = considered_leagues_config["cross_league_competitions"]
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
 TRIALS_NUM = 50
 
@@ -297,14 +298,15 @@ def process_game(
             )
         else:
             new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
-            handle_league_swap(
-                ent_id=ent_id,
-                new_league=new_league,
-                elo_ratings=elo_ratings,
-                league_elo_dict=league_elo_dict,
-                baseline_elo=baseline_elo,
-                transfer_factor=transfer_factor,
-            )
+            if new_league not in CROSS_COMPETITION_LEAGUES:
+                handle_league_swap(
+                    ent_id=ent_id,
+                    new_league=new_league,
+                    elo_ratings=elo_ratings,
+                    league_elo_dict=league_elo_dict,
+                    baseline_elo=baseline_elo,
+                    transfer_factor=transfer_factor,
+                )
 
     # If dealing with players, handle position switching
     if entity.lower() == "player":
