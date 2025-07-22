@@ -8,7 +8,7 @@ repos:
 
   # Ruff (lint -> format, per docs)  :contentReference[oaicite:5]{index=5}
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.13
+    rev: v0.12.4
     hooks:
       - id: ruff-format
 
@@ -28,6 +28,12 @@ repos:
     rev: v1.5.0
     hooks:
       - id: detect-secrets
+
+  # TOML files linter
+  - repo: https://github.com/ComPWA/taplo-pre-commit
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
 
   - repo: https://github.com/jorisroovers/gitlint
     rev: v0.19.1
