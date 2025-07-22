@@ -8,7 +8,6 @@ for different components of the pipeline, with timestamped log files.
 import datetime as dt
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -34,9 +33,9 @@ TIMESTAMP_STR = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 def create_logger(
     name: str,
-    log_file: Optional[str] = None,
+    log_file: str | None = None,
     level: int = logging.INFO,
-    format_string: Optional[str] = None,
+    format_string: str | None = None,
     mode: str = "a",
 ) -> logging.Logger:
     """
@@ -51,6 +50,7 @@ def create_logger(
 
     Returns:
         logging.Logger: A configured logger.
+
     """
     logger = logging.getLogger(name)
 
@@ -68,7 +68,8 @@ def create_logger(
             try:
                 handler = logging.FileHandler(log_file, mode=mode)
             except OSError as e:
-                raise ValueError(f"Failed to create or access log file at '{log_file}': {e}") from e
+                msg = f"Failed to create or access log file at '{log_file}': {e}"
+                raise ValueError(msg) from e
         else:
             handler = logging.StreamHandler()
 
@@ -83,15 +84,17 @@ class ConfigurableLogger:
     """Dataclass for creating and managing a configurable logger."""
 
     name: str
-    log_file: Optional[str] = None
+    log_file: str | None = None
     level: int = logging.INFO
     format_string: str = DEFAULT_LOG_FORMAT
     mode: str = "a"
-    logger: Optional[logging.Logger] = None
+    logger: logging.Logger | None = None
 
     def __post_init__(self):
         """Initialize the logger instance."""
-        self.logger = create_logger(self.name, self.log_file, self.level, self.format_string, self.mode)
+        self.logger = create_logger(
+            self.name, self.log_file, self.level, self.format_string, self.mode
+        )
 
     def get_logger(self) -> logging.Logger:
         """
@@ -99,6 +102,7 @@ class ConfigurableLogger:
 
         Returns:
             logging.Logger: The configured logger instance.
+
         """
         return self.logger
 
@@ -114,9 +118,12 @@ def instantiate_conf_logger(name: str, level: int = logging.INFO) -> logging.Log
 
     Returns:
         logging.Logger: The configured logger instance.
+
     """
     return ConfigurableLogger(
-        PREDEFINED_LOGGERS.get(name, name), log_file=LOGS_DIR / f"{TIMESTAMP_STR}_{name}.log", level=level
+        PREDEFINED_LOGGERS.get(name, name),
+        log_file=LOGS_DIR / f"{TIMESTAMP_STR}_{name}.log",
+        level=level,
     ).get_logger()
 
 

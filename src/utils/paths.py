@@ -7,7 +7,6 @@ It ensures that the necessary directories are created and available for data sto
 
 import os
 from pathlib import Path
-from typing import List
 
 from dotenv import load_dotenv
 
@@ -24,12 +23,14 @@ def create_directory(directory: Path) -> None:
 
     Raises:
         OSError: If the directory cannot be created.
+
     """
     try:
         if not directory.exists():
             directory.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        raise OSError(f"Error creating directory: {directory}") from e
+        msg = f"Error creating directory: {directory}"
+        raise OSError(msg) from e
 
 
 # Retrieve the base directory from an environment variable or default to the current working directory
@@ -58,7 +59,9 @@ TRAINING_AND_INPUT_COLS_DIR: Path = CONFIG_DIR / "training"
 # Data Ingestion paths
 YEARS_RANGE_PATH: Path = DATA_INGESTION_DIR / "years_range.json"
 IMPORT_COLUMNS: Path = DATA_INGESTION_DIR / "import_columns.json"
-TEAM_REPLACEMENTS_AND_INVALID_GAMES: Path = DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
+TEAM_REPLACEMENTS_AND_INVALID_GAMES: Path = (
+    DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
+)
 CONSIDERED_LEAGUES: Path = DATA_INGESTION_DIR / "considered_leagues.json"
 
 # Raw data
@@ -85,8 +88,12 @@ TRAINING_PLAYER_DATA: Path = PROCESSED_PLAYERS_DIR / "training_player_data.parqu
 # Training and input columns for outcome prediction
 TRAINING_TEAM_CONFIG: Path = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
 FLATTENED_TEAM_CONFIG: Path = TRAINING_AND_INPUT_COLS_DIR / "flattened_team_config.json"
-TRAINING_PLAYER_CONFIG: Path = TRAINING_AND_INPUT_COLS_DIR / "training_player_config.json"
-FLATTENED_PLAYER_CONFIG: Path = TRAINING_AND_INPUT_COLS_DIR / "flattened_player_config.json"
+TRAINING_PLAYER_CONFIG: Path = (
+    TRAINING_AND_INPUT_COLS_DIR / "training_player_config.json"
+)
+FLATTENED_PLAYER_CONFIG: Path = (
+    TRAINING_AND_INPUT_COLS_DIR / "flattened_player_config.json"
+)
 
 # Artifacts storage
 MODEL_ARTIFACTS: Path = MODELS_DIR / "artifacts"
@@ -94,23 +101,45 @@ LEAGUE_ELO: Path = MODEL_ARTIFACTS / "league_elo.parquet"
 TEAM_LEAGUES_MAPPING: Path = MODEL_ARTIFACTS / "team_league_mapping.parquet"
 WHOLE_HISTORY_RATING_PATH: Path = MODEL_ARTIFACTS / "whr.pkl"
 OUTCOME_PREDICTION_MODEL_PATH: Path = MODEL_ARTIFACTS / "OutcomePrediction.pkl"
-OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Path = MODEL_ARTIFACTS / "OutcomePrediction_categorical_features.pkl"
-OUTCOME_PREDICTION_FINAL_FEATURES: Path = MODEL_ARTIFACTS / "OutcomePrediction_final_features.pkl"
-OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Path = MODEL_ARTIFACTS / "OutcomePrediction_best_hyperparameters.pkl"
+OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Path = (
+    MODEL_ARTIFACTS / "OutcomePrediction_categorical_features.pkl"
+)
+OUTCOME_PREDICTION_FINAL_FEATURES: Path = (
+    MODEL_ARTIFACTS / "OutcomePrediction_final_features.pkl"
+)
+OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Path = (
+    MODEL_ARTIFACTS / "OutcomePrediction_best_hyperparameters.pkl"
+)
 GAMELENGTH_PREDICTION_MODEL_PATH: Path = MODEL_ARTIFACTS / "GamelengthPrediction.pkl"
-GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Path = MODEL_ARTIFACTS / "GamelengthPrediction_categorical_features.pkl"
-GAMELENGTH_PREDICTION_FINAL_FEATURES: Path = MODEL_ARTIFACTS / "GamelengthPrediction_final_features.pkl"
-GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Path = MODEL_ARTIFACTS / "GamelengthPrediction_best_hyperparameters.pkl"
+GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Path = (
+    MODEL_ARTIFACTS / "GamelengthPrediction_categorical_features.pkl"
+)
+GAMELENGTH_PREDICTION_FINAL_FEATURES: Path = (
+    MODEL_ARTIFACTS / "GamelengthPrediction_final_features.pkl"
+)
+GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Path = (
+    MODEL_ARTIFACTS / "GamelengthPrediction_best_hyperparameters.pkl"
+)
 
 # Hyperparams
 HYPERPARAMETERS: Path = MODELS_DIR / "hyperparameters"
 DEFAULT_MODELS_PARAMETERS: Path = HYPERPARAMETERS / "default_models_parameters.json"
 BEST_HYPERPARAMETERS: Path = HYPERPARAMETERS / "best_hyperparams"
-LEAGUES_ELO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "leagues_elo_hyperparameters.json"
-ENTITY_ELO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_elo_hyperparameters.json"
-ENTITY_GLICKO_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_glicko_hyperparameters.json"
-ENTITY_PL_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_pl_hyperparameters.json"
-ENTITY_TRUESKILL_HYPERPARAMETERS: Path = BEST_HYPERPARAMETERS / "entity_trueskill_hyperparameters.json"
+LEAGUES_ELO_HYPERPARAMETERS: Path = (
+    BEST_HYPERPARAMETERS / "leagues_elo_hyperparameters.json"
+)
+ENTITY_ELO_HYPERPARAMETERS: Path = (
+    BEST_HYPERPARAMETERS / "entity_elo_hyperparameters.json"
+)
+ENTITY_GLICKO_HYPERPARAMETERS: Path = (
+    BEST_HYPERPARAMETERS / "entity_glicko_hyperparameters.json"
+)
+ENTITY_PL_HYPERPARAMETERS: Path = (
+    BEST_HYPERPARAMETERS / "entity_pl_hyperparameters.json"
+)
+ENTITY_TRUESKILL_HYPERPARAMETERS: Path = (
+    BEST_HYPERPARAMETERS / "entity_trueskill_hyperparameters.json"
+)
 
 # Reports storage
 FIGURES_DIR: Path = REPORTS_DIR / "figures"
@@ -118,7 +147,7 @@ FEATURE_IMP_DIR: Path = FIGURES_DIR / "feature_importances"
 INSIGHTS_DIR: Path = REPORTS_DIR / "evaluation_insights"
 
 # List of directories to ensure existence
-directories: List[Path] = [
+directories: list[Path] = [
     DATA_DIR,
     MODELS_DIR,
     REPORTS_DIR,

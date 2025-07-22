@@ -7,7 +7,6 @@ It also provides functionalities to update the roster and retrieve team informat
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional
 
 import pandas as pd
 
@@ -26,11 +25,12 @@ class Team:
         roster (Dict[str, Optional[str]]): The team's roster with roles as keys and player names as values.
         team_stats (Optional[pd.Series]): Statistical data related to the team.
         player_stats (Optional[pd.DataFrame]): Statistical data related to the players in the roster.
+
     """
 
     name: str
-    side: Optional[str] = None
-    roster: Dict[str, Optional[str]] = field(
+    side: str | None = None
+    roster: dict[str, str | None] = field(
         default_factory=lambda: {
             "top": None,
             "jng": None,
@@ -39,8 +39,8 @@ class Team:
             "sup": None,
         }
     )
-    team_stats: Optional[pd.Series] = field(default=None, init=False)
-    player_stats: Optional[pd.DataFrame] = field(default=None, init=False)
+    team_stats: pd.Series | None = field(default=None, init=False)
+    player_stats: pd.DataFrame | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         """Initialize team and player data upon object creation."""
@@ -57,7 +57,9 @@ class Team:
             logger.error(f"Initialization failed for team '{self.name}': {e}")
             raise
         except Exception as e:
-            logger.exception(f"An unexpected error occurred during initialization of team '{self.name}': {e}")
+            logger.exception(
+                f"An unexpected error occurred during initialization of team '{self.name}': {e}"
+            )
             raise
 
     def _load_team_data(self) -> pd.DataFrame:
@@ -70,15 +72,18 @@ class Team:
         Raises:
             FileNotFoundError: If the team data file does not exist.
             ValueError: If the team data cannot be loaded properly.
+
         """
         try:
             return pd.read_parquet(FLATTENED_TEAMS, engine="fastparquet")
         except FileNotFoundError as e:
             logger.error(f"Team data file not found at '{FLATTENED_TEAMS}'.")
-            raise FileNotFoundError(f"Team data file not found at '{FLATTENED_TEAMS}'.") from e
+            msg = f"Team data file not found at '{FLATTENED_TEAMS}'."
+            raise FileNotFoundError(msg) from e
         except Exception as e:
             logger.error(f"Error loading team data: {e}")
-            raise ValueError(f"Error loading team data: {e}") from e
+            msg = f"Error loading team data: {e}"
+            raise ValueError(msg) from e
 
     def _load_player_data(self) -> pd.DataFrame:
         """
@@ -90,15 +95,18 @@ class Team:
         Raises:
             FileNotFoundError: If the player data file does not exist.
             ValueError: If the player data cannot be loaded properly.
+
         """
         try:
             return pd.read_parquet(FLATTENED_PLAYERS, engine="fastparquet")
         except FileNotFoundError as e:
             logger.error(f"Player data file not found at '{FLATTENED_PLAYERS}'.")
-            raise FileNotFoundError(f"Player data file not found at '{FLATTENED_PLAYERS}'.") from e
+            msg = f"Player data file not found at '{FLATTENED_PLAYERS}'."
+            raise FileNotFoundError(msg) from e
         except Exception as e:
             logger.error(f"Error loading player data: {e}")
-            raise ValueError(f"Error loading player data: {e}") from e
+            msg = f"Error loading player data: {e}"
+            raise ValueError(msg) from e
 
     def _get_team_stats(self) -> pd.Series:
         """
@@ -109,18 +117,20 @@ class Team:
 
         Raises:
             ValueError: If the team is not found in the team data.
+
         """
-        filtered_team_data = self.team_data[self.team_data.teamname.str.lower() == self.name.lower()].reset_index(
-            drop=True
-        )
+        filtered_team_data = self.team_data[
+            self.team_data.teamname.str.lower() == self.name.lower()
+        ].reset_index(drop=True)
 
         if filtered_team_data.empty:
             logger.warning(f"Team '{self.name}' not found in the database.")
-            raise ValueError(f"Team '{self.name}' not found in the database.")
+            msg = f"Team '{self.name}' not found in the database."
+            raise ValueError(msg)
 
         return filtered_team_data.iloc[0]
 
-    def _get_last_roster(self) -> Dict[str, str]:
+    def _get_last_roster(self) -> dict[str, str]:
         """
         Retrieve the last known roster of the team from the player data.
 
@@ -129,14 +139,16 @@ class Team:
 
         Raises:
             ValueError: If the last roster cannot be determined.
+
         """
-        roster_data = self.player_data[self.player_data.teamname.str.lower() == str(self.name).lower()].reset_index(
-            drop=True
-        )
+        roster_data = self.player_data[
+            self.player_data.teamname.str.lower() == str(self.name).lower()
+        ].reset_index(drop=True)
 
         if roster_data.empty:
             logger.warning(f"No player data found for team '{self.name}'.")
-            raise ValueError(f"No player data found for team '{self.name}'.")
+            msg = f"No player data found for team '{self.name}'."
+            raise ValueError(msg)
 
         last_played = (
             roster_data.sort_values(by=["position", "date"], ascending=[True, False])
@@ -146,12 +158,15 @@ class Team:
         )
 
         if last_played.empty or len(last_played) < 5:
-            logger.warning(f"Could not determine the last roster for team '{self.name}'.")
-            raise ValueError(f"Could not determine the last roster for team '{self.name}'.")
+            logger.warning(
+                f"Could not determine the last roster for team '{self.name}'."
+            )
+            msg = f"Could not determine the last roster for team '{self.name}'."
+            raise ValueError(msg)
 
         return {row["position"]: row["playername"] for _, row in last_played.iterrows()}
 
-    def update_roster(self, players: Dict[str, str]) -> None:
+    def update_roster(self, players: dict[str, str]) -> None:
         """
         Update the team roster with the specified players.
 
@@ -160,6 +175,7 @@ class Team:
 
         Raises:
             ValueError: If the updated roster is invalid.
+
         """
         logger.info(f"Updating roster for team '{self.name}' with players: {players}")
         self.roster.update(players)
@@ -172,22 +188,34 @@ class Team:
 
         Raises:
             ValueError: If the roster is invalid.
+
         """
         expected_positions = {"top", "jng", "mid", "bot", "sup"}
         roster_positions = set(self.roster.keys())
 
         missing_positions = expected_positions - roster_positions
         if missing_positions:
-            logger.error(f"Roster for team '{self.name}' is missing positions: {missing_positions}")
-            raise ValueError(f"Roster is missing required positions: {missing_positions}")
+            logger.error(
+                f"Roster for team '{self.name}' is missing positions: {missing_positions}"
+            )
+            msg = f"Roster is missing required positions: {missing_positions}"
+            raise ValueError(msg)
 
         extra_positions = roster_positions - expected_positions
         if extra_positions:
-            logger.warning(f"Roster for team '{self.name}' has unexpected positions: {extra_positions}")
+            logger.warning(
+                f"Roster for team '{self.name}' has unexpected positions: {extra_positions}"
+            )
 
-        if any(player is None or not isinstance(player, str) for player in self.roster.values()):
-            logger.error(f"Roster for team '{self.name}' contains invalid player entries.")
-            raise ValueError("Team roster cannot have None values or non-string player names.")
+        if any(
+            player is None or not isinstance(player, str)
+            for player in self.roster.values()
+        ):
+            logger.error(
+                f"Roster for team '{self.name}' contains invalid player entries."
+            )
+            msg = "Team roster cannot have None values or non-string player names."
+            raise ValueError(msg)
 
     def _get_player_stats(self) -> pd.DataFrame:
         """
@@ -198,20 +226,26 @@ class Team:
 
         Raises:
             ValueError: If player statistics are incomplete or missing.
+
         """
         players = [player.lower() for player in self.roster.values() if player]
 
-        filtered_player_data = self.player_data[self.player_data.playername.str.lower().isin(players)].reset_index(
-            drop=True
-        )
+        filtered_player_data = self.player_data[
+            self.player_data.playername.str.lower().isin(players)
+        ].reset_index(drop=True)
 
         if filtered_player_data.empty:
-            logger.warning(f"No player statistics found for the roster of team '{self.name}'.")
-            raise ValueError(f"No player statistics found for the roster of team '{self.name}'.")
+            logger.warning(
+                f"No player statistics found for the roster of team '{self.name}'."
+            )
+            msg = f"No player statistics found for the roster of team '{self.name}'."
+            raise ValueError(msg)
 
         # Sort by playername and date descending, then drop duplicates
         filtered_player_data = (
-            filtered_player_data.sort_values(["playername", "date"], ascending=[True, False])
+            filtered_player_data.sort_values(
+                ["playername", "date"], ascending=[True, False]
+            )
             .drop_duplicates(subset=["playername"], keep="first")
             .reset_index(drop=True)
         )
@@ -220,18 +254,26 @@ class Team:
             logger.warning(
                 f"Incomplete player statistics for team '{self.name}'. Expected 5, found {len(filtered_player_data)}."
             )
-            raise ValueError("Team cannot have less than 5 player statistics.")
+            msg = "Team cannot have less than 5 player statistics."
+            raise ValueError(msg)
 
         # Map back to original player names
         player_name_mapping = {name.lower(): name for name in players}
-        filtered_player_data["playername"] = filtered_player_data["playername"].str.lower().map(player_name_mapping)
+        filtered_player_data["playername"] = (
+            filtered_player_data["playername"].str.lower().map(player_name_mapping)
+        )
 
         # Verify that all players are present after mapping
         missing_players = set(players) - set(filtered_player_data["playername"])
         if missing_players:
-            missing_players_original = [self.roster[pos] for pos in self.roster if self.roster[pos] in missing_players]
+            missing_players_original = [
+                self.roster[pos]
+                for pos in self.roster
+                if self.roster[pos] in missing_players
+            ]
             logger.error(f"Missing statistics for players: {missing_players_original}")
-            raise ValueError(f"Missing statistics for players: {missing_players_original}")
+            msg = f"Missing statistics for players: {missing_players_original}"
+            raise ValueError(msg)
 
         return filtered_player_data
 
@@ -241,6 +283,7 @@ class Team:
 
         Returns:
             pd.DataFrame: DataFrame containing the team information.
+
         """
         data = [{"ROLE": "Team", "NAME": self.name}]
         for position, player in self.roster.items():

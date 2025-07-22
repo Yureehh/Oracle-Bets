@@ -10,10 +10,18 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from src.feature_engineering.performance_features.entity_stats import enrich_entity_ema_statistics
-from src.feature_engineering.performance_features.patch_win_rate import patch_win_rate_ewm_performance
-from src.feature_engineering.performance_features.season_win_rate import season_win_rate_ewm_performance
-from src.feature_engineering.performance_features.side_win_rate import side_win_rate_ewm_performance
+from src.feature_engineering.performance_features.entity_stats import (
+    enrich_entity_ema_statistics,
+)
+from src.feature_engineering.performance_features.patch_win_rate import (
+    patch_win_rate_ewm_performance,
+)
+from src.feature_engineering.performance_features.season_win_rate import (
+    season_win_rate_ewm_performance,
+)
+from src.feature_engineering.performance_features.side_win_rate import (
+    side_win_rate_ewm_performance,
+)
 
 
 @dataclass
@@ -37,14 +45,18 @@ class PerformanceMetrics:
         :raises ValueError: if entity is invalid, df is empty, or required columns are missing
         """
         if entity not in {"player", "team"}:
-            raise ValueError(f"Invalid entity '{entity}': must be either 'player' or 'team'.")
+            msg = f"Invalid entity '{entity}': must be either 'player' or 'team'."
+            raise ValueError(msg)
         if df.empty:
-            raise ValueError("Input DataFrame is empty.")
+            msg = "Input DataFrame is empty."
+            raise ValueError(msg)
         if not isinstance(df, pd.DataFrame):
-            raise ValueError("Input data must be a Pandas DataFrame.")
+            msg = "Input data must be a Pandas DataFrame."
+            raise ValueError(msg)
         missing = PerformanceMetrics.REQUIRED_COLUMNS - set(df.columns)
         if missing:
-            raise ValueError(f"DataFrame is missing required columns: {missing}")
+            msg = f"DataFrame is missing required columns: {missing}"
+            raise ValueError(msg)
 
     @staticmethod
     def add_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:

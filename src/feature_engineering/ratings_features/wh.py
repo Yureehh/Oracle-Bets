@@ -5,7 +5,6 @@ This module calculates Whole History Ratings (WHR) for teams or players based on
 """
 
 import sys
-from typing import List, Union
 
 import pandas as pd
 from tqdm import tqdm
@@ -23,8 +22,8 @@ DEFAULT_RATING = [0, 0, 1]  # Default rating if not available
 
 
 def format_game_data(
-    blue_id: Union[int, str],
-    red_id: Union[int, str],
+    blue_id: int | str,
+    red_id: int | str,
     result: int,
     game_date: str,
 ) -> str:
@@ -39,12 +38,15 @@ def format_game_data(
 
     Returns:
         str: Formatted game data string for WHR.
+
     """
     winner = "B" if result == 1 else "W"
     return f"{blue_id};{red_id};{winner};{game_date};0"
 
 
-def get_player_rating(whr: whole_history_rating.Base, player_id: Union[int, str]) -> List[float]:
+def get_player_rating(
+    whr: whole_history_rating.Base, player_id: int | str
+) -> list[float]:
     """
     Retrieve the latest player rating or default if not available.
 
@@ -54,6 +56,7 @@ def get_player_rating(whr: whole_history_rating.Base, player_id: Union[int, str]
 
     Returns:
         List[float]: Latest rating [time, mu, sigma] or default rating.
+
     """
     ratings = whr.ratings_for_player(player_id)
     return ratings[-1] if ratings else DEFAULT_RATING
@@ -73,12 +76,15 @@ def process_game_group(
         whr (whole_history_rating.Base): WHR model instance.
         df (pd.DataFrame): DataFrame to update with ratings.
         entity_column (str): Column name for the entity identifier ('teamid' or 'playerid').
+
     """
     games_batch = []
     blue_rows = group[group["side"] == "Blue"]
     red_rows = group[group["side"] == "Red"]
 
-    for blue_row, red_row in zip(blue_rows.itertuples(), red_rows.itertuples()):
+    for blue_row, red_row in zip(
+        blue_rows.itertuples(), red_rows.itertuples(), strict=False
+    ):
         result = blue_row.result
         blue_id = blue_row.entity_column
         red_id = red_row.entity_column
@@ -120,7 +126,9 @@ def process_game_group(
     whr.iterate(len(games_batch) * 2)
 
     rating_attributes = ["whr_mu_after", "whr_sigma_after"]
-    for blue_row, red_row in zip(blue_rows.itertuples(), red_rows.itertuples()):
+    for blue_row, red_row in zip(
+        blue_rows.itertuples(), red_rows.itertuples(), strict=False
+    ):
         blue_id = getattr(blue_row, entity_column)
         red_id = getattr(red_row, entity_column)
 
@@ -156,16 +164,19 @@ def calculate_whr(
 
     Returns:
         pd.DataFrame: Updated DataFrame with WHR ratings.
+
     """
     if entity.lower() not in ["team", "player"]:
-        raise ValueError("Entity must be 'team' or 'player'")
+        msg = "Entity must be 'team' or 'player'"
+        raise ValueError(msg)
 
     entity_column = "teamid" if entity.lower() == "team" else "playerid"
     required_columns = ["date", "gameid", "side", "result", entity_column]
 
     missing_columns = set(required_columns) - set(df.columns)
     if missing_columns:
-        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+        msg = f"Input DataFrame is missing required columns: {missing_columns}"
+        raise ValueError(msg)
 
     sort_keys = get_sorting_keys(entity)
     df_sorted = df.sort_values(by=sort_keys).reset_index(drop=True)
@@ -185,7 +196,9 @@ def calculate_whr(
 
     whr = whole_history_rating.Base({"w2": w2, "uncased": uncased, "debug": False})
 
-    for _, game_group in tqdm(df_sorted.groupby(["date", "gameid"]), desc="Processing games"):
+    for _, game_group in tqdm(
+        df_sorted.groupby(["date", "gameid"]), desc="Processing games"
+    ):
         process_game_group(game_group, whr, df_sorted, entity_column)
 
     whr.auto_iterate()

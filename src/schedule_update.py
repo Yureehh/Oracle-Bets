@@ -8,7 +8,6 @@ It retrieves the schedule for a specified range of days and exports it to a Parq
 import datetime as dt
 import os
 import sys
-from typing import Optional
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -36,10 +35,13 @@ def get_api_key_from_env(env_key: str = PANDASCORE_API_KEY_ENV) -> str:
 
     Raises:
         ValueError: If the environment variable is not set or empty.
+
     """
     api_key = os.getenv(env_key, "")
     if not api_key:
-        error_message = f"PandaScore API key is not set in environment variables ({env_key})."
+        error_message = (
+            f"PandaScore API key is not set in environment variables ({env_key})."
+        )
         schedule_generation_logger.error(error_message)
         raise ValueError(error_message)
     return api_key.strip()
@@ -64,17 +66,24 @@ def fetch_schedule_data(
 
     Returns:
         pd.DataFrame: DataFrame containing schedule data.
+
     """
     logger.info("Initializing PandaScoreSchedule...")
     schedule_generation_logger.info("Initializing PandaScoreSchedule...")
     panda_schedule = PandaScoreSchedule(api_key=api_key)
     return panda_schedule.get_schedule(
-        start_datetime=start_datetime, end_datetime=end_datetime, max_day_range=max_day_range, time_format=time_format
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        max_day_range=max_day_range,
+        time_format=time_format,
     )
 
 
 def fetch_and_store_schedule(
-    start_datetime: dt.datetime, end_datetime: dt.datetime, api_key: str, output_file_path: str = SCHEDULE
+    start_datetime: dt.datetime,
+    end_datetime: dt.datetime,
+    api_key: str,
+    output_file_path: str = SCHEDULE,
 ) -> None:
     """
     Fetches the schedule from the PandaScore API and stores it in a Parquet file.
@@ -84,6 +93,7 @@ def fetch_and_store_schedule(
         end_datetime (dt.datetime): End datetime (UTC).
         api_key (str): PandaScore API key.
         output_file_path (str): Path where fetched data will be stored as Parquet.
+
     """
     schedule_df = fetch_schedule_data(start_datetime, end_datetime, api_key)
 
@@ -94,19 +104,29 @@ def fetch_and_store_schedule(
         return
 
     logger.info(f"Fetched {len(schedule_df)} matches from PandaScore.")
-    schedule_generation_logger.info(f"Fetched {len(schedule_df)} matches from PandaScore.")
-    schedule_generation_logger.info(f"Sample of the schedule data:\n{schedule_df.head()}")
+    schedule_generation_logger.info(
+        f"Fetched {len(schedule_df)} matches from PandaScore."
+    )
+    schedule_generation_logger.info(
+        f"Sample of the schedule data:\n{schedule_df.head()}"
+    )
 
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
 
     # Export the schedule to a Parquet file
-    safe_store_df_as_parquet(schedule_df, output_file_path, [logger, schedule_generation_logger])
+    safe_store_df_as_parquet(
+        schedule_df, output_file_path, [logger, schedule_generation_logger]
+    )
     logger.info(f"Schedule successfully stored at {output_file_path}")
-    schedule_generation_logger.info(f"Schedule successfully stored at {output_file_path}")
+    schedule_generation_logger.info(
+        f"Schedule successfully stored at {output_file_path}"
+    )
 
 
-def main(start_datetime: Optional[dt.datetime] = None, end_datetime: Optional[dt.datetime] = None):
+def main(
+    start_datetime: dt.datetime | None = None, end_datetime: dt.datetime | None = None
+):
     """
     Main entry point for fetching and storing PandaScore schedule data.
 
@@ -119,6 +139,7 @@ def main(start_datetime: Optional[dt.datetime] = None, end_datetime: Optional[dt
     Args:
         start_datetime (Optional[dt.datetime]): Start datetime (UTC). Defaults to current time.
         end_datetime (Optional[dt.datetime]): End datetime (UTC). Defaults to start + MAX_DAYS_RANGE days.
+
     """
     logger.info("Schedule Generation process initialized.")
     schedule_generation_logger.info("Schedule Generation process initialized.")
@@ -126,7 +147,9 @@ def main(start_datetime: Optional[dt.datetime] = None, end_datetime: Optional[dt
 
     # Determine the date range if not provided
     if start_datetime is None:
-        start_datetime = dt.datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
+        start_datetime = dt.datetime.today().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
     if end_datetime is None:
         end_datetime = start_datetime + dt.timedelta(days=MAX_DAYS_RANGE)
 
@@ -134,7 +157,9 @@ def main(start_datetime: Optional[dt.datetime] = None, end_datetime: Optional[dt
     formatted_end = end_datetime.strftime(TIME_FORMAT)
 
     logger.info(f"Fetching schedule from {formatted_start} to {formatted_end}")
-    schedule_generation_logger.info(f"Fetching schedule from {formatted_start} to {formatted_end}")
+    schedule_generation_logger.info(
+        f"Fetching schedule from {formatted_start} to {formatted_end}"
+    )
 
     # Retrieve API key
     try:

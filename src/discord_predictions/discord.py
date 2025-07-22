@@ -6,7 +6,6 @@ It includes functions for handling commands, formatting messages, and sending pr
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -23,20 +22,21 @@ MATCH_PREDICTOR = match_predictor_module.MatchPredictor()
 
 # Constants
 MESSAGE_LIMIT: int = CONFIG.get("MESSAGE_LIMIT", 2000)
-EMPTY_ROSTER: Dict[str, str] = CONFIG["EMPTY_ROSTER"].copy()
-VALID_MATCH_TYPES: List[str] = ["bo1", "bo3", "bo5"]
-POSITIONS: List[str] = ["top", "jng", "mid", "bot", "sup"]
+EMPTY_ROSTER: dict[str, str] = CONFIG["EMPTY_ROSTER"].copy()
+VALID_MATCH_TYPES: list[str] = ["bo1", "bo3", "bo5"]
+POSITIONS: list[str] = ["top", "jng", "mid", "bot", "sup"]
 WEEKS_FOR_DELAY: int = CONFIG.get("WEEKS_FOR_DELAY", 3)
 PLEASE_PROVIDE_TEAMS = "Please provide both a blue and red team name."
 TEAMS_MUST_BE_DIFFERENT = "The two teams must be different."
 
 
-def get_empty_roster() -> Dict[str, str]:
+def get_empty_roster() -> dict[str, str]:
     """
     Returns a copy of the empty roster configuration.
 
     Returns:
         Dict[str, str]: Empty roster dictionary.
+
     """
     return EMPTY_ROSTER.copy()
 
@@ -51,6 +51,7 @@ def handle_command_error(error: Exception, additional_info: str = "") -> str:
 
     Returns:
         str: Formatted error message.
+
     """
     return (
         f"Something went wrong. {additional_info} If this issue persists, please contact either Yureeh or ProjektZero. "
@@ -58,7 +59,7 @@ def handle_command_error(error: Exception, additional_info: str = "") -> str:
     )
 
 
-def format_leagues_message(leagues: List[str]) -> str:
+def format_leagues_message(leagues: list[str]) -> str:
     """
     Formats a list of leagues into a Discord message.
 
@@ -67,6 +68,7 @@ def format_leagues_message(leagues: List[str]) -> str:
 
     Returns:
         str: Formatted message string.
+
     """
     if not leagues:
         return "No leagues found. Please check the league names."
@@ -83,6 +85,7 @@ def format_schedule_message(schedule_df: pd.DataFrame) -> str:
 
     Returns:
         str: Formatted schedule message.
+
     """
     if schedule_df.empty or "league" not in schedule_df.columns:
         return "No upcoming matches found."
@@ -112,6 +115,7 @@ def format_league(df: pd.DataFrame, league: str) -> str:
 
     Returns:
         str: Formatted league schedule string.
+
     """
     league_df = df[df["league"] == league].head(5).copy()
     # Modify 'league' column if needed; ensure this doesn't affect other parts
@@ -121,7 +125,7 @@ def format_league(df: pd.DataFrame, league: str) -> str:
     return f"Upcoming {league} Games (Next 5 Matches Within 7 Days):\n```{clean_markdown}```\n\n"
 
 
-def get_player_data(entity_name: str, players_path: Path) -> Optional[pd.DataFrame]:
+def get_player_data(entity_name: str, players_path: Path) -> pd.DataFrame | None:
     """
     Retrieves player data from the specified file path.
 
@@ -131,18 +135,23 @@ def get_player_data(entity_name: str, players_path: Path) -> Optional[pd.DataFra
 
     Returns:
         Optional[pd.DataFrame]: DataFrame with player data or None if not found.
+
     """
     try:
         players_df = parquet_loader(players_path)
         if "playername" not in players_df.columns:
-            raise KeyError("Column 'playername' not found in players data.")
-        filtered_players = players_df[players_df["playername"].str.lower() == entity_name.lower()]
+            msg = "Column 'playername' not found in players data."
+            raise KeyError(msg)
+        filtered_players = players_df[
+            players_df["playername"].str.lower() == entity_name.lower()
+        ]
         return filtered_players if not filtered_players.empty else None
     except Exception as e:
-        raise ValueError(f"Error processing player data: {e}") from e
+        msg = f"Error processing player data: {e}"
+        raise ValueError(msg) from e
 
 
-def get_team_data(entity_name: str, teams_path: Path) -> Optional[pd.DataFrame]:
+def get_team_data(entity_name: str, teams_path: Path) -> pd.DataFrame | None:
     """
     Retrieves team data from the specified file path.
 
@@ -152,18 +161,25 @@ def get_team_data(entity_name: str, teams_path: Path) -> Optional[pd.DataFrame]:
 
     Returns:
         Optional[pd.DataFrame]: DataFrame with team data or None if not found.
+
     """
     try:
         teams_df = parquet_loader(teams_path)
         if "teamname" not in teams_df.columns:
-            raise KeyError("Column 'teamname' not found in teams data.")
-        filtered_teams = teams_df[teams_df["teamname"].str.lower() == entity_name.lower()]
+            msg = "Column 'teamname' not found in teams data."
+            raise KeyError(msg)
+        filtered_teams = teams_df[
+            teams_df["teamname"].str.lower() == entity_name.lower()
+        ]
         return filtered_teams if not filtered_teams.empty else None
     except Exception as e:
-        raise ValueError(f"Error processing team data: {e}") from e
+        msg = f"Error processing team data: {e}"
+        raise ValueError(msg) from e
 
 
-def format_profile(data: pd.DataFrame, stats_names: List[str], truncate: bool = False) -> str:
+def format_profile(
+    data: pd.DataFrame, stats_names: list[str], truncate: bool = False
+) -> str:
     """
     Formats the profile data into a Discord-friendly Markdown format.
 
@@ -174,6 +190,7 @@ def format_profile(data: pd.DataFrame, stats_names: List[str], truncate: bool = 
 
     Returns:
         str: Formatted profile string.
+
     """
     if truncate:
         stats_names = stats_names[:9]
@@ -202,6 +219,7 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
 
     Returns:
         str: Formatted player profile string.
+
     """
     stats_names = [
         "Position",
@@ -276,6 +294,7 @@ def format_team_profile(data: pd.DataFrame) -> str:
 
     Returns:
         str: Formatted team profile string.
+
     """
     stats_names = [
         "Elo",
@@ -321,16 +340,20 @@ def convert_to_discord_markdown(df: pd.DataFrame) -> str:
 
     Returns:
         str: Formatted Markdown string.
+
     """
     try:
         markdown_text = df.to_markdown(index=False)
-        discord_friendly_md = "\n".join(line.lstrip() for line in markdown_text.split("\n"))
+        discord_friendly_md = "\n".join(
+            line.lstrip() for line in markdown_text.split("\n")
+        )
         return f"```{discord_friendly_md}```\n\n"
     except Exception as e:
-        raise ValueError(f"Error converting DataFrame to Markdown: {e}") from e
+        msg = f"Error converting DataFrame to Markdown: {e}"
+        raise ValueError(msg) from e
 
 
-async def get_formatted_team_profile(team_name: str) -> Tuple[Optional[str], Optional[str]]:
+async def get_formatted_team_profile(team_name: str) -> tuple[str | None, str | None]:
     """
     Retrieves and formats the team profile.
 
@@ -339,6 +362,7 @@ async def get_formatted_team_profile(team_name: str) -> Tuple[Optional[str], Opt
 
     Returns:
         Tuple[Optional[str], Optional[str]]: Formatted team profile or error message.
+
     """
     try:
         team_profile = get_team_data(team_name, FLATTENED_TEAMS)
@@ -347,10 +371,14 @@ async def get_formatted_team_profile(team_name: str) -> Tuple[Optional[str], Opt
             return profile_md, None
         return None, f"Data for team '{team_name}' not found in the database."
     except Exception as e:
-        return None, handle_command_error(e, additional_info="Team profile retrieval failed.")
+        return None, handle_command_error(
+            e, additional_info="Team profile retrieval failed."
+        )
 
 
-async def get_formatted_player_profile(player_name: str, truncate: bool = False) -> Tuple[Optional[str], Optional[str]]:
+async def get_formatted_player_profile(
+    player_name: str, truncate: bool = False
+) -> tuple[str | None, str | None]:
     """
     Retrieves and formats the player profile.
 
@@ -360,6 +388,7 @@ async def get_formatted_player_profile(player_name: str, truncate: bool = False)
 
     Returns:
         Tuple[Optional[str], Optional[str]]: Formatted player profile or error message.
+
     """
     try:
         player_profile = get_player_data(player_name, FLATTENED_PLAYERS)
@@ -368,15 +397,17 @@ async def get_formatted_player_profile(player_name: str, truncate: bool = False)
             return profile_md, None
         return None, f"Data for player '{player_name}' not found in the database."
     except Exception as e:
-        return None, handle_command_error(e, additional_info="Player profile retrieval failed.")
+        return None, handle_command_error(
+            e, additional_info="Player profile retrieval failed."
+        )
 
 
 async def predict_and_format_result(
     ctx,
     blue_team_name: str,
     red_team_name: str,
-    blue_roster_str: Optional[str],
-    red_roster_str: Optional[str],
+    blue_roster_str: str | None,
+    red_roster_str: str | None,
     match_type: str,
     account_for_side: bool,
 ) -> None:
@@ -391,16 +422,23 @@ async def predict_and_format_result(
         red_roster_str (Optional[str]): Comma-separated string of red team players.
         match_type (str): Type of match ('bo1', 'bo3', 'bo5').
         account_for_side (bool): Whether to account for side in predictions.
+
     """
     if match_type not in VALID_MATCH_TYPES:
-        await ctx.send(content=f"Invalid match type: {match_type}. Please specify either 'bo1', 'bo3', or 'bo5'.")
+        await ctx.send(
+            content=f"Invalid match type: {match_type}. Please specify either 'bo1', 'bo3', or 'bo5'."
+        )
         return
 
     message = await ctx.send(content="```Calculating win probabilities...```")
 
     try:
-        blue_roster = process_roster(blue_roster_str) if blue_roster_str else get_empty_roster()
-        red_roster = process_roster(red_roster_str) if red_roster_str else get_empty_roster()
+        blue_roster = (
+            process_roster(blue_roster_str) if blue_roster_str else get_empty_roster()
+        )
+        red_roster = (
+            process_roster(red_roster_str) if red_roster_str else get_empty_roster()
+        )
 
         blue_team = Team(name=blue_team_name, side="Blue", roster=blue_roster)
         red_team = Team(name=red_team_name, side="Red", roster=red_roster)
@@ -413,26 +451,42 @@ async def predict_and_format_result(
         break_blue_flag = (today_date - blue_last_played).days >= days_delay
         break_red_flag = (today_date - red_last_played).days >= days_delay
 
-        first_prediction = MATCH_PREDICTOR.predict_match(blue_team, red_team, account_for_side=account_for_side)
-        second_prediction = MATCH_PREDICTOR.predict_match(red_team, blue_team, account_for_side=account_for_side)
+        first_prediction = MATCH_PREDICTOR.predict_match(
+            blue_team, red_team, account_for_side=account_for_side
+        )
+        second_prediction = MATCH_PREDICTOR.predict_match(
+            red_team, blue_team, account_for_side=account_for_side
+        )
 
         final_team1_win = (first_prediction[0][1] + second_prediction[0][0]) / 2
         final_team2_win = (first_prediction[0][0] + second_prediction[0][1]) / 2
 
         if match_type == "bo1":
-            output = BestOfs.best_of_one(blue_team_name, final_team1_win, red_team_name, final_team2_win)
+            output = BestOfs.best_of_one(
+                blue_team_name, final_team1_win, red_team_name, final_team2_win
+            )
         elif match_type == "bo3":
-            output = BestOfs.best_of_three(blue_team_name, final_team1_win, red_team_name, final_team2_win)
+            output = BestOfs.best_of_three(
+                blue_team_name, final_team1_win, red_team_name, final_team2_win
+            )
         elif match_type == "bo5":
-            output = BestOfs.best_of_five(blue_team_name, final_team1_win, red_team_name, final_team2_win)
+            output = BestOfs.best_of_five(
+                blue_team_name, final_team1_win, red_team_name, final_team2_win
+            )
 
         output = add_roster_to_output(output, blue_team, red_team)
-        output = add_break_flags_to_output(output, break_blue_flag, blue_team_name, break_red_flag, red_team_name)
+        output = add_break_flags_to_output(
+            output, break_blue_flag, blue_team_name, break_red_flag, red_team_name
+        )
 
         await message.edit(content=output)
 
     except Exception as e:
-        await message.edit(content=handle_command_error(e, additional_info="Could not complete the prediction."))
+        await message.edit(
+            content=handle_command_error(
+                e, additional_info="Could not complete the prediction."
+            )
+        )
 
 
 def add_roster_to_output(output: str, blue_team: Team, red_team: Team) -> str:
@@ -446,6 +500,7 @@ def add_roster_to_output(output: str, blue_team: Team, red_team: Team) -> str:
 
     Returns:
         str: Updated output message with roster information.
+
     """
     blue_players = "\t-\t".join(blue_team.roster.values())
     red_players = "\t-\t".join(red_team.roster.values())
@@ -474,6 +529,7 @@ def add_break_flags_to_output(
 
     Returns:
         str: Updated output message with break flags.
+
     """
     if break_blue_flag:
         output += f"\n\nCAREFUL! {blue_team_name.capitalize()} has not played in the last {WEEKS_FOR_DELAY} weeks."
@@ -482,7 +538,9 @@ def add_break_flags_to_output(
     return output
 
 
-def process_roster(roster_str: Optional[str], positions: Optional[List[str]] = None) -> Dict[str, str]:
+def process_roster(
+    roster_str: str | None, positions: list[str] | None = None
+) -> dict[str, str]:
     """
     Converts a comma-separated string of player names into a dictionary mapping each position to a player's name.
 
@@ -495,22 +553,23 @@ def process_roster(roster_str: Optional[str], positions: Optional[List[str]] = N
 
     Returns:
         Dict[str, str]: Dictionary mapping positions to player names.
+
     """
     if not roster_str:
-        raise ValueError("Roster string cannot be empty.")
+        msg = "Roster string cannot be empty."
+        raise ValueError(msg)
     if positions is None:
         positions = POSITIONS
     players = [player.strip() for player in roster_str.split(",")]
 
     if len(players) != len(positions):
-        raise ValueError(
-            f"Roster does not contain the correct number of players: expected {len(positions)}, got {len(players)}."
-        )
+        msg = f"Roster does not contain the correct number of players: expected {len(positions)}, got {len(players)}."
+        raise ValueError(msg)
 
-    return dict(zip(positions, players))
+    return dict(zip(positions, players, strict=False))
 
 
-def calculate_odds(win_probability: float, to_decimal: bool) -> Union[float, str]:
+def calculate_odds(win_probability: float, to_decimal: bool) -> float | str:
     """
     Calculates odds based on win probability.
 
@@ -520,14 +579,14 @@ def calculate_odds(win_probability: float, to_decimal: bool) -> Union[float, str
 
     Returns:
         Union[float, str]: Calculated odds or a message if odds are undefined.
+
     """
     if win_probability <= 0 or win_probability >= 1:
         return "Odds are undefined for win probabilities of 0% or 100%."
 
     if to_decimal:
         return round(1 / win_probability, 2)
-    else:
-        return round(win_probability / (1 - win_probability), 2)
+    return round(win_probability / (1 - win_probability), 2)
 
 
 def calculate_prob(odds: float) -> float:
@@ -539,13 +598,15 @@ def calculate_prob(odds: float) -> float:
 
     Returns:
         float: Probability value between 0 and 1.
+
     """
     if odds <= 0:
-        raise ValueError("Odds must be greater than 0.")
+        msg = "Odds must be greater than 0."
+        raise ValueError(msg)
     return round(1 / odds, 4)
 
 
-def convert_odds(odds: Union[float, str]) -> float:
+def convert_odds(odds: float | str) -> float:
     """
     Converts odds to a probability value.
 
@@ -554,6 +615,7 @@ def convert_odds(odds: Union[float, str]) -> float:
 
     Returns:
         float: Probability value between 0 and 1.
+
     """
     if isinstance(odds, str) and odds.endswith("%"):
         odds_value = float(odds.strip("%")) / 100
@@ -572,16 +634,19 @@ def calculate_kelly_criterion(bookmaker_odds: float, win_probability: float) -> 
 
     Returns:
         float: Kelly Criterion value.
+
     """
     loss_probability = 1 - win_probability
     net_odds = bookmaker_odds - 1
     if net_odds == 0:
         return 0.0  # Avoid division by zero
-    kelly = (net_odds * win_probability - loss_probability) / net_odds / 2  # Dividing by 2 for half Kelly
+    kelly = (
+        (net_odds * win_probability - loss_probability) / net_odds / 2
+    )  # Dividing by 2 for half Kelly
     return max(kelly, 0.0)  # Ensure non-negative
 
 
-def strip_team_names(team1: str, team2: str) -> Tuple[str, str]:
+def strip_team_names(team1: str, team2: str) -> tuple[str, str]:
     """
     Strips team names of any leading or trailing whitespace.
 
@@ -591,6 +656,7 @@ def strip_team_names(team1: str, team2: str) -> Tuple[str, str]:
 
     Returns:
         Tuple[str, str]: Stripped team names.
+
     """
     return team1.strip(), team2.strip()
 
@@ -599,8 +665,8 @@ async def validate_and_predict(
     ctx,
     blue_team_name: str,
     red_team_name: str,
-    blue_roster_str: Optional[str],
-    red_roster_str: Optional[str],
+    blue_roster_str: str | None,
+    red_roster_str: str | None,
     match_type: str,
     side_consideration: bool,
 ):
@@ -613,5 +679,11 @@ async def validate_and_predict(
         await ctx.send(TEAMS_MUST_BE_DIFFERENT)
         return
     await predict_and_format_result(
-        ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, match_type, side_consideration
+        ctx,
+        blue_team_name,
+        red_team_name,
+        blue_roster_str,
+        red_roster_str,
+        match_type,
+        side_consideration,
     )

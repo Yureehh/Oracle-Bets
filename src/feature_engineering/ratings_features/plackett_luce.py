@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import optuna
 import pandas as pd
@@ -18,7 +18,12 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from src.utils.logger import instantiate_conf_logger, logger
-from src.utils.paths import CONSIDERED_LEAGUES, DEFAULT_MODELS_PARAMETERS, ENTITY_PL_HYPERPARAMETERS, LEAGUE_ELO
+from src.utils.paths import (
+    CONSIDERED_LEAGUES,
+    DEFAULT_MODELS_PARAMETERS,
+    ENTITY_PL_HYPERPARAMETERS,
+    LEAGUE_ELO,
+)
 from src.utils.utils import get_sorting_keys, json_loader
 
 # ------------------------------------------------------------------------------
@@ -59,39 +64,54 @@ def preprocess_pl_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     Mirrors the approach in the Elo and Glicko modules.
     """
     if entity.lower() not in ["team", "player"]:
-        raise ValueError("Entity must be 'team' or 'player'")
+        msg = "Entity must be 'team' or 'player'"
+        raise ValueError(msg)
 
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
-    required_columns = ["season", "date", "gameid", entity_key, "league", "side", "result"]
+    required_columns = [
+        "season",
+        "date",
+        "gameid",
+        entity_key,
+        "league",
+        "side",
+        "result",
+    ]
     if entity.lower() == "player":
         required_columns.append("position")
 
     missing_cols = set(required_columns) - set(df.columns)
     if missing_cols:
-        raise ValueError(f"Input DataFrame is missing required columns: {missing_cols}")
+        msg = f"Input DataFrame is missing required columns: {missing_cols}"
+        raise ValueError(msg)
 
     # Convert 'date' to datetime
     if not pd.api.types.is_datetime64_any_dtype(df["date"]):
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         null_count = df["date"].isnull().sum()
         if null_count > 0:
-            logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
-            data_pipeline_logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
+            logger.warning(
+                f"{null_count} 'date' entries could not be converted; dropping them."
+            )
+            data_pipeline_logger.warning(
+                f"{null_count} 'date' entries could not be converted; dropping them."
+            )
             df = df.dropna(subset=["date"]).copy()
 
     # Drop rows missing league or result
     if df["league"].isna().any() or df["result"].isna().any():
         n_missing_league = df["league"].isnull().sum()
         n_missing_result = df["result"].isnull().sum()
-        logger.warning(f"{n_missing_league} 'league' and {n_missing_result} 'result' missing; dropping them.")
+        logger.warning(
+            f"{n_missing_league} 'league' and {n_missing_result} 'result' missing; dropping them."
+        )
         data_pipeline_logger.warning(
             f"{n_missing_league} 'league' and {n_missing_result} 'result' missing; dropping them."
         )
         df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
 
     # Sort the DataFrame
-    df = df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
-    return df
+    return df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
 
 
 # ------------------------------------------------------------------------------
@@ -103,7 +123,9 @@ def initialize_pl_rating(mu: float, sigma: float) -> PlackettLuce:
 
 
 def predict_win_probability(
-    model: PlackettLuce, team1_ratings: List[PlackettLuce.rating], team2_ratings: List[PlackettLuce.rating]
+    model: PlackettLuce,
+    team1_ratings: list[PlackettLuce.rating],
+    team2_ratings: list[PlackettLuce.rating],
 ) -> float:
     """
     Predict the probability that `team1` defeats `team2` using the Plackett-Luce model's
@@ -116,34 +138,33 @@ def predict_win_probability(
 
 def update_pl_ratings(
     model: PlackettLuce,
-    teams_ratings: Tuple[List[PlackettLuce.rating], List[PlackettLuce.rating]],
-    ranks: List[int],
-) -> List[List[PlackettLuce.rating]]:
+    teams_ratings: tuple[list[PlackettLuce.rating], list[PlackettLuce.rating]],
+    ranks: list[int],
+) -> list[list[PlackettLuce.rating]]:
     """
     Update the ratings for the two teams based on their ranks (0 means first place, 1 means second).
     The function returns updated ratings for both teams in a list of lists.
     """
-    updated = model.rate([deepcopy(r) for r in teams_ratings], ranks=ranks)
-    return updated
+    return model.rate([deepcopy(r) for r in teams_ratings], ranks=ranks)
 
 
 # ------------------------------------------------------------------------------
 # 5. Seasonal, Position, League Lifecycle
 # ------------------------------------------------------------------------------
 def linear_decay_reset(
-    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
+    pl_ratings: dict[int | str, dict[str, Any]],
     current_season: int,
     baseline_mu: float,
     baseline_sigma: float,
     decay_factor: float,
-) -> Dict[Union[int, str], Dict[str, Any]]:
+) -> dict[int | str, dict[str, Any]]:
     """
     In-place: Partially reset mu and sigma toward the baseline if stored season < current_season.
 
     new_mu = baseline_mu + (old_mu - baseline_mu) * decay_factor
     new_sigma = baseline_sigma + (old_sigma - baseline_sigma) * decay_factor
     """
-    for _, data in pl_ratings.items():
+    for data in pl_ratings.values():
         if data["season"] < current_season:
             old_rating = data["rating"]
             old_mu, old_sigma = old_rating.mu, old_rating.sigma
@@ -151,16 +172,18 @@ def linear_decay_reset(
             decayed_mu = baseline_mu + (old_mu - baseline_mu) * decay_factor
             decayed_sigma = baseline_sigma + (old_sigma - baseline_sigma) * decay_factor
 
-            data["rating"] = initialize_pl_rating(decayed_mu, decayed_sigma).rating(decayed_mu, decayed_sigma)
+            data["rating"] = initialize_pl_rating(decayed_mu, decayed_sigma).rating(
+                decayed_mu, decayed_sigma
+            )
             data["season"] = current_season
 
     return pl_ratings  # Return the same dict reference
 
 
 def handle_position_switch(
-    entity_id: Union[int, str],
-    new_position: Optional[str],
-    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
+    entity_id: int | str,
+    new_position: str | None,
+    pl_ratings: dict[int | str, dict[str, Any]],
     baseline_mu: float,
     baseline_sigma: float,
     position_reset_factor: float,
@@ -177,17 +200,21 @@ def handle_position_switch(
         old_mu, old_sigma = old_rating.mu, old_rating.sigma
 
         new_mu = baseline_mu + (old_mu - baseline_mu) * (1.0 - position_reset_factor)
-        new_sigma = baseline_sigma + (old_sigma - baseline_sigma) * (1.0 - position_reset_factor)
+        new_sigma = baseline_sigma + (old_sigma - baseline_sigma) * (
+            1.0 - position_reset_factor
+        )
 
-        pl_ratings[entity_id]["rating"] = initialize_pl_rating(new_mu, new_sigma).rating(new_mu, new_sigma)
+        pl_ratings[entity_id]["rating"] = initialize_pl_rating(
+            new_mu, new_sigma
+        ).rating(new_mu, new_sigma)
 
     pl_ratings[entity_id]["last_position"] = new_position
 
 
 def handle_new_entity(
-    ent_id: Union[int, str],
-    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
-    league_elo_dict: Dict[str, float],
+    ent_id: int | str,
+    pl_ratings: dict[int | str, dict[str, Any]],
+    league_elo_dict: dict[str, float],
     new_league: str,
     current_season: int,
     baseline_mu: float,
@@ -211,17 +238,19 @@ def handle_new_entity(
     initial_mu = baseline_mu + offset
 
     pl_ratings[ent_id] = {
-        "rating": initialize_pl_rating(initial_mu, baseline_sigma).rating(initial_mu, baseline_sigma),
+        "rating": initialize_pl_rating(initial_mu, baseline_sigma).rating(
+            initial_mu, baseline_sigma
+        ),
         "season": current_season,
         "league": new_league,
     }
 
 
 def handle_league_swap(
-    ent_id: Union[int, str],
+    ent_id: int | str,
     new_league: str,
-    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
-    league_elo_dict: Dict[str, float],
+    pl_ratings: dict[int | str, dict[str, Any]],
+    league_elo_dict: dict[str, float],
     baseline_mu: float,
     baseline_sigma: float,
     transfer_factor: float,
@@ -249,7 +278,12 @@ def handle_league_swap(
     max_diff = 0.2 * baseline_mu
 
     # Calculate adjusted difference based on the league swap type
-    if isinstance(ent_id, str) and "player" in ent_id.lower() and not curr_is_major and new_is_major:
+    if (
+        isinstance(ent_id, str)
+        and "player" in ent_id.lower()
+        and not curr_is_major
+        and new_is_major
+    ):
         # Apply a bigger penalty for minor -> major player transitions
         adjusted_diff = transfer_factor_minor_to_major * diff
     else:
@@ -263,7 +297,9 @@ def handle_league_swap(
     new_mu = clamp(old_mu + adjusted_diff, -baseline_mu, 2 * baseline_mu)
 
     # Update the rating and league
-    pl_ratings[ent_id]["rating"] = initialize_pl_rating(new_mu, baseline_sigma).rating(new_mu, baseline_sigma)
+    pl_ratings[ent_id]["rating"] = initialize_pl_rating(new_mu, baseline_sigma).rating(
+        new_mu, baseline_sigma
+    )
     pl_ratings[ent_id]["league"] = new_league
 
 
@@ -273,7 +309,7 @@ def handle_league_swap(
 def process_game(
     df: pd.DataFrame,
     game_group: pd.DataFrame,
-    pl_ratings: Dict[Union[int, str], Dict[str, Any]],
+    pl_ratings: dict[int | str, dict[str, Any]],
     pl_model: PlackettLuce,
     entity: str,
     entity_key: str,
@@ -283,8 +319,8 @@ def process_game(
     transfer_factor: float,
     initial_elo_adjustment_factor: float,
     position_reset_factor: float,
-    league_elo_dict: Dict[str, float],
-) -> Dict[Union[int, str], Dict[str, Any]]:
+    league_elo_dict: dict[str, float],
+) -> dict[int | str, dict[str, Any]]:
     """
     Process a single match, updating Plackett-Luce ratings for each entity in the match.
     This now *returns* the updated pl_ratings so we don't lose changes.
@@ -308,14 +344,18 @@ def process_game(
                 ent_id=ent_id,
                 pl_ratings=pl_ratings,
                 league_elo_dict=league_elo_dict,
-                new_league=game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0],
+                new_league=game_group.loc[
+                    game_group[entity_key] == ent_id, "league"
+                ].iloc[0],
                 current_season=current_season,
                 baseline_mu=baseline_mu,
                 baseline_sigma=baseline_sigma,
                 init_adjust_factor=initial_elo_adjustment_factor,
             )
         else:
-            new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
+            new_league = game_group.loc[
+                game_group[entity_key] == ent_id, "league"
+            ].iloc[0]
             if new_league not in CROSS_LEAGUE_COMPETITIONS:
                 handle_league_swap(
                     ent_id=ent_id,
@@ -359,16 +399,17 @@ def process_game(
 
     # Determine ranks
     blue_result = blue_side.iloc[0]["result"]  # 1 => Blue won, 0 => lost
-    if abs(blue_result - 1.0) < 1e-9:
-        ranks = [0, 1]
-    else:
-        ranks = [1, 0]
+    ranks = [0, 1] if abs(blue_result - 1.0) < 1e-09 else [1, 0]
 
     # Probability Blue wins
-    prob_blue_wins = predict_win_probability(pl_model, blue_ratings_before, red_ratings_before)
+    prob_blue_wins = predict_win_probability(
+        pl_model, blue_ratings_before, red_ratings_before
+    )
 
     # Update ratings
-    updated = update_pl_ratings(pl_model, (blue_ratings_before, red_ratings_before), ranks=ranks)
+    updated = update_pl_ratings(
+        pl_model, (blue_ratings_before, red_ratings_before), ranks=ranks
+    )
     updated_blue_ratings = updated[0]
     updated_red_ratings = updated[1]
 
@@ -411,8 +452,8 @@ def tune_pl_hyperparameters(
     df: pd.DataFrame,
     entity: str,
     hyperparameters_path: Path,
-    league_elo_dict: Dict[str, float],
-) -> Dict[str, float]:
+    league_elo_dict: dict[str, float],
+) -> dict[str, float]:
     """
     If existing hyperparameters are found, load them. Otherwise, run Optuna to find the best
     PL parameters that minimize validation log loss.
@@ -422,8 +463,12 @@ def tune_pl_hyperparameters(
     if best_params:
         return best_params
 
-    logger.info(f"No Plackett-Luce hyperparameters found at {hyperparameters_path}. Starting tuning...")
-    data_pipeline_logger.info(f"No Plackett-Luce hyperparameters found at {hyperparameters_path}. Starting tuning...")
+    logger.info(
+        f"No Plackett-Luce hyperparameters found at {hyperparameters_path}. Starting tuning..."
+    )
+    data_pipeline_logger.info(
+        f"No Plackett-Luce hyperparameters found at {hyperparameters_path}. Starting tuning..."
+    )
 
     def objective(trial: optuna.trial.Trial) -> float:
         hyperparams = suggest_pl_hyperparameters(trial)
@@ -431,7 +476,9 @@ def tune_pl_hyperparameters(
         df_train, df_valid = split_and_validate_data(df, entity)
         if df_train.empty or df_valid.empty:
             logger.warning("Training or validation data is empty after splitting.")
-            data_pipeline_logger.warning("Training or validation data is empty after splitting.")
+            data_pipeline_logger.warning(
+                "Training or validation data is empty after splitting."
+            )
             return float("inf")
 
         try:
@@ -442,23 +489,27 @@ def tune_pl_hyperparameters(
                 sigma=hyperparams["sigma"],
                 decay_factor=hyperparams["decay_factor"],
                 transfer_factor=hyperparams["transfer_factor"],
-                initial_elo_adjustment_factor=hyperparams["initial_elo_adjustment_factor"],
+                initial_elo_adjustment_factor=hyperparams[
+                    "initial_elo_adjustment_factor"
+                ],
                 position_reset_factor=hyperparams["position_reset_factor"],
                 league_elo_dict=league_elo_dict,
                 show_progress=False,
             )
         except Exception as e:
             logger.error(f"Error in training PL computation: {e}")
-            data_pipeline_logger.error(f"Error in training PL computation: {e}")
+            data_pipeline_logger.exception(f"Error in training PL computation: {e}")
             return float("inf")
 
-        val_ratings = initialize_validation_ratings(df_train_res, entity, hyperparams["mu"], hyperparams["sigma"])
+        val_ratings = initialize_validation_ratings(
+            df_train_res, entity, hyperparams["mu"], hyperparams["sigma"]
+        )
 
         try:
             loss = evaluate_validation(df_valid, val_ratings, entity, hyperparams)
         except Exception as e:
             logger.error(f"Error in validation step: {e}")
-            data_pipeline_logger.error(f"Error in validation step: {e}")
+            data_pipeline_logger.exception(f"Error in validation step: {e}")
             return float("inf")
 
         return loss
@@ -474,7 +525,7 @@ def tune_pl_hyperparameters(
     return best_params
 
 
-def load_hyperparameters(path: Path) -> Dict[str, float]:
+def load_hyperparameters(path: Path) -> dict[str, float]:
     """Load PL hyperparameters from JSON if available."""
     if path.exists():
         logger.info(f"Loading PL hyperparameters from {path}")
@@ -484,11 +535,13 @@ def load_hyperparameters(path: Path) -> Dict[str, float]:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Failed to load PL hyperparameters: {e}")
-            data_pipeline_logger.error(f"Failed to load PL hyperparameters from {path}")
+            data_pipeline_logger.exception(
+                f"Failed to load PL hyperparameters from {path}"
+            )
     return {}
 
 
-def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
+def save_hyperparameters(params: dict[str, float], path: Path) -> None:
     """Save hyperparameters to a JSON file."""
     try:
         logger.info(f"Storing PL hyperparameters to {path}")
@@ -497,27 +550,35 @@ def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
             json.dump(params, f)
     except Exception as e:
         logger.error(f"Failed to save PL hyperparameters: {e}")
-        data_pipeline_logger.error(f"Failed to save PL hyperparameters to {path}")
+        data_pipeline_logger.exception(f"Failed to save PL hyperparameters to {path}")
 
 
-def suggest_pl_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, float]:
+def suggest_pl_hyperparameters(trial: optuna.trial.Trial) -> dict[str, float]:
     """Suggest Plackett-Luce hyperparameters (mu, sigma, decay_factor, etc.) via Optuna."""
     return {
         "mu": trial.suggest_float("mu", 15.0, 40.0, step=5.0),
         "sigma": trial.suggest_float("sigma", 2.0, 15.0, step=1.0),
         "decay_factor": trial.suggest_float("decay_factor", 0.5, 1.0, step=0.05),
         "transfer_factor": trial.suggest_float("transfer_factor", 0.1, 1.0, step=0.1),
-        "initial_elo_adjustment_factor": trial.suggest_float("initial_elo_adjustment_factor", 0.0, 1.0, step=0.1),
-        "position_reset_factor": trial.suggest_float("position_reset_factor", 0.0, 1.0, step=0.1),
+        "initial_elo_adjustment_factor": trial.suggest_float(
+            "initial_elo_adjustment_factor", 0.0, 1.0, step=0.1
+        ),
+        "position_reset_factor": trial.suggest_float(
+            "position_reset_factor", 0.0, 1.0, step=0.1
+        ),
     }
 
 
-def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def split_and_validate_data(
+    df: pd.DataFrame, entity: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Sort, then split into training and validation sets by year boundary, verifying group sizes."""
     df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
     if df_sorted.empty:
         logger.warning("DataFrame is empty after sorting in split_and_validate_data.")
-        data_pipeline_logger.warning("DataFrame is empty after sorting in split_and_validate_data.")
+        data_pipeline_logger.warning(
+            "DataFrame is empty after sorting in split_and_validate_data."
+        )
         return pd.DataFrame(), pd.DataFrame()
 
     try:
@@ -525,7 +586,7 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
         split_date = pd.to_datetime(f"{split_year}-01-01")
     except AttributeError as e:
         logger.error(f"Error accessing date column with .dt: {e}")
-        data_pipeline_logger.error(f"Error accessing date column with .dt: {e}")
+        data_pipeline_logger.exception(f"Error accessing date column with .dt: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
     df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
@@ -536,14 +597,20 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
         if not subset.empty:
             group_sizes = subset.groupby("gameid").size()
             if not (group_sizes == expected_count).all():
-                logger.warning(f"{name} data has gameids with an incorrect number of entities.")
-                data_pipeline_logger.warning(f"{name} data has gameids with an incorrect number of entities.")
+                logger.warning(
+                    f"{name} data has gameids with an incorrect number of entities."
+                )
+                data_pipeline_logger.warning(
+                    f"{name} data has gameids with an incorrect number of entities."
+                )
                 return pd.DataFrame(), pd.DataFrame()
 
     return df_train, df_valid
 
 
-def initialize_validation_ratings(df_train_res: pd.DataFrame, entity: str, mu: float, sigma: float) -> defaultdict:
+def initialize_validation_ratings(
+    df_train_res: pd.DataFrame, entity: str, mu: float, sigma: float
+) -> defaultdict:
     """
     After training completes, read the final 'pl_mu_after'/'pl_sigma_after' from training data
     to initialize validation ratings. If an entity isn't in training, it starts from (mu, sigma).
@@ -553,14 +620,18 @@ def initialize_validation_ratings(df_train_res: pd.DataFrame, entity: str, mu: f
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
     final_mu_map = df_train_res.groupby(entity_key)["pl_mu_after"].last().to_dict()
-    final_sigma_map = df_train_res.groupby(entity_key)["pl_sigma_after"].last().to_dict()
+    final_sigma_map = (
+        df_train_res.groupby(entity_key)["pl_sigma_after"].last().to_dict()
+    )
 
-    val_ratings = defaultdict(lambda: {"rating": initialize_pl_rating(mu, sigma).rating(mu, sigma)})
+    val_ratings = defaultdict(
+        lambda: {"rating": initialize_pl_rating(mu, sigma).rating(mu, sigma)}
+    )
     for e_id in final_mu_map:
         if pd.notna(final_mu_map[e_id]) and pd.notna(final_sigma_map[e_id]):
-            val_ratings[e_id]["rating"] = initialize_pl_rating(final_mu_map[e_id], final_sigma_map[e_id]).rating(
+            val_ratings[e_id]["rating"] = initialize_pl_rating(
                 final_mu_map[e_id], final_sigma_map[e_id]
-            )
+            ).rating(final_mu_map[e_id], final_sigma_map[e_id])
     return val_ratings
 
 
@@ -568,7 +639,7 @@ def evaluate_validation(
     df_valid: pd.DataFrame,
     val_ratings: defaultdict,
     entity: str,
-    hyperparams: Dict[str, float],
+    hyperparams: dict[str, float],
 ) -> float:
     """
     Compute log loss on the validation set. For each match, we:
@@ -615,7 +686,9 @@ def evaluate_validation(
 
     if len(y_true) != len(y_pred):
         logger.error("Mismatch in lengths of y_true and y_pred in evaluate_validation.")
-        data_pipeline_logger.error("Mismatch in lengths of y_true and y_pred in evaluate_validation.")
+        data_pipeline_logger.error(
+            "Mismatch in lengths of y_true and y_pred in evaluate_validation."
+        )
         return float("inf")
 
     return log_loss(y_true, y_pred)
@@ -633,7 +706,7 @@ def run_pl_computation(
     transfer_factor: float,
     initial_elo_adjustment_factor: float,
     position_reset_factor: float,
-    league_elo_dict: Dict[str, float],
+    league_elo_dict: dict[str, float],
     show_progress: bool = True,
 ) -> pd.DataFrame:
     """
@@ -698,7 +771,7 @@ def run_pl_computation(
 def calculate_plackett_luce(
     df: pd.DataFrame,
     entity: str,
-    league_elo_dict: Optional[Dict[str, float]] = None,
+    league_elo_dict: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
     Main entry point for Plackett-Luce rating computation, parallel to Elo and Glicko-2 modules.
@@ -717,20 +790,25 @@ def calculate_plackett_luce(
             league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 
     # 3. Attempt to find or tune hyperparameters
-    hyperparameters_path = Path(str(ENTITY_PL_HYPERPARAMETERS).replace("entity", entity))
-    best_params = tune_pl_hyperparameters(df_pre, entity, hyperparameters_path, league_elo_dict)
+    hyperparameters_path = Path(
+        str(ENTITY_PL_HYPERPARAMETERS).replace("entity", entity)
+    )
+    best_params = tune_pl_hyperparameters(
+        df_pre, entity, hyperparameters_path, league_elo_dict
+    )
 
     # 4. Final run with best hyperparams
-    df_final = run_pl_computation(
+    return run_pl_computation(
         df=df_pre,
         entity=entity,
         mu=best_params.get("mu", DEFAULT_MU),
         sigma=best_params.get("sigma", DEFAULT_SIGMA),
         decay_factor=best_params.get("decay_factor", 0.9),
         transfer_factor=best_params.get("transfer_factor", 0.5),
-        initial_elo_adjustment_factor=best_params.get("initial_elo_adjustment_factor", 0.5),
+        initial_elo_adjustment_factor=best_params.get(
+            "initial_elo_adjustment_factor", 0.5
+        ),
         position_reset_factor=best_params.get("position_reset_factor", 0.2),
         league_elo_dict=league_elo_dict,
         show_progress=True,
     )
-    return df_final

@@ -27,13 +27,17 @@ def compute_ema_patch(df: pd.DataFrame, identity: str) -> pd.DataFrame:
 
     Returns:
         pd.DataFrame: DataFrame with computed EWM for patch win rates.
+
     """
     df = df.copy()
     grouped = df.groupby([identity, "patch"])["result"]
 
     # Compute EMA before and after for win rate
     df["ema_patch_win_rate_before"] = grouped.transform(
-        lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True).mean().shift().bfill()
+        lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True)
+        .mean()
+        .shift()
+        .bfill()
     )
     df["ema_patch_win_rate_after"] = grouped.transform(
         lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True).mean()
@@ -41,7 +45,9 @@ def compute_ema_patch(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     return df
 
 
-def calculate_patch_win_likelihood(ema_win_rate: pd.Series, opp_ema_win_rate: pd.Series) -> pd.Series:
+def calculate_patch_win_likelihood(
+    ema_win_rate: pd.Series, opp_ema_win_rate: pd.Series
+) -> pd.Series:
     """
     Calculate the EMA patch win likelihood.
 
@@ -51,6 +57,7 @@ def calculate_patch_win_likelihood(ema_win_rate: pd.Series, opp_ema_win_rate: pd
 
     Returns:
         pd.Series: The calculated patch win likelihood.
+
     """
     total_win_rate = ema_win_rate + opp_ema_win_rate + EPSILON
     win_likelihood = ema_win_rate / total_win_rate
@@ -70,9 +77,11 @@ def patch_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFram
 
     Raises:
         ValueError: If the entity is not 'player' or 'team'.
+
     """
     if entity.lower() not in {"player", "team"}:
-        raise ValueError("Entity must be either 'player' or 'team'.")
+        msg = "Entity must be either 'player' or 'team'."
+        raise ValueError(msg)
 
     identity = get_identity(entity)
     df = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
@@ -81,7 +90,9 @@ def patch_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFram
     df = compute_ema_patch(df, identity)
 
     # Compute Opponent Columns
-    df["opp_ema_patch_win_rate_before"] = get_opponent(df["ema_patch_win_rate_before"].tolist(), entity=entity)
+    df["opp_ema_patch_win_rate_before"] = get_opponent(
+        df["ema_patch_win_rate_before"].tolist(), entity=entity
+    )
 
     # Calculate win likelihood based on EMA
     df["patch_win_likelihood"] = df.apply(
@@ -91,5 +102,4 @@ def patch_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFram
         axis=1,
     )
 
-    df = df.reset_index(drop=True)
-    return df
+    return df.reset_index(drop=True)

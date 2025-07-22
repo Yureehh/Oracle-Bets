@@ -1,114 +1,99 @@
-[tool.poetry]
+[project]
 name = "lol-oracle"
 version = "0.10.3"
-description = "League of Legends esports analytics betting suite"
-authors = ["Matthew Rittinghouse <matthew.rittinghouse@gmail.com>, Juri Fabbri <yureefabbri@gmail.com>"]
+description = "Esports analytics betting suite"
+authors = [{ name = "yureeh", email = "yureefabbri@gmail.com" }]
 readme = "README.md"
-packages = [
-    { include = "**/*" }
+requires-python = ">=3.11"
+
+dependencies = [
+    "awswrangler >=3.7.1,<4.0.0",
+    "black[jupyter] >=24.4.2,<25.0.0",
+    "boto3 >=1.34.66,<2.0.0",
+    "commitizen >=3.27.0,<4.0.0",
+    "discord >=2.3.2,<3.0.0",
+    "fastparquet >=2024.5.0,<2025.0.0",
+    "glicko2 @ git+https://github.com/sublee/glicko2.git",
+    "ipykernel >=6.29.4,<7.0.0",
+    "isort >=5.13.2,<6.0.0",
+    "lightgbm >=4.4.0,<5.0.0",
+    "matplotlib ==3.8.3",
+    "numpy >=1.26.4,<2.0.0",
+    "openskill >=5.1.1,<6.0.0",
+    "optuna >=3.6.1,<4.0.0",
+    "pandas >=2.2.1,<3.0.0",
+    "plotly >=5.22.0,<6.0.0",
+    "polars >=1.18.0,<2.0.0",
+    "pre-commit >=4.0.1,<5.0.0",
+    "pytest >=7.4.0,<8.0.0",
+    "pytest-cov >=4.1.0,<5.0.0",
+    "python-dotenv >=1.0.1,<2.0.0",
+    "requests >=2.31.0,<3.0.0",
+    "seaborn >=0.13.2,<1.0.0",
+    "shap >=0.45.1,<1.0.0",
+    "streamlit >=1.35.0,<2.0.0",
+    "tqdm >=4.66.2,<5.0.0",
+    "trueskill >=0.4.5,<1.0.0"
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.13"
-# fireducks = "^1.1.5"
-awswrangler = "^3.7.1"
-black = {extras = ["jupyter"], version = "^24.4.2"}
-boto3 = "^1.34.66"
-commitizen = "^3.27.0"
-discord = "^2.3.2"
-fastparquet = "^2024.5.0"
-flake8 = "^7.0.0"
-flake8-bugbear = "^24.4.26"
-flake8-comprehensions = "^3.14.0"
-flake8-docstrings = "^1.7.0"
-flake8-import-order = "^0.18.2"
-glicko2 = {git = "https://github.com/sublee/glicko2.git"}
-ipykernel = "^6.29.4"
-isort = "^5.13.2"
-lightgbm = "^4.4.0"
-matplotlib = "3.8.3"
-mkdocs = "^1.6.1"
-mkdocs-markdownextradata-plugin = "^0.2.6"
-mkdocs-material = "^9.5.49"
-mkdocs-material-extensions = "^1.3.1"
-numpy = "^1.26.4"
-openskill = "^5.1.1"
-optuna = "^3.6.1"
-pandas = "^2.2.1"
-pep8-naming = "^0.14.1"
-plotly = "^5.22.0"
-polars = "^1.18.0"
-pre-commit = "^4.0.1"
-pytest = "^7.4.0"
-pytest-cov = "^4.1.0"
-python-dotenv = "^1.0.1"
-requests = "^2.31.0"
-seaborn = "^0.13.2"
-shap = "^0.45.1"
-streamlit = "^1.35.0"
-tqdm = "^4.66.2"
-trueskill = "^0.4.5"
+[project.optional-dependencies]
+dev = [
+    "flake8 >=7.0.0,<8.0.0",
+    "flake8-docstrings >=1.7.0,<2.0.0",
+    "black >=24.3.0,<25.0.0",
+    "coverage >=7.4.4,<8.0.0",
+    "pylint >=3.1.0,<4.0.0",
+    "isort >=5.13.0,<6.0.0",
+    "build >=1.1.1,<2.0.0",
+    "ipykernel >=6.29.4,<7.0.0",
+    "mkdocs >=1.6.1,<2.0.0",
+    "mkdocs-markdownextradata-plugin >=0.2.6,<1.0.0",
+    "mkdocs-material >=9.5.49,<10.0.0",
+    "mkdocs-material-extensions >=1.3.1,<2.0.0",
+    "pytest >=7.4.0,<8.0.0",
+]
 
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
-polars-lts-cpu = "^1.19.0"
 [tool.commitizen]
 name = "cz_conventional_commits"
 tag_format = "$version"
-version_provider = "poetry"
+version_scheme = "pep440"
+version_provider = "scm"
 update_changelog_on_bump = true
 major_version_zero = true
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[tool.ruff]
+exclude = [
+    ".bzr",".direnv",".eggs",".git",".git-rewrite",".hg",
+    ".ipynb_checkpoints",".mypy_cache",".nox",".pants.d",".pyenv",
+    ".pytest_cache",".pytype",".ruff_cache",".svn",".tox",".venv",
+    ".vscode","__pypackages__","_build","buck-out","build","dist",
+    "node_modules","site-packages","venv"
+]
+target-version = "py311"
 
-[tool.poetry.group.test.dependencies]
-pytest = "^7.4.0"
-moto = "^4.1.12"
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN","COM","C90","DJ","EXE","T10","TID","DTZ",
+    "D100","D101","D102","D103","D104","D105","D106","D107",
+    "D200","D203","D205","D211","D212","D400","D401","D415",
+    "E402","E501","TRY003","TD002","TD003","FIX002",
+    "PLR0913","S101","N806","FBT001","FBT002","N999",
+    "G004","TRY300","RUF001","RUF002","RUF003", "SLF001"
+]
+dummy-variable-rgx = "^(_+|_[a-zA-Z0-9]+)$"
 
-[tool.poetry.group.dev.dependencies]
-flake8 = "^7.0.0"
-flake8-docstrings = "^1.7.0"
-black = "^24.3.0"
-coverage = "^7.4.4"
-pylint = "^3.1.0"
-isort = "^5.13.0"
-build = "^1.1.1"
-ipykernel = "^6.29.4"
+[tool.ruff.lint.per-file-ignores]
+"*/grid_central_data.py" = ["A002","N803"]
 
-[tool.black]
-line-length = 120
-target-version = ['py311']
-include = '\.pyi?$'
-exclude = '''
-/(
-    \.eggs|
-    \.git|
-    \.hg|
-    \.mypy_cache|
-    \.nox|
-    \.tox|
-    \.venv|
-    _build|
-    buck-out|
-    build|
-    dist
-)/
-'''
-
-[tool.isort]
-profile = "black"
-line_length = 120
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
-
-[tool.flake8-docstrings]
-docstring-convention = "google"
-
-[tool.pytest.ini_options]
-minversion = "6.0"
-addopts = "--cov=src --cov-report=term-missing"
-testpaths = ["tests"]
+[tool.ruff.format]
+quote-style                 = "double"
+indent-style                = "space"
+skip-magic-trailing-comma   = false
+line-ending                 = "auto"
+docstring-code-format       = false
+docstring-code-line-length  = "dynamic"

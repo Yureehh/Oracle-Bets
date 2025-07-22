@@ -28,13 +28,18 @@ def compute_ema_season(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     Returns:
         pd.DataFrame: DataFrame with computed EWM for season win rates.
                      Columns: 'ema_season_win_rate_before', 'ema_season_win_rate_after'.
+
     """
     df = df.copy()
     grouped = df.groupby([identity, "season"])["result"]
 
     # "before" uses shift() to avoid leaking current match result
     df["ema_season_win_rate_before"] = (
-        grouped.transform(lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True).mean()).shift().bfill()
+        grouped.transform(
+            lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True).mean()
+        )
+        .shift()
+        .bfill()
     )  # bfill ensures no NaNs. Consider leaving as NaN to avoid any data leak in first row.
 
     # "after" includes the current row's result
@@ -45,7 +50,9 @@ def compute_ema_season(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     return df
 
 
-def calculate_season_win_likelihood(ema_win_rate: pd.Series, opp_ema_win_rate: pd.Series) -> pd.Series:
+def calculate_season_win_likelihood(
+    ema_win_rate: pd.Series, opp_ema_win_rate: pd.Series
+) -> pd.Series:
     """
     Calculate the EMA season win likelihood.
 
@@ -55,6 +62,7 @@ def calculate_season_win_likelihood(ema_win_rate: pd.Series, opp_ema_win_rate: p
 
     Returns:
         pd.Series: The calculated season win likelihood per row.
+
     """
     total_win_rate = ema_win_rate + opp_ema_win_rate + EPSILON
     win_likelihood = ema_win_rate / total_win_rate
@@ -72,9 +80,11 @@ def season_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFra
     Returns:
         pd.DataFrame: A DataFrame with columns for EWM of season win rates (before/after),
                       opponent's EWM, and a 'season_win_likelihood' measure.
+
     """
     if entity.lower() not in {"player", "team"}:
-        raise ValueError("Entity must be either 'player' or 'team'.")
+        msg = "Entity must be either 'player' or 'team'."
+        raise ValueError(msg)
 
     identity = get_identity(entity)
     # Sort the DataFrame for correct chronological or logical EWM calculation
@@ -84,7 +94,9 @@ def season_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFra
     df = compute_ema_season(df, identity)
 
     # Compute Opponent EWM columns (using "before" as a baseline)
-    df["opp_ema_season_win_rate_before"] = get_opponent(df["ema_season_win_rate_before"].tolist(), entity=entity)
+    df["opp_ema_season_win_rate_before"] = get_opponent(
+        df["ema_season_win_rate_before"].tolist(), entity=entity
+    )
 
     # Calculate season win likelihood based on EWM
     df["season_win_likelihood"] = df.apply(
@@ -95,5 +107,4 @@ def season_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFra
     )
 
     # Re-index after transformations
-    df = df.reset_index(drop=True)
-    return df
+    return df.reset_index(drop=True)

@@ -28,6 +28,7 @@ class FeatureGenerator:
 
         Returns:
             pd.DataFrame: The player data with key statistics added.
+
         """
         logger.info("Computing key statistics...")
         data_pipeline_logger.info("Computing key statistics...")
@@ -50,7 +51,8 @@ class FeatureGenerator:
         if missing_columns:
             logger.error(f"Missing required columns: {missing_columns}")
             data_pipeline_logger.error(f"Missing required columns: {missing_columns}")
-            raise ValueError(f"Missing required columns: {missing_columns}")
+            msg = f"Missing required columns: {missing_columns}"
+            raise ValueError(msg)
 
         data = data.copy()
         enemy_team_stats = FeatureGenerator._aggregate_enemy_team_stats(data)
@@ -73,6 +75,7 @@ class FeatureGenerator:
 
         Returns:
             pd.DataFrame: Aggregated enemy team statistics.
+
         """
         logger.info("Aggregating enemy team statistics...")
         data_pipeline_logger.info("Aggregating enemy team statistics...")
@@ -95,8 +98,10 @@ class FeatureGenerator:
 
         if enemy_team_stats["side"].isnull().any():
             logger.error("Duplicate rows found after mapping side values.")
-            data_pipeline_logger.error("Duplicate rows found after mapping side values.")
-            enemy_team_stats.dropna(subset=["side"], inplace=True)
+            data_pipeline_logger.error(
+                "Duplicate rows found after mapping side values."
+            )
+            enemy_team_stats = enemy_team_stats.dropna(subset=["side"])
 
         return enemy_team_stats
 
@@ -110,6 +115,7 @@ class FeatureGenerator:
 
         Returns:
             pd.DataFrame: DataFrame with ratio features added.
+
         """
         logger.info("Calculating ratio features...")
         data_pipeline_logger.info("Calculating ratio features...")
@@ -127,14 +133,20 @@ class FeatureGenerator:
         )
         data["d_ratio"] = data["deaths"] / data["enemyTeamDeaths"]
         data["damages_ratio"] = data["damagetochampions"] / data["enemyTeamDamages"]
-        data["damage_tanked_ratio"] = (data["damagetakenperminute"] * data["gamelength"]) / data["enemyTeamDamages"]
-        data["damage_mitigated_ratio"] = (data["damagemitigatedperminute"] * data["gamelength"]) / data[
-            "enemyTeamDamages"
-        ]
+        data["damage_tanked_ratio"] = (
+            data["damagetakenperminute"] * data["gamelength"]
+        ) / data["enemyTeamDamages"]
+        data["damage_mitigated_ratio"] = (
+            data["damagemitigatedperminute"] * data["gamelength"]
+        ) / data["enemyTeamDamages"]
         data["gold_ratio"] = data["totalgold"] / data["enemyTeamGolds"]
         data["cs_to_gold_ratio"] = data["total_cs"] / data["enemyTeamGolds"]
-        data["wards_placed_ratio"] = (data["wpm"] * data["gamelength"]) / data["enemyTeamWardPlaced"]
-        data["wards_killed_ratio"] = (data["wcpm"] * data["gamelength"]) / data["enemyTeamWardPlaced"]
+        data["wards_placed_ratio"] = (data["wpm"] * data["gamelength"]) / data[
+            "enemyTeamWardPlaced"
+        ]
+        data["wards_killed_ratio"] = (data["wcpm"] * data["gamelength"]) / data[
+            "enemyTeamWardPlaced"
+        ]
 
         logger.info("Ratio features computed.")
         data_pipeline_logger.info("Ratio features computed.")
@@ -150,14 +162,18 @@ class FeatureGenerator:
 
         Returns:
             pd.DataFrame: DataFrame with win/loss metrics added.
+
         """
         logger.info("Computing win/loss metrics...")
         data_pipeline_logger.info("Computing win/loss metrics...")
 
         if "result" not in data.columns:
             logger.error("'result' column is required to compute win/loss metrics.")
-            data_pipeline_logger.error("'result' column is required to compute win/loss metrics.")
-            raise ValueError("'result' column is missing.")
+            data_pipeline_logger.error(
+                "'result' column is required to compute win/loss metrics."
+            )
+            msg = "'result' column is missing."
+            raise ValueError(msg)
 
         data = data.copy()
         win_metrics = (
@@ -259,6 +275,7 @@ class FeatureGenerator:
 
         Returns:
             pd.DataFrame: The player data with new features added.
+
         """
         logger.info("Generating new player features...")
         data_pipeline_logger.info("Generating new player features...")
@@ -281,22 +298,31 @@ class FeatureGenerator:
         if missing_columns:
             logger.error(f"Missing required columns: {missing_columns}")
             data_pipeline_logger.error(f"Missing required columns: {missing_columns}")
-            raise ValueError(f"Missing required columns: {missing_columns}")
+            msg = f"Missing required columns: {missing_columns}"
+            raise ValueError(msg)
 
         data = data.copy()
         data["season"] = data["patch"].astype(str).str.split(".").str[0]
 
-        data["team_kills"] = data.groupby(["gameid", "teamid"])["kills"].transform("sum")
+        data["team_kills"] = data.groupby(["gameid", "teamid"])["kills"].transform(
+            "sum"
+        )
 
         data["kda"] = (data["kills"] + data["assists"]) / data["deaths"].replace(0, 1)
-        data["gold_efficiency"] = data["totalgold"] / data["gamelength"].replace(0, np.nan)
+        data["gold_efficiency"] = data["totalgold"] / data["gamelength"].replace(
+            0, np.nan
+        )
         data["xp_efficiency"] = data["total_cs"] / data["gamelength"].replace(0, np.nan)
-        data["kill_participation"] = (data["kills"] + data["assists"]) / data["team_kills"].replace(0, np.nan)
+        data["kill_participation"] = (data["kills"] + data["assists"]) / data[
+            "team_kills"
+        ].replace(0, np.nan)
 
         data = FeatureGenerator.compute_key_stats(data)
         data = FeatureGenerator.compute_win_loss_metrics(data)
 
-        position_dummies = pd.get_dummies(data["position"], prefix="position").reset_index(drop=True)
+        position_dummies = pd.get_dummies(
+            data["position"], prefix="position"
+        ).reset_index(drop=True)
         data = data.reset_index(drop=True)
         data = pd.concat([data, position_dummies], axis=1)
 
@@ -316,6 +342,7 @@ class FeatureGenerator:
 
         Returns:
             pd.DataFrame: The team data with new features added.
+
         """
         logger.info("Generating new team features...")
         data_pipeline_logger.info("Generating new team features...")
@@ -333,9 +360,14 @@ class FeatureGenerator:
         }
         missing_columns = required_columns - set(data.columns)
         if missing_columns:
-            logger.error(f"Missing required columns for team feature generation: {missing_columns}")
-            data_pipeline_logger.error(f"Missing required columns for team feature generation: {missing_columns}")
-            raise ValueError(f"Missing required columns: {missing_columns}")
+            logger.error(
+                f"Missing required columns for team feature generation: {missing_columns}"
+            )
+            data_pipeline_logger.error(
+                f"Missing required columns for team feature generation: {missing_columns}"
+            )
+            msg = f"Missing required columns: {missing_columns}"
+            raise ValueError(msg)
 
         data = data.copy()  # Avoid modifying the original DataFrame
 
@@ -347,7 +379,9 @@ class FeatureGenerator:
 
         # Calculate total game kills and total tower kills
         game_stats = (
-            data.groupby("gameid").agg(total_kills=("kills", "sum"), total_towers=("towers", "sum")).reset_index()
+            data.groupby("gameid")
+            .agg(total_kills=("kills", "sum"), total_towers=("towers", "sum"))
+            .reset_index()
         )
 
         data = data.merge(game_stats, on="gameid", how="left")
@@ -356,40 +390,64 @@ class FeatureGenerator:
         data_pipeline_logger.info("Starting game length features generation...")
 
         # Calculate average game length per season and patch
-        season_avg_gamelength = data.groupby("season")["gamelength"].mean().reset_index()
-        season_avg_gamelength = season_avg_gamelength.rename(columns={"gamelength": "season_avg_gamelength"})
+        season_avg_gamelength = (
+            data.groupby("season")["gamelength"].mean().reset_index()
+        )
+        season_avg_gamelength = season_avg_gamelength.rename(
+            columns={"gamelength": "season_avg_gamelength"}
+        )
         data = data.merge(season_avg_gamelength, on="season", how="left")
 
         patch_avg_gamelength = data.groupby("patch")["gamelength"].mean().reset_index()
-        patch_avg_gamelength = patch_avg_gamelength.rename(columns={"gamelength": "patch_avg_gamelength"})
+        patch_avg_gamelength = patch_avg_gamelength.rename(
+            columns={"gamelength": "patch_avg_gamelength"}
+        )
         data = data.merge(patch_avg_gamelength, on="patch", how="left")
 
         # Compute team average game lengths by season
-        team_season_avg = data.groupby(["teamid", "season"])["gamelength"].mean().reset_index()
-        team_season_avg = team_season_avg.rename(columns={"gamelength": "team_season_avg_gamelength"})
+        team_season_avg = (
+            data.groupby(["teamid", "season"])["gamelength"].mean().reset_index()
+        )
+        team_season_avg = team_season_avg.rename(
+            columns={"gamelength": "team_season_avg_gamelength"}
+        )
         data = data.merge(team_season_avg, on=["teamid", "season"], how="left")
 
         # Compute team average game lengths by patch
-        team_patch_avg = data.groupby(["teamid", "patch"])["gamelength"].mean().reset_index()
-        team_patch_avg = team_patch_avg.rename(columns={"gamelength": "team_patch_avg_gamelength"})
+        team_patch_avg = (
+            data.groupby(["teamid", "patch"])["gamelength"].mean().reset_index()
+        )
+        team_patch_avg = team_patch_avg.rename(
+            columns={"gamelength": "team_patch_avg_gamelength"}
+        )
         data = data.merge(team_patch_avg, on=["teamid", "patch"], how="left")
 
         # Compute team average game lengths by season and result
-        team_season_result_avg = data.groupby(["teamid", "season", "result"])["gamelength"].mean().reset_index()
+        team_season_result_avg = (
+            data.groupby(["teamid", "season", "result"])["gamelength"]
+            .mean()
+            .reset_index()
+        )
 
         # Separate win and loss stats for season
         team_season_win = team_season_result_avg[team_season_result_avg["result"] == 1][
             ["teamid", "season", "gamelength"]
         ].rename(columns={"gamelength": "team_win_avg_season_gamelength"})
-        team_season_loss = team_season_result_avg[team_season_result_avg["result"] == 0][
-            ["teamid", "season", "gamelength"]
-        ].rename(columns={"gamelength": "team_lose_avg_season_gamelength"})
+        team_season_loss = team_season_result_avg[
+            team_season_result_avg["result"] == 0
+        ][["teamid", "season", "gamelength"]].rename(
+            columns={"gamelength": "team_lose_avg_season_gamelength"}
+        )
 
         data = data.merge(team_season_win, on=["teamid", "season"], how="left")
         data = data.merge(team_season_loss, on=["teamid", "season"], how="left")
 
         # Compute team average game lengths by patch and result
-        team_patch_result_avg = data.groupby(["teamid", "patch", "result"])["gamelength"].mean().reset_index()
+        team_patch_result_avg = (
+            data.groupby(["teamid", "patch", "result"])["gamelength"]
+            .mean()
+            .reset_index()
+        )
 
         # Separate win and loss stats for patch
         team_patch_win = team_patch_result_avg[team_patch_result_avg["result"] == 1][

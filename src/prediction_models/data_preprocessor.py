@@ -1,6 +1,6 @@
 """A module for preprocessing team and player data for training models."""
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -19,14 +19,17 @@ class DataPreprocessor:
         Args:
             team_data (pd.DataFrame): DataFrame containing team-level data.
             player_data (pd.DataFrame): DataFrame containing player-level data.
+
         """
         self.team_data = team_data.copy()
         self.player_data = player_data.copy()
-        self.training_data: Optional[pd.DataFrame] = None
+        self.training_data: pd.DataFrame | None = None
 
         self.merge_keys = ["gameid", "side"]
 
-    def preprocess(self, target_col: str, problem_type: str = "classification") -> pd.DataFrame:
+    def preprocess(
+        self, target_col: str, problem_type: str = "classification"
+    ) -> pd.DataFrame:
         """
         Preprocess data by removing unnecessary targets, pivoting player data, and merging datasets.
 
@@ -36,6 +39,7 @@ class DataPreprocessor:
 
         Returns:
             pd.DataFrame: The preprocessed training data.
+
         """
         self._remove_other_targets(target_col)
         self._pivot_player_data()
@@ -52,17 +56,19 @@ class DataPreprocessor:
 
         Args:
             target_col (str): The target column to retain.
+
         """
         try:
-            targets_config: Dict[str, Any] = json_loader(TARGET_FEATURES)
+            targets_config: dict[str, Any] = json_loader(TARGET_FEATURES)
             target_cols = targets_config.get("targets", [])
             if target_col in target_cols:
                 target_cols.remove(target_col)
-            self.team_data.drop(columns=target_cols, inplace=True, errors="ignore")
+            self.team_data = self.team_data.drop(columns=target_cols, errors="ignore")
             logger.info(f"Removed target columns except for '{target_col}'.")
         except FileNotFoundError as e:
             logger.error(f"Target features configuration file not found: {e}")
-            raise FileNotFoundError(f"Configuration file '{TARGET_FEATURES}' not found.") from e
+            msg = f"Configuration file '{TARGET_FEATURES}' not found."
+            raise FileNotFoundError(msg) from e
         except Exception as e:
             logger.error(f"Error removing target columns: {e}")
             raise
@@ -71,21 +77,30 @@ class DataPreprocessor:
         """Pivot player data to create features for each position."""
         if "position" not in self.player_data.columns:
             logger.error("Column 'position' not found in player data.")
-            raise ValueError("Column 'position' is required in player data.")
+            msg = "Column 'position' is required in player data."
+            raise ValueError(msg)
 
-        numeric_cols = self.player_data.select_dtypes(include=["number"]).columns.tolist()
+        numeric_cols = self.player_data.select_dtypes(
+            include=["number"]
+        ).columns.tolist()
         non_numeric_cols = self.player_data.columns.difference(numeric_cols).tolist()
         if "position" in non_numeric_cols:
-            non_numeric_cols.remove("position")  # Exclude 'position' from non-numeric columns
+            non_numeric_cols.remove(
+                "position"
+            )  # Exclude 'position' from non-numeric columns
 
         agg_funcs = {col: "mean" for col in numeric_cols}
-        agg_funcs.update({col: "first" for col in non_numeric_cols if col != "position"})
+        agg_funcs.update(
+            {col: "first" for col in non_numeric_cols if col != "position"}
+        )
 
         self.player_data = self.player_data.pivot_table(
             index=self.merge_keys, columns="position", aggfunc=agg_funcs, fill_value=0
         )
-        self.player_data.columns = [f"{position}_{col}" for col, position in self.player_data.columns]
-        self.player_data.reset_index(inplace=True)
+        self.player_data.columns = [
+            f"{position}_{col}" for col, position in self.player_data.columns
+        ]
+        self.player_data = self.player_data.reset_index()
         logger.info("Pivoted player data to create position-based features.")
 
     def _merge_datasets(self) -> None:
@@ -95,19 +110,29 @@ class DataPreprocessor:
         """
         try:
             self.training_data = pd.merge(
-                self.team_data, self.player_data, on=self.merge_keys, how="inner", validate="m:1"
+                self.team_data,
+                self.player_data,
+                on=self.merge_keys,
+                how="inner",
+                validate="m:1",
             )
             if "date" in self.training_data.columns:
-                self.training_data.sort_values(by=["date"] + self.merge_keys, inplace=True)
+                self.training_data = self.training_data.sort_values(
+                    by=["date", *self.merge_keys]
+                )
             logger.info("Merged team and player data successfully.")
         except Exception as e:
             logger.error(f"Error merging datasets: {e}")
             raise
 
-        drop_cols = [f"{pos}_{key}" for pos in ["top", "jng", "mid", "bot", "sup"] for key in self.merge_keys]
+        drop_cols = [
+            f"{pos}_{key}"
+            for pos in ["top", "jng", "mid", "bot", "sup"]
+            for key in self.merge_keys
+        ]
         drop_cols.append("date")
 
-        self.training_data.drop(columns=drop_cols, inplace=True, errors="ignore")
+        self.training_data = self.training_data.drop(columns=drop_cols, errors="ignore")
         logger.info(f"Dropped unnecessary columns: {drop_cols}")
 
     def _handle_regression_specifics(self, target_col: str) -> None:
@@ -116,20 +141,26 @@ class DataPreprocessor:
 
         Args:
             target_col (str): The target column for regression.
+
         """
         if target_col not in self.training_data.columns:
             logger.error(f"Target column '{target_col}' not found in training data.")
-            raise ValueError(f"Target column '{target_col}' is required in training data.")
+            msg = f"Target column '{target_col}' is required in training data."
+            raise ValueError(msg)
 
         # Ensure the target variable is numerical
-        self.training_data[target_col] = pd.to_numeric(self.training_data[target_col], errors="coerce")
+        self.training_data[target_col] = pd.to_numeric(
+            self.training_data[target_col], errors="coerce"
+        )
 
         # Drop rows with NaN in the target column
         initial_row_count = len(self.training_data)
-        self.training_data.dropna(subset=[target_col], inplace=True)
+        self.training_data = self.training_data.dropna(subset=[target_col])
         dropped_rows = initial_row_count - len(self.training_data)
         if dropped_rows > 0:
-            logger.warning(f"Dropped {dropped_rows} rows due to NaN in target column '{target_col}'.")
+            logger.warning(
+                f"Dropped {dropped_rows} rows due to NaN in target column '{target_col}'."
+            )
 
         # Handle outliers by removing values below the 0.1 quantile and above the 0.99 quantile
         lower_bound = self.training_data[target_col].quantile(0.01)
@@ -137,7 +168,10 @@ class DataPreprocessor:
 
         # Filter the data to keep only the rows where the target column is within the specified bounds
         self.training_data = self.training_data[
-            (self.training_data[target_col] >= lower_bound) & (self.training_data[target_col] <= upper_bound)
+            (self.training_data[target_col] >= lower_bound)
+            & (self.training_data[target_col] <= upper_bound)
         ]
 
-        logger.info(f"Applied regression-specific preprocessing for target: '{target_col}'.")
+        logger.info(
+            f"Applied regression-specific preprocessing for target: '{target_col}'."
+        )

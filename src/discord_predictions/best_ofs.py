@@ -21,6 +21,7 @@ class BestOfs:
 
         Raises:
             ValueError: If the sum of probabilities does not equal 1 within the defined tolerance.
+
         """
         total = sum(probs)
         if abs(total - 1.0) > BestOfs.TOLERANCE:
@@ -36,6 +37,7 @@ class BestOfs:
 
         Returns:
             str: Formatted percentage string.
+
         """
         return f"{prob * 100:.2f}%"
 
@@ -52,6 +54,7 @@ class BestOfs:
 
         Returns:
             str: Formatted string with likelihoods.
+
         """
         BestOfs.validate_probabilities(t1_odds, t2_odds)
 
@@ -73,13 +76,16 @@ class BestOfs:
 
         Returns:
             str: Formatted string with likelihoods.
+
         """
         BestOfs.validate_probabilities(t1_odds, t2_odds)
 
         # Possible outcomes: Team1 wins 2-0, Team2 wins 2-0, or a tie (1-1)
         t1_win_2 = t1_odds**2
         t2_win_2 = t2_odds**2
-        tie = 2 * t1_odds * t2_odds  # Two ways the series can tie: T1 wins one game, T2 wins the other
+        tie = (
+            2 * t1_odds * t2_odds
+        )  # Two ways the series can tie: T1 wins one game, T2 wins the other
 
         BestOfs.validate_probabilities(t1_win_2 + t2_win_2 + tie)
 
@@ -92,7 +98,9 @@ class BestOfs:
         )
 
     @staticmethod
-    def best_of_three(t1_name: str, t1_odds: float, t2_name: str, t2_odds: float) -> str:
+    def best_of_three(
+        t1_name: str, t1_odds: float, t2_name: str, t2_odds: float
+    ) -> str:
         """
         Calculate the likelihood of each team winning a best-of-three series.
 
@@ -104,6 +112,7 @@ class BestOfs:
 
         Returns:
             str: Formatted string with likelihoods.
+
         """
         BestOfs.validate_probabilities(t1_odds, t2_odds)
 
@@ -157,6 +166,7 @@ class BestOfs:
 
         Returns:
             str: Formatted string with likelihoods.
+
         """
         BestOfs.validate_probabilities(t1_odds, t2_odds)
 

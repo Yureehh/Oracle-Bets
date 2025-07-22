@@ -9,7 +9,7 @@ The `ModelFactory` class is used to create a `LightGBMModel` instance based on t
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any
 
 import lightgbm as lgb
 import optuna
@@ -18,7 +18,10 @@ from sklearn.metrics import log_loss, mean_absolute_error
 
 from prediction_models.gbdt_model import GradientBoostingModel
 from src.utils.logger import logger
-from src.utils.paths import GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS, OUTCOME_PREDICTION_BEST_HYPERPARAMETERS
+from src.utils.paths import (
+    GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS,
+    OUTCOME_PREDICTION_BEST_HYPERPARAMETERS,
+)
 from src.utils.utils import load_model
 
 # Constants
@@ -43,7 +46,9 @@ class LightGBMModel(GradientBoostingModel):
         super().__post_init__()
         # Additional initialization if needed
 
-    def train_model(self, target_col: str) -> Tuple[lgb.LGBMModel, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
+    def train_model(
+        self, target_col: str
+    ) -> tuple[lgb.LGBMModel, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
         """
         Train the LightGBM model using the training data.
 
@@ -55,6 +60,7 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             Exception: If training fails.
+
         """
         try:
             X, y, categorical_cols = self._prepare_features_and_target(target_col)
@@ -69,15 +75,21 @@ class LightGBMModel(GradientBoostingModel):
                 eval_sides,
             ) = self._split_data(X, y)
             X_train, X_val, X_test = self._preprocess_features(X_train, X_val, X_test)
-            X_train, X_val, X_test = self._select_and_store_features(X_train, X_val, X_test, y_val, categorical_cols)
-            best_params = self._get_best_hyperparameters(X_train, y_train, X_val, y_val, target_col)
+            X_train, X_val, X_test = self._select_and_store_features(
+                X_train, X_val, X_test, y_val, categorical_cols
+            )
+            best_params = self._get_best_hyperparameters(
+                X_train, y_train, X_val, y_val, target_col
+            )
             model = self._fit_model(X_train, y_train, X_val, y_val, best_params)
             return model, X_test, y_test, eval_gameids, eval_sides
         except Exception as e:
             logger.error(f"Failed to train model: {e}")
             raise
 
-    def train_and_validate_model(self, target_col: str = "result", validate: bool = True) -> lgb.LGBMModel:
+    def train_and_validate_model(
+        self, target_col: str = "result", validate: bool = True
+    ) -> lgb.LGBMModel:
         """
         Train and optionally validate the LightGBM model.
 
@@ -90,18 +102,25 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             Exception: If training or validation fails.
+
         """
         try:
-            model, X_test, y_test, eval_gameids, eval_sides = self.train_model(target_col)
+            model, X_test, y_test, eval_gameids, eval_sides = self.train_model(
+                target_col
+            )
             if validate:
                 self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
-            self._calculate_and_plot_feature_importances(model, X_test, y_test, X_test.columns.tolist())
+            self._calculate_and_plot_feature_importances(
+                model, X_test, y_test, X_test.columns.tolist()
+            )
             return model
         except Exception as e:
             logger.error(f"Failed to train and validate model: {e}")
             raise
 
-    def _prepare_features_and_target(self, target_col: str) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
+    def _prepare_features_and_target(
+        self, target_col: str
+    ) -> tuple[pd.DataFrame, pd.Series, list[str]]:
         """
         Prepare the features and target for model training.
 
@@ -113,16 +132,22 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             ValueError: If the target column is not found in training data.
+
         """
         if target_col not in self.training_data.columns:
             logger.error(f"Target column '{target_col}' not found in training data.")
-            raise ValueError(f"Target column '{target_col}' not found in training data.")
+            msg = f"Target column '{target_col}' not found in training data."
+            raise ValueError(msg)
         X = self.training_data.drop(columns=[target_col])
         y = self.training_data[target_col]
-        X, categorical_features = self.preprocess_categorical_features(X, exclude_cols=["gameid", "side", "league"])
+        X, categorical_features = self.preprocess_categorical_features(
+            X, exclude_cols=["gameid", "side", "league"]
+        )
         return X, y, categorical_features
 
-    def _split_data(self, X: pd.DataFrame, y: pd.Series) -> Tuple[
+    def _split_data(
+        self, X: pd.DataFrame, y: pd.Series
+    ) -> tuple[
         pd.DataFrame,
         pd.DataFrame,
         pd.DataFrame,
@@ -145,12 +170,14 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             ValueError: If required columns are missing.
+
         """
         required_columns = ["gameid", "side", "league"]
         missing_columns = [col for col in required_columns if col not in X.columns]
         if missing_columns:
             logger.error(f"Missing required columns in X: {missing_columns}")
-            raise ValueError(f"Missing required columns in X: {missing_columns}")
+            msg = f"Missing required columns in X: {missing_columns}"
+            raise ValueError(msg)
         try:
             (
                 X_train,
@@ -193,7 +220,7 @@ class LightGBMModel(GradientBoostingModel):
         X_train: pd.DataFrame,
         X_val: pd.DataFrame,
         X_test: pd.DataFrame,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Process and fuse features for training, validation, and testing sets.
 
@@ -207,6 +234,7 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             Exception: If preprocessing fails.
+
         """
         try:
             for func in [
@@ -227,8 +255,8 @@ class LightGBMModel(GradientBoostingModel):
         X_val: pd.DataFrame,
         X_test: pd.DataFrame,
         y_val: pd.Series,
-        categorical_cols: List[str],
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        categorical_cols: list[str],
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Select features, store them, and plot the correlation matrix.
 
@@ -244,15 +272,22 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             Exception: If feature selection fails.
+
         """
         try:
             X_train = self.remove_unnecessary_columns(X_train)
             selected_features = X_train.columns.tolist()
-            selected_features = [feat for feat in selected_features if feat in X_val.columns and feat in X_test.columns]
+            selected_features = [
+                feat
+                for feat in selected_features
+                if feat in X_val.columns and feat in X_test.columns
+            ]
             X_val = X_val[selected_features]
             X_test = X_test[selected_features]
 
-            categorical_features = [col for col in categorical_cols if col in selected_features]
+            categorical_features = [
+                col for col in categorical_cols if col in selected_features
+            ]
 
             self.store_correlation(X_val, y_val)
             self.store_model_features(selected_features)
@@ -270,7 +305,7 @@ class LightGBMModel(GradientBoostingModel):
         X_val: pd.DataFrame,
         y_val: pd.Series,
         target_col: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Retrieve the best hyperparameters for the LightGBM model.
 
@@ -286,6 +321,7 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             Exception: If hyperparameter optimization fails.
+
         """
         best_hyperparams_map = {
             "result": OUTCOME_PREDICTION_BEST_HYPERPARAMETERS,
@@ -297,8 +333,12 @@ class LightGBMModel(GradientBoostingModel):
                 best_params = load_model(hyperparams_path)
                 logger.info(f"Loaded best hyperparameters from {hyperparams_path}")
             except Exception as e:
-                logger.error(f"Failed to load hyperparameters from {hyperparams_path}: {e}")
-                best_params = self._optimize_hyperparameters(X_train, y_train, X_val, y_val)
+                logger.error(
+                    f"Failed to load hyperparameters from {hyperparams_path}: {e}"
+                )
+                best_params = self._optimize_hyperparameters(
+                    X_train, y_train, X_val, y_val
+                )
                 self.store_best_hyperparameters(best_params)
         else:
             best_params = self._optimize_hyperparameters(X_train, y_train, X_val, y_val)
@@ -311,8 +351,8 @@ class LightGBMModel(GradientBoostingModel):
         y_train: pd.Series,
         X_val: pd.DataFrame,
         y_val: pd.Series,
-        best_params: Dict[str, Any],
-    ) -> Union[lgb.LGBMClassifier, lgb.LGBMRegressor]:
+        best_params: dict[str, Any],
+    ) -> lgb.LGBMClassifier | lgb.LGBMRegressor:
         """
         Fit the LightGBM model using the best hyperparameters.
 
@@ -328,8 +368,13 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             Exception: If model fitting fails.
+
         """
-        model_class = lgb.LGBMClassifier if self.problem_type == "classification" else lgb.LGBMRegressor
+        model_class = (
+            lgb.LGBMClassifier
+            if self.problem_type == "classification"
+            else lgb.LGBMRegressor
+        )
         try:
             model = model_class(**best_params, verbosity=-1)
             model.fit(
@@ -350,7 +395,7 @@ class LightGBMModel(GradientBoostingModel):
         y_train: pd.Series,
         X_val: pd.DataFrame,
         y_val: pd.Series,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Optimize hyperparameters for the LightGBM model using Optuna.
 
@@ -365,14 +410,21 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             Exception: If hyperparameter optimization fails.
+
         """
 
         def objective(trial):
             params = {
-                "objective": "binary" if self.problem_type == "classification" else "regression",
-                "metric": "binary_logloss" if self.problem_type == "classification" else "mae",
+                "objective": "binary"
+                if self.problem_type == "classification"
+                else "regression",
+                "metric": "binary_logloss"
+                if self.problem_type == "classification"
+                else "mae",
                 "bagging_freq": 1,
-                "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.1, log=True),
+                "learning_rate": trial.suggest_float(
+                    "learning_rate", 1e-3, 0.1, log=True
+                ),
                 "num_leaves": trial.suggest_int("num_leaves", 2, 1024),
                 "max_depth": trial.suggest_int("max_depth", -1, 50),
                 "subsample": trial.suggest_float("subsample", 0.05, 1.0),
@@ -383,7 +435,11 @@ class LightGBMModel(GradientBoostingModel):
                 "verbosity": -1,
             }
 
-            model_class = lgb.LGBMClassifier if self.problem_type == "classification" else lgb.LGBMRegressor
+            model_class = (
+                lgb.LGBMClassifier
+                if self.problem_type == "classification"
+                else lgb.LGBMRegressor
+            )
             clf = model_class(**params, verbosity=-1)
             clf.fit(
                 X_train,
@@ -401,7 +457,9 @@ class LightGBMModel(GradientBoostingModel):
             return score
 
         try:
-            study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler())
+            study = optuna.create_study(
+                direction="minimize", sampler=optuna.samplers.TPESampler()
+            )
             study.optimize(objective, n_trials=self.trials)
             best_params = study.best_params
             logger.info(f"Best hyperparameters: {best_params}")
@@ -413,10 +471,10 @@ class LightGBMModel(GradientBoostingModel):
 
     def _calculate_and_plot_feature_importances(
         self,
-        model: Union[lgb.LGBMClassifier, lgb.LGBMRegressor],
+        model: lgb.LGBMClassifier | lgb.LGBMRegressor,
         X_test: pd.DataFrame,
         y_test: pd.Series,
-        selected_features: List[str],
+        selected_features: list[str],
     ) -> None:
         """
         Calculate and plot feature importances.
@@ -429,6 +487,7 @@ class LightGBMModel(GradientBoostingModel):
 
         Raises:
             Exception: If calculation or plotting fails.
+
         """
         logger.info("Calculating and plotting feature importances...")
         try:
@@ -437,7 +496,9 @@ class LightGBMModel(GradientBoostingModel):
             logger.error(f"Failed to store feature importance: {e}")
 
         try:
-            self.calculate_permutation_importance(model, X_test, y_test, selected_features)
+            self.calculate_permutation_importance(
+                model, X_test, y_test, selected_features
+            )
         except Exception as e:
             logger.error(f"Failed to calculate permutation importance: {e}")
 
@@ -475,9 +536,11 @@ class ModelFactory:
 
         Raises:
             ValueError: If the problem type or model type is unsupported.
+
         """
         if problem_type not in ["classification", "regression"]:
-            raise ValueError(f"Unsupported problem type: {problem_type}")
+            msg = f"Unsupported problem type: {problem_type}"
+            raise ValueError(msg)
 
         if model_type == "lightgbm":
             return LightGBMModel(
@@ -486,5 +549,5 @@ class ModelFactory:
                 team_data=training_team_data,
                 player_data=training_player_data,
             )
-        else:
-            raise ValueError(f"Unsupported model type: {model_type}")
+        msg = f"Unsupported model type: {model_type}"
+        raise ValueError(msg)

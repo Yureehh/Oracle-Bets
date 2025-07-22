@@ -64,6 +64,7 @@ def initialize_and_train_model(
 
     Raises:
         Exception: If training fails.
+
     """
     try:
         model = ModelFactory.create_model(
@@ -73,14 +74,20 @@ def initialize_and_train_model(
             training_player_data=training_player_data,
         )
 
-        logger.info(f"Initialized {model_name} model for {problem_type} problem. Starting training process...")
+        logger.info(
+            f"Initialized {model_name} model for {problem_type} problem. Starting training process..."
+        )
         start_time = dt.datetime.now()
 
         model.preprocess_data(target_col=target_column_name)
-        trained_model = model.train_and_validate_model(target_col=target_column_name, validate=validate)
+        trained_model = model.train_and_validate_model(
+            target_col=target_column_name, validate=validate
+        )
         elapsed_time = (dt.datetime.now() - start_time).total_seconds()
 
-        logger.info(f"{model_name} model training and evaluation completed in {elapsed_time:.2f} seconds")
+        logger.info(
+            f"{model_name} model training and evaluation completed in {elapsed_time:.2f} seconds"
+        )
 
         model_path = MODELS_DIR / f"{model_name}.{MODEL_FILE_EXTENSION}"
         store_model(model_path, trained_model, model_name, logger)
@@ -95,7 +102,9 @@ def train_models() -> None:
     """Train all models defined in MODELS_TO_TRAIN."""
     try:
         logger.info("Loading training data...")
-        training_team_data, training_player_data = load_training_data(TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA, logger)
+        training_team_data, training_player_data = load_training_data(
+            TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA, logger
+        )
         logger.info("Training data loaded successfully.\n")
     except Exception as e:
         logger.error(f"Failed to load training data: {e}")

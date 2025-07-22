@@ -8,7 +8,7 @@ with Glicko-2 functions from the 'glicko2' library.
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import optuna
 import pandas as pd
@@ -17,7 +17,12 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from src.utils.logger import instantiate_conf_logger, logger
-from src.utils.paths import CONSIDERED_LEAGUES, DEFAULT_MODELS_PARAMETERS, ENTITY_GLICKO_HYPERPARAMETERS, LEAGUE_ELO
+from src.utils.paths import (
+    CONSIDERED_LEAGUES,
+    DEFAULT_MODELS_PARAMETERS,
+    ENTITY_GLICKO_HYPERPARAMETERS,
+    LEAGUE_ELO,
+)
 from src.utils.utils import get_sorting_keys, json_loader
 
 # ----------------------------------------------------------------------
@@ -53,6 +58,7 @@ def clamp(value: float, min_val: float, max_val: float) -> float:
 
     Returns:
         float: Clamped result within [min_val, max_val].
+
     """
     return max(min_val, min(value, max_val))
 
@@ -66,6 +72,7 @@ def is_major_league(league: str) -> bool:
 
     Returns:
         bool: True if league is major, False otherwise.
+
     """
     return league in MAJOR_LEAGUES
 
@@ -73,7 +80,7 @@ def is_major_league(league: str) -> bool:
 # ------------------------------------------------------------------------------
 # 1. Preprocessing (mirrors Elo's preprocessing)
 # ------------------------------------------------------------------------------
-def calculate_mean_rating(ratings: List[Rating]) -> Rating:
+def calculate_mean_rating(ratings: list[Rating]) -> Rating:
     """
     Calculate the mean Glicko-2 rating for a group of Ratings.
 
@@ -82,6 +89,7 @@ def calculate_mean_rating(ratings: List[Rating]) -> Rating:
 
     Returns:
         Rating: A new Rating whose mu, phi, and sigma are averages of the input ratings.
+
     """
     if not ratings:
         return Rating(mu=DEFAULT_MU, phi=DEFAULT_PHI, sigma=DEFAULT_SIGMA)
@@ -93,8 +101,8 @@ def calculate_mean_rating(ratings: List[Rating]) -> Rating:
 
 
 def rate_match_using_mean(
-    model: Glicko2, team_ratings: List[Rating], opp_mean_rating: Rating, result: int
-) -> List[Rating]:
+    model: Glicko2, team_ratings: list[Rating], opp_mean_rating: Rating, result: int
+) -> list[Rating]:
     """
     Rate each player in a team using the team's mean rating against the opposing team's mean rating.
 
@@ -106,6 +114,7 @@ def rate_match_using_mean(
 
     Returns:
         List[Rating]: Updated Glicko-2 Ratings for each member of the team.
+
     """
     updated_ratings = []
     for rating in team_ratings:
@@ -135,47 +144,65 @@ def preprocess_glicko2_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
 
     Returns:
         pd.DataFrame: Cleaned and sorted DataFrame ready for Glicko-2 rating.
+
     """
     if entity.lower() not in ["team", "player"]:
-        raise ValueError("Entity must be 'team' or 'player'")
+        msg = "Entity must be 'team' or 'player'"
+        raise ValueError(msg)
 
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
-    required_columns = ["season", "date", "gameid", entity_key, "league", "side", "result"]
+    required_columns = [
+        "season",
+        "date",
+        "gameid",
+        entity_key,
+        "league",
+        "side",
+        "result",
+    ]
     if entity.lower() == "player":
         required_columns.append("position")
 
     missing_columns = set(required_columns) - set(df.columns)
     if missing_columns:
-        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+        msg = f"Input DataFrame is missing required columns: {missing_columns}"
+        raise ValueError(msg)
 
     # Convert 'date' to datetime
     if not pd.api.types.is_datetime64_any_dtype(df["date"]):
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         null_count = df["date"].isnull().sum()
         if null_count > 0:
-            logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
-            data_pipeline_logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
+            logger.warning(
+                f"{null_count} 'date' entries could not be converted; dropping them."
+            )
+            data_pipeline_logger.warning(
+                f"{null_count} 'date' entries could not be converted; dropping them."
+            )
             df = df.dropna(subset=["date"]).copy()
 
     # Drop rows missing 'league' or 'result'
     if df["league"].isna().any() or df["result"].isna().any():
         n_missing_leagues = df["league"].isnull().sum()
         n_missing_results = df["result"].isnull().sum()
-        logger.warning(f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them.")
+        logger.warning(
+            f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them."
+        )
         data_pipeline_logger.warning(
             f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them."
         )
         df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
 
-    df = df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
-    return df
+    return df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
 
 
 # ----------------------------------------------------------------------
 # 2. Core Glicko-2 Functions
 # ----------------------------------------------------------------------
-def update_glicko2_rating(own_rating: Rating, opp_rating: Rating, actual_result: float, model: Glicko2) -> Rating:
+def update_glicko2_rating(
+    own_rating: Rating, opp_rating: Rating, actual_result: float, model: Glicko2
+) -> Rating:
     """
     Update a single entity's Glicko-2 rating for a single match using the 1vs1 approach.
 
@@ -187,26 +214,26 @@ def update_glicko2_rating(own_rating: Rating, opp_rating: Rating, actual_result:
 
     Returns:
         Rating: Updated Glicko-2 rating after the match.
+
     """
     if abs(actual_result - 1.0) < 1e-9:
         # own_rating is winner
         new_win_rating, _ = model.rate_1vs1(own_rating, opp_rating)
         return new_win_rating
-    else:
-        # own_rating is loser
-        _, new_loser_rating = model.rate_1vs1(opp_rating, own_rating)
-        return new_loser_rating
+    # own_rating is loser
+    _, new_loser_rating = model.rate_1vs1(opp_rating, own_rating)
+    return new_loser_rating
 
 
 # ----------------------------------------------------------------------
 # 3. Season / Entity Lifecycle Utilities
 # ----------------------------------------------------------------------
 def linear_decay_reset(
-    glicko2_ratings: Dict[Union[int, str], Dict[str, Any]],
+    glicko2_ratings: dict[int | str, dict[str, Any]],
     current_season: int,
     baseline_mu: float,
     decay_factor: float,
-) -> Dict[Union[int, str], Dict[str, Any]]:
+) -> dict[int | str, dict[str, Any]]:
     """
     Partially decay mu toward baseline if old season < current_season.
 
@@ -218,6 +245,7 @@ def linear_decay_reset(
 
     Returns:
         Dict[Union[int, str], Dict[str, Any]]: Updated rating dict after seasonal decay.
+
     """
     for entity_id, data in glicko2_ratings.items():
         old_rating = data["rating"]
@@ -225,16 +253,18 @@ def linear_decay_reset(
             delta_mu = old_rating.mu - baseline_mu
             reset_mu = baseline_mu + delta_mu * decay_factor
             # create a new Rating with decayed mu
-            glicko2_ratings[entity_id]["rating"] = Rating(mu=reset_mu, phi=old_rating.phi, sigma=old_rating.sigma)
+            glicko2_ratings[entity_id]["rating"] = Rating(
+                mu=reset_mu, phi=old_rating.phi, sigma=old_rating.sigma
+            )
             glicko2_ratings[entity_id]["season"] = current_season
     # Return the same dict reference for chaining
     return glicko2_ratings
 
 
 def handle_position_switch(
-    entity_id: Union[int, str],
-    new_position: Optional[str],
-    glicko2_ratings: Dict[Union[int, str], Dict[str, Any]],
+    entity_id: int | str,
+    new_position: str | None,
+    glicko2_ratings: dict[int | str, dict[str, Any]],
     baseline_mu: float,
     position_reset_factor: float,
 ) -> None:
@@ -247,6 +277,7 @@ def handle_position_switch(
         glicko2_ratings (Dict[Union[int, str], Dict[str, Any]]): Ratings dictionary for all entities.
         baseline_mu (float): Baseline mu value.
         position_reset_factor (float): Fraction of the difference from baseline to keep after a position swap.
+
     """
     if not new_position:
         return
@@ -256,15 +287,17 @@ def handle_position_switch(
         old_rating = glicko2_ratings[entity_id]["rating"]
         delta_mu = old_rating.mu - baseline_mu
         reset_mu = baseline_mu + delta_mu * (1.0 - position_reset_factor)
-        glicko2_ratings[entity_id]["rating"] = Rating(mu=reset_mu, phi=old_rating.phi, sigma=old_rating.sigma)
+        glicko2_ratings[entity_id]["rating"] = Rating(
+            mu=reset_mu, phi=old_rating.phi, sigma=old_rating.sigma
+        )
 
     glicko2_ratings[entity_id]["last_position"] = new_position
 
 
 def handle_new_entity(
-    ent_id: Union[int, str],
-    glicko2_ratings: Dict[Union[int, str], Dict[str, Any]],
-    league_elo_dict: Dict[str, float],
+    ent_id: int | str,
+    glicko2_ratings: dict[int | str, dict[str, Any]],
+    league_elo_dict: dict[str, float],
     new_league: str,
     current_season: int,
     baseline_mu: float,
@@ -281,9 +314,14 @@ def handle_new_entity(
         current_season (int): Season number for the new entity.
         baseline_mu (float): Baseline mu (e.g., 1500).
         init_adjust_factor (float): Fraction of difference between league_elo and average_elo to apply.
+
     """
     max_diff = 0.2 * baseline_mu
-    avg_league_elo = sum(league_elo_dict.values()) / len(league_elo_dict) if league_elo_dict else baseline_mu
+    avg_league_elo = (
+        sum(league_elo_dict.values()) / len(league_elo_dict)
+        if league_elo_dict
+        else baseline_mu
+    )
     league_elo = league_elo_dict.get(new_league, baseline_mu)
     init_adjustment = (league_elo - avg_league_elo) * init_adjust_factor
     initial_mu = baseline_mu + init_adjustment
@@ -299,10 +337,10 @@ def handle_new_entity(
 
 
 def handle_league_swap(
-    ent_id: Union[int, str],
+    ent_id: int | str,
     new_league: str,
-    glicko2_ratings: Dict[Union[int, str], Dict[str, Any]],
-    league_elo_dict: Dict[str, float],
+    glicko2_ratings: dict[int | str, dict[str, Any]],
+    league_elo_dict: dict[str, float],
     baseline_mu: float,
     transfer_factor: float,
     transfer_factor_minor_to_major: float = 0.4,
@@ -318,6 +356,7 @@ def handle_league_swap(
         baseline_mu (float): Baseline mu value.
         transfer_factor (float): Fraction of difference to apply for standard league changes.
         transfer_factor_minor_to_major (float): Fraction of difference for minor->major transitions.
+
     """
     curr_league = glicko2_ratings[ent_id].get("league")
     if not curr_league or curr_league == new_league:
@@ -341,7 +380,9 @@ def handle_league_swap(
         adjusted_diff = transfer_factor * diff
         new_mu = old_mu + adjusted_diff
 
-    glicko2_ratings[ent_id]["rating"] = Rating(mu=new_mu, phi=old_rating.phi, sigma=old_rating.sigma)
+    glicko2_ratings[ent_id]["rating"] = Rating(
+        mu=new_mu, phi=old_rating.phi, sigma=old_rating.sigma
+    )
     glicko2_ratings[ent_id]["league"] = new_league
 
 
@@ -351,17 +392,17 @@ def handle_league_swap(
 def process_game(
     df: pd.DataFrame,
     game_group: pd.DataFrame,
-    glicko2_ratings: Dict[Union[int, str], Dict[str, Any]],
+    glicko2_ratings: dict[int | str, dict[str, Any]],
     glicko2_model: Glicko2,
     entity: str,
     entity_key: str,
     baseline_mu: float,
     decay_factor: float,
-    league_elo_dict: Dict[str, float],
+    league_elo_dict: dict[str, float],
     transfer_factor: float,
     initial_elo_adjustment_factor: float,
     position_reset_factor: float = 0.2,
-) -> Dict[Union[int, str], Dict[str, Any]]:
+) -> dict[int | str, dict[str, Any]]:
     """
     Process a single grouped game, updating Glicko-2 ratings for both sides.
 
@@ -378,6 +419,7 @@ def process_game(
         transfer_factor (float): Factor for normal league swaps.
         initial_elo_adjustment_factor (float): Factor for initial league offset.
         position_reset_factor (float, optional): Factor for partial position-based resets. Defaults to 0.2.
+
     """
     current_season = game_group.iloc[0]["season"]
 
@@ -394,7 +436,9 @@ def process_game(
     for ent_id in entity_ids:
         # Optional: ent_id = str(ent_id) to unify types
         if ent_id not in glicko2_ratings:
-            new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
+            new_league = game_group.loc[
+                game_group[entity_key] == ent_id, "league"
+            ].iloc[0]
             handle_new_entity(
                 ent_id=ent_id,
                 glicko2_ratings=glicko2_ratings,
@@ -405,7 +449,9 @@ def process_game(
                 init_adjust_factor=initial_elo_adjustment_factor,
             )
         else:
-            new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
+            new_league = game_group.loc[
+                game_group[entity_key] == ent_id, "league"
+            ].iloc[0]
             if new_league not in CROSS_LEAGUE_COMPETITIONS:
                 handle_league_swap(
                     ent_id=ent_id,
@@ -442,16 +488,24 @@ def process_game(
     red_mean_rating = calculate_mean_rating(red_old_ratings)
     mean_blue_impact = glicko2_model.reduce_impact(blue_mean_rating)
 
-    blue_expected = glicko2_model.expect_score(blue_mean_rating, red_mean_rating, mean_blue_impact)
+    blue_expected = glicko2_model.expect_score(
+        blue_mean_rating, red_mean_rating, mean_blue_impact
+    )
     result = blue_rows.iloc[0]["result"]
     red_result = 1.0 - result
 
     # Rate both sides
     updated_blue_ratings = rate_match_using_mean(
-        glicko2_model, team_ratings=blue_old_ratings, opp_mean_rating=red_mean_rating, result=int(result)
+        glicko2_model,
+        team_ratings=blue_old_ratings,
+        opp_mean_rating=red_mean_rating,
+        result=int(result),
     )
     updated_red_ratings = rate_match_using_mean(
-        glicko2_model, team_ratings=red_old_ratings, opp_mean_rating=blue_mean_rating, result=int(red_result)
+        glicko2_model,
+        team_ratings=red_old_ratings,
+        opp_mean_rating=blue_mean_rating,
+        result=int(red_result),
     )
 
     # Save updates in dictionary
@@ -488,8 +542,8 @@ def tune_glicko2_hyperparameters(
     df: pd.DataFrame,
     entity: str,
     hyperparameters_path: Path,
-    league_elo_dict: Dict[str, float],
-) -> Dict[str, float]:
+    league_elo_dict: dict[str, float],
+) -> dict[str, float]:
     """
     Either load Glicko-2 hyperparameters if they exist, or compute them via Optuna.
     Returns the best parameters for subsequent Glicko-2 calculations.
@@ -502,13 +556,18 @@ def tune_glicko2_hyperparameters(
 
     Returns:
         Dict[str, float]: Dictionary of best Glicko-2 hyperparameters found or loaded.
+
     """
     best_params = load_hyperparameters(hyperparameters_path)
     if best_params:
         return best_params
 
-    logger.info(f"No hyperparameters found at {hyperparameters_path}. Starting tuning process...")
-    data_pipeline_logger.info(f"No hyperparameters found at {hyperparameters_path}. Starting tuning process...")
+    logger.info(
+        f"No hyperparameters found at {hyperparameters_path}. Starting tuning process..."
+    )
+    data_pipeline_logger.info(
+        f"No hyperparameters found at {hyperparameters_path}. Starting tuning process..."
+    )
 
     def objective(trial: optuna.trial.Trial) -> float:
         hyperparams = suggest_glicko2_hyperparameters(trial)
@@ -516,7 +575,9 @@ def tune_glicko2_hyperparameters(
         df_train, df_valid = split_and_validate_data(df, entity)
         if df_train.empty or df_valid.empty:
             logger.warning("Training or validation DataFrame is empty after splitting.")
-            data_pipeline_logger.warning("Training or validation DataFrame is empty after splitting.")
+            data_pipeline_logger.warning(
+                "Training or validation DataFrame is empty after splitting."
+            )
             return float("inf")
 
         try:
@@ -528,25 +589,33 @@ def tune_glicko2_hyperparameters(
                 sigma=hyperparams["sigma"],
                 decay_factor=hyperparams["decay_factor"],
                 transfer_factor=hyperparams["transfer_factor"],
-                initial_elo_adjustment_factor=hyperparams["initial_elo_adjustment_factor"],
+                initial_elo_adjustment_factor=hyperparams[
+                    "initial_elo_adjustment_factor"
+                ],
                 position_reset_factor=hyperparams["position_reset_factor"],
                 league_elo_dict=league_elo_dict,
                 show_progress=False,
             )
         except Exception as err:
             logger.error(f"Error during Glicko-2 computation in training phase: {err}")
-            data_pipeline_logger.error(f"Error during Glicko-2 computation in training phase: {err}")
+            data_pipeline_logger.exception(
+                f"Error during Glicko-2 computation in training phase: {err}"
+            )
             return float("inf")
 
         val_ratings = initialize_validation_ratings(
-            df_train_res, entity, hyperparams["mu"], hyperparams["phi"], hyperparams["sigma"]
+            df_train_res,
+            entity,
+            hyperparams["mu"],
+            hyperparams["phi"],
+            hyperparams["sigma"],
         )
 
         try:
             loss = evaluate_validation(df_valid, val_ratings, entity, hyperparams)
         except Exception as err:
             logger.error(f"Error during validation phase: {err}")
-            data_pipeline_logger.error(f"Error during validation phase: {err}")
+            data_pipeline_logger.exception(f"Error during validation phase: {err}")
             return float("inf")
 
         return loss
@@ -562,7 +631,7 @@ def tune_glicko2_hyperparameters(
     return best_params
 
 
-def load_hyperparameters(path: Path) -> Dict[str, float]:
+def load_hyperparameters(path: Path) -> dict[str, float]:
     """
     Load hyperparameters from a JSON file if it exists.
 
@@ -571,6 +640,7 @@ def load_hyperparameters(path: Path) -> Dict[str, float]:
 
     Returns:
         Dict[str, float]: Loaded hyperparameter dictionary or empty if not found / error.
+
     """
     if path.exists():
         logger.info(f"Loading hyperparameters from {path}")
@@ -580,17 +650,20 @@ def load_hyperparameters(path: Path) -> Dict[str, float]:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Failed to load hyperparameters from {path}: {e}")
-            data_pipeline_logger.error(f"Failed to load hyperparameters from {path}")
+            data_pipeline_logger.exception(
+                f"Failed to load hyperparameters from {path}"
+            )
     return {}
 
 
-def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
+def save_hyperparameters(params: dict[str, float], path: Path) -> None:
     """
     Save hyperparameters to a JSON file.
 
     Args:
         params (Dict[str, float]): Hyperparameter dictionary to store.
         path (Path): JSON file path to save into.
+
     """
     try:
         logger.info(f"Storing hyperparameters to {path}")
@@ -599,10 +672,10 @@ def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
             json.dump(params, f)
     except Exception as e:
         logger.error(f"Failed to save hyperparameters to {path}: {e}")
-        data_pipeline_logger.error(f"Failed to save hyperparameters to {path}")
+        data_pipeline_logger.exception(f"Failed to save hyperparameters to {path}")
 
 
-def suggest_glicko2_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, float]:
+def suggest_glicko2_hyperparameters(trial: optuna.trial.Trial) -> dict[str, float]:
     """
     Suggest Glicko-2 hyperparameters using Optuna's trial.
 
@@ -611,6 +684,7 @@ def suggest_glicko2_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, floa
 
     Returns:
         Dict[str, float]: Proposed hyperparameters for this trial.
+
     """
     return {
         "mu": trial.suggest_float("mu", 1200, 1800, step=100),
@@ -618,12 +692,18 @@ def suggest_glicko2_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, floa
         "sigma": trial.suggest_float("sigma", 0.01, 0.3, step=0.01),
         "decay_factor": trial.suggest_float("decay_factor", 0.5, 1.0, step=0.05),
         "transfer_factor": trial.suggest_float("transfer_factor", 0.1, 1.0, step=0.1),
-        "initial_elo_adjustment_factor": trial.suggest_float("initial_elo_adjustment_factor", 0.0, 1.0, step=0.1),
-        "position_reset_factor": trial.suggest_float("position_reset_factor", 0.0, 1.0, step=0.1),
+        "initial_elo_adjustment_factor": trial.suggest_float(
+            "initial_elo_adjustment_factor", 0.0, 1.0, step=0.1
+        ),
+        "position_reset_factor": trial.suggest_float(
+            "position_reset_factor", 0.0, 1.0, step=0.1
+        ),
     }
 
 
-def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def split_and_validate_data(
+    df: pd.DataFrame, entity: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Sort, split, and validate the DataFrame into training and validation sets
     based on year boundaries, then verify group sizes (2 for teams, 10 for players).
@@ -634,6 +714,7 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
 
     Returns:
         Tuple[pd.DataFrame, pd.DataFrame]: (training_df, validation_df).
+
     """
     df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
     if df_sorted.empty:
@@ -646,7 +727,9 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
         split_date = pd.to_datetime(f"{split_year}-01-01")
     except AttributeError as e:
         logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
-        data_pipeline_logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
+        data_pipeline_logger.exception(
+            f"Error accessing 'date' column with .dt accessor: {e}"
+        )
         return pd.DataFrame(), pd.DataFrame()
 
     df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
@@ -657,8 +740,12 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
         if not split_df.empty:
             group_sizes = split_df.groupby("gameid").size()
             if not (group_sizes == expected_count).all():
-                logger.warning(f"{name} data has gameids with incorrect number of entities.")
-                data_pipeline_logger.warning(f"{name} data has gameids with incorrect number of entities.")
+                logger.warning(
+                    f"{name} data has gameids with incorrect number of entities."
+                )
+                data_pipeline_logger.warning(
+                    f"{name} data has gameids with incorrect number of entities."
+                )
                 return pd.DataFrame(), pd.DataFrame()
 
     return df_train, df_valid
@@ -680,6 +767,7 @@ def initialize_validation_ratings(
 
     Returns:
         defaultdict: A mapping from entity_id -> {"rating": Rating(...)} for validation initialization.
+
     """
     from collections import defaultdict
 
@@ -700,7 +788,7 @@ def evaluate_validation(
     df_valid: pd.DataFrame,
     val_ratings: defaultdict,
     entity: str,
-    hyperparams: Dict[str, float],
+    hyperparams: dict[str, float],
 ) -> float:
     """
     Evaluate the validation set and compute the log loss. We approximate the
@@ -715,24 +803,37 @@ def evaluate_validation(
 
     Returns:
         float: Log loss over the validation set.
+
     """
     expected_probs = []
     df_valid_sorted = df_valid.sort_values(by=["date", "gameid"]).reset_index(drop=True)
-    model = Glicko2(mu=hyperparams["mu"], phi=hyperparams["phi"], sigma=hyperparams["sigma"])
+    model = Glicko2(
+        mu=hyperparams["mu"], phi=hyperparams["phi"], sigma=hyperparams["sigma"]
+    )
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
     for _, grp in df_valid_sorted.groupby(["date", "gameid"]):
         blue_side = grp[grp["side"] == "Blue"]
         red_side = grp[grp["side"] == "Red"]
 
-        blue_mu_sum = sum(val_ratings[bid]["rating"].mu for bid in blue_side[entity_key])
+        blue_mu_sum = sum(
+            val_ratings[bid]["rating"].mu for bid in blue_side[entity_key]
+        )
         red_mu_sum = sum(val_ratings[rid]["rating"].mu for rid in red_side[entity_key])
         blue_count = max(1, len(blue_side))
         red_count = max(1, len(red_side))
 
         # Construct approximate team rating
-        blue_team_rating = Rating(mu=blue_mu_sum / blue_count, phi=hyperparams["phi"], sigma=hyperparams["sigma"])
-        red_team_rating = Rating(mu=red_mu_sum / red_count, phi=hyperparams["phi"], sigma=hyperparams["sigma"])
+        blue_team_rating = Rating(
+            mu=blue_mu_sum / blue_count,
+            phi=hyperparams["phi"],
+            sigma=hyperparams["sigma"],
+        )
+        red_team_rating = Rating(
+            mu=red_mu_sum / red_count,
+            phi=hyperparams["phi"],
+            sigma=hyperparams["sigma"],
+        )
 
         mean_blue_impact = model.reduce_impact(blue_team_rating)
 
@@ -743,10 +844,14 @@ def evaluate_validation(
         # Simplified rating update for validation
         for bid in blue_side[entity_key]:
             old = val_ratings[bid]["rating"]
-            val_ratings[bid]["rating"] = update_glicko2_rating(old, red_team_rating, result, model)
+            val_ratings[bid]["rating"] = update_glicko2_rating(
+                old, red_team_rating, result, model
+            )
         for rid in red_side[entity_key]:
             old = val_ratings[rid]["rating"]
-            val_ratings[rid]["rating"] = update_glicko2_rating(old, blue_team_rating, 1.0 - result, model)
+            val_ratings[rid]["rating"] = update_glicko2_rating(
+                old, blue_team_rating, 1.0 - result, model
+            )
 
     y_true = df_valid_sorted.loc[df_valid_sorted["side"] == "Blue", "result"]
     y_pred = pd.Series(expected_probs).clip(0.0001, 0.9999)
@@ -772,7 +877,7 @@ def run_glicko2_computation(
     transfer_factor: float,
     initial_elo_adjustment_factor: float,
     position_reset_factor: float,
-    league_elo_dict: Dict[str, float],
+    league_elo_dict: dict[str, float],
     show_progress: bool = True,
 ) -> pd.DataFrame:
     """
@@ -798,6 +903,7 @@ def run_glicko2_computation(
         pd.DataFrame: Updated DataFrame with Glicko-2 columns:
                       [glicko2_mu_before, glicko2_phi_before, glicko2_mu_after,
                        glicko2_phi_after, glicko2_win_likelihood].
+
     """
     df = df.copy()
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
@@ -851,7 +957,7 @@ def run_glicko2_computation(
 def calculate_glicko2(
     df: pd.DataFrame,
     entity: str,
-    league_elo_dict: Optional[Dict[str, float]] = None,
+    league_elo_dict: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
     Main entry point for Glicko-2 rating computation.
@@ -865,6 +971,7 @@ def calculate_glicko2(
 
     Returns:
         pd.DataFrame: DataFrame with updated Glicko-2 columns.
+
     """
     df_pre = preprocess_glicko2_dataframe(df, entity)
 
@@ -874,10 +981,14 @@ def calculate_glicko2(
             league_elo_df = pd.read_parquet(LEAGUE_ELO)
             league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 
-    hyperparameters_path = Path(str(ENTITY_GLICKO_HYPERPARAMETERS).replace("entity", entity))
-    best_params = tune_glicko2_hyperparameters(df_pre, entity, hyperparameters_path, league_elo_dict)
+    hyperparameters_path = Path(
+        str(ENTITY_GLICKO_HYPERPARAMETERS).replace("entity", entity)
+    )
+    best_params = tune_glicko2_hyperparameters(
+        df_pre, entity, hyperparameters_path, league_elo_dict
+    )
 
-    df_final = run_glicko2_computation(
+    return run_glicko2_computation(
         df=df_pre,
         entity=entity,
         mu=best_params["mu"],
@@ -890,4 +1001,3 @@ def calculate_glicko2(
         league_elo_dict=league_elo_dict,
         show_progress=True,
     )
-    return df_final

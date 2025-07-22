@@ -8,7 +8,7 @@ with FireDucks-based performance optimizations.
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 import optuna
 import pandas as pd
@@ -17,7 +17,12 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from src.utils.logger import instantiate_conf_logger, logger
-from src.utils.paths import CONSIDERED_LEAGUES, DEFAULT_MODELS_PARAMETERS, ENTITY_ELO_HYPERPARAMETERS, LEAGUE_ELO
+from src.utils.paths import (
+    CONSIDERED_LEAGUES,
+    DEFAULT_MODELS_PARAMETERS,
+    ENTITY_ELO_HYPERPARAMETERS,
+    LEAGUE_ELO,
+)
 from src.utils.utils import get_sorting_keys, json_loader
 
 # ------------------------------------------------------------------------------
@@ -53,42 +58,57 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     and that rows are sorted by the appropriate keys.
     """
     if entity.lower() not in ["team", "player"]:
-        raise ValueError("Entity must be 'team' or 'player'")
+        msg = "Entity must be 'team' or 'player'"
+        raise ValueError(msg)
 
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
     # Required columns
-    required_columns = ["season", "date", "gameid", entity_key, "league", "side", "result"]
+    required_columns = [
+        "season",
+        "date",
+        "gameid",
+        entity_key,
+        "league",
+        "side",
+        "result",
+    ]
     if entity.lower() == "player":
         required_columns.append("position")
 
     # Check for missing columns
     missing_columns = set(required_columns) - set(df.columns)
     if missing_columns:
-        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+        msg = f"Input DataFrame is missing required columns: {missing_columns}"
+        raise ValueError(msg)
 
     # Convert 'date' to datetime
     if not pd.api.types.is_datetime64_any_dtype(df["date"]):
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         null_count = df["date"].isnull().sum()
         if null_count > 0:
-            logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
-            data_pipeline_logger.warning(f"{null_count} 'date' entries could not be converted; dropping them.")
+            logger.warning(
+                f"{null_count} 'date' entries could not be converted; dropping them."
+            )
+            data_pipeline_logger.warning(
+                f"{null_count} 'date' entries could not be converted; dropping them."
+            )
             df = df.dropna(subset=["date"]).copy()
 
     # Drop rows missing 'league' or 'result'
     if df["league"].isna().any() or df["result"].isna().any():
         n_missing_leagues = df["league"].isnull().sum()
         n_missing_results = df["result"].isnull().sum()
-        logger.warning(f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them.")
+        logger.warning(
+            f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them."
+        )
         data_pipeline_logger.warning(
             f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them."
         )
         df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
 
     # Sort keys
-    df = df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
-    return df
+    return df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
 
 
 # ------------------------------------------------------------------------------
@@ -102,14 +122,16 @@ def expected_outcome(elo_a: float, elo_b: float, elo_divisor: float) -> float:
 
 
 @njit
-def update_elo_rating(old_elo: float, expected: float, actual_result: float, k_factor: float) -> float:
+def update_elo_rating(
+    old_elo: float, expected: float, actual_result: float, k_factor: float
+) -> float:
     """Update Elo rating based on the match result."""
     adjustment = k_factor * (actual_result - expected)
     return old_elo + adjustment
 
 
 def aggregate_team_elo(
-    rows: pd.DataFrame, elo_ratings: Dict[Union[int, str], Dict[str, Any]], entity_key: str
+    rows: pd.DataFrame, elo_ratings: dict[int | str, dict[str, Any]], entity_key: str
 ) -> float:
     """
     Aggregate Elo ratings for a group of entities in 'rows' (e.g., all players on a team).
@@ -128,9 +150,9 @@ def aggregate_team_elo(
 
 
 def handle_position_switch(
-    entity_id: Union[int, str],
-    new_position: Optional[str],
-    elo_ratings: Dict[Union[int, str], Dict[str, Any]],
+    entity_id: int | str,
+    new_position: str | None,
+    elo_ratings: dict[int | str, dict[str, Any]],
     baseline_elo: float,
     position_reset_factor: float,
 ) -> None:
@@ -145,22 +167,24 @@ def handle_position_switch(
     if last_position and last_position != new_position:
         old_elo = elo_ratings[entity_id]["elo"]
         # partial reset toward baseline
-        elo_ratings[entity_id]["elo"] = baseline_elo + (old_elo - baseline_elo) * (1.0 - position_reset_factor)
+        elo_ratings[entity_id]["elo"] = baseline_elo + (old_elo - baseline_elo) * (
+            1.0 - position_reset_factor
+        )
 
     elo_ratings[entity_id]["last_position"] = new_position
 
 
 def linear_decay_reset(
-    elo_ratings: Dict[Union[int, str], Dict[str, Any]],
+    elo_ratings: dict[int | str, dict[str, Any]],
     current_season: int,
     baseline_elo: float,
     decay_factor: float,
-) -> Dict[Union[int, str], Dict[str, Any]]:
+) -> dict[int | str, dict[str, Any]]:
     """
     In-place: Apply a seasonal decay if the stored season < current_season.
     Elo is partially reset toward baseline by decay_factor.
     """
-    for _, data in elo_ratings.items():
+    for data in elo_ratings.values():
         if data["season"] < current_season:
             data["elo"] = baseline_elo + (data["elo"] - baseline_elo) * decay_factor
             data["season"] = current_season
@@ -168,9 +192,9 @@ def linear_decay_reset(
 
 
 def handle_new_entity(
-    ent_id: Union[int, str],
-    elo_ratings: Dict[Union[int, str], Dict[str, Any]],
-    league_elo_dict: Dict[str, float],
+    ent_id: int | str,
+    elo_ratings: dict[int | str, dict[str, Any]],
+    league_elo_dict: dict[str, float],
     new_league: str,
     current_season: int,
     baseline_elo: float,
@@ -183,7 +207,11 @@ def handle_new_entity(
     # Cap max difference to avoid extreme starts
     max_diff = 0.2 * baseline_elo
 
-    avg_league_elo = sum(league_elo_dict.values()) / len(league_elo_dict) if league_elo_dict else baseline_elo
+    avg_league_elo = (
+        sum(league_elo_dict.values()) / len(league_elo_dict)
+        if league_elo_dict
+        else baseline_elo
+    )
     league_elo = league_elo_dict.get(new_league, baseline_elo)
 
     # Additional partial adjustment factor
@@ -202,10 +230,10 @@ def handle_new_entity(
 
 
 def handle_league_swap(
-    ent_id: Union[int, str],
+    ent_id: int | str,
     new_league: str,
-    elo_ratings: Dict[Union[int, str], Dict[str, Any]],
-    league_elo_dict: Dict[str, float],
+    elo_ratings: dict[int | str, dict[str, Any]],
+    league_elo_dict: dict[str, float],
     baseline_elo: float,
     transfer_factor: float,
     transfer_factor_minor_to_major: float = 0.4,
@@ -252,18 +280,18 @@ def handle_league_swap(
 def process_game(
     df: pd.DataFrame,
     game_group: pd.DataFrame,
-    elo_ratings: Dict[Union[int, str], Dict[str, Any]],
+    elo_ratings: dict[int | str, dict[str, Any]],
     k_factor: float,
     entity: str,
     entity_key: str,
     baseline_elo: float,
     decay_factor: float,
     elo_divisor: float,
-    league_elo_dict: Dict[str, float],
+    league_elo_dict: dict[str, float],
     transfer_factor: float,
     initial_elo_adjustment_factor: float,
     position_reset_factor: float = 0.2,
-) -> Dict[Union[int, str], Dict[str, Any]]:
+) -> dict[int | str, dict[str, Any]]:
     """
     Process a single game group, updating Elo for both sides and writing results to df.
     Return the updated dictionary so it persists across matches.
@@ -286,7 +314,9 @@ def process_game(
         # Optional: convert ent_id to string or int consistently
         # ent_id = str(ent_id)
         if ent_id not in elo_ratings:
-            new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
+            new_league = game_group.loc[
+                game_group[entity_key] == ent_id, "league"
+            ].iloc[0]
             handle_new_entity(
                 ent_id=ent_id,
                 elo_ratings=elo_ratings,
@@ -297,7 +327,9 @@ def process_game(
                 init_adjust_factor=initial_elo_adjustment_factor,
             )
         else:
-            new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
+            new_league = game_group.loc[
+                game_group[entity_key] == ent_id, "league"
+            ].iloc[0]
             if new_league not in CROSS_COMPETITION_LEAGUES:
                 handle_league_swap(
                     ent_id=ent_id,
@@ -341,8 +373,14 @@ def process_game(
     red_old_elos = [elo_ratings[r]["elo"] for r in red_ids]
 
     # Update Elos
-    blue_new_elos = [update_elo_rating(old, blue_expected, blue_result, k_factor) for old in blue_old_elos]
-    red_new_elos = [update_elo_rating(old, 1.0 - blue_expected, red_result, k_factor) for old in red_old_elos]
+    blue_new_elos = [
+        update_elo_rating(old, blue_expected, blue_result, k_factor)
+        for old in blue_old_elos
+    ]
+    red_new_elos = [
+        update_elo_rating(old, 1.0 - blue_expected, red_result, k_factor)
+        for old in red_old_elos
+    ]
 
     # Commit new Elos
     for i, bid in enumerate(blue_ids):
@@ -371,8 +409,8 @@ def tune_elo_hyperparameters(
     df: pd.DataFrame,
     entity: str,
     hyperparameters_path: Path,
-    league_elo_dict: Dict[str, float],
-) -> Dict[str, float]:
+    league_elo_dict: dict[str, float],
+) -> dict[str, float]:
     """
     Either load hyperparameters if they exist, or compute them via Optuna.
     Returns the best parameters for subsequent Elo calculations.
@@ -382,8 +420,12 @@ def tune_elo_hyperparameters(
     if best_params:
         return best_params
 
-    logger.info(f"No hyperparameters found at {hyperparameters_path}. Starting tuning process...")
-    data_pipeline_logger.info(f"No hyperparameters found at {hyperparameters_path}. Starting tuning process...")
+    logger.info(
+        f"No hyperparameters found at {hyperparameters_path}. Starting tuning process..."
+    )
+    data_pipeline_logger.info(
+        f"No hyperparameters found at {hyperparameters_path}. Starting tuning process..."
+    )
 
     # Define the objective function for Optuna
     def objective(trial: optuna.trial.Trial) -> float:
@@ -394,7 +436,9 @@ def tune_elo_hyperparameters(
         df_train, df_valid = split_and_validate_data(df, entity)
         if df_train.empty or df_valid.empty:
             logger.warning("Training or validation DataFrame is empty after splitting.")
-            data_pipeline_logger.warning("Training or validation DataFrame is empty after splitting.")
+            data_pipeline_logger.warning(
+                "Training or validation DataFrame is empty after splitting."
+            )
             return float("inf")
 
         # Run Elo computation on training data
@@ -407,25 +451,31 @@ def tune_elo_hyperparameters(
                 decay_factor=hyperparams["decay_factor"],
                 elo_divisor=hyperparams["elo_divisor"],
                 transfer_factor=hyperparams["transfer_factor"],
-                initial_elo_adjustment_factor=hyperparams["initial_elo_adjustment_factor"],
+                initial_elo_adjustment_factor=hyperparams[
+                    "initial_elo_adjustment_factor"
+                ],
                 position_reset_factor=hyperparams["position_reset_factor"],
                 league_elo_dict=league_elo_dict,
                 show_progress=True,
             )
         except Exception as err:
             logger.error(f"Error during Elo computation in training phase: {err}")
-            data_pipeline_logger.error(f"Error during Elo computation in training phase: {err}")
+            data_pipeline_logger.exception(
+                f"Error during Elo computation in training phase: {err}"
+            )
             return float("inf")
 
         # Initialize validation ratings based on training results
-        val_ratings = initialize_validation_ratings(df_train_res, entity, hyperparams["initial_elo"])
+        val_ratings = initialize_validation_ratings(
+            df_train_res, entity, hyperparams["initial_elo"]
+        )
 
         # Evaluate on validation set and compute log loss
         try:
             loss = evaluate_validation(df_valid, val_ratings, entity, hyperparams)
         except Exception as err:
             logger.error(f"Error during validation phase: {err}")
-            data_pipeline_logger.error(f"Error during validation phase: {err}")
+            data_pipeline_logger.exception(f"Error during validation phase: {err}")
             return float("inf")
 
         return loss
@@ -445,7 +495,7 @@ def tune_elo_hyperparameters(
     return best_params
 
 
-def load_hyperparameters(path: Path) -> Dict[str, float]:
+def load_hyperparameters(path: Path) -> dict[str, float]:
     """
     Load hyperparameters from a JSON file if it exists.
     Returns the loaded parameters or None if the file doesn't exist or loading fails.
@@ -455,15 +505,16 @@ def load_hyperparameters(path: Path) -> Dict[str, float]:
         data_pipeline_logger.info(f"Loading hyperparameters from {path}")
         try:
             with path.open() as f:
-                loaded_params = json.load(f)
-            return loaded_params
+                return json.load(f)
         except Exception as e:
             logger.error(f"Failed to load hyperparameters from {path}: {e}")
-            data_pipeline_logger.error(f"Failed to load hyperparameters from {path}")
+            data_pipeline_logger.exception(
+                f"Failed to load hyperparameters from {path}"
+            )
     return {}
 
 
-def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
+def save_hyperparameters(params: dict[str, float], path: Path) -> None:
     """Save hyperparameters to a JSON file."""
     try:
         logger.info(f"Storing hyperparameters to {path}")
@@ -472,10 +523,10 @@ def save_hyperparameters(params: Dict[str, float], path: Path) -> None:
             json.dump(params, f)
     except Exception as e:
         logger.error(f"Failed to save hyperparameters to {path}: {e}")
-        data_pipeline_logger.error(f"Failed to save hyperparameters to {path}")
+        data_pipeline_logger.exception(f"Failed to save hyperparameters to {path}")
 
 
-def suggest_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, float]:
+def suggest_hyperparameters(trial: optuna.trial.Trial) -> dict[str, float]:
     """Suggest hyperparameters using Optuna's trial object."""
     return {
         "k_factor": trial.suggest_float("k_factor", 16, 64, step=8),
@@ -483,12 +534,18 @@ def suggest_hyperparameters(trial: optuna.trial.Trial) -> Dict[str, float]:
         "elo_divisor": trial.suggest_float("elo_divisor", 100, 500, step=100),
         "decay_factor": trial.suggest_float("decay_factor", 0.5, 1.0, step=0.05),
         "transfer_factor": trial.suggest_float("transfer_factor", 0.1, 1.0, step=0.1),
-        "initial_elo_adjustment_factor": trial.suggest_float("initial_elo_adjustment_factor", 0.0, 1.0, step=0.1),
-        "position_reset_factor": trial.suggest_float("position_reset_factor", 0.0, 1.0, step=0.1),
+        "initial_elo_adjustment_factor": trial.suggest_float(
+            "initial_elo_adjustment_factor", 0.0, 1.0, step=0.1
+        ),
+        "position_reset_factor": trial.suggest_float(
+            "position_reset_factor", 0.0, 1.0, step=0.1
+        ),
     }
 
 
-def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def split_and_validate_data(
+    df: pd.DataFrame, entity: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Sort, split, and validate the DataFrame into training and validation sets.
     Returns the training and validation DataFrames.
@@ -506,7 +563,9 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
         split_date = pd.to_datetime(f"{split_year}-01-01")
     except AttributeError as e:
         logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
-        data_pipeline_logger.error(f"Error accessing 'date' column with .dt accessor: {e}")
+        data_pipeline_logger.exception(
+            f"Error accessing 'date' column with .dt accessor: {e}"
+        )
         return pd.DataFrame(), pd.DataFrame()
 
     # Split into training and validation sets
@@ -519,14 +578,20 @@ def split_and_validate_data(df: pd.DataFrame, entity: str) -> Tuple[pd.DataFrame
         if not split_df.empty:
             group_sizes = split_df.groupby("gameid").size()
             if not (group_sizes == expected_count).all():
-                logger.warning(f"{split_name} data has gameids with incorrect number of entities.")
-                data_pipeline_logger.warning(f"{split_name} data has gameids with incorrect number of entities.")
+                logger.warning(
+                    f"{split_name} data has gameids with incorrect number of entities."
+                )
+                data_pipeline_logger.warning(
+                    f"{split_name} data has gameids with incorrect number of entities."
+                )
                 return pd.DataFrame(), pd.DataFrame()
 
     return df_train, df_valid
 
 
-def initialize_validation_ratings(df_train_res: pd.DataFrame, entity: str, initial_elo: float) -> defaultdict:
+def initialize_validation_ratings(
+    df_train_res: pd.DataFrame, entity: str, initial_elo: float
+) -> defaultdict:
     """Initialize validation ratings based on training results."""
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
     last_elo_map = df_train_res.groupby(entity_key)["elo_after"].last().to_dict()
@@ -541,7 +606,7 @@ def evaluate_validation(
     df_valid: pd.DataFrame,
     val_ratings: defaultdict,
     entity: str,
-    hyperparams: Dict[str, float],
+    hyperparams: dict[str, float],
 ) -> float:
     """Evaluate the validation set and compute the log loss."""
     expected_probs = []
@@ -564,9 +629,13 @@ def evaluate_validation(
 
         # Update Elo ratings for validation
         for bid in blue_side[entity_key]:
-            val_ratings[bid]["elo"] = update_elo_rating(val_ratings[bid]["elo"], exp, result, k_factor)
+            val_ratings[bid]["elo"] = update_elo_rating(
+                val_ratings[bid]["elo"], exp, result, k_factor
+            )
         for rid in red_side[entity_key]:
-            val_ratings[rid]["elo"] = update_elo_rating(val_ratings[rid]["elo"], 1.0 - exp, 1.0 - result, k_factor)
+            val_ratings[rid]["elo"] = update_elo_rating(
+                val_ratings[rid]["elo"], 1.0 - exp, 1.0 - result, k_factor
+            )
 
     # Prepare true labels and predictions
     y_true = df_valid_sorted.loc[df_valid_sorted["side"] == "Blue", "result"]
@@ -595,7 +664,7 @@ def run_elo_computation(
     transfer_factor: float,
     initial_elo_adjustment_factor: float,
     position_reset_factor: float,
-    league_elo_dict: Dict[str, float],
+    league_elo_dict: dict[str, float],
     show_progress: bool = True,
 ) -> pd.DataFrame:
     """
@@ -649,7 +718,7 @@ def run_elo_computation(
 def calculate_elo(
     df: pd.DataFrame,
     entity: str,
-    league_elo_dict: Optional[Dict[str, float]] = None,
+    league_elo_dict: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """Main entry point for Elo computation"""
     df_pre = preprocess_elo_dataframe(df, entity)
@@ -662,11 +731,15 @@ def calculate_elo(
             league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 
     # Load or compute hyperparams
-    hyperparameters_path = Path(str(ENTITY_ELO_HYPERPARAMETERS).replace("entity", entity))
-    best_params = tune_elo_hyperparameters(df_pre, entity, hyperparameters_path, league_elo_dict)
+    hyperparameters_path = Path(
+        str(ENTITY_ELO_HYPERPARAMETERS).replace("entity", entity)
+    )
+    best_params = tune_elo_hyperparameters(
+        df_pre, entity, hyperparameters_path, league_elo_dict
+    )
 
     # 4) Run final Elo computation
-    df_final = run_elo_computation(
+    return run_elo_computation(
         df=df_pre,
         entity=entity,
         initial_elo=best_params["initial_elo"],
@@ -679,4 +752,3 @@ def calculate_elo(
         league_elo_dict=league_elo_dict,
         show_progress=True,
     )
-    return df_final

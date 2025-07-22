@@ -5,13 +5,15 @@ This module contains functions to calculate entity-specific statistics, such as 
 It uses Exponential Moving Average (EMA) to calculate statistics for 'before' and 'after' periods.
 """
 
-from typing import List
-
 import pandas as pd
 from tqdm import tqdm
 
 from ingestion.oracles_elixir import get_opponent
-from src.utils.paths import DEFAULT_MODELS_PARAMETERS, FLATTENED_PLAYER_CONFIG, FLATTENED_TEAM_CONFIG
+from src.utils.paths import (
+    DEFAULT_MODELS_PARAMETERS,
+    FLATTENED_PLAYER_CONFIG,
+    FLATTENED_TEAM_CONFIG,
+)
 from src.utils.utils import get_identity, get_sorting_keys, json_loader
 
 # Constants
@@ -19,7 +21,7 @@ config_params = json_loader(DEFAULT_MODELS_PARAMETERS)
 HALF_LIFE = config_params["half_life"]
 
 
-def select_columns_for_entity(entity: str) -> List[str]:
+def select_columns_for_entity(entity: str) -> list[str]:
     """
     Select relevant columns for EMA statistics based on the entity type.
 
@@ -31,9 +33,11 @@ def select_columns_for_entity(entity: str) -> List[str]:
 
     Raises:
         ValueError: If the entity type is neither 'team' nor 'player'.
+
     """
     if entity not in {"team", "player"}:
-        raise ValueError("Entity must be either 'team' or 'player'.")
+        msg = "Entity must be either 'team' or 'player'."
+        raise ValueError(msg)
 
     config_path = FLATTENED_TEAM_CONFIG if entity == "team" else FLATTENED_PLAYER_CONFIG
     entity_cols = json_loader(config_path)["flattened_cols"]
@@ -62,16 +66,16 @@ def select_columns_for_entity(entity: str) -> List[str]:
     }
 
     # Only select columns with "ema" and "after", but skip any in avoid_cols
-    selected_cols = [
+    return [
         col.replace("ema_", "").replace("_after", "")
         for col in entity_cols
         if ("ema" in col and "after" in col and col not in avoid_cols)
     ]
 
-    return selected_cols
 
-
-def apply_ema(df: pd.DataFrame, identity: str, columns: List[str], half_life: float) -> pd.DataFrame:
+def apply_ema(
+    df: pd.DataFrame, identity: str, columns: list[str], half_life: float
+) -> pd.DataFrame:
     """
     Apply EMA calculations to selected columns for entities,
     maintaining distinctions between 'before' and 'after' periods.
@@ -84,6 +88,7 @@ def apply_ema(df: pd.DataFrame, identity: str, columns: List[str], half_life: fl
 
     Returns:
         pd.DataFrame: DataFrame with new EMA columns added, ensuring no duplicates.
+
     """
     # Initialize dictionaries to collect new columns
     ema_before_cols = {}
@@ -93,23 +98,29 @@ def apply_ema(df: pd.DataFrame, identity: str, columns: List[str], half_life: fl
         group = df.groupby(identity)[col]
 
         # Calculate 'before' EMA: shift to avoid data leakage into current row
-        ema_before = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).mean()).shift().bfill()
+        ema_before = (
+            group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).mean())
+            .shift()
+            .bfill()
+        )
         ema_before_cols[f"ema_{col}_before"] = ema_before
 
         # Calculate 'after' EMA: no shift, as it represents the updated stats
-        ema_after = group.transform(lambda x: x.ewm(halflife=half_life, ignore_na=True).mean())
+        ema_after = group.transform(
+            lambda x: x.ewm(halflife=half_life, ignore_na=True).mean()
+        )
         ema_after_cols[f"ema_{col}_after"] = ema_after
 
     # Combine all new columns into a DataFrame
     new_columns = pd.DataFrame({**ema_before_cols, **ema_after_cols})
 
     # Concatenate new columns to the original DataFrame
-    df = pd.concat([df, new_columns], axis=1)
-
-    return df
+    return pd.concat([df, new_columns], axis=1)
 
 
-def apply_opponent_stats(df: pd.DataFrame, entity: str, columns: List[str]) -> pd.DataFrame:
+def apply_opponent_stats(
+    df: pd.DataFrame, entity: str, columns: list[str]
+) -> pd.DataFrame:
     """
     Get the opponent entity's values for the EMA statistics calculated previously.
     Currently, only 'before' columns are used to fetch opponent stats.
@@ -121,6 +132,7 @@ def apply_opponent_stats(df: pd.DataFrame, entity: str, columns: List[str]) -> p
 
     Returns:
         pd.DataFrame: DataFrame with new opponent statistics columns added.
+
     """
     # Adjust if you also need "after" columns for opponent stats
     ema_cols = [f"ema_{col}_before" for col in columns]
@@ -131,9 +143,7 @@ def apply_opponent_stats(df: pd.DataFrame, entity: str, columns: List[str]) -> p
 
     # Concatenate all new columns at once to avoid fragmentation
     new_cols_df = pd.DataFrame(new_cols, index=df.index)
-    df = pd.concat([df, new_cols_df], axis=1)
-
-    return df
+    return pd.concat([df, new_cols_df], axis=1)
 
 
 def enrich_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:
@@ -149,9 +159,11 @@ def enrich_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:
 
     Raises:
         ValueError: If the entity type is neither 'team' nor 'player'.
+
     """
     if entity not in {"team", "player"}:
-        raise ValueError("Entity must be either 'team' or 'player'.")
+        msg = "Entity must be either 'team' or 'player'."
+        raise ValueError(msg)
 
     # Sort and reset index to ensure consistent row ordering
     df = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
@@ -164,6 +176,4 @@ def enrich_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     df = apply_ema(df, identity, columns, HALF_LIFE)
 
     # Apply opponent stats to the 'before' columns
-    df = apply_opponent_stats(df, entity, columns)
-
-    return df
+    return apply_opponent_stats(df, entity, columns)

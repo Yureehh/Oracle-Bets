@@ -11,7 +11,7 @@ import pickle
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -31,7 +31,13 @@ from sklearn.model_selection import StratifiedGroupKFold
 
 from src.prediction_models.data_preprocessor import DataPreprocessor
 from src.utils.logger import logger
-from src.utils.paths import FEATURE_IMP_DIR, FIGURES_DIR, INSIGHTS_DIR, MODELS_DIR, PROCESSED_TEAMS
+from src.utils.paths import (
+    FEATURE_IMP_DIR,
+    FIGURES_DIR,
+    INSIGHTS_DIR,
+    MODELS_DIR,
+    PROCESSED_TEAMS,
+)
 
 sns.set_style("darkgrid")
 
@@ -59,6 +65,7 @@ class GradientBoostingModel(ABC):
         trials (int): Number of trials for hyperparameter optimization.
         directory (Path): Directory to store figures and outputs.
         training_data (pd.DataFrame): Preprocessed training data.
+
     """
 
     model_name: str
@@ -85,6 +92,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If preprocessing fails.
+
         """
         try:
             preprocessor = DataPreprocessor(self.team_data, self.player_data)
@@ -92,7 +100,8 @@ class GradientBoostingModel(ABC):
             logger.info("Data preprocessing completed successfully.")
         except Exception as e:
             logger.error(f"Data preprocessing failed: {e}")
-            raise ValueError(f"Data preprocessing failed: {e}") from e
+            msg = f"Data preprocessing failed: {e}"
+            raise ValueError(msg) from e
         return self.training_data
 
     @staticmethod
@@ -103,7 +112,9 @@ class GradientBoostingModel(ABC):
         stratify: pd.Series,
         val_size: float = VALIDATION_SIZE,
         test_size: float = TEST_SIZE,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
+    ) -> tuple[
+        pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series
+    ]:
         """
         Splits the data into training, validation, and test sets, grouped by specified
         columnsand stratified by a specified column.
@@ -121,24 +132,32 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If splitting fails or required columns are missing.
+
         """
 
         def stratified_split(temp_df, n_splits, groups_col, stratify_col):
             strat_split = StratifiedGroupKFold(n_splits=n_splits, shuffle=True)
-            splits = strat_split.split(temp_df[groups_col], temp_df[stratify_col], groups=temp_df[groups_col])
+            splits = strat_split.split(
+                temp_df[groups_col], temp_df[stratify_col], groups=temp_df[groups_col]
+            )
             return next(splits)
 
         required_columns = ["gameid", "league"]
         missing_columns = [col for col in required_columns if col not in X.columns]
         if missing_columns:
             logger.error(f"Missing required columns in X: {missing_columns}")
-            raise ValueError(f"Missing required columns in X: {missing_columns}")
+            msg = f"Missing required columns in X: {missing_columns}"
+            raise ValueError(msg)
 
         try:
-            temp_df = pd.DataFrame({"group": groups, "stratify": stratify}).drop_duplicates()
+            temp_df = pd.DataFrame(
+                {"group": groups, "stratify": stratify}
+            ).drop_duplicates()
 
             n_splits_test = int(1 / test_size)
-            train_val_idx, test_idx = stratified_split(temp_df, n_splits_test, "group", "stratify")
+            train_val_idx, test_idx = stratified_split(
+                temp_df, n_splits_test, "group", "stratify"
+            )
 
             train_val_groups = temp_df.iloc[train_val_idx]["group"]
             test_groups = temp_df.iloc[test_idx]["group"]
@@ -153,7 +172,9 @@ class GradientBoostingModel(ABC):
             ).drop_duplicates()
 
             n_splits_val = int(1 / val_size)
-            train_idx, val_idx = stratified_split(temp_df_train_val, n_splits_val, "group", "stratify")
+            train_idx, val_idx = stratified_split(
+                temp_df_train_val, n_splits_val, "group", "stratify"
+            )
 
             train_groups = temp_df_train_val.iloc[train_idx]["group"]
             val_groups = temp_df_train_val.iloc[val_idx]["group"]
@@ -168,7 +189,8 @@ class GradientBoostingModel(ABC):
 
         except Exception as e:
             logger.error(f"Data splitting failed: {e}")
-            raise ValueError(f"Data splitting failed: {e}") from e
+            msg = f"Data splitting failed: {e}"
+            raise ValueError(msg) from e
 
     def fuse_opposing_team_features(self, X: pd.DataFrame) -> pd.DataFrame:
         """
@@ -182,6 +204,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If required columns are missing.
+
         """
         X = X.copy()
         try:
@@ -191,31 +214,40 @@ class GradientBoostingModel(ABC):
                 original_col = col[4:]
                 if original_col in X.columns:
                     X[original_col] = X[original_col] - X[col]
-                    X.drop(columns=[col], inplace=True)
+                    X = X.drop(columns=[col])
                 else:
-                    logger.warning(f"Original column '{original_col}' not found for opposing feature '{col}'.")
-                    X.drop(columns=[col], inplace=True)
+                    logger.warning(
+                        f"Original column '{original_col}' not found for opposing feature '{col}'."
+                    )
+                    X = X.drop(columns=[col])
 
             # Process role-specific 'opp_' prefixed columns
             roles = ["top", "jng", "mid", "bot", "sup"]
             for role in roles:
-                role_opp_cols = [col for col in X.columns if col.startswith(f"{role}_opp_")]
+                role_opp_cols = [
+                    col for col in X.columns if col.startswith(f"{role}_opp_")
+                ]
                 for col in role_opp_cols:
                     original_col = col.replace(f"{role}_opp_", f"{role}_")
                     if original_col in X.columns:
                         X[original_col] = X[original_col] - X[col]
-                        X.drop(columns=[col], inplace=True)
+                        X = X.drop(columns=[col])
                     else:
-                        logger.warning(f"Original column '{original_col}' not found for opposing feature '{col}'.")
-                        X.drop(columns=[col], inplace=True)
+                        logger.warning(
+                            f"Original column '{original_col}' not found for opposing feature '{col}'."
+                        )
+                        X = X.drop(columns=[col])
             logger.info("Fused opposing team features successfully.")
         except Exception as e:
             logger.error(f"Error in fusing opposing team features: {e}")
-            raise ValueError(f"Error in fusing opposing team features: {e}") from e
+            msg = f"Error in fusing opposing team features: {e}"
+            raise ValueError(msg) from e
 
         return X
 
-    def process_players_likelihood_columns(self, df: pd.DataFrame, target_role: str = "top") -> pd.DataFrame:
+    def process_players_likelihood_columns(
+        self, df: pd.DataFrame, target_role: str = "top"
+    ) -> pd.DataFrame:
         """
         Processes player likelihood columns by renaming and dropping unnecessary ones.
 
@@ -228,6 +260,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If likelihood columns are missing.
+
         """
         df = df.copy()
         try:
@@ -237,21 +270,26 @@ class GradientBoostingModel(ABC):
                 return df
 
             modified_df = df[likelihood_columns].copy()
-            modified_df.columns = modified_df.columns.str.replace(f"{target_role}_", "players_")
+            modified_df.columns = modified_df.columns.str.replace(
+                f"{target_role}_", "players_"
+            )
 
             roles = ["top_", "jng_", "mid_", "bot_", "sup_"]
             roles.remove(f"{target_role}_")
             cols_to_drop = []
             for role in roles:
-                cols_to_drop.extend([col for col in modified_df.columns if col.startswith(role)])
-            modified_df.drop(columns=cols_to_drop, inplace=True)
+                cols_to_drop.extend(
+                    [col for col in modified_df.columns if col.startswith(role)]
+                )
+            modified_df = modified_df.drop(columns=cols_to_drop)
 
             df = df.drop(columns=likelihood_columns, inplace=False)
             df = pd.concat([df, modified_df], axis=1)
             logger.info(f"Processed likelihood columns for role '{target_role}'.")
         except Exception as e:
             logger.error(f"Error processing player likelihood columns: {e}")
-            raise ValueError(f"Error processing player likelihood columns: {e}") from e
+            msg = f"Error processing player likelihood columns: {e}"
+            raise ValueError(msg) from e
 
         return df
 
@@ -273,6 +311,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If an error occurs during the process.
+
         """
         df = df.copy()
         try:
@@ -284,11 +323,14 @@ class GradientBoostingModel(ABC):
             logger.info("Removed unnecessary columns successfully.")
         except Exception as e:
             logger.error(f"Error removing unnecessary columns: {e}")
-            raise ValueError(f"Error removing unnecessary columns: {e}") from e
+            msg = f"Error removing unnecessary columns: {e}"
+            raise ValueError(msg) from e
 
         return df
 
-    def drop_low_std_columns(self, df: pd.DataFrame, threshold: float = LOW_STD_THRESHOLD) -> pd.DataFrame:
+    def drop_low_std_columns(
+        self, df: pd.DataFrame, threshold: float = LOW_STD_THRESHOLD
+    ) -> pd.DataFrame:
         """
         Drops columns with low standard deviation.
 
@@ -301,6 +343,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If an error occurs during the process.
+
         """
         df = df.copy()
         try:
@@ -312,15 +355,21 @@ class GradientBoostingModel(ABC):
 
             columns_to_drop = coef_of_variation[coef_of_variation < threshold].index
             df = df.drop(columns=columns_to_drop, inplace=False)
-            logger.info(f"Dropped columns with coefficient of variation below {threshold}: {list(columns_to_drop)}")
+            logger.info(
+                f"Dropped columns with coefficient of variation below {threshold}: {list(columns_to_drop)}"
+            )
         except Exception as e:
             logger.error(f"Error dropping low standard deviation columns: {e}")
-            raise ValueError(f"Error dropping low standard deviation columns: {e}") from e
+            msg = f"Error dropping low standard deviation columns: {e}"
+            raise ValueError(msg) from e
 
         return df
 
     def drop_highly_correlated_features(
-        self, df: pd.DataFrame, threshold: float = HIGH_CORR_THRESHOLD, priority_features: Optional[List[str]] = None
+        self,
+        df: pd.DataFrame,
+        threshold: float = HIGH_CORR_THRESHOLD,
+        priority_features: list[str] | None = None,
     ) -> pd.DataFrame:
         """
         Drops one feature from each pair of highly correlated features.
@@ -335,29 +384,43 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If an error occurs during the process.
+
         """
         df = df.copy()
         try:
             corr_matrix = df.corr().abs()
-            upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+            upper = corr_matrix.where(
+                np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+            )
 
             to_drop = set()
 
             for column in upper.columns:
-                highly_correlated = [index for index in upper.index if upper.loc[index, column] > threshold]
-                if highly_correlated and not any(col in to_drop for col in highly_correlated):
+                highly_correlated = [
+                    index
+                    for index in upper.index
+                    if upper.loc[index, column] > threshold
+                ]
+                if highly_correlated and not any(
+                    col in to_drop for col in highly_correlated
+                ):
                     to_drop.add(column)
 
             df = df.drop(columns=list(to_drop), inplace=False)
             logger.info(f"Dropped columns due to high correlation: {list(to_drop)}")
         except Exception as e:
             logger.error(f"Error dropping highly correlated features: {e}")
-            raise ValueError(f"Error dropping highly correlated features: {e}") from e
+            msg = f"Error dropping highly correlated features: {e}"
+            raise ValueError(msg) from e
 
         return df
 
     def store_correlation(
-        self, X: pd.DataFrame, y: pd.Series, figsize: Tuple[int, int] = FIGSIZE, cmap: str = CMAP
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        figsize: tuple[int, int] = FIGSIZE,
+        cmap: str = CMAP,
     ) -> None:
         """
         Stores the correlation matrix as a heatmap.
@@ -370,6 +433,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If plotting fails.
+
         """
         try:
             df = pd.concat([X, y.rename("target")], axis=1)
@@ -380,13 +444,16 @@ class GradientBoostingModel(ABC):
             plt.title("Correlation Matrix Heatmap")
             plt.tight_layout()
             plt.savefig(
-                self.directory.joinpath(f"{self.model_name}_Correlation_Matrix.png"), dpi=300, bbox_inches="tight"
+                self.directory.joinpath(f"{self.model_name}_Correlation_Matrix.png"),
+                dpi=300,
+                bbox_inches="tight",
             )
             plt.close()
             logger.info(f"Correlation matrix plot for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to store correlation matrix: {e}")
-            raise ValueError(f"Failed to store correlation matrix: {e}") from e
+            msg = f"Failed to store correlation matrix: {e}"
+            raise ValueError(msg) from e
 
     @abstractmethod
     def train_model(self) -> None:
@@ -395,12 +462,15 @@ class GradientBoostingModel(ABC):
 
         This method should be implemented by subclasses to define the model training process.
         """
-        pass
 
     @abstractmethod
     def _optimize_hyperparameters(
-        self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series
-    ) -> Dict[str, Any]:
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_val: pd.DataFrame,
+        y_val: pd.Series,
+    ) -> dict[str, Any]:
         """
         Abstract method to optimize hyperparameters.
 
@@ -408,13 +478,15 @@ class GradientBoostingModel(ABC):
 
         Returns:
             Dict[str, Any]: A dictionary of optimized hyperparameters.
+
         """
-        pass
 
     @staticmethod
     def preprocess_categorical_features(
-        X: pd.DataFrame, exclude_cols: Optional[List[str]] = None, categorical_columns: Optional[List[str]] = None
-    ) -> Tuple[pd.DataFrame, List[str]]:
+        X: pd.DataFrame,
+        exclude_cols: list[str] | None = None,
+        categorical_columns: list[str] | None = None,
+    ) -> tuple[pd.DataFrame, list[str]]:
         """
         Preprocess features by converting categorical columns to category dtype.
 
@@ -428,21 +500,28 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If an error occurs during processing.
+
         """
         try:
             X = X.copy()
             if exclude_cols is None:
                 exclude_cols = []
             if categorical_columns is None:
-                categorical_columns = [col for col in X.columns if X[col].dtype == "object"]
+                categorical_columns = [
+                    col for col in X.columns if X[col].dtype == "object"
+                ]
 
             for col in categorical_columns:
                 X[col] = X[col].astype("category")
 
             if exclude_cols:
-                categorical_columns = [col for col in categorical_columns if col not in exclude_cols]
+                categorical_columns = [
+                    col for col in categorical_columns if col not in exclude_cols
+                ]
 
-            consistent_cats = {col: X[col].cat.categories for col in categorical_columns}
+            consistent_cats = {
+                col: X[col].cat.categories for col in categorical_columns
+            }
             for col, cats in consistent_cats.items():
                 X[col] = X[col].cat.set_categories(cats)
 
@@ -450,7 +529,8 @@ class GradientBoostingModel(ABC):
 
         except Exception as e:
             logger.error(f"Error processing categorical features: {e}")
-            raise ValueError(f"Error processing categorical features: {e}") from e
+            msg = f"Error processing categorical features: {e}"
+            raise ValueError(msg) from e
 
     def store_model_features(self, all_features: pd.Index) -> None:
         """
@@ -458,17 +538,23 @@ class GradientBoostingModel(ABC):
 
         Args:
             all_features (pd.Index): Index of feature names.
-        """
-        self._store_pickle(f"{self.model_name}_final_features.pkl", all_features.tolist())
 
-    def store_categorical_features(self, categorical_features: List[str]) -> None:
+        """
+        self._store_pickle(
+            f"{self.model_name}_final_features.pkl", all_features.tolist()
+        )
+
+    def store_categorical_features(self, categorical_features: list[str]) -> None:
         """
         Store categorical features to a pickle file.
 
         Args:
             categorical_features (List[str]): List of categorical feature names.
+
         """
-        self._store_pickle(f"{self.model_name}_categorical_features.pkl", categorical_features)
+        self._store_pickle(
+            f"{self.model_name}_categorical_features.pkl", categorical_features
+        )
 
     def _store_pickle(self, filename: str, data: Any) -> None:
         """
@@ -480,6 +566,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If storing fails.
+
         """
         try:
             with open(MODELS_DIR / filename, "wb") as f:
@@ -487,18 +574,22 @@ class GradientBoostingModel(ABC):
             logger.info(f"Stored {filename} successfully.")
         except Exception as e:
             logger.error(f"Failed to store {filename}: {e}")
-            raise ValueError(f"Failed to store {filename}: {e}") from e
+            msg = f"Failed to store {filename}: {e}"
+            raise ValueError(msg) from e
 
-    def store_best_hyperparameters(self, hyperparams: Dict[str, Any]) -> None:
+    def store_best_hyperparameters(self, hyperparams: dict[str, Any]) -> None:
         """
         Store best hyperparameters to a pickle file.
 
         Args:
             hyperparams (Dict[str, Any]): Dictionary of best hyperparameters.
+
         """
         self._store_pickle(f"{self.model_name}_best_hyperparameters.pkl", hyperparams)
 
-    def store_predictions(self, predictions: np.ndarray, eval_gameids: pd.Series, eval_sides: pd.Series) -> None:
+    def store_predictions(
+        self, predictions: np.ndarray, eval_gameids: pd.Series, eval_sides: pd.Series
+    ) -> None:
         """
         Store prediction insights to a parquet file.
 
@@ -509,19 +600,30 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If storing fails.
+
         """
         try:
-            insights = pd.DataFrame({"prediction": predictions, "gameid": eval_gameids, "side": eval_sides})
+            insights = pd.DataFrame(
+                {"prediction": predictions, "gameid": eval_gameids, "side": eval_sides}
+            )
             insights.to_parquet(
-                INSIGHTS_DIR / f"{self.model_name}_predictions.parquet", index=False, compression="gzip"
+                INSIGHTS_DIR / f"{self.model_name}_predictions.parquet",
+                index=False,
+                compression="gzip",
             )
             logger.info(f"Prediction insights for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to store prediction insights: {e}")
-            raise ValueError(f"Failed to store prediction insights: {e}") from e
+            msg = f"Failed to store prediction insights: {e}"
+            raise ValueError(msg) from e
 
     def validate_model(
-        self, model, X_test: pd.DataFrame, y_test: pd.Series, eval_gameids: pd.Series, eval_sides: pd.Series
+        self,
+        model,
+        X_test: pd.DataFrame,
+        y_test: pd.Series,
+        eval_gameids: pd.Series,
+        eval_sides: pd.Series,
     ) -> None:
         """
         Validate the model and store evaluation metrics.
@@ -535,6 +637,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If validation fails.
+
         """
         try:
             logger.info("Validating the model...")
@@ -549,10 +652,15 @@ class GradientBoostingModel(ABC):
                 metrics = self.compute_regression_metrics(y_test, predictions)
                 self.plot_regression_results(y_test, predictions)
                 self.plot_regression_error_over_samples(y_test, predictions)
-                self.plot_regression_error_over_time(X_test, y_test, predictions, eval_gameids)
+                self.plot_regression_error_over_time(
+                    X_test, y_test, predictions, eval_gameids
+                )
             else:
-                logger.error(f"Unknown problem type '{self.problem_type}' during validation.")
-                raise ValueError(f"Unknown problem type '{self.problem_type}' during validation.")
+                logger.error(
+                    f"Unknown problem type '{self.problem_type}' during validation."
+                )
+                msg = f"Unknown problem type '{self.problem_type}' during validation."
+                raise ValueError(msg)
 
             self.log_evaluation_metrics(metrics)
             self.store_evaluation_metrics(metrics)
@@ -561,9 +669,12 @@ class GradientBoostingModel(ABC):
             logger.info(f"Model {self.model_name} validated and insights stored.\n")
         except Exception as e:
             logger.error(f"Model validation failed: {e}")
-            raise ValueError(f"Model validation failed: {e}") from e
+            msg = f"Model validation failed: {e}"
+            raise ValueError(msg) from e
 
-    def compute_classification_metrics(self, y_true: pd.Series, y_pred: np.ndarray) -> Dict[str, Any]:
+    def compute_classification_metrics(
+        self, y_true: pd.Series, y_pred: np.ndarray
+    ) -> dict[str, Any]:
         """
         Compute evaluation metrics for classification models.
 
@@ -573,13 +684,24 @@ class GradientBoostingModel(ABC):
 
         Returns:
             Dict[str, Any]: Dictionary of computed metrics.
+
         """
         accuracy = accuracy_score(y_true, y_pred)
-        precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="binary")
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_true, y_pred, average="binary"
+        )
         cm = confusion_matrix(y_true, y_pred)
-        return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1, "cm": cm}
+        return {
+            "accuracy": accuracy,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "cm": cm,
+        }
 
-    def compute_regression_metrics(self, y_true: pd.Series, y_pred: np.ndarray) -> Dict[str, Any]:
+    def compute_regression_metrics(
+        self, y_true: pd.Series, y_pred: np.ndarray
+    ) -> dict[str, Any]:
         """
         Compute evaluation metrics for regression models.
 
@@ -589,6 +711,7 @@ class GradientBoostingModel(ABC):
 
         Returns:
             Dict[str, Any]: Dictionary of computed metrics.
+
         """
         mae = mean_absolute_error(y_true, y_pred)
         mse = mean_squared_error(y_true, y_pred)
@@ -596,7 +719,7 @@ class GradientBoostingModel(ABC):
         r2 = r2_score(y_true, y_pred)
         return {"mae": mae, "mse": mse, "rmse": rmse, "r2": r2}
 
-    def store_evaluation_metrics(self, metrics: Dict[str, Any]) -> None:
+    def store_evaluation_metrics(self, metrics: dict[str, Any]) -> None:
         """
         Store evaluation metrics to a JSON file.
 
@@ -605,6 +728,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If storing fails.
+
         """
         metrics_to_store = {k: v for k, v in metrics.items() if k != "cm"}
         try:
@@ -613,14 +737,16 @@ class GradientBoostingModel(ABC):
             logger.info(f"Evaluation metrics for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to store evaluation metrics: {e}")
-            raise ValueError(f"Failed to store evaluation metrics: {e}") from e
+            msg = f"Failed to store evaluation metrics: {e}"
+            raise ValueError(msg) from e
 
-    def log_evaluation_metrics(self, metrics: Dict[str, Any]) -> None:
+    def log_evaluation_metrics(self, metrics: dict[str, Any]) -> None:
         """
         Log evaluation metrics.
 
         Args:
             metrics (Dict[str, Any]): Dictionary of evaluation metrics.
+
         """
         if self.problem_type == "classification":
             log_message = (
@@ -646,6 +772,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If plotting fails.
+
         """
         try:
             cm_df = pd.DataFrame(
@@ -657,12 +784,16 @@ class GradientBoostingModel(ABC):
             sns.heatmap(cm_df, annot=True, fmt="d", cmap="Blues")
             plt.title("Confusion Matrix")
             plt.tight_layout()
-            plt.savefig(self.directory.joinpath(f"{self.model_name}_Confusion_Matrix.png"), dpi=300)
+            plt.savefig(
+                self.directory.joinpath(f"{self.model_name}_Confusion_Matrix.png"),
+                dpi=300,
+            )
             plt.close()
             logger.info(f"Confusion matrix plot for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to plot confusion matrix: {e}")
-            raise ValueError(f"Failed to plot confusion matrix: {e}") from e
+            msg = f"Failed to plot confusion matrix: {e}"
+            raise ValueError(msg) from e
 
     def plot_regression_results(self, y_true: pd.Series, y_pred: np.ndarray) -> None:
         """
@@ -674,22 +805,32 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If plotting fails.
+
         """
         try:
             plt.figure(figsize=(10, 6))
             plt.scatter(y_true, y_pred, alpha=0.5)
-            plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], color="red", linestyle="--")
+            plt.plot(
+                [y_true.min(), y_true.max()],
+                [y_true.min(), y_true.max()],
+                color="red",
+                linestyle="--",
+            )
             plt.xlabel("Actual Values")
             plt.ylabel("Predicted Values")
             plt.title("Regression Model Results")
             plt.grid(True)
             plt.tight_layout()
-            plt.savefig(self.directory.joinpath(f"{self.model_name}_Regression_Results.png"), dpi=300)
+            plt.savefig(
+                self.directory.joinpath(f"{self.model_name}_Regression_Results.png"),
+                dpi=300,
+            )
             plt.close()
             logger.info(f"Regression results plot for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to plot regression results: {e}")
-            raise ValueError(f"Failed to plot regression results: {e}") from e
+            msg = f"Failed to plot regression results: {e}"
+            raise ValueError(msg) from e
 
     def plot_accuracy_over_samples(self, y_true: pd.Series, y_pred: np.ndarray) -> None:
         """
@@ -701,11 +842,20 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If plotting fails.
+
         """
         try:
-            accuracy_timeline = [accuracy_score(y_true[:i], y_pred[:i]) for i in range(1, len(y_true) + 1)]
+            accuracy_timeline = [
+                accuracy_score(y_true[:i], y_pred[:i])
+                for i in range(1, len(y_true) + 1)
+            ]
             plt.figure(figsize=(10, 5))
-            sns.lineplot(x=range(1, len(y_true) + 1), y=accuracy_timeline, linestyle="--", color="#84C3FA")
+            sns.lineplot(
+                x=range(1, len(y_true) + 1),
+                y=accuracy_timeline,
+                linestyle="--",
+                color="#84C3FA",
+            )
             plt.xlabel("Number of Samples")
             plt.ylabel("Accuracy")
             plt.grid(True, linestyle="--", alpha=0.6, axis="y")
@@ -715,14 +865,20 @@ class GradientBoostingModel(ABC):
             plt.tight_layout()
             plt.gca().tick_params(axis="x", colors="white")
             plt.gca().tick_params(axis="y", colors="white")
-            plt.savefig(self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"), dpi=300)
+            plt.savefig(
+                self.directory.joinpath(f"{self.model_name}_Accuracy_Over_Samples.png"),
+                dpi=300,
+            )
             plt.close()
             logger.info(f"Accuracy over samples plot for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to plot accuracy over samples: {e}")
-            raise ValueError(f"Failed to plot accuracy over samples: {e}") from e
+            msg = f"Failed to plot accuracy over samples: {e}"
+            raise ValueError(msg) from e
 
-    def plot_regression_error_over_samples(self, y_true: pd.Series, y_pred: np.ndarray, metric: str = "mae") -> None:
+    def plot_regression_error_over_samples(
+        self, y_true: pd.Series, y_pred: np.ndarray, metric: str = "mae"
+    ) -> None:
         """
         Plots the regression error over samples using the specified error metric.
 
@@ -733,6 +889,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If plotting fails or invalid metric is specified.
+
         """
         try:
             if metric == "mae":
@@ -740,9 +897,12 @@ class GradientBoostingModel(ABC):
             elif metric == "mse":
                 errors = (y_true - y_pred) ** 2
             else:
-                raise ValueError("Invalid metric specified. Use 'mae' or 'mse'.")
+                msg = "Invalid metric specified. Use 'mae' or 'mse'."
+                raise ValueError(msg)
 
-            cumulative_error_timeline = [np.mean(errors[:i]) for i in range(1, len(y_true) + 1)]
+            cumulative_error_timeline = [
+                np.mean(errors[:i]) for i in range(1, len(y_true) + 1)
+            ]
 
             plt.figure(figsize=(10, 5))
             plt.plot(range(1, len(y_true) + 1), cumulative_error_timeline, marker="o")
@@ -752,16 +912,26 @@ class GradientBoostingModel(ABC):
             plt.grid(True)
             plt.tight_layout()
             plt.savefig(
-                self.directory.joinpath(f"{self.model_name}_Cumulative_{metric.upper()}_Over_Samples.png"), dpi=300
+                self.directory.joinpath(
+                    f"{self.model_name}_Cumulative_{metric.upper()}_Over_Samples.png"
+                ),
+                dpi=300,
             )
             plt.close()
-            logger.info(f"Cumulative {metric.upper()} over samples plot for {self.model_name} stored.")
+            logger.info(
+                f"Cumulative {metric.upper()} over samples plot for {self.model_name} stored."
+            )
         except Exception as e:
             logger.error(f"Failed to plot regression error over samples: {e}")
-            raise ValueError(f"Failed to plot regression error over samples: {e}") from e
+            msg = f"Failed to plot regression error over samples: {e}"
+            raise ValueError(msg) from e
 
     def plot_historical_accuracy(
-        self, X_val: pd.DataFrame, y_true: pd.Series, y_pred: np.ndarray, eval_gameids: pd.Series
+        self,
+        X_val: pd.DataFrame,
+        y_true: pd.Series,
+        y_pred: np.ndarray,
+        eval_gameids: pd.Series,
     ) -> None:
         """
         Plot and save historical accuracy over weekly timespans.
@@ -774,21 +944,32 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If plotting fails.
+
         """
         try:
             X_val = X_val.copy()
             X_val["gameid"] = eval_gameids
 
             if "date" not in X_val.columns:
-                team_data = pd.read_parquet(PROCESSED_TEAMS, engine="fastparquet")[["gameid", "date"]].drop_duplicates()
-                X_val = pd.merge(X_val, team_data, on="gameid", how="left", validate="m2m").reset_index(drop=True)
+                team_data = pd.read_parquet(PROCESSED_TEAMS, engine="fastparquet")[
+                    ["gameid", "date"]
+                ].drop_duplicates()
+                X_val = pd.merge(
+                    X_val, team_data, on="gameid", how="left", validate="m2m"
+                ).reset_index(drop=True)
 
-            df = pd.DataFrame({"date": X_val["date"], "correct": (y_true == y_pred).astype(int)})
+            df = pd.DataFrame(
+                {"date": X_val["date"], "correct": (y_true == y_pred).astype(int)}
+            )
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-            df["week_start"] = df["date"].dt.to_period("W").apply(lambda r: r.start_time)
+            df["week_start"] = (
+                df["date"].dt.to_period("W").apply(lambda r: r.start_time)
+            )
             df = df.sort_values(by="week_start")
-            df_grouped = df.groupby("week_start")["correct"].mean().reset_index(name="accuracy")
+            df_grouped = (
+                df.groupby("week_start")["correct"].mean().reset_index(name="accuracy")
+            )
             df_grouped["week_start"] = pd.to_datetime(df_grouped["week_start"])
 
             _, ax = plt.subplots(figsize=(15, 8))
@@ -806,9 +987,18 @@ class GradientBoostingModel(ABC):
             plt.axhline(y=0.5, color="gray", linestyle="--", label="50% Accuracy")
 
             polynomial_degree = 3
-            z = np.polyfit(mdates.date2num(df_grouped["date"]), df_grouped["accuracy"], polynomial_degree)
+            z = np.polyfit(
+                mdates.date2num(df_grouped["date"]),
+                df_grouped["accuracy"],
+                polynomial_degree,
+            )
             p = np.poly1d(z)
-            plt.plot(df_grouped["date"], p(mdates.date2num(df_grouped["date"])), "r--", label="Trend Line")
+            plt.plot(
+                df_grouped["date"],
+                p(mdates.date2num(df_grouped["date"])),
+                "r--",
+                label="Trend Line",
+            )
 
             ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
@@ -824,16 +1014,23 @@ class GradientBoostingModel(ABC):
             ax.tick_params(axis="y", colors="white")
 
             plt.savefig(
-                self.directory.joinpath(f"{self.model_name}_Historical_Accuracy.png"), dpi=300, transparent=True
+                self.directory.joinpath(f"{self.model_name}_Historical_Accuracy.png"),
+                dpi=300,
+                transparent=True,
             )
             plt.close()
             logger.info(f"Historical accuracy plot for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to plot historical accuracy: {e}")
-            raise ValueError(f"Failed to plot historical accuracy: {e}") from e
+            msg = f"Failed to plot historical accuracy: {e}"
+            raise ValueError(msg) from e
 
     def plot_regression_error_over_time(
-        self, X_val: pd.DataFrame, y_true: pd.Series, y_pred: np.ndarray, eval_gameids: pd.Series
+        self,
+        X_val: pd.DataFrame,
+        y_true: pd.Series,
+        y_pred: np.ndarray,
+        eval_gameids: pd.Series,
     ) -> None:
         """
         Plots the regression error (MAE) over time.
@@ -846,21 +1043,36 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If plotting fails.
+
         """
         try:
             X_val = X_val.copy()
             X_val["gameid"] = eval_gameids
 
             if "date" not in X_val.columns:
-                team_data = pd.read_parquet(PROCESSED_TEAMS, engine="fastparquet")[["gameid", "date"]].drop_duplicates()
-                X_val = pd.merge(X_val, team_data, on="gameid", how="left", validate="m2m").reset_index(drop=True)
+                team_data = pd.read_parquet(PROCESSED_TEAMS, engine="fastparquet")[
+                    ["gameid", "date"]
+                ].drop_duplicates()
+                X_val = pd.merge(
+                    X_val, team_data, on="gameid", how="left", validate="m2m"
+                ).reset_index(drop=True)
 
-            df = pd.DataFrame({"date": X_val["date"].values, "true": y_true.values, "predicted": y_pred})
+            df = pd.DataFrame(
+                {
+                    "date": X_val["date"].values,
+                    "true": y_true.values,
+                    "predicted": y_pred,
+                }
+            )
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-            df["week_start"] = df["date"].dt.to_period("W").apply(lambda r: r.start_time)
+            df["week_start"] = (
+                df["date"].dt.to_period("W").apply(lambda r: r.start_time)
+            )
             df = df.sort_values(by="week_start")
-            df_grouped = df.groupby("week_start").apply(lambda x: np.mean(np.abs(x["true"] - x["predicted"])))
+            df_grouped = df.groupby("week_start").apply(
+                lambda x: np.mean(np.abs(x["true"] - x["predicted"]))
+            )
             df_grouped = df_grouped.reset_index(name="mae")
             df_grouped["week_start"] = pd.to_datetime(df_grouped["week_start"])
 
@@ -877,12 +1089,26 @@ class GradientBoostingModel(ABC):
                 color="#84C3FA",
             )
 
-            plt.axhline(y=df_grouped["mae"].mean(), color="gray", linestyle="--", label="Average MAE")
+            plt.axhline(
+                y=df_grouped["mae"].mean(),
+                color="gray",
+                linestyle="--",
+                label="Average MAE",
+            )
 
             polynomial_degree = 3
-            z = np.polyfit(mdates.date2num(df_grouped["date"]), df_grouped["mae"], polynomial_degree)
+            z = np.polyfit(
+                mdates.date2num(df_grouped["date"]),
+                df_grouped["mae"],
+                polynomial_degree,
+            )
             p = np.poly1d(z)
-            plt.plot(df_grouped["date"], p(mdates.date2num(df_grouped["date"])), "r--", label="Trend Line")
+            plt.plot(
+                df_grouped["date"],
+                p(mdates.date2num(df_grouped["date"])),
+                "r--",
+                label="Trend Line",
+            )
 
             ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
@@ -898,15 +1124,20 @@ class GradientBoostingModel(ABC):
             ax.tick_params(axis="y", colors="white")
 
             plt.savefig(
-                self.directory.joinpath(f"{self.model_name}_Historical_MAE_Over_Time.png"), dpi=300, transparent=True
+                self.directory.joinpath(
+                    f"{self.model_name}_Historical_MAE_Over_Time.png"
+                ),
+                dpi=300,
+                transparent=True,
             )
             plt.close()
             logger.info(f"Historical MAE over time plot for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to plot regression error over time: {e}")
-            raise ValueError(f"Failed to plot regression error over time: {e}") from e
+            msg = f"Failed to plot regression error over time: {e}"
+            raise ValueError(msg) from e
 
-    def store_feature_importance(self, model, feature_names: List[str]) -> None:
+    def store_feature_importance(self, model, feature_names: list[str]) -> None:
         """
         Store feature importance to a parquet file and plot as a PNG file.
 
@@ -916,24 +1147,37 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If storing fails.
+
         """
         try:
             importances = model.feature_importances_
-            sorted_importances = sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)
+            sorted_importances = sorted(
+                zip(feature_names, importances, strict=False),
+                key=lambda x: x[1],
+                reverse=True,
+            )
 
-            data = [{"Feature": name, "Importance": importance} for name, importance in sorted_importances]
+            data = [
+                {"Feature": name, "Importance": importance}
+                for name, importance in sorted_importances
+            ]
             df = pd.DataFrame(data)
             df.to_parquet(
-                INSIGHTS_DIR / f"{self.model_name}_feature_importances.parquet", index=False, compression="gzip"
+                INSIGHTS_DIR / f"{self.model_name}_feature_importances.parquet",
+                index=False,
+                compression="gzip",
             )
 
             self.plot_feature_importance(sorted_importances)
             logger.info(f"Feature importance for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to store feature importance: {e}")
-            raise ValueError(f"Failed to store feature importance: {e}") from e
+            msg = f"Failed to store feature importance: {e}"
+            raise ValueError(msg) from e
 
-    def plot_feature_importance(self, sorted_importances: List[Tuple[str, float]], top_n: int = TOP_N_FEATURES) -> None:
+    def plot_feature_importance(
+        self, sorted_importances: list[tuple[str, float]], top_n: int = TOP_N_FEATURES
+    ) -> None:
         """
         Plots the feature importances, showing only the top_n features.
 
@@ -943,25 +1187,36 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If plotting fails.
+
         """
         try:
             top_features = sorted_importances[:top_n]
-            features, importances = zip(*top_features)
+            features, importances = zip(*top_features, strict=False)
             plt.figure(figsize=(10, 8))
             plt.barh(features, importances)
             plt.xlabel("Feature Importance")
             plt.title(f"Top {top_n} Feature Importances")
             plt.gca().invert_yaxis()
             plt.tight_layout()
-            plt.savefig(FEATURE_IMP_DIR / f"{self.model_name}_feature_importance_plot.png")
+            plt.savefig(
+                FEATURE_IMP_DIR / f"{self.model_name}_feature_importance_plot.png"
+            )
             plt.close()
-            logger.info(f"Top {top_n} feature importances for {self.model_name} stored.")
+            logger.info(
+                f"Top {top_n} feature importances for {self.model_name} stored."
+            )
         except Exception as e:
             logger.error(f"Failed to plot feature importance: {e}")
-            raise ValueError(f"Failed to plot feature importance: {e}") from e
+            msg = f"Failed to plot feature importance: {e}"
+            raise ValueError(msg) from e
 
     def calculate_permutation_importance(
-        self, model, X_test: pd.DataFrame, y_test: pd.Series, feature_names: List[str], top_n: int = TOP_N_FEATURES
+        self,
+        model,
+        X_test: pd.DataFrame,
+        y_test: pd.Series,
+        feature_names: list[str],
+        top_n: int = TOP_N_FEATURES,
     ) -> None:
         """
         Calculates and plots permutation importances for the top_n features.
@@ -975,24 +1230,38 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If calculation or plotting fails.
+
         """
         try:
-            result = permutation_importance(model, X_test, y_test, n_repeats=10, n_jobs=-1, random_state=42)
+            result = permutation_importance(
+                model, X_test, y_test, n_repeats=10, n_jobs=-1, random_state=42
+            )
             sorted_idx = result.importances_mean.argsort()[-top_n:]
 
             plt.figure(figsize=(10, 8))
-            plt.boxplot(result.importances[sorted_idx].T, vert=False, labels=np.array(feature_names)[sorted_idx])
+            plt.boxplot(
+                result.importances[sorted_idx].T,
+                vert=False,
+                labels=np.array(feature_names)[sorted_idx],
+            )
             plt.title(f"Top {top_n} Permutation Importances (test set)")
             plt.tight_layout()
-            plt.savefig(FEATURE_IMP_DIR / f"{self.model_name}_permutation_importance_plot.png")
+            plt.savefig(
+                FEATURE_IMP_DIR / f"{self.model_name}_permutation_importance_plot.png"
+            )
             plt.close()
             logger.info(f"Permutation importance plot for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to calculate or plot permutation importance: {e}")
-            raise ValueError(f"Failed to calculate or plot permutation importance: {e}") from e
+            msg = f"Failed to calculate or plot permutation importance: {e}"
+            raise ValueError(msg) from e
 
     def calculate_and_plot_shap(
-        self, model, X: pd.DataFrame, feature_names: List[str], top_n: int = TOP_N_FEATURES
+        self,
+        model,
+        X: pd.DataFrame,
+        feature_names: list[str],
+        top_n: int = TOP_N_FEATURES,
     ) -> None:
         """
         Plots SHAP values for the top_n features.
@@ -1005,6 +1274,7 @@ class GradientBoostingModel(ABC):
 
         Raises:
             ValueError: If calculation or plotting fails.
+
         """
         try:
             import shap
@@ -1019,7 +1289,9 @@ class GradientBoostingModel(ABC):
             elif self.problem_type == "regression":
                 pass  # shap_values is already correct
             else:
-                logger.warning(f"Unknown problem type '{self.problem_type}' for SHAP values.")
+                logger.warning(
+                    f"Unknown problem type '{self.problem_type}' for SHAP values."
+                )
                 shap_values = np.array([])
 
             if shap_values.size == 0:
@@ -1042,4 +1314,5 @@ class GradientBoostingModel(ABC):
             logger.info(f"SHAP summary plot for {self.model_name} stored.")
         except Exception as e:
             logger.error(f"Failed to calculate or plot SHAP values: {e}")
-            raise ValueError(f"Failed to calculate or plot SHAP values: {e}") from e
+            msg = f"Failed to calculate or plot SHAP values: {e}"
+            raise ValueError(msg) from e
