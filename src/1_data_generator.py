@@ -18,14 +18,14 @@ import pandas as pd
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
-from src.feature_engineering.features_generator import FeatureGenerator
-from src.feature_engineering.performance_features.performance_metrics import (
+from feature_engineering.features_generator import FeatureGenerator
+from feature_engineering.performance_features.performance_metrics import (
     PerformanceMetrics,
 )
-from src.feature_engineering.ratings_features.rating_models import Ratings
-from src.ingestion.oracles_elixir import OraclesElixir
-from src.utils.logger import instantiate_conf_logger, logger
-from src.utils.paths import (
+from feature_engineering.ratings_features.rating_models import Ratings
+from ingestion.oracles_elixir import OraclesElixir
+from utils.logger import instantiate_conf_logger, logger
+from utils.paths import (
     FLATTENED_PLAYER_CONFIG,
     FLATTENED_TEAM_CONFIG,
     INTERIM_PLAYER_DATA,
@@ -38,7 +38,7 @@ from src.utils.paths import (
     TRAINING_PLAYER_CONFIG,
     TRAINING_TEAM_CONFIG,
 )
-from src.utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
+from utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
 
 # -------------------------------------------------------------------------------------------
 # 1. Load environment variables from .env file

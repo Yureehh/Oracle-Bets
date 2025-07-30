@@ -16,14 +16,14 @@ from numba import njit
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
-from src.utils.logger import instantiate_conf_logger, logger
-from src.utils.paths import (
+from utils.logger import instantiate_conf_logger, logger
+from utils.paths import (
     CONSIDERED_LEAGUES,
     DEFAULT_MODELS_PARAMETERS,
     ENTITY_ELO_HYPERPARAMETERS,
     LEAGUE_ELO,
 )
-from src.utils.utils import get_sorting_keys, json_loader
+from utils.utils import get_sorting_keys, json_loader
 
 # ------------------------------------------------------------------------------
 # Global Config / Constants

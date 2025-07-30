@@ -29,9 +29,9 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import StratifiedGroupKFold
 
-from src.prediction_models.data_preprocessor import DataPreprocessor
-from src.utils.logger import logger
-from src.utils.paths import (
+from prediction_models.data_preprocessor import DataPreprocessor
+from utils.logger import logger
+from utils.paths import (
     FEATURE_IMP_DIR,
     FIGURES_DIR,
     INSIGHTS_DIR,

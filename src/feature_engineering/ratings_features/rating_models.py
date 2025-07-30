@@ -7,15 +7,15 @@ This module contains a class that serves as a wrapper for various rating models.
 from dataclasses import dataclass
 from typing import Any
 
-from src.feature_engineering.ratings_features.elo import calculate_elo
-from src.feature_engineering.ratings_features.glicko import calculate_glicko2
-from src.feature_engineering.ratings_features.leagues_elo import calculate_leagues_elo
-from src.feature_engineering.ratings_features.plackett_luce import (
+from feature_engineering.ratings_features.elo import calculate_elo
+from feature_engineering.ratings_features.glicko import calculate_glicko2
+from feature_engineering.ratings_features.leagues_elo import calculate_leagues_elo
+from feature_engineering.ratings_features.plackett_luce import (
     calculate_plackett_luce,
 )
-from src.feature_engineering.ratings_features.trueskill import calculate_trueskill
+from feature_engineering.ratings_features.trueskill import calculate_trueskill
 
-# from src.feature_engineering.ratings_features.wh import calculate_whr
+# from feature_engineering.ratings_features.wh import calculate_whr
 
 
 @dataclass

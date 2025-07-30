@@ -11,9 +11,9 @@ import datetime as dt
 import pandas as pd
 
 from prediction_models.lightgbm_model import ModelFactory
-from src.utils.logger import logger
-from src.utils.paths import MODELS_DIR, TRAINING_PLAYER_DATA, TRAINING_TEAM_DATA
-from src.utils.utils import load_training_data, store_model
+from utils.logger import logger
+from utils.paths import MODELS_DIR, TRAINING_PLAYER_DATA, TRAINING_TEAM_DATA
+from utils.utils import load_training_data, store_model
 
 # Constants
 MODEL_FILE_EXTENSION = "pkl"

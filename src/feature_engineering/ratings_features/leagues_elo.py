@@ -13,14 +13,14 @@ import pandas as pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
-from src.utils.logger import instantiate_conf_logger, logger
-from src.utils.paths import (
+from utils.logger import instantiate_conf_logger, logger
+from utils.paths import (
     CONSIDERED_LEAGUES,
     LEAGUE_ELO,
     LEAGUES_ELO_HYPERPARAMETERS,
     TEAM_LEAGUES_MAPPING,
 )
-from src.utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
+from utils.utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
 
 # Load considered leagues configuration
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)

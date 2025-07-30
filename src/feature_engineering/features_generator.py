@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.utils.logger import instantiate_conf_logger, logger
+from utils.logger import instantiate_conf_logger, logger
 
 data_pipeline_logger = instantiate_conf_logger("data_pipeline")
 

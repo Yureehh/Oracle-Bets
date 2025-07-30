@@ -1,412 +1,308 @@
 """
 Schedule Data Ingestion.
 
-This script fetches the schedule of upcoming matches from the PandaScore API
-using a Pandas-like interface from `fireducks.pandas`.
-
-Please visit and support www.pandascore.com
+Fetches upcoming League of Legends matches from the PandaScore API
+(https://pandascore.co).  Designed for testability (DI), observability
+(structured logging) and robust error handling.
 """
 
-import datetime as dt
-import time
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+from __future__ import annotations
 
-# Replace polars with fireducks.pandas (identical to pandas syntax)
+import datetime as dt
+import os
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol
+
 import pandas as pd
 import requests
 from dateutil import parser
 from dotenv import load_dotenv
 
-from src.utils.logger import instantiate_conf_logger, logger
+# --------------------------------------------------------------------------- #
+# Logging
+# --------------------------------------------------------------------------- #
+from utils.logger import instantiate_conf_logger  # your helper
 
-# Load environment variables from .env file
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+schedule_logger = instantiate_conf_logger("schedule_generation")
+
+# --------------------------------------------------------------------------- #
+# Exceptions
+# --------------------------------------------------------------------------- #
+
+
+class ScheduleError(Exception):
+    """Base class for schedule-related errors."""
+
+
+class PandaScoreAPIError(ScheduleError):
+    """Raised when the PandaScore API request ultimately fails."""
+
+
+class DataValidationError(ScheduleError):
+    """Raised when the API payload cannot be parsed into the expected schema."""
+
+
+# --------------------------------------------------------------------------- #
+# Dependency-injection hooks / Strategies
+# --------------------------------------------------------------------------- #
+
+
+class Sleeper(Protocol):
+    """Callable sleep strategy – useful for test fakes."""
+
+    def __call__(self, seconds: float, /) -> None: ...
+
+
+def default_sleep(seconds: float) -> None:  # pragma: no cover
+    time.sleep(seconds)
+
+
+# --------------------------------------------------------------------------- #
+# Constants & helpers
+# --------------------------------------------------------------------------- #
+PANDASCORE_BASE_URL = "https://api.pandascore.co/lol/matches/upcoming"
+ACCEPT_JSON_HEADER: dict[str, str] = {"Accept": "application/json"}
+DEFAULT_PER_PAGE = 100
+START_DATETIME_COLUMN = "Start (UTC)"
+
 load_dotenv()
 
-# Constants
-PANDASCORE_BASE_URL = "https://api.pandascore.co/lol/matches/upcoming"
-ACCEPT_JSON_HEADER = {"Accept": "application/json"}
-PER_PAGE = 100
-START_DATETIME_COLUMN = "Start (UTC)"
-schedule_generation_logger = instantiate_conf_logger("schedule_generation")
 
-
-@dataclass
+# --------------------------------------------------------------------------- #
+# Main dataclass
+# --------------------------------------------------------------------------- #
+@dataclass(slots=True)
 class PandaScoreSchedule:
-    """Schedule Data Ingestion from the PandaScore API."""
+    """
+    Ingests schedule data from PandaScore and returns a pandas DataFrame.
 
-    api_key: str
-    headers: dict = field(default_factory=lambda: ACCEPT_JSON_HEADER)
-    base_url: str = field(default_factory=lambda: PANDASCORE_BASE_URL)
+    Parameters
+    ----------
+    api_key:
+        PandaScore bearer token.  Falls back to the ``PANDASCORE_API_KEY`` env
+        variable if not supplied.
+    session:
+        Injected HTTP client; defaults to a fresh ``requests.Session``.
+    headers:
+        Extra HTTP headers merged with ``ACCEPT_JSON_HEADER``.
+    base_url:
+        Endpoint for fetching upcoming matches.
+    per_page:
+        API pagination size.
+    max_retries:
+        Retry count before giving up and raising ``PandaScoreAPIError``.
+    sleep_fn:
+        Strategy for waiting between retries/pages (DI for unit tests).
+    logger:
+        Inject a custom logger if you don’t want to use ``schedule_logger``.
 
-    def _fetch_matches(self, page: int) -> list[dict]:
-        """
-        Fetch matches from the PandaScore API for a specific page.
+    """
 
-        Args:
-            page (int): The page number to fetch.
+    api_key: str | None = None
+    session: requests.Session = field(default_factory=requests.Session)
+    headers: dict[str, str] = field(default_factory=lambda: ACCEPT_JSON_HEADER.copy())
+    base_url: str = PANDASCORE_BASE_URL
+    per_page: int = DEFAULT_PER_PAGE
+    max_retries: int = 3
+    sleep_fn: Sleeper = default_sleep
+    logger: Any = schedule_logger  # keep type flexible for custom wrappers
 
-        Returns:
-            List[dict]: List of match data dictionaries.
+    # --------------------------------------------------------------------- #
+    # Lifecycle
+    # --------------------------------------------------------------------- #
+    def __post_init__(self) -> None:
+        if not self.api_key:
+            self.api_key = os.getenv("PANDASCORE_API_KEY")
+        if not self.api_key:
+            msg = (
+                "PandaScore API key missing – supply via constructor or "
+                "PANDASCORE_API_KEY environment variable."
+            )
+            raise ScheduleError(msg)
 
-        """
+    # --------------------------------------------------------------------- #
+    # Public API
+    # --------------------------------------------------------------------- #
+    def get_schedule(
+        self,
+        start_datetime: str | dt.datetime,
+        end_datetime: str | dt.datetime | None = None,
+        max_day_range: int = 14,
+        time_format: str = "%Y-%m-%dT%H:%M:%S%z",
+        leagues: str | None = None,
+    ) -> pd.DataFrame:
+        """Return a DataFrame of upcoming matches within the given time window."""
+        if end_datetime is None:
+            end_datetime = parser.isoparse(start_datetime) + dt.timedelta(
+                days=max_day_range
+            )
+        start_dt, end_dt = self._validate_and_parse_dates(
+            start_datetime, end_datetime, max_day_range
+        )
+
+        schedule_df = pd.DataFrame()
+        for matches in self._fetch_all_matches():
+            parsed = self._parse_and_filter_matches(
+                matches, start_dt, end_dt, time_format
+            )
+            if parsed.empty:
+                continue
+            schedule_df = self._append_to_schedule(schedule_df, parsed)
+            if self._should_stop_fetching(parsed, end_dt):
+                break
+
+        if leagues:
+            schedule_df = self.filter_by_league(schedule_df, leagues)
+
+        self.logger.info("Fetched %s unique matches.", len(schedule_df))
+        return schedule_df.reset_index(drop=True)
+
+    # --------------------------------------------------------------------- #
+    # I/O helpers
+    # --------------------------------------------------------------------- #
+    def _fetch_matches(self, page: int) -> list[dict[str, Any]]:
+        """Fetch a single page from PandaScore with retry/back-off."""
         params = {
             "sort": "",
             "page": page,
-            "per_page": PER_PAGE,
+            "per_page": self.per_page,
             "token": self.api_key,
         }
-        try:
-            response = requests.get(self.base_url, headers=self.headers, params=params)
-            response.raise_for_status()
-            logger.info("Successful PandaScore API request for page: %s", page)
-            schedule_generation_logger.info(
-                "Successful PandaScore API request for page: %s", page
-            )
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTPError during API request: {e}")
-            schedule_generation_logger.exception(f"HTTPError during API request: {e}")
-            return []
-        except requests.RequestException as e:
-            logger.error(f"Failed to fetch data: {e!s}")
-            schedule_generation_logger.exception(f"Failed to fetch data: {e!s}")
-            return []
-        except Exception as e:
-            logger.error(f"Exception during API request: {e}")
-            schedule_generation_logger.exception(f"Exception during API request: {e}")
-            return []
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = self.session.get(
+                    self.base_url,
+                    headers=self.headers,
+                    params=params,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                self.logger.debug("Page %s OK – %s bytes", page, len(resp.content))
+                return resp.json()
+            except requests.RequestException as exc:
+                self.logger.warning(
+                    "API error (attempt %s/%s) – %s", attempt, self.max_retries, exc
+                )
+                if attempt == self.max_retries:
+                    msg = "Max retries exceeded"
+                    raise PandaScoreAPIError(msg) from exc
+                self.sleep_fn(2**attempt)  # exponential back-off
+        return []  # unreachable but satisfies type checker
 
-    def _fetch_all_matches(self) -> Iterator[list[dict]]:
-        """
-        Fetches all matches across pages.
-
-        Yields:
-            Iterator[List[dict]]: Iterator of match data lists.
-
-        """
+    def _fetch_all_matches(self) -> Iterator[list[dict[str, Any]]]:
+        """Generator yielding lists of match dicts page-by-page."""
         page = 1
         while True:
             matches = self._fetch_matches(page)
             if not matches:
                 if page == 1:
-                    logger.error("No matches found or failed to fetch matches.")
-                    schedule_generation_logger.error(
-                        "No matches found or failed to fetch matches."
-                    )
+                    self.logger.warning("No matches returned from PandaScore.")
                 break
-
             yield matches
-            logger.info(f"Fetched {len(matches)} matches from page {page}.")
-            schedule_generation_logger.info(
-                f"Fetched {len(matches)} matches from page {page}."
-            )
+            self.logger.debug("Yielded %s matches from page %s", len(matches), page)
             page += 1
+            self.sleep_fn(1.2)
 
-            # Adjust the sleep duration based on API guidelines
-            time.sleep(1)
-
+    # --------------------------------------------------------------------- #
+    # Parsing / validation
+    # --------------------------------------------------------------------- #
     @staticmethod
-    def _parse_matches_response(matches: list[dict]) -> pd.DataFrame:
-        """
-        Parse and structure matches data from the API response into a DataFrame.
-
-        Args:
-            matches (List[dict]): List of match data dictionaries.
-
-        Returns:
-            pd.DataFrame: DataFrame containing parsed match data.
-
-        """
-        data = []
-        for match in matches:
-            try:
-                scheduled_at = match.get("scheduled_at")
-                if not scheduled_at:
-                    continue
-
-                opponents = match.get("opponents", [])
-                blue_team = (
-                    opponents[0].get("opponent", {}).get("name", "N/A")
-                    if len(opponents) > 0
-                    else "N/A"
-                )
-                red_team = (
-                    opponents[1].get("opponent", {}).get("name", "N/A")
-                    if len(opponents) > 1
-                    else "N/A"
-                )
-
-                data.append(
-                    {
-                        "match_id": match.get("id", "N/A"),
-                        "league": match.get("league", {}).get("name", "N/A"),
-                        "Blue": blue_team,
-                        "Red": red_team,
-                        START_DATETIME_COLUMN: scheduled_at or "N/A",
-                        "Best Of": match.get("number_of_games", "N/A"),
-                    }
-                )
-            except KeyError as e:
-                logger.warning(f"Missing expected data in match: {e}")
-                schedule_generation_logger.warning(
-                    f"Missing expected data in match: {e}"
-                )
-            except Exception as e:
-                logger.error(f"Failed to parse match: {e}")
-                schedule_generation_logger.exception(f"Failed to parse match: {e}")
-
-        if not data:
-            # Return empty DataFrame with the expected columns
-            return pd.DataFrame(
-                columns=[
-                    "match_id",
-                    "league",
-                    "Blue",
-                    "Red",
-                    START_DATETIME_COLUMN,
-                    "Best Of",
-                ]
+    def _parse_matches_response(matches: list[dict[str, Any]]) -> pd.DataFrame:
+        """Convert raw JSON list into a normalized DataFrame."""
+        data: list[dict[str, Any]] = []
+        for m in matches:
+            scheduled_at = m.get("scheduled_at")
+            if not scheduled_at:
+                continue
+            opponents = m.get("opponents", [])
+            blue = opponents[0].get("opponent", {}).get("name") if opponents else None
+            red = (
+                opponents[1].get("opponent", {}).get("name")
+                if len(opponents) > 1
+                else None
             )
-
+            data.append(
+                {
+                    "match_id": m.get("id"),
+                    "league": m.get("league", {}).get("name"),
+                    "Blue": blue,
+                    "Red": red,
+                    START_DATETIME_COLUMN: scheduled_at,
+                    "Best Of": m.get("number_of_games"),
+                }
+            )
+        if not data:
+            msg = "API payload contained no parsable matches."
+            raise DataValidationError(msg)
         return pd.DataFrame(data)
 
     @staticmethod
-    def filter_by_league(schedule: pd.DataFrame, leagues: str) -> pd.DataFrame:
-        """
-        Filter the schedule by specified leagues.
+    def filter_by_league(df: pd.DataFrame, leagues: str) -> pd.DataFrame:
+        """Case-insensitive filter on the “league” column."""
+        leagues_set = {lg.strip().lower() for lg in leagues.split(",")}
+        out = df[df["league"].str.lower().isin(leagues_set)]
+        schedule_logger.debug("Leagues filter → %s rows", len(out))
+        return out
 
-        Args:
-            schedule (pd.DataFrame): DataFrame containing match schedules.
-            leagues (str): Comma-separated string of league names to filter.
-
-        Returns:
-            pd.DataFrame: Filtered DataFrame containing only specified leagues.
-
-        """
-        if "league" not in schedule.columns:
-            logger.error("The schedule DataFrame does not contain a 'league' column.")
-            schedule_generation_logger.error(
-                "The schedule DataFrame does not contain a 'league' column."
-            )
-            return pd.DataFrame()
-
-        league_list = [lg.strip().lower() for lg in leagues.split(",")]
-        # Convert league column to lowercase
-        schedule["league"] = schedule["league"].astype(str).str.strip().str.lower()
-
-        filtered_schedule = schedule[schedule["league"].isin(league_list)]
-        logger.info(f"Filtered schedule by leagues: {league_list}")
-        schedule_generation_logger.info(f"Filtered schedule by leagues: {league_list}")
-        return filtered_schedule
-
+    # --------------------------------------------------------------------- #
+    # Internal helpers
+    # --------------------------------------------------------------------- #
     @staticmethod
-    def load_schedule(schedule_path: str, leagues: str | None = None) -> pd.DataFrame:
-        """
-        Load the schedule from a Parquet file and optionally filter by leagues.
-
-        Args:
-            schedule_path (str): Path to the parquet file containing the schedule.
-            leagues (Optional[str]): Comma-separated leagues to filter. Defaults to None.
-
-        Returns:
-            pd.DataFrame: Loaded and optionally filtered schedule DataFrame.
-
-        """
-        try:
-            # Using the same syntax as pandas
-            schedule_df = pd.read_parquet(schedule_path)
-            logger.info("Loaded schedule from %s", schedule_path)
-            schedule_generation_logger.info("Loaded schedule from %s", schedule_path)
-        except FileNotFoundError as e:
-            logger.error(f"File not found: {schedule_path} - {e}")
-            schedule_generation_logger.exception(
-                f"File not found: {schedule_path} - {e}"
-            )
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Error loading schedule: {e}")
-            schedule_generation_logger.exception(f"Error loading schedule: {e}")
-            return pd.DataFrame()
-
-        if leagues:
-            schedule_df = PandaScoreSchedule.filter_by_league(schedule_df, leagues)
-
-        return schedule_df
-
-    def get_schedule(
-        self,
-        start_datetime: str | dt.datetime,
-        end_datetime: str | dt.datetime,
-        max_day_range: int,
-        time_format: str,
-        leagues: str | None = None,
-    ) -> pd.DataFrame:
-        """
-        Retrieves schedule of upcoming matches within a specified datetime range.
-
-        Args:
-            start_datetime (Union[str, dt.datetime]): Start datetime.
-            end_datetime (Union[str, dt.datetime]): End datetime.
-            max_day_range (int): Maximum allowed range in days between start and end datetime.
-            time_format (str): Format of the datetime strings for parsing.
-            leagues (Optional[str]): Comma-separated leagues to filter. Defaults to None.
-
-        Returns:
-            pd.DataFrame: DataFrame containing the schedule of upcoming matches.
-
-        """
-        start_dt, end_dt = self._validate_and_parse_dates(
-            start_datetime, end_datetime, max_day_range
-        )
-        schedule_df = pd.DataFrame()
-
-        for matches in self._fetch_all_matches():
-            parsed_matches = self._parse_and_filter_matches(
-                matches, start_dt, end_dt, time_format
-            )
-            if parsed_matches.empty:
-                continue
-
-            schedule_df = self._append_to_schedule(schedule_df, parsed_matches)
-
-            # If the earliest match is after the end date, stop further API calls
-            if self._should_stop_fetching(parsed_matches, end_dt):
-                break
-
-        # Filter by leagues if specified
-        if leagues:
-            schedule_df = self.filter_by_league(schedule_df, leagues)
-
-        logger.info("Completed fetching and processing the schedule.")
-        schedule_generation_logger.info(
-            "Completed fetching and processing the schedule."
-        )
-        return schedule_df
+    def _parse_datetime(value: str | dt.datetime) -> dt.datetime:
+        dt_obj = parser.isoparse(value) if isinstance(value, str) else value
+        return dt_obj.astimezone(dt.UTC)
 
     def _validate_and_parse_dates(
         self,
-        start_datetime: str | dt.datetime,
-        end_datetime: str | dt.datetime,
-        max_day_range: int,
+        start: str | dt.datetime,
+        end: str | dt.datetime,
+        max_range: int,
     ) -> tuple[dt.datetime, dt.datetime]:
-        """
-        Validates and parses start and end datetime inputs.
-
-        Args:
-            start_datetime (Union[str, dt.datetime]): Start datetime.
-            end_datetime (Union[str, dt.datetime]): End datetime.
-            max_day_range (int): Maximum allowed range in days.
-
-        Returns:
-            tuple[dt.datetime, dt.datetime]: Parsed and validated start and end datetimes.
-
-        """
-        start_dt = self._parse_datetime(start_datetime)
-        end_dt = self._parse_datetime(end_datetime)
-
+        start_dt, end_dt = self._parse_datetime(start), self._parse_datetime(end)
         if start_dt > end_dt:
-            msg = "Start datetime must be before end datetime."
-            raise ValueError(msg)
-
-        if (end_dt - start_dt).days > max_day_range:
-            msg = f"Time range exceeds the maximum allowed {max_day_range} days."
-            raise ValueError(msg)
-
+            msg = "start_datetime must be ≤ end_datetime."
+            raise ScheduleError(msg)
+        if (end_dt - start_dt).days > max_range:
+            msg = f"Range exceeds {max_range} days."
+            raise ScheduleError(msg)
         return start_dt, end_dt
-
-    def _parse_datetime(self, datetime_input: str | dt.datetime) -> dt.datetime:
-        """
-        Parses a datetime input, ensuring it is in UTC.
-
-        Args:
-            datetime_input (Union[str, dt.datetime]): Input datetime.
-
-        Returns:
-            dt.datetime: UTC datetime object.
-
-        """
-        if isinstance(datetime_input, dt.datetime):
-            parsed_dt = datetime_input
-        else:
-            parsed_dt = parser.isoparse(datetime_input)
-
-        return parsed_dt.astimezone(dt.UTC)
 
     def _parse_and_filter_matches(
         self,
-        matches: list[dict],
+        matches: list[dict[str, Any]],
         start_dt: dt.datetime,
         end_dt: dt.datetime,
         time_format: str,
     ) -> pd.DataFrame:
-        """
-        Parses and filters matches within the datetime range.
-
-        Args:
-            matches (List[dict]): List of match data.
-            start_dt (dt.datetime): Start datetime.
-            end_dt (dt.datetime): End datetime.
-            time_format (str): Time format string for parsing.
-
-        Returns:
-            pd.DataFrame: Filtered DataFrame.
-
-        """
-        parsed_matches = self._parse_matches_response(matches)
-        if parsed_matches.empty:
-            return parsed_matches
-
-        # Convert scheduled column to datetime, drop invalid rows
-        parsed_matches[START_DATETIME_COLUMN] = pd.to_datetime(
-            parsed_matches[START_DATETIME_COLUMN],
+        games_df = self._parse_matches_response(matches)
+        games_df[START_DATETIME_COLUMN] = pd.to_datetime(
+            games_df[START_DATETIME_COLUMN],
             format=time_format,
-            errors="coerce",  # any invalid parse becomes NaT
+            errors="coerce",
+            utc=True,
         )
-        parsed_matches = parsed_matches.dropna(subset=[START_DATETIME_COLUMN])
+        games_df = games_df.dropna(subset=[START_DATETIME_COLUMN])
+        mask = (games_df[START_DATETIME_COLUMN] >= start_dt) & (
+            games_df[START_DATETIME_COLUMN] <= end_dt
+        )
+        return games_df.loc[mask]
 
-        # Filter rows by time range
-        return parsed_matches[
-            (parsed_matches[START_DATETIME_COLUMN] >= start_dt.replace(tzinfo=None))
-            & (parsed_matches[START_DATETIME_COLUMN] <= end_dt.replace(tzinfo=None))
-        ]
+    @staticmethod
+    def _append_to_schedule(curr: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+        combined = pd.concat([curr, new], ignore_index=True)
+        return combined.drop_duplicates(subset=["match_id"], keep="last")
 
-    def _append_to_schedule(
-        self, schedule_df: pd.DataFrame, new_data: pd.DataFrame
-    ) -> pd.DataFrame:
-        """
-        Appends new data to the schedule, ensuring no duplicates by 'match_id'.
+    @staticmethod
+    def _should_stop_fetching(df: pd.DataFrame, end_dt: dt.datetime) -> bool:
+        return df[START_DATETIME_COLUMN].min() > end_dt
 
-        Args:
-            schedule_df (pd.DataFrame): Existing schedule DataFrame.
-            new_data (pd.DataFrame): New data to append.
 
-        Returns:
-            pd.DataFrame: Updated schedule DataFrame.
-
-        """
-        if schedule_df.empty:
-            # Just remove duplicates from new_data (if any) before returning
-            return new_data.drop_duplicates(subset=["match_id"])
-
-        combined_df = pd.concat([schedule_df, new_data], axis=0)
-        return combined_df.drop_duplicates(subset=["match_id"])
-
-    def _should_stop_fetching(
-        self, parsed_matches: pd.DataFrame, end_dt: dt.datetime
-    ) -> bool:
-        """
-        Determines whether to stop fetching more data.
-
-        Args:
-            parsed_matches (pd.DataFrame): Parsed matches DataFrame.
-            end_dt (dt.datetime): End datetime.
-
-        Returns:
-            bool: True if fetching should stop, False otherwise.
-
-        """
-        if parsed_matches.empty:
-            return False
-        earliest_match = parsed_matches[START_DATETIME_COLUMN].min()
-        return earliest_match and earliest_match > end_dt.replace(tzinfo=None)
+if __name__ == "__main__":
+    # Example usage
+    schedule = PandaScoreSchedule()
+    schedule_df = schedule.get_schedule(start_datetime="2025-08-01T00:00:00Z")
+    schedule_logger.info("Schedule DataFrame:\n%s", schedule_df.head())

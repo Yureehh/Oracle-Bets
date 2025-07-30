@@ -10,16 +10,16 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from src.feature_engineering.performance_features.entity_stats import (
+from feature_engineering.performance_features.entity_stats import (
     enrich_entity_ema_statistics,
 )
-from src.feature_engineering.performance_features.patch_win_rate import (
+from feature_engineering.performance_features.patch_win_rate import (
     patch_win_rate_ewm_performance,
 )
-from src.feature_engineering.performance_features.season_win_rate import (
+from feature_engineering.performance_features.season_win_rate import (
     season_win_rate_ewm_performance,
 )
-from src.feature_engineering.performance_features.side_win_rate import (
+from feature_engineering.performance_features.side_win_rate import (
     side_win_rate_ewm_performance,
 )
 

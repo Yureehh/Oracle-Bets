@@ -12,7 +12,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from src.discord_predictions.discord import (
+from discord_predictions.discord import (
     calculate_kelly_criterion,
     calculate_odds,
     calculate_prob,
@@ -25,10 +25,10 @@ from src.discord_predictions.discord import (
     handle_command_error,
     validate_and_predict,
 )
-from src.ingestion.schedule import PandaScoreSchedule
-from src.utils.logger import logger
-from src.utils.paths import SCHEDULE
-from src.utils.team import Team
+from ingestion.schedule import PandaScoreSchedule
+from utils.logger import logger
+from utils.paths import SCHEDULE
+from utils.team import Team
 
 # Load environment variables from .env file
 load_dotenv()

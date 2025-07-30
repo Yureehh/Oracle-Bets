@@ -19,13 +19,13 @@ import boto3
 import pandas as pd
 from dotenv import load_dotenv
 
-from src.utils.logger import instantiate_conf_logger, logger
-from src.utils.paths import (
+from utils.logger import instantiate_conf_logger, logger
+from utils.paths import (
     CONSIDERED_LEAGUES,
     IMPORT_COLUMNS,
     TEAM_REPLACEMENTS_AND_INVALID_GAMES,
 )
-from src.utils.utils import get_sorting_keys, json_loader
+from utils.utils import get_sorting_keys, json_loader
 
 # Load environment variables from .env file
 load_dotenv()

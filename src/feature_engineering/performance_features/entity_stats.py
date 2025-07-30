@@ -9,12 +9,12 @@ import pandas as pd
 from tqdm import tqdm
 
 from ingestion.oracles_elixir import get_opponent
-from src.utils.paths import (
+from utils.paths import (
     DEFAULT_MODELS_PARAMETERS,
     FLATTENED_PLAYER_CONFIG,
     FLATTENED_TEAM_CONFIG,
 )
-from src.utils.utils import get_identity, get_sorting_keys, json_loader
+from utils.utils import get_identity, get_sorting_keys, json_loader
 
 # Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)

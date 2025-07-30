@@ -29,15 +29,15 @@ from feature_engineering.ratings_features.trueskill import (
     win_probability as trueskill_win_probability,
 )
 from prediction_models.gbdt_model import GradientBoostingModel
-from src.utils.paths import (
+from utils.paths import (
     LEAGUE_ELO,
     OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
     OUTCOME_PREDICTION_FINAL_FEATURES,
     OUTCOME_PREDICTION_MODEL_PATH,
     TEAM_LEAGUES_MAPPING,
 )
-from src.utils.team import Team
-from src.utils.utils import load_model
+from utils.team import Team
+from utils.utils import load_model
 
 # Constants
 PREDICTION_PRECISION = 3

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-from src.utils.paths import LOGS_DIR
+from utils.paths import LOGS_DIR
 
 # Load environment variables from .env file
 load_dotenv()

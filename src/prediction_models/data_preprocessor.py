@@ -4,9 +4,9 @@ from typing import Any
 
 import pandas as pd
 
-from src.utils.logger import logger
-from src.utils.paths import TARGET_FEATURES
-from src.utils.utils import json_loader
+from utils.logger import logger
+from utils.paths import TARGET_FEATURES
+from utils.utils import json_loader
 
 
 class DataPreprocessor:

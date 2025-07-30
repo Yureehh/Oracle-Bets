@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from src.utils.logger import logger
-from src.utils.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
+from utils.logger import logger
+from utils.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
 
 
 @dataclass
