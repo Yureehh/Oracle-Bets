@@ -25,10 +25,10 @@ from discord_predictions.discord import (
     handle_command_error,
     validate_and_predict,
 )
+from entities.team import Team
 from ingestion.schedule import PandaScoreSchedule
 from utils.logger import logger
 from utils.paths import SCHEDULE
-from utils.team import Team
 
 # Load environment variables from .env file
 load_dotenv()

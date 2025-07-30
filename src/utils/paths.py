@@ -1,176 +1,194 @@
 """
-Paths Module.
+Paths module.
 
-This module defines and manages file system paths used across the project.
-It ensures that the necessary directories are created and available for data storage.
+Centralises every on-disk location used by Oracle-Bets and eagerly ensures the
+directories exist.  Nothing outside this module should hard-code a filesystem
+path string.
 """
+
+from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Final
 
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+from utils.logger import LOG_TOPIC, instantiate_logger
+
+# --------------------------------------------------------------------------- #
+# Logging
+# --------------------------------------------------------------------------- #
+_log = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
+
+# --------------------------------------------------------------------------- #
+# Environment
+# --------------------------------------------------------------------------- #
+load_dotenv()  # makes BASE_DIR overridable via .env / process env
 
 
-def create_directory(directory: Path) -> None:
-    """
-    Create a directory if it does not exist.
+# --------------------------------------------------------------------------- #
+# Helpers / explicit error model
+# --------------------------------------------------------------------------- #
+class DirectoryCreationError(OSError):
+    """Raised when a required directory cannot be created."""
 
-    Args:
-        directory (Path): The directory path to create.
 
-    Raises:
-        OSError: If the directory cannot be created.
-
-    """
+def _create_directory(directory: Path) -> None:
+    """Create *directory* (recursively) iff it does not already exist."""
     try:
-        if not directory.exists():
-            directory.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
         msg = f"Error creating directory: {directory}"
-        raise OSError(msg) from e
+        raise DirectoryCreationError(msg) from exc
 
 
-# Retrieve the base directory from an environment variable or default to the current working directory
-BASE_DIR: Path = Path(os.getenv("BASE_DIR", os.getcwd())).resolve()
+# --------------------------------------------------------------------------- #
+# Base & top-level dirs
+# --------------------------------------------------------------------------- #
+BASE_DIR: Final[Path] = Path(os.getenv("BASE_DIR", os.getcwd())).resolve()
 
-# Directories for data storage
-DATA_DIR: Path = BASE_DIR / "data"
-MODELS_DIR: Path = BASE_DIR / "models"
-REPORTS_DIR: Path = BASE_DIR / "reports"
-CONFIG_DIR: Path = BASE_DIR / "config"
-NOTEBOOKS_DIR: Path = BASE_DIR / "notebooks"
-LOGS_DIR: Path = BASE_DIR / "logs"
+DATA_DIR: Final = BASE_DIR / "data"
+MODELS_DIR: Final = BASE_DIR / "models"
+REPORTS_DIR: Final = BASE_DIR / "reports"
+CONFIG_DIR: Final = BASE_DIR / "config"
+NOTEBOOKS_DIR: Final = BASE_DIR / "notebooks"
+LOGS_DIR: Final = BASE_DIR / "logs"
 
-# Data storage subdirectories
-INTERIM_DIR: Path = DATA_DIR / "interim"
-PROCESSED_DIR: Path = DATA_DIR / "processed"
-PROCESSED_TEAMS_DIR: Path = PROCESSED_DIR / "teams"
-PROCESSED_PLAYERS_DIR: Path = PROCESSED_DIR / "players"
+# --------------------------------------------------------------------------- #
+# Data sub-directories
+# --------------------------------------------------------------------------- #
+RAW_DIR: Final = DATA_DIR / "raw"
+INTERIM_DIR: Final = DATA_DIR / "interim"
+PROCESSED_DIR: Final = DATA_DIR / "processed"
+PROCESSED_TEAMS_DIR: Final = PROCESSED_DIR / "teams"
+PROCESSED_PLAYERS_DIR: Final = PROCESSED_DIR / "players"
 
-# Configuration file paths
-DISCORD_CONFIG: Path = CONFIG_DIR / "discord_config.json"
-DATA_INGESTION_DIR: Path = CONFIG_DIR / "data_ingestion"
-TARGET_FEATURES: Path = CONFIG_DIR / "target_features.json"
-TRAINING_AND_INPUT_COLS_DIR: Path = CONFIG_DIR / "training"
+# --------------------------------------------------------------------------- #
+# Configuration files
+# --------------------------------------------------------------------------- #
+DISCORD_CONFIG: Final = CONFIG_DIR / "discord_config.json"
+DATA_INGESTION_DIR: Final = CONFIG_DIR / "data_ingestion"
+TARGET_FEATURES: Final = CONFIG_DIR / "target_features.json"
+TRAINING_AND_INPUT_COLS_DIR: Final = CONFIG_DIR / "training"
 
-# Data Ingestion paths
-YEARS_RANGE_PATH: Path = DATA_INGESTION_DIR / "years_range.json"
-IMPORT_COLUMNS: Path = DATA_INGESTION_DIR / "import_columns.json"
-TEAM_REPLACEMENTS_AND_INVALID_GAMES: Path = (
+YEARS_RANGE_PATH: Final = DATA_INGESTION_DIR / "years_range.json"
+IMPORT_COLUMNS: Final = DATA_INGESTION_DIR / "import_columns.json"
+TEAM_REPLACEMENTS_AND_INVALID_GAMES: Final = (
     DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
 )
-CONSIDERED_LEAGUES: Path = DATA_INGESTION_DIR / "considered_leagues.json"
+CONSIDERED_LEAGUES: Final = DATA_INGESTION_DIR / "considered_leagues.json"
 
-# Raw data
-RAW_DIR: Path = DATA_DIR / "raw"
-RAW_DATA: Path = RAW_DIR / "raw_data.parquet"
+# --------------------------------------------------------------------------- #
+# Concrete data artefacts
+# --------------------------------------------------------------------------- #
+RAW_DATA: Final = RAW_DIR / "raw_data.parquet"
 
-# Interim data
-INTERIM_TEAM_DATA: Path = INTERIM_DIR / "team_data.parquet"
-INTERIM_PLAYER_DATA: Path = INTERIM_DIR / "player_data.parquet"
+INTERIM_TEAM_DATA: Final = INTERIM_DIR / "team_data.parquet"
+INTERIM_PLAYER_DATA: Final = INTERIM_DIR / "player_data.parquet"
 
-# Processed data
-PROCESSED_TEAMS: Path = PROCESSED_TEAMS_DIR / "team_data.parquet"
-PROCESSED_PLAYERS: Path = PROCESSED_PLAYERS_DIR / "player_data.parquet"
-SCHEDULE: Path = PROCESSED_DIR / "schedule.parquet"
+PROCESSED_TEAMS: Final = PROCESSED_TEAMS_DIR / "team_data.parquet"
+PROCESSED_PLAYERS: Final = PROCESSED_PLAYERS_DIR / "player_data.parquet"
+SCHEDULE: Final = PROCESSED_DIR / "schedule.parquet"
 
-# Flattened data
-FLATTENED_TEAMS: Path = PROCESSED_TEAMS_DIR / "flattened_teams.parquet"
-FLATTENED_PLAYERS: Path = PROCESSED_PLAYERS_DIR / "flattened_players.parquet"
+FLATTENED_TEAMS: Final = PROCESSED_TEAMS_DIR / "flattened_teams.parquet"
+FLATTENED_PLAYERS: Final = PROCESSED_PLAYERS_DIR / "flattened_players.parquet"
 
-# Training data
-TRAINING_TEAM_DATA: Path = PROCESSED_TEAMS_DIR / "training_team_data.parquet"
-TRAINING_PLAYER_DATA: Path = PROCESSED_PLAYERS_DIR / "training_player_data.parquet"
+TRAINING_TEAM_DATA: Final = PROCESSED_TEAMS_DIR / "training_team_data.parquet"
+TRAINING_PLAYER_DATA: Final = PROCESSED_PLAYERS_DIR / "training_player_data.parquet"
 
-# Training and input columns for outcome prediction
-TRAINING_TEAM_CONFIG: Path = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
-FLATTENED_TEAM_CONFIG: Path = TRAINING_AND_INPUT_COLS_DIR / "flattened_team_config.json"
-TRAINING_PLAYER_CONFIG: Path = (
+TRAINING_TEAM_CONFIG: Final = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
+FLATTENED_TEAM_CONFIG: Final = (
+    TRAINING_AND_INPUT_COLS_DIR / "flattened_team_config.json"
+)
+TRAINING_PLAYER_CONFIG: Final = (
     TRAINING_AND_INPUT_COLS_DIR / "training_player_config.json"
 )
-FLATTENED_PLAYER_CONFIG: Path = (
+FLATTENED_PLAYER_CONFIG: Final = (
     TRAINING_AND_INPUT_COLS_DIR / "flattened_player_config.json"
 )
 
-# Artifacts storage
-MODEL_ARTIFACTS: Path = MODELS_DIR / "artifacts"
-LEAGUE_ELO: Path = MODEL_ARTIFACTS / "league_elo.parquet"
-TEAM_LEAGUES_MAPPING: Path = MODEL_ARTIFACTS / "team_league_mapping.parquet"
-WHOLE_HISTORY_RATING_PATH: Path = MODEL_ARTIFACTS / "whr.pkl"
-OUTCOME_PREDICTION_MODEL_PATH: Path = MODEL_ARTIFACTS / "OutcomePrediction.pkl"
-OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Path = (
+# --------------------------------------------------------------------------- #
+# Model artefacts & hyper-parameters
+# --------------------------------------------------------------------------- #
+MODEL_ARTIFACTS: Final = MODELS_DIR / "artifacts"
+LEAGUE_ELO: Final = MODEL_ARTIFACTS / "league_elo.parquet"
+TEAM_LEAGUES_MAPPING: Final = MODEL_ARTIFACTS / "team_league_mapping.parquet"
+WHOLE_HISTORY_RATING_PATH: Final = MODEL_ARTIFACTS / "whr.pkl"
+OUTCOME_PREDICTION_MODEL_PATH: Final = MODEL_ARTIFACTS / "OutcomePrediction.pkl"
+OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Final = (
     MODEL_ARTIFACTS / "OutcomePrediction_categorical_features.pkl"
 )
-OUTCOME_PREDICTION_FINAL_FEATURES: Path = (
+OUTCOME_PREDICTION_FINAL_FEATURES: Final = (
     MODEL_ARTIFACTS / "OutcomePrediction_final_features.pkl"
 )
-OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Path = (
+OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Final = (
     MODEL_ARTIFACTS / "OutcomePrediction_best_hyperparameters.pkl"
 )
-GAMELENGTH_PREDICTION_MODEL_PATH: Path = MODEL_ARTIFACTS / "GamelengthPrediction.pkl"
-GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Path = (
+GAMELENGTH_PREDICTION_MODEL_PATH: Final = MODEL_ARTIFACTS / "GamelengthPrediction.pkl"
+GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Final = (
     MODEL_ARTIFACTS / "GamelengthPrediction_categorical_features.pkl"
 )
-GAMELENGTH_PREDICTION_FINAL_FEATURES: Path = (
+GAMELENGTH_PREDICTION_FINAL_FEATURES: Final = (
     MODEL_ARTIFACTS / "GamelengthPrediction_final_features.pkl"
 )
-GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Path = (
+GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Final = (
     MODEL_ARTIFACTS / "GamelengthPrediction_best_hyperparameters.pkl"
 )
 
-# Hyperparams
-HYPERPARAMETERS: Path = MODELS_DIR / "hyperparameters"
-DEFAULT_MODELS_PARAMETERS: Path = HYPERPARAMETERS / "default_models_parameters.json"
-BEST_HYPERPARAMETERS: Path = HYPERPARAMETERS / "best_hyperparams"
-LEAGUES_ELO_HYPERPARAMETERS: Path = (
+# Hyper-parameter grids
+HYPERPARAMETERS: Final = MODELS_DIR / "hyperparameters"
+DEFAULT_MODELS_PARAMETERS: Final = HYPERPARAMETERS / "default_models_parameters.json"
+BEST_HYPERPARAMETERS: Final = HYPERPARAMETERS / "best_hyperparams"
+LEAGUES_ELO_HYPERPARAMETERS: Final = (
     BEST_HYPERPARAMETERS / "leagues_elo_hyperparameters.json"
 )
-ENTITY_ELO_HYPERPARAMETERS: Path = (
+ENTITY_ELO_HYPERPARAMETERS: Final = (
     BEST_HYPERPARAMETERS / "entity_elo_hyperparameters.json"
 )
-ENTITY_GLICKO_HYPERPARAMETERS: Path = (
+ENTITY_GLICKO_HYPERPARAMETERS: Final = (
     BEST_HYPERPARAMETERS / "entity_glicko_hyperparameters.json"
 )
-ENTITY_PL_HYPERPARAMETERS: Path = (
+ENTITY_PL_HYPERPARAMETERS: Final = (
     BEST_HYPERPARAMETERS / "entity_pl_hyperparameters.json"
 )
-ENTITY_TRUESKILL_HYPERPARAMETERS: Path = (
+ENTITY_TRUESKILL_HYPERPARAMETERS: Final = (
     BEST_HYPERPARAMETERS / "entity_trueskill_hyperparameters.json"
 )
 
-# Reports storage
-FIGURES_DIR: Path = REPORTS_DIR / "figures"
-FEATURE_IMP_DIR: Path = FIGURES_DIR / "feature_importances"
-INSIGHTS_DIR: Path = REPORTS_DIR / "evaluation_insights"
+# --------------------------------------------------------------------------- #
+# Reports & figures
+# --------------------------------------------------------------------------- #
+FIGURES_DIR: Final = REPORTS_DIR / "figures"
+FEATURE_IMP_DIR: Final = FIGURES_DIR / "feature_importances"
+INSIGHTS_DIR: Final = REPORTS_DIR / "evaluation_insights"
 
-# List of directories to ensure existence
-directories: list[Path] = [
+# --------------------------------------------------------------------------- #
+# Directory bootstrap
+# --------------------------------------------------------------------------- #
+_directories: list[Path] = [
     DATA_DIR,
-    MODELS_DIR,
-    REPORTS_DIR,
-    CONFIG_DIR,
-    NOTEBOOKS_DIR,
-    LOGS_DIR,
+    RAW_DIR,
     INTERIM_DIR,
     PROCESSED_DIR,
     PROCESSED_TEAMS_DIR,
     PROCESSED_PLAYERS_DIR,
-    RAW_DIR,
+    MODELS_DIR,
     MODEL_ARTIFACTS,
+    REPORTS_DIR,
     FIGURES_DIR,
     FEATURE_IMP_DIR,
     INSIGHTS_DIR,
+    CONFIG_DIR,
     DATA_INGESTION_DIR,
     TRAINING_AND_INPUT_COLS_DIR,
+    NOTEBOOKS_DIR,
+    LOGS_DIR,
     HYPERPARAMETERS,
     BEST_HYPERPARAMETERS,
-    FEATURE_IMP_DIR,
-    INSIGHTS_DIR,
 ]
 
-# Create directories if they do not exist
-for directory in directories:
-    create_directory(directory)
+for _d in _directories:
+    _create_directory(_d)
+
+_log.debug("Path subsystem initialised (base_dir=%s).", BASE_DIR)

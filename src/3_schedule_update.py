@@ -13,9 +13,9 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from ingestion.schedule import PandaScoreSchedule, schedule_generation_logger
+from utils.io_utils import safe_store_df_as_parquet
 from utils.logger import logger
 from utils.paths import SCHEDULE
-from utils.utils import safe_store_df_as_parquet
 
 # Constants
 TIME_FORMAT: str = "%Y-%m-%dT%H:%M:%SZ"

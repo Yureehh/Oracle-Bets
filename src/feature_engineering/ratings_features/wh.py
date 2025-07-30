@@ -10,8 +10,8 @@ import pandas as pd
 from tqdm import tqdm
 from whr import whole_history_rating
 
+from utils.io_utils import get_sorting_keys, json_loader
 from utils.paths import DEFAULT_MODELS_PARAMETERS, WHOLE_HISTORY_RATING_PATH
-from utils.utils import get_sorting_keys, json_loader
 
 # Load configuration parameters
 config = json_loader(DEFAULT_MODELS_PARAMETERS)

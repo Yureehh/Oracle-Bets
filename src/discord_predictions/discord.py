@@ -12,9 +12,9 @@ import pandas as pd
 
 import discord_predictions.match_predictor as match_predictor_module
 from discord_predictions.best_ofs import BestOfs
+from entities.team import Team
+from utils.io_utils import json_loader, parquet_loader
 from utils.paths import DISCORD_CONFIG, FLATTENED_PLAYERS, FLATTENED_TEAMS
-from utils.team import Team
-from utils.utils import json_loader, parquet_loader
 
 # Load configuration and initialize match predictor
 CONFIG = json_loader(DISCORD_CONFIG)

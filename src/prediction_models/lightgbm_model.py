@@ -17,12 +17,12 @@ import pandas as pd
 from sklearn.metrics import log_loss, mean_absolute_error
 
 from prediction_models.gbdt_model import GradientBoostingModel
+from utils.io_utils import load_model
 from utils.logger import logger
 from utils.paths import (
     GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS,
     OUTCOME_PREDICTION_BEST_HYPERPARAMETERS,
 )
-from utils.utils import load_model
 
 # Constants
 VALIDATION_SIZE = 0.25
