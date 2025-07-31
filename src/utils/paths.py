@@ -14,13 +14,6 @@ from typing import Final
 
 from dotenv import load_dotenv
 
-from utils.logger import LOG_TOPIC, instantiate_logger
-
-# --------------------------------------------------------------------------- #
-# Logging
-# --------------------------------------------------------------------------- #
-_log = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
-
 # --------------------------------------------------------------------------- #
 # Environment
 # --------------------------------------------------------------------------- #
@@ -190,5 +183,3 @@ _directories: list[Path] = [
 
 for _d in _directories:
     _create_directory(_d)
-
-_log.debug("Path subsystem initialised (base_dir=%s).", BASE_DIR)

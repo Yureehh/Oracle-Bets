@@ -21,7 +21,7 @@ from tqdm import tqdm
 from trueskill import Rating, TrueSkill
 
 from utils.io_utils import get_sorting_keys, json_loader
-from utils.logger import instantiate_conf_logger, logger
+from utils.logger import instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
     DEFAULT_MODELS_PARAMETERS,
@@ -45,7 +45,7 @@ considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
 CROSS_LEAGUE_COMPETITIONS = considered_leagues_config["cross_league_competitions"]
 
-data_pipeline_logger = instantiate_conf_logger("data_pipeline")
+data_pipeline_logger = instantiate_logger("data_pipeline")
 
 
 # ------------------------------------------------------------------------------

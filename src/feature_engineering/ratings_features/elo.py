@@ -17,7 +17,7 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from utils.io_utils import get_sorting_keys, json_loader
-from utils.logger import instantiate_conf_logger, logger
+from utils.logger import instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
     DEFAULT_MODELS_PARAMETERS,
@@ -30,7 +30,7 @@ from utils.paths import (
 # ------------------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
-data_pipeline_logger = instantiate_conf_logger("data_pipeline")
+data_pipeline_logger = instantiate_logger("data_pipeline")
 CROSS_COMPETITION_LEAGUES = considered_leagues_config["cross_league_competitions"]
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
 TRIALS_NUM = 50

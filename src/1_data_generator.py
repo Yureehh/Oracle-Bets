@@ -25,7 +25,7 @@ from feature_engineering.performance_features.performance_metrics import (
 from feature_engineering.ratings_features.rating_models import Ratings
 from ingestion.oracles_elixir import OraclesElixir
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
-from utils.logger import instantiate_conf_logger, logger
+from utils.logger import instantiate_logger, logger
 from utils.paths import (
     FLATTENED_PLAYER_CONFIG,
     FLATTENED_TEAM_CONFIG,
@@ -55,7 +55,7 @@ MAX_EXPECTED_PLAYERS = 10
 MAX_EXPECTED_TEAMS = 2
 MAX_EXPECTED_ROWS = 12
 YEARS_RANGE = 3
-data_pipeline_logger = instantiate_conf_logger("data_pipeline")
+data_pipeline_logger = instantiate_logger("data_pipeline")
 
 
 # -------------------------------------------------------------------------------------------

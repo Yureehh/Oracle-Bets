@@ -170,7 +170,6 @@ def load_training_data(
 def safe_store_df_as_parquet(
     df: pd.DataFrame,
     output_path: str | Path,
-    *,
     loggers: list[Any] | None = None,
 ) -> None:
     """

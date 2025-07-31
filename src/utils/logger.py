@@ -26,8 +26,7 @@ from utils.paths import LOGS_DIR
 if TYPE_CHECKING:
     from pathlib import Path
 
-load_dotenv()  # ensures BASE_DIR is resolved before LOGS_DIR is imported
-
+load_dotenv()
 
 # --------------------------------------------------------------------------- #
 # Constants / Enums
@@ -36,9 +35,12 @@ ISO_TIME_FMT: Final = "%Y-%m-%dT%H:%M:%S"
 DEFAULT_FORMAT: Final = "%(asctime)s | %(levelname)s | %(name)s: %(message)s"
 
 # Timestamp used in all file names for the current interpreter session
-_TS: Final = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+_TS: Final = dt.datetime.now().strftime("%Y%m%d_%H%M%S")  # session timestamp
 
 
+# --------------------------------------------------------------------------- #
+# Enum of topics
+# --------------------------------------------------------------------------- #
 @unique
 class LOG_TOPIC(Enum):
     """Pre-defined logger namespaces (extend as needed)."""
@@ -49,7 +51,7 @@ class LOG_TOPIC(Enum):
     SCHEDULE_GENERATION = "ScheduleGenerationLogger"
     GENERAL = "GeneralLogger"
 
-    def __str__(self) -> str:  # for nice `str(LOG_TOPIC.SCHEDULE_GENERATION)`
+    def __str__(self) -> str:
         return self.value
 
 
@@ -57,21 +59,20 @@ class LOG_TOPIC(Enum):
 # Exceptions
 # --------------------------------------------------------------------------- #
 class LogConfigurationError(RuntimeError):
-    """Raised when a logger cannot be configured as requested."""
+    """Raised when the logger can’t be configured as requested."""
 
 
 # --------------------------------------------------------------------------- #
 # Core helpers
 # --------------------------------------------------------------------------- #
 def _build_handler(*, log_file: Path | None, fmt: str, mode: str) -> logging.Handler:
-    """Return a `FileHandler` or `StreamHandler` with the given formatter."""
     formatter = logging.Formatter(fmt, datefmt=ISO_TIME_FMT)
     if log_file:
         try:
             handler: logging.Handler = logging.FileHandler(
                 log_file, mode=mode, encoding="utf-8"
             )
-        except OSError as exc:  # e.g. permission denied
+        except OSError as exc:  # permission denied, etc.
             msg = f"Cannot open log file '{log_file}': {exc}"
             raise LogConfigurationError(msg) from exc
     else:
@@ -80,6 +81,9 @@ def _build_handler(*, log_file: Path | None, fmt: str, mode: str) -> logging.Han
     return handler
 
 
+# --------------------------------------------------------------------------- #
+# Public factory helpers
+# --------------------------------------------------------------------------- #
 def create_logger(
     name: str | LOG_TOPIC,
     *,
@@ -90,53 +94,30 @@ def create_logger(
 ) -> logging.Logger:
     """
     Build (or fetch) a configured logger.
-
-    Parameters
-    ----------
-    name:
-        Logger name or `LOG_TOPIC` enum value.
-    log_file:
-        Full path to log file.  If omitted, logs stream to stdout/stderr.
-    level:
-        Logging level (int or `"DEBUG"`, `"INFO"`, …).
-    fmt:
-        Format string for the log records.
-    mode:
-        File mode when using a file handler.
-
-    Returns
-    -------
-    logging.Logger
-
     """
     logger_name = str(name) if not isinstance(name, str) else name
-    logger = logging.getLogger(logger_name)
+    lg = logging.getLogger(logger_name)
 
-    # Avoid duplicated handlers in interactive contexts / tests
-    if not logger.handlers:
-        logger.setLevel(
-            level if isinstance(level, int) else logging.getLevelName(level)
-        )
-        logger.propagate = False  # don’t bubble to root
+    if not lg.handlers:  # avoid duplicate handlers
+        lg.setLevel(level if isinstance(level, int) else logging.getLevelName(level))
+        lg.propagate = False
+        lg.addHandler(_build_handler(log_file=log_file, fmt=fmt, mode=mode))
 
-        handler = _build_handler(log_file=log_file, fmt=fmt, mode=mode)
-        logger.addHandler(handler)
-
-    return logger
+    return lg
 
 
 def instantiate_logger(
-    topic: LOG_TOPIC, *, level: int | str = logging.INFO
+    topic: LOG_TOPIC, level: int | str = logging.INFO
 ) -> logging.Logger:
     """
-    Convenience helper – always writes to a timestamped file in ``LOGS_DIR``.
+    Convenience helper – writes to a timestamped file in ``LOGS_DIR``.
     """
-    file_path = LOGS_DIR / f"{_TS}_{topic.name.lower()}.log"
+    file_path = LOGS_DIR / f"{_TS}_{str(topic).lower()}.log"
     return create_logger(topic, log_file=file_path, level=level)
 
 
 # --------------------------------------------------------------------------- #
-# Eagerly create a general-purpose logger so modules can ``from utils.logger import logger``.
+# Console-only general logger (no file output)
 # --------------------------------------------------------------------------- #
-logger: logging.Logger = instantiate_logger(LOG_TOPIC.GENERAL)
+logger: logging.Logger = create_logger(LOG_TOPIC.GENERAL)
 logger.debug("Logging subsystem initialised.")

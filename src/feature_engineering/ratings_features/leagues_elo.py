@@ -14,7 +14,7 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
-from utils.logger import instantiate_conf_logger, logger
+from utils.logger import instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
     LEAGUE_ELO,
@@ -25,7 +25,7 @@ from utils.paths import (
 # Load considered leagues configuration
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 CROSS_LEAGUE_COMPETITIONS = set(considered_leagues_config["cross_league_competitions"])
-data_pipeline_logger = instantiate_conf_logger("data_pipeline")
+data_pipeline_logger = instantiate_logger("data_pipeline")
 
 
 def preprocess_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:

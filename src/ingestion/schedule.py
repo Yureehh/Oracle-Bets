@@ -22,12 +22,12 @@ from dotenv import load_dotenv
 # --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
-from utils.logger import instantiate_conf_logger  # your helper
+from utils.logger import instantiate_logger  # your helper
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-schedule_logger = instantiate_conf_logger("schedule_generation")
+schedule_logger = instantiate_logger("schedule_generation")
 
 # --------------------------------------------------------------------------- #
 # Exceptions
