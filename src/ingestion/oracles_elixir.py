@@ -25,7 +25,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from utils.io_utils import get_sorting_keys, json_loader
-from utils.logger import instantiate_logger, logger
+from utils.logger import LOG_TOPIC, instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
     IMPORT_COLUMNS,
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 # Environment & logging
 # --------------------------------------------------------------------------- #
 load_dotenv()
-data_pipeline_logger = instantiate_logger("data_pipeline")
+data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 # --------------------------------------------------------------------------- #
 # Constants (names unchanged so imports elsewhere remain valid)
@@ -50,6 +50,10 @@ GAP_PLAYER: int = 5
 GAP_TEAM: int = 1
 ROWS_PER_GAME_PER_TEAM: int = 2
 NULL_REPLACEMENTS: list[str] = ["nan", "null", "unknown", "Unknown", "N/A"]
+
+
+class OraclesElixirError(RuntimeError):
+    """Base class for all Oracle Elixir ingestion errors."""
 
 
 # --------------------------------------------------------------------------- #
@@ -161,11 +165,11 @@ class OraclesElixir:
     def remove_null_games(oracles_elixir_data: pd.DataFrame) -> pd.DataFrame:
         """
         Remove rows with null 'gameid' values.
-        Raises ValueError if 'gameid' column is missing.
+        Raises OraclesElixirError if 'gameid' column is missing.
         """
         if "gameid" not in oracles_elixir_data.columns:
             msg = "The dataframe does not contain the 'gameid' column."
-            raise ValueError(msg)
+            raise OraclesElixirError(msg)
         before = len(oracles_elixir_data)
         cleaned = oracles_elixir_data.dropna(subset=["gameid"])
         logger.info("Removed %s rows with null 'gameid'.", before - len(cleaned))
@@ -178,11 +182,11 @@ class OraclesElixir:
     def drop_unknown_entities(oracles_elixir_data: pd.DataFrame) -> pd.DataFrame:
         """
         Remove rows with 'unknown player' or 'unknown team' in 'playername' or 'teamname'.
-        Raises ValueError if 'playername' or 'teamname' columns are missing.
+        Raises OraclesElixirError if 'playername' or 'teamname' columns are missing.
         """
         if not {"playername", "teamname"} <= set(oracles_elixir_data.columns):
             msg = "Missing 'playername' or 'teamname' in dataframe."
-            raise ValueError(msg)
+            raise OraclesElixirError(msg)
         before = len(oracles_elixir_data)
         mask = ~oracles_elixir_data["playername"].fillna("").str.lower().eq(
             "unknown player"
@@ -245,11 +249,11 @@ class OraclesElixir:
     def sort_data(oracles_elixir_data: pd.DataFrame, split_on: str) -> pd.DataFrame:
         """
         Sort the DataFrame by the specified *split_on* key.
-        Raises ValueError if *split_on* is not 'player' or 'team'.
+        Raises OraclesElixirError if *split_on* is not 'player' or 'team'.
         """
         if split_on not in {"player", "team"}:
             msg = "split_on must be either 'player' or 'team'."
-            raise ValueError(msg)
+            raise OraclesElixirError(msg)
         keys = get_sorting_keys(split_on)
         df = oracles_elixir_data.sort_values(keys).reset_index(drop=True)
         logger.info("Sorted data by %s.", keys)
@@ -260,7 +264,7 @@ class OraclesElixir:
     def fill_null_team_ids(oracles_elixir_data: pd.DataFrame) -> pd.DataFrame:
         """
         Fill null 'teamid' values with 'teamname' where possible.
-        Raises ValueError if 'teamid' or 'teamname' columns are missing.
+        Raises OraclesElixirError if 'teamid' or 'teamname' columns are missing.
         """
         df = oracles_elixir_data.copy()
         df["teamname"] = df["teamname"].astype(str).fillna("")
@@ -274,7 +278,7 @@ class OraclesElixir:
     def fill_null_patch_value(oracles_elixir_data: pd.DataFrame) -> pd.DataFrame:
         """
         Fill null 'patch' values with the previous value in the column.
-        Raises ValueError if 'patch' column is missing.
+        Raises OraclesElixirError if 'patch' column is missing.
         """
         oracles_elixir_data["patch"] = oracles_elixir_data["patch"].ffill()
         logger.info("Filled null patch values with previous value.")
@@ -289,14 +293,14 @@ class OraclesElixir:
     ) -> pd.DataFrame:
         """
         Subset the DataFrame to only include relevant columns based on *split_on*.
-        Raises ValueError if *split_on* is not 'player' or 'team'.
+        Raises OraclesElixirError if *split_on* is not 'player' or 'team'.
         """
         try:
             with Path(IMPORT_COLUMNS).open(encoding="utf-8") as f:
                 columns = json.load(f)
             if split_on not in columns:
                 msg = "Must split on either 'player' or 'team'."
-                raise ValueError(msg)
+                raise OraclesElixirError(msg)
         except FileNotFoundError:
             logger.error("Import columns file not found at %s.", IMPORT_COLUMNS)
             raise
@@ -313,7 +317,7 @@ class OraclesElixir:
 
         if "position" not in df.columns:
             msg = "The dataframe does not contain the 'position' column."
-            raise ValueError(msg)
+            raise OraclesElixirError(msg)
         df["position"] = df["position"].fillna("")
 
         pos_filter = (
@@ -331,7 +335,7 @@ class OraclesElixir:
     ) -> pd.DataFrame:
         """
         Remove games with inconsistent 'gameid' counts based on *split_on*.
-        Raises ValueError if *split_on* is not 'player' or 'team'.
+        Raises OraclesElixirError if *split_on* is not 'player' or 'team'.
         """
         expected = 2 if split_on.lower() == "team" else 10
         bad_ids = (
@@ -347,7 +351,7 @@ class OraclesElixir:
     ) -> pd.DataFrame:
         """
         Enrich the DataFrame with opponent metrics based on *split_on*.
-        Raises ValueError if *split_on* is not 'player' or 'team'.
+        Raises OraclesElixirError if *split_on* is not 'player' or 'team'.
         """
         metrics: dict[str, Any] = {
             "teamid": oracles_elixir_data["teamid"].fillna(
@@ -396,7 +400,7 @@ class OraclesElixir:
             raise
         if not considered:
             msg = "No leagues specified in the considered leagues list."
-            raise ValueError(msg)
+            raise OraclesElixirError(msg)
         return oracles_elixir_data[oracles_elixir_data["league"].isin(considered)]
 
     # --------------------------------------------------------------------- #
@@ -407,7 +411,7 @@ class OraclesElixir:
     ) -> pd.DataFrame:
         """
         Clean the Oracle Elixir data according to the specified *split_on* key.
-        Raises ValueError if *split_on* is not 'player' or 'team'.
+        Raises OraclesElixirError if *split_on* is not 'player' or 'team'.
         """
         logger.info("Cleaning data for %ss...", split_on)
         data_pipeline_logger.info("Cleaning data for %ss...", split_on)
@@ -437,7 +441,7 @@ def get_opponent(column: pd.Series, entity: str) -> pd.Series:
     gap = gap_dict.get(entity)
     if gap is None:
         msg = "Entity must be either player or team."
-        raise ValueError(msg)
+        raise OraclesElixirError(msg)
 
     opposition: list[Any] = []
     flag = 0
@@ -448,6 +452,50 @@ def get_opponent(column: pd.Series, entity: str) -> pd.Series:
             opposition.append(column[i - gap])
         else:
             msg = f"Index {i} - Out Of Bounds"
-            raise ValueError(msg)
+            raise OraclesElixirError(msg)
         flag = (flag + 1) % (gap * 2)
     return pd.Series(opposition)
+
+
+def get_league_teams(parquet_path: str) -> dict:
+    """
+    Read the Parquet at `parquet_path` and return a dict mapping each league
+    to its list of unique team names.
+    """
+    df = pd.read_parquet(parquet_path)
+    return df.groupby("league")["teamname"].unique().apply(list).to_dict()
+
+
+def filter_teams_by_league(path1, path2, output_path):
+    # Read the considered leagues from the first JSON file
+    with open(path1) as f:
+        considered_leagues = json.load(f)["considered_leagues"]
+    # Read the teams by league from the second JSON file
+    with open(path2) as f:
+        teams_by_league = json.load(f)
+    # Filter the teams by league based on the considered leagues
+    filtered_teams = {
+        league: teams
+        for league, teams in teams_by_league.items()
+        if league in considered_leagues
+    }
+    # Write the filtered teams to a new JSON file
+    with open(output_path, "w") as f:
+        json.dump(filtered_teams, f, indent=4)
+
+
+if __name__ == "__main__":
+    raw_data_path = r"data\raw\raw_data.parquet"
+    cons_leagues_path = r"config\data_ingestion\considered_leagues.json"
+    team_by_league_path = r"config\data_ingestion\leagues_handling\teams_by_league.json"
+    filtered_teams_by_league_path = (
+        r"config\data_ingestion\leagues_handling\filtered_teams_by_league.json"
+    )
+
+    league_teams = get_league_teams(raw_data_path)
+    with Path(team_by_league_path).open("w") as f:
+        json.dump(league_teams, f, indent=4)
+
+    filter_teams_by_league(
+        cons_leagues_path, team_by_league_path, filtered_teams_by_league_path
+    )

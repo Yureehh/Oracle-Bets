@@ -46,13 +46,62 @@
     ],
     [
       {
-        "name": "Team Heretics",
-        "teamid": "oe:team:1285e1c04d54de96502f12da4d49458",
-        "until": "2023-01-01"
+        "name": "GnG Esports",
+        "teamid": "oe:team:4df6cdd02990bde40c808cf09796dd7"
       },
       {
-        "name": "Los Heretics",
-        "teamid": "oe:team:2dfc66b98002c5afad2a98dbf86e350"
+        "name": "GnG Amazigh",
+        "teamid": "oe:team:c9d247506c051256fff4babbcfcab82"
+      }
+    ],
+    [
+      {
+        "name": "MAGAZA",
+        "teamid": "oe:team:df01434cb64c250b577057dfe89e229"
+      },
+      {
+        "name": "Magaza Esports",
+        "teamid": "oe:team:8b7f6ca4d6c6251072fa4044da4d8b3"
+      }
+    ],
+    [
+      {
+        "name": "24 7 Tower Dive",
+        "teamid": ""
+      },
+      {
+        "name": "24/7 Tower Dive",
+        "teamid": "oe:team:76f3de935fdb45874ac6a85e9d65253"
+      }
+    ],
+    [
+      {
+        "name": "Partizan Esports",
+        "teamid": "oe:team:e42ade212c09777da0f54bffe481f6d"
+      },
+      {
+        "name": "Partizan Sangal",
+        "teamid": "oe:team:a66e91a2f91dd5b797328cdebf35039"
+      }
+    ],
+    [
+      {
+        "name": "Fluxo",
+        "teamid": "oe:team:ca3882dbcefa68eac0892e3218080db"
+      },
+      {
+        "name": "Fluxo W7M",
+        "teamid": "oe:team:45c362a0cfc4b81f597b5ab89250df5"
+      }
+    ],
+    [
+      {
+        "name": "SINNERS Esports",
+        "teamid": "oe:team:9a3327bd6c9a07e61350e24d97419fa"
+      },
+      {
+        "name": "SINS Esports",
+        "teamid": "oe:team:a288f7a515a6cc02f21acdb9b593cf2"
       }
     ]
   ]
