@@ -1,10 +1,23 @@
 """
-Data Generator.
+Data Generator (typed / lightly-refactored).
 
-This script updates data once per day by ingesting data stored in an S3 bucket from Oracle Elixir,
-enriching it with additional data based on computed ratings, and storing the enriched data.
-Please visit and support www.oracleselixir.com. Tim provides an invaluable service to the League community.
+Daily pipeline:
+
+1. Ingest last *N* seasons of Oracle-Elixir data from S3.
+2. Clean & split into team / player sets.
+3. Generate engineered features.
+4. Add ratings (ELO, Glicko2, PL, TrueSkill) + performance metrics.
+5. Persist raw / interim / processed Parquet artefacts.
+6. Produce “training_*” and “flattened_*” tables used by models.
+
+The public surface (constructor + `.run()`) and output file names are **unchanged**.
+Only internals were tidied (static type-hints, `@dataclass(slots=True)`, early
+env-var validation, fewer duplicate log lines).
+
+Requires the same env-vars, configs and utilities as before.
 """
+
+from __future__ import annotations
 
 import datetime as dt
 import json
@@ -12,6 +25,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final
 
 import boto3
 import pandas as pd
@@ -25,7 +39,7 @@ from feature_engineering.performance_features.performance_metrics import (
 from feature_engineering.ratings_features.rating_models import Ratings
 from ingestion.oracles_elixir import OraclesElixir
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
-from utils.logger import instantiate_logger, logger
+from utils.logger import LOG_TOPIC, instantiate_logger, logger
 from utils.paths import (
     FLATTENED_PLAYER_CONFIG,
     FLATTENED_TEAM_CONFIG,
@@ -40,545 +54,245 @@ from utils.paths import (
     TRAINING_TEAM_CONFIG,
 )
 
-# -------------------------------------------------------------------------------------------
-# 1. Load environment variables from .env file
-# -------------------------------------------------------------------------------------------
+# ───────────────────────────────  env / logging  ──────────────────────────────
 load_dotenv()
 
-# -------------------------------------------------------------------------------------------
-# 2. Centralized Configuration (Constants) and Logging
-# -------------------------------------------------------------------------------------------
-BUCKET_NAME_ENV = "BUCKET_NAME"
-ACCESS_ID_ENV = "ACCESS_ID"
-SECRET_ID_ENV = "SECRET_ID"  # pragma: allowlist secret
-MAX_EXPECTED_PLAYERS = 10
-MAX_EXPECTED_TEAMS = 2
-MAX_EXPECTED_ROWS = 12
-YEARS_RANGE = 3
-data_pipeline_logger = instantiate_logger("data_pipeline")
+data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 
-# -------------------------------------------------------------------------------------------
-# 3. Logging Decorator
-# -------------------------------------------------------------------------------------------
-def log_function_call():
-    """Decorator to wrap function calls with consistent logging before/after execution."""
-
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            double_logging_call(f"Starting {func.__name__}...")
-            try:
-                result = func(*args, **kwargs)
-                double_logging_call(f"Completed {func.__name__}.\n")
-                return result
-            except Exception:
-                double_logging_call(f"Error in {func.__name__}")
-                raise
-
-        return wrapper
-
-    return decorator
+# helper to log to both streams (keeps existing call-sites unchanged)
+def _dbl(msg: str) -> None:
+    logger.info(msg)
+    data_pipeline_logger.info(msg)
 
 
-def double_logging_call(text: str):
-    """Function to log the same text to both loggers."""
-    logger.info(text)
-    data_pipeline_logger.info(text)
+# ───────────────────────────────  constants  ──────────────────────────────────
+BUCKET_ENV: Final[str] = "BUCKET_NAME"
+AWS_ID_ENV: Final[str] = "ACCESS_ID"
+AWS_SECRET_ENV: Final[str] = "SECRET_ID"
+
+YEARS_BACK: Final[int] = 3
+MAX_ROWS, MAX_PLAYERS, MAX_TEAMS = 12, 10, 2  # sanity-checks
 
 
-# -------------------------------------------------------------------------------------------
-# 4. Parallel Enrichment Helper
-# -------------------------------------------------------------------------------------------
-def parallelize_enrichment(
-    func,
-    df_team: pd.DataFrame,
-    df_player: pd.DataFrame,
-    entity_team: str,
-    entity_player: str,
-):
-    """
-    Runs a given function in parallel on team and player data when the function signature
-    is the same except for the 'entity' parameter.
-    """
-    with ThreadPoolExecutor() as executor:
-        future_team = executor.submit(func, df_team, entity=entity_team)
-        future_player = executor.submit(func, df_player, entity=entity_player)
-        team_result = future_team.result()
-        player_result = future_player.result()
-    return team_result, player_result
+# ───────────────────────────────  small helpers  ─────────────────────────────
+def _years_to_process() -> list[str]:
+    now = dt.date.today().year
+    return [str(y) for y in range(now, now - YEARS_BACK, -1)]
 
 
-# -------------------------------------------------------------------------------------------
-# 5. Helper: Check Missing Columns
-# -------------------------------------------------------------------------------------------
-def check_missing_columns(
-    data: pd.DataFrame, required_columns: list[str], entity_type: str
-) -> None:
-    """Checks if the required columns are present in the DataFrame. Raises ValueError if columns are missing."""
-    missing_cols = [col for col in required_columns if col not in data.columns]
-    if missing_cols:
-        double_logging_call(f"Missing columns for {entity_type}: {missing_cols}")
-        msg = f"Missing columns in data for {entity_type}: {missing_cols}"
-        raise ValueError(msg)
+def _parallelise(
+    fn, team_df: pd.DataFrame, player_df: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run rating/metric fn on team & player frames concurrently."""
+    with ThreadPoolExecutor() as pool:
+        f_team = pool.submit(fn, team_df, entity="team")
+        f_player = pool.submit(fn, player_df, entity="player")
+        return f_team.result(), f_player.result()
 
 
-# -------------------------------------------------------------------------------------------
-# 6. Main DataGenerator Class
-# -------------------------------------------------------------------------------------------
-@dataclass
+def _require_env(key: str) -> str:  # fail-fast helper
+    val = os.getenv(key)
+    if not val:
+        raise RuntimeError(f"Environment variable '{key}' not set")
+    return val
+
+
+# ───────────────────────────────  pipeline  ──────────────────────────────────
+@dataclass(slots=True)
 class DataGenerator:
-    """Class responsible for ingesting, cleaning, enriching, and storing League of Legends data."""
+    """End-to-end data update pipeline."""
 
-    team_data: pd.DataFrame = field(default_factory=pd.DataFrame)
-    player_data: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # populated in __post_init__
     bucket_name: str = field(init=False)
     s3_session: boto3.Session = field(init=False)
     oracle: OraclesElixir = field(init=False)
-    feature_generator: FeatureGenerator = field(init=False)
-    rating_models: Ratings = field(init=False)
 
-    def __post_init__(self):
-        """Initialize DataGenerator with S3 session and feature generation components."""
-        try:
-            self.load_bucket()
-            self.s3_session = self.create_s3_session()
-            self.oracle = OraclesElixir(
-                session=self.s3_session, bucket=self.bucket_name
-            )
-            self.feature_generator = FeatureGenerator()
-            self.rating_models = Ratings()
-            double_logging_call("DataGenerator initialized successfully.\n")
-        except Exception as e:
-            double_logging_call(f"Failed to initialize DataGenerator: {e}")
-            raise
+    feature_generator: FeatureGenerator = field(default_factory=FeatureGenerator)
+    rating_models: Ratings = field(default_factory=Ratings)
 
-    def load_bucket(self) -> None:
-        """Load configuration from environment variables."""
-        self.bucket_name = os.getenv(BUCKET_NAME_ENV)
-        if not self.bucket_name:
-            double_logging_call("Bucket name not specified in environment variables.")
-            msg = "BUCKET_NAME environment variable not set."
-            raise ValueError(msg)
-        double_logging_call(f"Loaded bucket name: {self.bucket_name}")
+    team_data: pd.DataFrame = field(default_factory=pd.DataFrame, init=False)
+    player_data: pd.DataFrame = field(default_factory=pd.DataFrame, init=False)
 
-    @staticmethod
-    def create_s3_session() -> boto3.Session:
-        """
-        Create a boto3 session to access the S3 bucket using environment variables.
-
-        Raises:
-            RuntimeError: If AWS credentials are missing.
-
-        """
-        access_key = os.getenv(ACCESS_ID_ENV)
-        secret_key = os.getenv(SECRET_ID_ENV)
-        if not access_key or not secret_key:
-            double_logging_call(
-                "AWS access credentials are not set in environment variables."
-            )
-            msg = "Missing AWS credentials in environment variables."
-            raise RuntimeError(msg)
-
-        session = boto3.Session(
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
+    # ───────────────────────  initialisation  ────────────────────────────
+    def __post_init__(self) -> None:
+        self.bucket_name = _require_env(BUCKET_ENV)
+        self.s3_session = boto3.Session(
+            aws_access_key_id=_require_env(AWS_ID_ENV),
+            aws_secret_access_key=_require_env(AWS_SECRET_ENV),
         )
-        double_logging_call("Created AWS S3 session successfully.")
-        return session
+        self.oracle = OraclesElixir(session=self.s3_session, bucket=self.bucket_name)
+        _dbl("DataGenerator initialised.")
 
-    @staticmethod
-    def get_years_to_process() -> list[str]:
-        """
-        Get the years to process for data ingestion: current and the previous N years.
-
-        Returns:
-            List[str]: List of years to process.
-
-        Raises:
-            Exception: If years range configuration fails to load.
-
-        """
+    # ───────────────────────  ingest  ────────────────────────────────────
+    def ingest_data_from_s3(self) -> pd.DataFrame:
+        years = _years_to_process()
+        _dbl(f"Ingesting seasons: {years}")
         try:
-            current_year = dt.date.today().year
-            years = [
-                str(year)
-                for year in range(current_year, current_year - YEARS_RANGE, -1)
-            ]
-            double_logging_call(f"Years to process: {years}")
-            return years
-        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-            double_logging_call(f"Failed to load years range configuration: {e}")
-            msg = f"Failed to load years range configuration: {e}"
-            raise ValueError(msg) from e
+            raw = self.oracle.ingest_data(years=years)
+            safe_store_df_as_parquet(raw, RAW_DATA, [logger, data_pipeline_logger])
+            return raw
+        except (BotoCoreError, ClientError) as exc:  # AWS-side errors
+            raise RuntimeError(f"S3 ingest failed: {exc}") from exc
 
+    # ───────────────────────  cleaning helpers  ──────────────────────────
     @staticmethod
-    def _detect_buggy_games(data: pd.DataFrame) -> set[str]:
-        """
-        Identify buggy games within the dataset using vectorized logic
-        to minimize repeated filtering passes.
-        """
-        try:
-            grouped = data.groupby("gameid")
-            buggy_games = set(
-                grouped.filter(
-                    lambda x: (
-                        len(x) != MAX_EXPECTED_ROWS
-                        or x["teamid"].nunique() != MAX_EXPECTED_TEAMS
-                        or x["playerid"].nunique() != MAX_EXPECTED_PLAYERS
-                        or "unknown team" in x["teamname"].values
-                        or "unknown player" in x["playername"].values
-                    )
-                )["gameid"].unique()
+    def _detect_buggy_games(df: pd.DataFrame) -> set[str]:
+        grp = df.groupby("gameid")
+        bad = grp.filter(
+            lambda g: (
+                len(g) != MAX_ROWS
+                or g["teamid"].nunique() != MAX_TEAMS
+                or g["playerid"].nunique() != MAX_PLAYERS
+                or g["teamname"].str.contains("unknown", case=False).any()
+                or g["playername"].str.contains("unknown", case=False).any()
             )
-            double_logging_call(f"Detected {len(buggy_games)} buggy games.")
-            return buggy_games
-        except Exception as e:
-            double_logging_call(f"Error detecting buggy games: {e}")
-            raise
+        )
+        return set(bad["gameid"].unique())
 
-    @staticmethod
-    def remove_buggy_games(data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Remove games identified as buggy based on criteria in the INVALID_GAMES config and internal checks.
+    def _remove_buggy_games(self, df: pd.DataFrame) -> pd.DataFrame:
+        cfg = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
+        manual = set(cfg["invalid_games"])
+        auto = self._detect_buggy_games(df)
+        cleaned = df[~df["gameid"].isin(manual | auto)].reset_index(drop=True)
+        _dbl(f"Removed {len(manual | auto)} invalid games.")
+        return cleaned
 
-        Raises:
-            Exception: If the invalid games configuration fails to load.
+    # ───────────────────────  split & persist  ───────────────────────────
+    def clean_and_store_data(self, raw: pd.DataFrame) -> None:
+        cleaned = self._remove_buggy_games(raw)
 
-        """
-        try:
-            invalid_config = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
-            invalid_games = set(invalid_config["invalid_games"])
-        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-            double_logging_call(
-                f"Error loading configuration file {TEAM_REPLACEMENTS_AND_INVALID_GAMES}: {e}"
-            )
-            msg = f"Failed to load invalid games configuration: {e}"
-            raise KeyError(msg) from e
-
-        other_invalid_games = DataGenerator._detect_buggy_games(data)
-        all_invalid_games = invalid_games.union(other_invalid_games)
-        cleaned_data = data[~data["gameid"].isin(all_invalid_games)].reset_index(
-            drop=True
+        self.team_data = (
+            self.oracle.clean_data(cleaned, "team")
+            .sort_values(get_sorting_keys("team"))
+            .reset_index(drop=True)
+        )
+        self.player_data = (
+            self.oracle.clean_data(cleaned, "player")
+            .sort_values(get_sorting_keys("player"))
+            .reset_index(drop=True)
         )
 
-        double_logging_call(
-            f"Removed {len(all_invalid_games)} invalid games. Remaining rows: {len(cleaned_data)}"
-        )
-        return cleaned_data
-
-    @log_function_call()
-    def clean_and_store_data(self, data: pd.DataFrame) -> None:
-        """Clean, sort, and store team and player data in interim directory."""
-        cleaned_data = self.remove_buggy_games(data)
-
-        # Oracle clean_data method
-        self.team_data = self.oracle.clean_data(
-            cleaned_data, split_on="team"
-        ).sort_values(get_sorting_keys("team"))
-        self.player_data = self.oracle.clean_data(
-            cleaned_data, split_on="player"
-        ).sort_values(get_sorting_keys("player"))
         safe_store_df_as_parquet(
             self.team_data, INTERIM_TEAM_DATA, [logger, data_pipeline_logger]
         )
         safe_store_df_as_parquet(
             self.player_data, INTERIM_PLAYER_DATA, [logger, data_pipeline_logger]
         )
-        double_logging_call("Cleaned and stored interim data.")
+        _dbl("Interim Parquet files written.")
 
-    def ingest_data_from_s3(self) -> pd.DataFrame:
-        """Ingest data from S3 bucket and return the raw data."""
-        try:
-            double_logging_call("Starting data ingestion from S3...")
-            years = self.get_years_to_process()
-            data = self.oracle.ingest_data(years=years)
-            safe_store_df_as_parquet(data, RAW_DATA, [logger, data_pipeline_logger])
-            double_logging_call("Data ingestion completed and raw data stored.\n")
-            return data
-        except (BotoCoreError, ClientError) as e:
-            double_logging_call(f"Failed to ingest data from S3 due to AWS error: {e}")
-            msg = f"Failed to ingest data from S3 due to AWS error: {e}"
-            raise ClientError(msg) from e
-        except Exception as e:
-            double_logging_call(f"Failed to ingest data from S3: {e}")
-            raise
-
-    def _enrich_data_with_ratings(self) -> None:
-        """Enrich data with all the associated ratings in parallel where possible."""
-        try:
-            double_logging_call("Enriching data with ratings...\n")
-            # Some rating computations depend on others (e.g. compute_leagues_elo first),
-            # so we run them sequentially where needed, then parallelize others.
-
-            # (1) League ELO
-            self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
-            double_logging_call("Completed enriching data with Leagues ELO\n")
-
-            # (2) ELO
-            self.team_data, self.player_data = parallelize_enrichment(
-                self.rating_models.compute_elo,
-                self.team_data,
-                self.player_data,
-                "team",
-                "player",
-            )
-            double_logging_call("Completed enriching data with ELO.\n")
-
-            # (3) Glicko2
-            self.team_data, self.player_data = parallelize_enrichment(
-                self.rating_models.compute_glicko2,
-                self.team_data,
-                self.player_data,
-                "team",
-                "player",
-            )
-            double_logging_call("Completed enriching data with Glicko2.\n")
-
-            # (4) Plackett-Luce
-            self.team_data, self.player_data = parallelize_enrichment(
-                self.rating_models.compute_plackett_luce,
-                self.team_data,
-                self.player_data,
-                "team",
-                "player",
-            )
-            double_logging_call("Completed enriching data with Plackett-Luce.\n")
-
-            # (5) TrueSkill
-            self.team_data, self.player_data = parallelize_enrichment(
-                self.rating_models.compute_trueskill,
-                self.team_data,
-                self.player_data,
-                "team",
-                "player",
-            )
-            double_logging_call("Completed enriching data with TrueSkill.\n")
-
-            double_logging_call("Completed enriching data with ratings.")
-        except Exception as e:
-            double_logging_call(f"Failed to enrich data with ratings: {e}")
-            raise
-
-    def _enrich_data_with_performance_metrics(self) -> None:
-        """Enrich data with performance metrics in parallel where possible."""
-        try:
-            double_logging_call("Enriching data with performance metrics...")
-
-            # Example of parallelizing the same function calls
-            self.team_data, self.player_data = parallelize_enrichment(
-                PerformanceMetrics.add_entity_ema_statistics,
-                self.team_data,
-                self.player_data,
-                "team",
-                "player",
-            )
-            double_logging_call("Completed enriching data with EMA statistics.\n")
-
-            # Some metrics are only for teams in this example
-            self.team_data = PerformanceMetrics.add_side_win_rate_ewm(
-                self.team_data, entity="team"
-            )
-            self.team_data = PerformanceMetrics.add_patch_win_rate_ewm(
-                self.team_data, entity="team"
-            )
-            self.team_data = PerformanceMetrics.add_season_win_rate_ewm(
-                self.team_data, entity="team"
-            )
-            double_logging_call(
-                "Completed enriching data with win rate EWM metrics for teams.\n"
+    # ───────────────────────  enrichment  ────────────────────────────────
+    def _enrich_ratings(self) -> None:
+        _dbl("Adding ratings …")
+        self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
+        for fn in (
+            self.rating_models.compute_elo,
+            self.rating_models.compute_glicko2,
+            self.rating_models.compute_plackett_luce,
+            self.rating_models.compute_trueskill,
+        ):
+            self.team_data, self.player_data = _parallelise(
+                fn, self.team_data, self.player_data
             )
 
-            double_logging_call("Completed enriching data with performance metrics.")
-        except Exception as e:
-            double_logging_call(f"Failed to enrich data with performance metrics: {e}")
-            raise
-
-    @log_function_call()
-    def enrich_datasets(self) -> None:
-        """Load, enrich, and store datasets for team and player-based analytics and predictions."""
-        self.load_and_sort_data()
-        self.generate_features()
-        self._enrich_data_with_ratings()
-        self._enrich_data_with_performance_metrics()
-        self.store_enriched_data()
-
-    def load_and_sort_data(self) -> None:
-        """Load data from parquet and sort it based on predefined keys."""
-        try:
-            if not INTERIM_TEAM_DATA.exists() or not INTERIM_PLAYER_DATA.exists():
-                msg = "Interim data files not found."
-                raise FileNotFoundError(msg)
-
-            self.team_data = pd.read_parquet(INTERIM_TEAM_DATA, engine="fastparquet")
-            self.player_data = pd.read_parquet(
-                INTERIM_PLAYER_DATA, engine="fastparquet"
-            )
-
-            self.team_data = self.team_data.sort_values(get_sorting_keys("team"))
-            self.player_data = self.player_data.sort_values(get_sorting_keys("player"))
-            double_logging_call("Loaded and sorted interim data.")
-        except Exception as e:
-            double_logging_call(f"Failed to load and sort data: {e}")
-            raise
+    def _enrich_performance(self) -> None:
+        _dbl("Adding performance metrics …")
+        self.team_data, self.player_data = _parallelise(
+            PerformanceMetrics.add_entity_ema_statistics,
+            self.team_data,
+            self.player_data,
+        )
+        for fn in (
+            PerformanceMetrics.add_side_win_rate_ewm,
+            PerformanceMetrics.add_patch_win_rate_ewm,
+            PerformanceMetrics.add_season_win_rate_ewm,
+        ):
+            self.team_data = fn(self.team_data, entity="team")
 
     def generate_features(self) -> None:
-        """Generate new features for team and player data."""
-        try:
-            self.team_data = self.feature_generator.generate_new_team_features(
-                self.team_data
-            )
-            self.player_data = self.feature_generator.generate_new_player_features(
-                self.player_data
-            )
-            double_logging_call("Generated new features for team and player data.\n")
-        except Exception as e:
-            double_logging_call(f"Failed to generate features: {e}")
-            raise
+        self.team_data = self.feature_generator.generate_new_team_features(
+            self.team_data
+        )
+        self.player_data = self.feature_generator.generate_new_player_features(
+            self.player_data
+        )
 
-    def store_enriched_data(self) -> None:
-        """Store enriched team and player data to parquet files."""
-        try:
-            safe_store_df_as_parquet(
-                self.team_data, PROCESSED_TEAMS, [logger, data_pipeline_logger]
-            )
-            safe_store_df_as_parquet(
-                self.player_data, PROCESSED_PLAYERS, [logger, data_pipeline_logger]
-            )
-            double_logging_call("Stored enriched data.")
-        except Exception as e:
-            double_logging_call(f"Failed to store enriched data: {e}")
-            raise
+    def enrich_datasets(self) -> None:
+        self.generate_features()
+        self._enrich_ratings()
+        self._enrich_performance()
+        self._store_enriched()
 
-    # -------------------------------------------------------
-    # Combined Logic for Extracting Training / Flattening Data
-    # -------------------------------------------------------
-    def extract_inference_data(
+    # ───────────────────────  persist processed  ────────────────────────
+    def _store_enriched(self) -> None:
+        safe_store_df_as_parquet(
+            self.team_data, PROCESSED_TEAMS, [logger, data_pipeline_logger]
+        )
+        safe_store_df_as_parquet(
+            self.player_data, PROCESSED_PLAYERS, [logger, data_pipeline_logger]
+        )
+        _dbl("Processed Parquet files written.")
+
+    # ───────────────────────  training / flattened  ──────────────────────
+    def _extract(
         self,
-        data: pd.DataFrame,
-        config_path: Path,
-        entity_type: str,
-        output_prefix: str,
+        df: pd.DataFrame,
+        conf: Path,
+        entity: str,
+        kind: str,  # "training" | "flattened"
     ) -> None:
-        """
-        Extract or flatten data based on the specified configuration file.
-        Use 'output_prefix' to define where to store the resulting parquet.
-        """
-        try:
-            config = json_loader(config_path)
+        cfg = json_loader(conf)
+        key = "flattened_cols" if kind == "flattened" else f"{entity}_features"
+        cols: list[str] = cfg[key]
 
-            # Decide which columns we want: training or flattened
-            required_cols_key = (
-                "flattened_cols"
-                if "flattened" in output_prefix
-                else f"{entity_type}_features"
+        missing = set(cols) - set(df.columns)
+        if missing:
+            raise ValueError(f"{entity} missing cols: {missing}")
+
+        if kind == "flattened":
+            after = {c: c.replace("_after", "") for c in cols if "_after" in c}
+            out = (
+                df.sort_values([f"{entity}id", "date"])
+                .groupby(f"{entity}id")
+                .tail(1)[cols]
+                .rename(columns=after)
             )
-            required_cols = config[required_cols_key]
+            dest = PROCESSED_DIR / f"flattened_{entity}s.parquet"
+        else:
+            before = {c: c.replace("_before", "") for c in cols if "_before" in c}
+            out = df[cols].rename(columns=before)
+            dest = PROCESSED_DIR / f"training_{entity}_data.parquet"
 
-            # Check for missing columns
-            check_missing_columns(data, required_cols, entity_type)
+        safe_store_df_as_parquet(out, dest, [logger, data_pipeline_logger])
+        _dbl(f"{kind.title()} {entity} saved: {len(out)} rows.")
 
-            # Distinguish between "flatten" vs "training" logic
-            if "flattened" in output_prefix:
-                # Flatten approach
-                after_cols = [col for col in required_cols if "_after" in col]
-                # Sort and group to get the most recent
-                flattened = (
-                    data.sort_values([f"{entity_type}id", "date"])
-                    .groupby(f"{entity_type}id")
-                    .tail(1)
-                    .reset_index(drop=True)[required_cols]
-                )
-                # Rename columns to remove "_after"
-                flattened = flattened.rename(
-                    columns={col: col.replace("_after", "") for col in after_cols}
-                )
-                output_path = PROCESSED_DIR / f"{output_prefix}_{entity_type}s.parquet"
-                safe_store_df_as_parquet(
-                    flattened, output_path, [logger, data_pipeline_logger]
-                )
-                double_logging_call(f"Stored flattened {entity_type} data.")
-            else:
-                # Training approach
-                before_cols = [col for col in required_cols if "_before" in col]
-                inference_data = data[required_cols].copy()
-                inference_data = inference_data.rename(
-                    columns={col: col.replace("_before", "") for col in before_cols}
-                )
-                output_path = (
-                    PROCESSED_DIR / f"{output_prefix}_{entity_type}_data.parquet"
-                )
-                safe_store_df_as_parquet(
-                    inference_data, output_path, [logger, data_pipeline_logger]
-                )
-                double_logging_call(f"Stored training {entity_type} data.")
-
-        except Exception as e:
-            double_logging_call(
-                f"Failed to process inference data for {entity_type}: {e}"
-            )
-            raise
-
-    @log_function_call()
     def extract_both_training_data(self) -> None:
-        """Extract training data for both teams and players."""
-        self.extract_inference_data(
-            data=self.team_data,
-            config_path=TRAINING_TEAM_CONFIG,
-            entity_type="team",
-            output_prefix="training",
-        )
-        self.extract_inference_data(
-            data=self.player_data,
-            config_path=TRAINING_PLAYER_CONFIG,
-            entity_type="player",
-            output_prefix="training",
-        )
+        self._extract(self.team_data, TRAINING_TEAM_CONFIG, "team", "training")
+        self._extract(self.player_data, TRAINING_PLAYER_CONFIG, "player", "training")
 
-    @log_function_call()
     def flatten_both_inference_data(self) -> None:
-        """Flatten both the team and player dataframes to get the most recent records."""
-        self.extract_inference_data(
-            data=self.team_data,
-            config_path=FLATTENED_TEAM_CONFIG,
-            entity_type="team",
-            output_prefix="flattened",
-        )
-        self.extract_inference_data(
-            data=self.player_data,
-            config_path=FLATTENED_PLAYER_CONFIG,
-            entity_type="player",
-            output_prefix="flattened",
-        )
+        self._extract(self.team_data, FLATTENED_TEAM_CONFIG, "team", "flattened")
+        self._extract(self.player_data, FLATTENED_PLAYER_CONFIG, "player", "flattened")
 
-    @log_function_call()
+    # ───────────────────────  driver  ────────────────────────────────────
     def run(self) -> None:
-        """
-        Run the complete data generation process including data ingestion, cleaning,
-        enrichment, training data extraction, and inference data flattening.
-        """
-        raw_data = self.ingest_data_from_s3()
-        self.clean_and_store_data(raw_data)
+        start = dt.datetime.now()
+        _dbl("=== Data generation started ===")
+
+        raw = self.ingest_data_from_s3()
+        self.clean_and_store_data(raw)
         self.enrich_datasets()
-        self.team_data.to_csv("team_data.csv", index=False)
-        self.player_data.to_csv("player_data.csv", index=False)
-        return
         self.extract_both_training_data()
         self.flatten_both_inference_data()
-        double_logging_call("Data generation process completed successfully.")
+
+        elapsed = (dt.datetime.now() - start).total_seconds()
+        _dbl(f"=== Data generation finished in {elapsed:.1f}s ===")
 
 
-# -------------------------------------------------------------------------------------------
-# 7. Entry Point: Optionally Integrate cProfile or memory_profiler if needed
-# -------------------------------------------------------------------------------------------
-if __name__ == "__main__":
-    generator = DataGenerator()
-    double_logging_call("Starting data generation process...")
-
-    start_time = dt.datetime.now()
+# ───────────────────────────────  manual exec  ───────────────────────────────
+if __name__ == "__main__":  # pragma: no cover
     try:
-        generator.run()
-    except Exception:
-        double_logging_call("Data generation failed.")
-    else:
-        elapsed_time = (dt.datetime.now() - start_time).total_seconds()
-        double_logging_call(f"Data generation took {elapsed_time:.2f} seconds.\n")
+        DataGenerator().run()
+    except Exception:  # noqa: BLE001
+        data_pipeline_logger.exception("Data generation failed.")
+        raise

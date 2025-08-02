@@ -575,7 +575,7 @@ class MatchPredictor:
         numeric_cols = player_data.select_dtypes(include=["number"]).columns
         non_numeric_cols = player_data.columns.difference(numeric_cols)
 
-        agg_funcs = {col: "mean" for col in numeric_cols}
+        agg_funcs = dict.fromkeys(numeric_cols, "mean")
         agg_funcs.update(
             {
                 col: "first"

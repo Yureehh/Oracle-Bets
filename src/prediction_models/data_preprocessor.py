@@ -89,7 +89,7 @@ class DataPreprocessor:
                 "position"
             )  # Exclude 'position' from non-numeric columns
 
-        agg_funcs = {col: "mean" for col in numeric_cols}
+        agg_funcs = dict.fromkeys(numeric_cols, "mean")
         agg_funcs.update(
             {col: "first" for col in non_numeric_cols if col != "position"}
         )
