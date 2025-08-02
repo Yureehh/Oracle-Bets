@@ -46,6 +46,9 @@ data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 # --------------------------------------------------------------------------- #
 # Constants (names unchanged so imports elsewhere remain valid)
 # --------------------------------------------------------------------------- #
+ROWS_PER_GAME_FULL: int = 12  # 10 players + 2 team rows
+UNIQUE_PLAYERS_PER_GAME: int = 10
+UNIQUE_TEAMS_PER_GAME: int = 2
 GAP_PLAYER: int = 5
 GAP_TEAM: int = 1
 ROWS_PER_GAME_PER_TEAM: int = 2
@@ -284,6 +287,62 @@ class OraclesElixir:
         logger.info("Filled null patch values with previous value.")
         data_pipeline_logger.info("Filled null patch values with previous value.")
         return oracles_elixir_data
+
+    # --------------------------------------------------------------------------- #
+    # Buggy-game detection (NEW)
+    # --------------------------------------------------------------------------- #
+    @staticmethod
+    def _detect_buggy_games(df: pd.DataFrame) -> set[str]:
+        """
+        Identify 'bad' gameids whose row-level composition is clearly wrong, e.g.
+        * missing rows
+        * wrong player / team counts
+        * 'unknown' placeholders sneaking through
+        """
+        grp = df.groupby("gameid")
+        bad_games = grp.filter(
+            lambda g: (
+                len(g) != ROWS_PER_GAME_FULL
+                or g["teamid"].nunique() != UNIQUE_TEAMS_PER_GAME
+                or g["playerid"].nunique() != UNIQUE_PLAYERS_PER_GAME
+                or g["teamname"].str.contains("unknown", case=False).any()
+                or g["playername"].str.contains("unknown", case=False).any()
+            )
+        )
+        return set(bad_games["gameid"].unique())
+
+    @classmethod
+    def _remove_buggy_games(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """Drop auto-detected AND manually listed bad games."""
+        auto = cls._detect_buggy_games(df)
+        try:
+            cfg = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
+            manual = set(cfg.get("invalid_games", []))
+        except FileNotFoundError:
+            manual = set()  # fail soft – log + carry on
+            logger.warning(
+                "%s not found – no manual invalid_games applied.",
+                TEAM_REPLACEMENTS_AND_INVALID_GAMES,
+            )
+
+        bad_games = auto | manual
+        if not bad_games:
+            return df  # fast path
+
+        cleaned = df[~df["gameid"].isin(bad_games)].reset_index(drop=True)
+        logger.info(
+            "Removed %d buggy games (%d auto, %d manual).",
+            len(bad_games),
+            len(auto),
+            len(manual),
+        )
+        data_pipeline_logger.info(
+            "Removed %d buggy games (%d auto, %d manual).",
+            len(bad_games),
+            len(auto),
+            len(manual),
+        )
+        return cleaned
 
     @staticmethod
     def subset_data(

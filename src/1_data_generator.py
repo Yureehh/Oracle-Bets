@@ -20,12 +20,10 @@ Requires the same env-vars, configs and utilities as before.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import boto3
 import pandas as pd
@@ -49,10 +47,12 @@ from utils.paths import (
     PROCESSED_PLAYERS,
     PROCESSED_TEAMS,
     RAW_DATA,
-    TEAM_REPLACEMENTS_AND_INVALID_GAMES,
     TRAINING_PLAYER_CONFIG,
     TRAINING_TEAM_CONFIG,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ───────────────────────────────  env / logging  ──────────────────────────────
 load_dotenv()
@@ -69,10 +69,9 @@ def _dbl(msg: str) -> None:
 # ───────────────────────────────  constants  ──────────────────────────────────
 BUCKET_ENV: Final[str] = "BUCKET_NAME"
 AWS_ID_ENV: Final[str] = "ACCESS_ID"
-AWS_SECRET_ENV: Final[str] = "SECRET_ID"
+AWS_SECRET_ENV: Final[str] = "SECRET_ID"  # noqa: S105
 
 YEARS_BACK: Final[int] = 3
-MAX_ROWS, MAX_PLAYERS, MAX_TEAMS = 12, 10, 2  # sanity-checks
 
 
 # ───────────────────────────────  small helpers  ─────────────────────────────
@@ -94,8 +93,13 @@ def _parallelise(
 def _require_env(key: str) -> str:  # fail-fast helper
     val = os.getenv(key)
     if not val:
-        raise RuntimeError(f"Environment variable '{key}' not set")
+        msg = f"Environment variable '{key}' not set"
+        raise RuntimeError(msg)
     return val
+
+
+class DataGeneratorError(RuntimeError):
+    """Custom error for DataGenerator exceptions."""
 
 
 # ───────────────────────────────  pipeline  ──────────────────────────────────
@@ -133,42 +137,19 @@ class DataGenerator:
             safe_store_df_as_parquet(raw, RAW_DATA, [logger, data_pipeline_logger])
             return raw
         except (BotoCoreError, ClientError) as exc:  # AWS-side errors
-            raise RuntimeError(f"S3 ingest failed: {exc}") from exc
-
-    # ───────────────────────  cleaning helpers  ──────────────────────────
-    @staticmethod
-    def _detect_buggy_games(df: pd.DataFrame) -> set[str]:
-        grp = df.groupby("gameid")
-        bad = grp.filter(
-            lambda g: (
-                len(g) != MAX_ROWS
-                or g["teamid"].nunique() != MAX_TEAMS
-                or g["playerid"].nunique() != MAX_PLAYERS
-                or g["teamname"].str.contains("unknown", case=False).any()
-                or g["playername"].str.contains("unknown", case=False).any()
-            )
-        )
-        return set(bad["gameid"].unique())
-
-    def _remove_buggy_games(self, df: pd.DataFrame) -> pd.DataFrame:
-        cfg = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
-        manual = set(cfg["invalid_games"])
-        auto = self._detect_buggy_games(df)
-        cleaned = df[~df["gameid"].isin(manual | auto)].reset_index(drop=True)
-        _dbl(f"Removed {len(manual | auto)} invalid games.")
-        return cleaned
+            msg = f"S3 ingest failed: {exc}"
+            raise RuntimeError(msg) from exc
 
     # ───────────────────────  split & persist  ───────────────────────────
     def clean_and_store_data(self, raw: pd.DataFrame) -> None:
-        cleaned = self._remove_buggy_games(raw)
-
+        # sourcery skip: class-extract-method
         self.team_data = (
-            self.oracle.clean_data(cleaned, "team")
+            self.oracle.clean_data(raw, "team")
             .sort_values(get_sorting_keys("team"))
             .reset_index(drop=True)
         )
         self.player_data = (
-            self.oracle.clean_data(cleaned, "player")
+            self.oracle.clean_data(raw, "player")
             .sort_values(get_sorting_keys("player"))
             .reset_index(drop=True)
         )
@@ -247,7 +228,8 @@ class DataGenerator:
 
         missing = set(cols) - set(df.columns)
         if missing:
-            raise ValueError(f"{entity} missing cols: {missing}")
+            msg = f"{entity} missing cols: {missing}"
+            raise ValueError(msg)
 
         if kind == "flattened":
             after = {c: c.replace("_after", "") for c in cols if "_after" in c}
@@ -281,6 +263,7 @@ class DataGenerator:
 
         raw = self.ingest_data_from_s3()
         self.clean_and_store_data(raw)
+        # MISSING
         self.enrich_datasets()
         self.extract_both_training_data()
         self.flatten_both_inference_data()
@@ -293,6 +276,6 @@ class DataGenerator:
 if __name__ == "__main__":  # pragma: no cover
     try:
         DataGenerator().run()
-    except Exception:  # noqa: BLE001
+    except DataGeneratorError:
         data_pipeline_logger.exception("Data generation failed.")
         raise
