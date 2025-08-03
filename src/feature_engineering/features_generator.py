@@ -4,6 +4,7 @@ Features Generator
 This script contains the `FeatureGenerator` class, which is used to generate new features for player and team data.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
@@ -331,135 +332,146 @@ class FeatureGenerator:
         return data
 
     @staticmethod
-    def generate_new_team_features(data: pd.DataFrame) -> pd.DataFrame:
+    def generate_new_team_features(
+        data: pd.DataFrame,
+        *,
+        recent_window: int = 5,
+        add_recent: bool = True,
+    ) -> pd.DataFrame:
         """
-        Generate new features for the given team data.
+        Enrich each team-game row with leak-free historical context **without**
+        the long-horizon team mean that would overweight old matches.
 
-        This function calculates additional statistics and prepares season data from patch numbers.
-
-        Args:
-            data (pd.DataFrame): The team data.
-
-        Returns:
-            pd.DataFrame: The team data with new features added.
-
+        Added columns
+        -------------
+        season
+        total_kills, total_towers
+        team_season_avg_gamelength
+        team_patch_avg_gamelength
+        (optional) team_recent{N}_avg_gamelength
+        patch_avg_gamelength
+        season_avg_gamelength
         """
-        logger.info("Generating new team features...")
-        data_pipeline_logger.info("Generating new team features...")
+        _check_required(
+            data,
+            required={
+                "date",
+                "patch",
+                "teamid",
+                "gameid",
+                "gamelength",
+                "kills",
+                "towers",
+            },
+        )
 
-        required_columns = {
-            "patch",
-            "kills",
-            "assists",
-            "deaths",
-            "towers",
-            "gamelength",
-            "gameid",
-            "result",
-            "teamid",
-        }
-        missing_columns = required_columns - set(data.columns)
-        if missing_columns:
-            logger.error(
-                f"Missing required columns for team feature generation: {missing_columns}"
-            )
-            data_pipeline_logger.error(
-                f"Missing required columns for team feature generation: {missing_columns}"
-            )
-            msg = f"Missing required columns: {missing_columns}"
-            raise ValueError(msg)
+        df = data.copy()
+        df["season"] = df["patch"].astype(str).str.split(".").str[0]
 
-        data = data.copy()  # Avoid modifying the original DataFrame
-
-        # Extract season from patch number
-        data["season"] = data["patch"].astype(str).str.split(".").str[0]
-
-        # Calculate KDA ratio, handling division by zero
-        data["kda"] = (data["kills"] + data["assists"]) / data["deaths"].replace(0, 1)
-
-        # Calculate total game kills and total tower kills
-        game_stats = (
-            data.groupby("gameid")
+        # ── Game-level context ───────────────────────────────────────────────
+        df = df.merge(
+            df.groupby("gameid", observed=True)
             .agg(total_kills=("kills", "sum"), total_towers=("towers", "sum"))
-            .reset_index()
+            .reset_index(),
+            on="gameid",
+            how="left",
         )
 
-        data = data.merge(game_stats, on="gameid", how="left")
+        # ── Team cumulative mean, reset each *season* and *patch* ────────────
+        for grp, pfx in (
+            (["teamid", "season"], "team_season_avg_"),
+            (["teamid", "patch"], "team_patch_avg_"),
+        ):
+            df = _add_expanding_mean(
+                df,
+                group_cols=list(grp),
+                value_cols=["gamelength"],
+                prefix=pfx,
+            )
 
-        logger.info("Starting game length features generation...")
-        data_pipeline_logger.info("Starting game length features generation...")
+        # ── Optional: recent-N rolling mean ───────────────────────────────────
+        if add_recent and recent_window > 0:
+            df = _add_rolling_mean(
+                df,
+                group_cols=["teamid"],
+                value_cols=["gamelength"],
+                prefix=f"team_recent{recent_window}_avg_",
+                window=recent_window,
+            )
 
-        # Calculate average game length per season and patch
-        season_avg_gamelength = (
-            data.groupby("season")["gamelength"].mean().reset_index()
+        # ── League-wide patch / season expanding means (deduped) ─────────────
+        game_level = (
+            df[["gameid", "date", "patch", "season", "gamelength"]]
+            .sort_values("date")
+            .drop_duplicates(subset="gameid", keep="first")
         )
-        season_avg_gamelength = season_avg_gamelength.rename(
-            columns={"gamelength": "season_avg_gamelength"}
-        )
-        data = data.merge(season_avg_gamelength, on="season", how="left")
 
-        patch_avg_gamelength = data.groupby("patch")["gamelength"].mean().reset_index()
-        patch_avg_gamelength = patch_avg_gamelength.rename(
-            columns={"gamelength": "patch_avg_gamelength"}
-        )
-        data = data.merge(patch_avg_gamelength, on="patch", how="left")
+        for gcol, pfx in (("patch", "patch_avg_"), ("season", "season_avg_")):
+            game_level = _add_expanding_mean(
+                game_level,
+                group_cols=[gcol],
+                value_cols=["gamelength"],
+                prefix=pfx,
+                sort_also_by=["date"],
+            )
 
-        # Compute team average game lengths by season
-        team_season_avg = (
-            data.groupby(["teamid", "season"])["gamelength"].mean().reset_index()
+        return df.merge(
+            game_level[["gameid", "patch_avg_gamelength", "season_avg_gamelength"]],
+            on="gameid",
+            how="left",
         )
-        team_season_avg = team_season_avg.rename(
-            columns={"gamelength": "team_season_avg_gamelength"}
-        )
-        data = data.merge(team_season_avg, on=["teamid", "season"], how="left")
 
-        # Compute team average game lengths by patch
-        team_patch_avg = (
-            data.groupby(["teamid", "patch"])["gamelength"].mean().reset_index()
-        )
-        team_patch_avg = team_patch_avg.rename(
-            columns={"gamelength": "team_patch_avg_gamelength"}
-        )
-        data = data.merge(team_patch_avg, on=["teamid", "patch"], how="left")
 
-        # Compute team average game lengths by season and result
-        team_season_result_avg = (
-            data.groupby(["teamid", "season", "result"])["gamelength"]
+# ────────────────────────────────────────────────────────────────────────────
+# Internal utilities
+# ────────────────────────────────────────────────────────────────────────────
+def _check_required(df: pd.DataFrame, *, required: Iterable[str]) -> None:
+    missing = set(required) - set(df.columns)
+    if missing:
+        msg = f"Missing required columns: {', '.join(sorted(missing))}"
+        logger.error(msg)
+        raise ValueError(msg)
+
+
+def _add_expanding_mean(
+    df: pd.DataFrame,
+    *,
+    group_cols: list[str],
+    value_cols: list[str],
+    prefix: str,
+    sort_also_by: list[str] | None = None,
+) -> pd.DataFrame:
+    sort_keys = list(group_cols) + (sort_also_by or [])
+    df = df.sort_values(sort_keys, kind="mergesort")
+
+    for col in value_cols:
+        grp = df.groupby(group_cols, observed=True)[col]
+        df[f"{prefix}{col}"] = (
+            grp.cumsum().shift().div(grp.cumcount().replace(0, np.nan))
+        )
+
+    return df
+
+
+def _add_rolling_mean(
+    df: pd.DataFrame,
+    *,
+    group_cols: list[str],
+    value_cols: list[str],
+    prefix: str,
+    window: int,
+) -> pd.DataFrame:
+    """Rolling mean of the *previous* `window` rows inside each group."""
+    df = df.sort_values([*group_cols, "date"], kind="mergesort")
+
+    for col in value_cols:
+        rolled = (
+            df.groupby(group_cols, observed=True)[col]
+            .shift()  # → leak-free
+            .rolling(window, min_periods=1)
             .mean()
-            .reset_index()
+            .reset_index(level=group_cols, drop=True)
         )
+        df[f"{prefix}{col}"] = rolled
 
-        # Separate win and loss stats for season
-        team_season_win = team_season_result_avg[team_season_result_avg["result"] == 1][
-            ["teamid", "season", "gamelength"]
-        ].rename(columns={"gamelength": "team_win_avg_season_gamelength"})
-        team_season_loss = team_season_result_avg[
-            team_season_result_avg["result"] == 0
-        ][["teamid", "season", "gamelength"]].rename(
-            columns={"gamelength": "team_lose_avg_season_gamelength"}
-        )
-
-        data = data.merge(team_season_win, on=["teamid", "season"], how="left")
-        data = data.merge(team_season_loss, on=["teamid", "season"], how="left")
-
-        # Compute team average game lengths by patch and result
-        team_patch_result_avg = (
-            data.groupby(["teamid", "patch", "result"])["gamelength"]
-            .mean()
-            .reset_index()
-        )
-
-        # Separate win and loss stats for patch
-        team_patch_win = team_patch_result_avg[team_patch_result_avg["result"] == 1][
-            ["teamid", "patch", "gamelength"]
-        ].rename(columns={"gamelength": "team_win_avg_patch_gamelength"})
-        team_patch_loss = team_patch_result_avg[team_patch_result_avg["result"] == 0][
-            ["teamid", "patch", "gamelength"]
-        ].rename(columns={"gamelength": "team_lose_avg_patch_gamelength"})
-
-        data = data.merge(team_patch_win, on=["teamid", "patch"], how="left")
-        data = data.merge(team_patch_loss, on=["teamid", "patch"], how="left")
-
-        logger.info("Team features generation completed.")
-        data_pipeline_logger.info("Team features generation completed.")
-        return data
+    return df
