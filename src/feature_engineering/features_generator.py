@@ -1,87 +1,44 @@
 """
 Features Generator
 
-This script contains the `FeatureGenerator` class, which is used to generate new features for player and team data.
+This script contains the `FeatureGenerator` class, which is used to generate
+new features for player and team data.
 """
 
-from collections.abc import Iterable
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from utils.logger import instantiate_logger, logger
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
 data_pipeline_logger = instantiate_logger("data_pipeline")
+
+# ────────────────────────────────────────────────────────────────────────────
+# Helpers/constants shared by multiple methods
+# ────────────────────────────────────────────────────────────────────────────
+_OPPOSITE_SIDE = {"Blue": "Red", "Red": "Blue"}  # quick side-flip
+
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class FeatureGenerator:
-    """A class to generate new features for player and team data."""
+    """Generate new features for player and team data."""
+
+    # ── 1. Key in-game opponent context ───────────────────────────────────
 
     @staticmethod
-    def compute_key_stats(data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Compute key statistics for the player data efficiently.
-
-        Args:
-            data (pd.DataFrame): The player data.
-
-        Returns:
-            pd.DataFrame: The player data with key statistics added.
-
-        """
-        logger.info("Computing key statistics...")
-        data_pipeline_logger.info("Computing key statistics...")
-        required_columns = {
-            "gameid",
-            "side",
-            "kills",
-            "assists",
-            "deaths",
-            "damagetochampions",
-            "damagetakenperminute",
-            "damagemitigatedperminute",
-            "gamelength",
-            "totalgold",
-            "total_cs",
-            "wpm",
-            "wcpm",
-        }
-        missing_columns = required_columns - set(data.columns)
-        if missing_columns:
-            logger.error(f"Missing required columns: {missing_columns}")
-            data_pipeline_logger.error(f"Missing required columns: {missing_columns}")
-            msg = f"Missing required columns: {missing_columns}"
-            raise ValueError(msg)
-
-        data = data.copy()
-        enemy_team_stats = FeatureGenerator._aggregate_enemy_team_stats(data)
-
-        data = data.merge(enemy_team_stats, on=["gameid", "side"], how="left")
-
-        data = FeatureGenerator._calculate_ratios(data)
-
-        logger.info("Key statistics computation completed.")
-        data_pipeline_logger.info("Key statistics computation completed.")
-        return data
-
-    @staticmethod
-    def _aggregate_enemy_team_stats(data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Aggregate enemy team statistics.
-
-        Args:
-            data (pd.DataFrame): The player data.
-
-        Returns:
-            pd.DataFrame: Aggregated enemy team statistics.
-
-        """
-        logger.info("Aggregating enemy team statistics...")
-        data_pipeline_logger.info("Aggregating enemy team statistics...")
-        enemy_team_stats = (
-            data.groupby(["gameid", "side"])
+    def _aggregate_enemy_team_stats(df: pd.DataFrame) -> pd.DataFrame:
+        """Return one row per (gameid, **opposite** side) with enemy totals."""
+        enemy = (
+            df.groupby(["gameid", "side"], observed=True)
             .agg(
                 enemyTeamKills=("kills", "sum"),
                 enemyTeamDeaths=("deaths", "sum"),
@@ -93,243 +50,178 @@ class FeatureGenerator:
             )
             .reset_index()
         )
-
-        side_mapping = {"Blue": "Red", "Red": "Blue"}
-        enemy_team_stats["side"] = enemy_team_stats["side"].map(side_mapping)
-
-        if enemy_team_stats["side"].isnull().any():
-            logger.error("Duplicate rows found after mapping side values.")
-            data_pipeline_logger.error(
-                "Duplicate rows found after mapping side values."
-            )
-            enemy_team_stats = enemy_team_stats.dropna(subset=["side"])
-
-        return enemy_team_stats
+        enemy["side"] = enemy["side"].map(_OPPOSITE_SIDE)  # flip to opponent
+        return enemy  # no duplicate rows
 
     @staticmethod
-    def _calculate_ratios(data: pd.DataFrame) -> pd.DataFrame:
+    def compute_key_stats(data: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculate various ratio features.
-
-        Args:
-            data (pd.DataFrame): The player data with enemy team statistics merged.
-
-        Returns:
-            pd.DataFrame: DataFrame with ratio features added.
-
+        Compute key statistics for each player in a game.
+        This includes aggregating enemy team stats and calculating ratios
+        such as kill/assist ratios, damage ratios, and gold ratios.
         """
-        logger.info("Calculating ratio features...")
-        data_pipeline_logger.info("Calculating ratio features...")
-        zero_columns = [
+        logger.info("Computing key statistics...")
+        _check_required(
+            data,
+            required={
+                "gameid",
+                "side",
+                "kills",
+                "assists",
+                "deaths",
+                "damagetochampions",
+                "damagetakenperminute",
+                "damagemitigatedperminute",
+                "gamelength",
+                "totalgold",
+                "total_cs",
+                "wpm",
+                "wcpm",
+            },
+        )
+
+        df = data.copy()
+        enemy = FeatureGenerator._aggregate_enemy_team_stats(df)
+        df = df.merge(enemy, on=["gameid", "side"], how="left")
+        df = FeatureGenerator._calculate_ratios(df)
+
+        data_pipeline_logger.info("Key statistics computation completed.")
+        return df
+
+    @staticmethod
+    def _calculate_ratios(df: pd.DataFrame) -> pd.DataFrame:
+        """Add efficiency / share ratios with safe divide-by-zero handling."""
+        denom_cols = [
             "enemyTeamKills",
             "enemyTeamDeaths",
             "enemyTeamDamages",
             "enemyTeamGolds",
             "enemyTeamWardPlaced",
         ]
-        data[zero_columns] = data[zero_columns].replace(0, np.nan)
+        df[denom_cols] = df[denom_cols].replace(0, np.nan)  # avoid /0
 
-        data["ka_ratio"] = (data["kills"] + data["assists"]) / (
-            data["enemyTeamKills"] + data["kills"] + data["assists"]
+        df["ka_ratio"] = np.divide(
+            df["kills"] + df["assists"],
+            df["enemyTeamKills"] + df["kills"] + df["assists"],
         )
-        data["d_ratio"] = data["deaths"] / data["enemyTeamDeaths"]
-        data["damages_ratio"] = data["damagetochampions"] / data["enemyTeamDamages"]
-        data["damage_tanked_ratio"] = (
-            data["damagetakenperminute"] * data["gamelength"]
-        ) / data["enemyTeamDamages"]
-        data["damage_mitigated_ratio"] = (
-            data["damagemitigatedperminute"] * data["gamelength"]
-        ) / data["enemyTeamDamages"]
-        data["gold_ratio"] = data["totalgold"] / data["enemyTeamGolds"]
-        data["cs_to_gold_ratio"] = data["total_cs"] / data["enemyTeamGolds"]
-        data["wards_placed_ratio"] = (data["wpm"] * data["gamelength"]) / data[
-            "enemyTeamWardPlaced"
-        ]
-        data["wards_killed_ratio"] = (data["wcpm"] * data["gamelength"]) / data[
-            "enemyTeamWardPlaced"
-        ]
+        df["d_ratio"] = np.divide(df["deaths"], df["enemyTeamDeaths"])
+        df["damages_ratio"] = np.divide(df["damagetochampions"], df["enemyTeamDamages"])
+        df["damage_tanked_ratio"] = np.divide(
+            df["damagetakenperminute"] * df["gamelength"], df["enemyTeamDamages"]
+        )
+        df["damage_mitigated_ratio"] = np.divide(
+            df["damagemitigatedperminute"] * df["gamelength"], df["enemyTeamDamages"]
+        )
+        df["gold_ratio"] = np.divide(df["totalgold"], df["enemyTeamGolds"])
+        df["cs_to_gold_ratio"] = np.divide(df["total_cs"], df["enemyTeamGolds"])
+        df["wards_placed_ratio"] = np.divide(
+            df["wpm"] * df["gamelength"], df["enemyTeamWardPlaced"]
+        )
+        df["wards_killed_ratio"] = np.divide(
+            df["wcpm"] * df["gamelength"], df["enemyTeamWardPlaced"]
+        )
+        return df
 
-        logger.info("Ratio features computed.")
-        data_pipeline_logger.info("Ratio features computed.")
-        return data
+        # ── 2. Win / loss historical means – kills & deaths only, no leakage ──
 
     @staticmethod
     def compute_win_loss_metrics(data: pd.DataFrame) -> pd.DataFrame:
         """
-        Compute average kills, deaths, and game length for wins and losses, grouped by playerid, season, and patch.
+        For each row, add the player's expanding-mean **kills** and **deaths**
+        in wins and losses, scoped by season *and* patch, using only games
+        strictly prior to the current one.
 
-        Args:
-            data (pd.DataFrame): The player data with a 'result' column indicating 1 (Win) or 0 (Lose).
-
-        Returns:
-            pd.DataFrame: DataFrame with win/loss metrics added.
-
+        Added columns
+        -------------
+        kills_prev_avg_season_win / loss
+        deaths_prev_avg_season_win / loss
+        kills_prev_avg_patch_win  / loss
+        deaths_prev_avg_patch_win / loss
         """
-        logger.info("Computing win/loss metrics...")
-        data_pipeline_logger.info("Computing win/loss metrics...")
+        logger.info("Computing win/loss metrics (kills & deaths)…")
 
-        if "result" not in data.columns:
-            logger.error("'result' column is required to compute win/loss metrics.")
-            data_pipeline_logger.error(
-                "'result' column is required to compute win/loss metrics."
-            )
-            msg = "'result' column is missing."
-            raise ValueError(msg)
+        req = {"playerid", "season", "patch", "result", "kills", "deaths", "date"}
+        _check_required(data, required=req)
 
-        data = data.copy()
-        win_metrics = (
-            data.loc[data["result"] == 1]
-            .groupby(["playerid", "season"], sort=True)
-            .agg(
-                kills_per_season_win=("kills", "mean"),
-                deaths_per_season_win=("deaths", "mean"),
-                avg_gamelength_season_win=("gamelength", "mean"),
-            )
-        )
+        df = data.copy().sort_values(["playerid", "date"], kind="mergesort")
 
-        loss_metrics = (
-            data.loc[data["result"] == 0]
-            .groupby(["playerid", "season"], sort=True)
-            .agg(
-                kills_per_season_loss=("kills", "mean"),
-                deaths_per_season_loss=("deaths", "mean"),
-                avg_gamelength_season_loss=("gamelength", "mean"),
-            )
-        )
+        def _add_expanding(by: list[str], scope: str) -> None:
+            for metric in ("kills", "deaths"):
+                grp = df.groupby([*by, "result"], observed=True)[metric]
+                shifted_mean = (
+                    grp.cumsum().shift().div(grp.cumcount().replace(0, np.nan))
+                )
 
-        combined_metrics = win_metrics.join(loss_metrics, how="outer").reset_index()
+                win_col = f"{metric}_prev_avg_{scope}_win"
+                loss_col = f"{metric}_prev_avg_{scope}_loss"
 
-        data = data.set_index(["playerid", "season"], drop=False)
-        data = data.join(combined_metrics.set_index(["playerid", "season"]), how="left")
-        data = data.reset_index(drop=True)
+                df[win_col] = np.where(df["result"] == 1, shifted_mean, df.get(win_col))
+                df[loss_col] = np.where(
+                    df["result"] == 0, shifted_mean, df.get(loss_col)
+                )
 
-        # Group wins by (playerid, patch)
-        win_patch = (
-            data.loc[data["result"] == 1]
-            .groupby(["playerid", "patch"], sort=True)
-            .agg(
-                kills_per_patch_win=("kills", "mean"),
-                deaths_per_patch_win=("deaths", "mean"),
-                avg_gamelength_patch_win=("gamelength", "mean"),
-            )
-        )
+        _add_expanding(["playerid", "season"], "season")
+        _add_expanding(["playerid", "patch"], "patch")
 
-        # Group losses by (playerid, patch)
-        loss_patch = (
-            data.loc[data["result"] == 0]
-            .groupby(["playerid", "patch"], sort=True)
-            .agg(
-                kills_per_patch_loss=("kills", "mean"),
-                deaths_per_patch_loss=("deaths", "mean"),
-                avg_gamelength_patch_loss=("gamelength", "mean"),
-            )
-        )
+        # Propagate NaNs so every row has both win & loss histories where possible
+        df = df.fillna(method="ffill").fillna(method="bfill")
 
-        patch_metrics = win_patch.join(loss_patch, how="outer")
+        return df
 
-        # Match original indexing approach for patch
-        patch_metrics = patch_metrics.reset_index()
-
-        data = data.set_index(["playerid", "patch"], drop=False)
-        data = data.join(patch_metrics.set_index(["playerid", "patch"]), how="left")
-        data = data.reset_index(drop=True)
-
-        # We'll place the new columns at the end in the same order they were added in the apply() code:
-        metric_cols = [
-            "kills_per_season_win",
-            "deaths_per_season_win",
-            "avg_gamelength_season_win",
-            "kills_per_season_loss",
-            "deaths_per_season_loss",
-            "avg_gamelength_season_loss",
-            "kills_per_patch_win",
-            "deaths_per_patch_win",
-            "avg_gamelength_patch_win",
-            "kills_per_patch_loss",
-            "deaths_per_patch_loss",
-            "avg_gamelength_patch_loss",
-        ]
-        # Ensure only columns that actually exist remain in the list
-        metric_cols = [c for c in metric_cols if c in data.columns]
-
-        # Move metric_cols to the end in the correct order
-        non_metric_cols = [c for c in data.columns if c not in metric_cols]
-        final_col_order = non_metric_cols + metric_cols
-
-        # Sort the rows by (playerid, season, patch) to mimic the apply() row order
-        data = data.sort_values(by=["playerid", "season", "patch"], ascending=True)
-        data = data.loc[:, final_col_order].reset_index(drop=True)
-
-        logger.info("Win/loss metrics computation completed.")
-        data_pipeline_logger.info("Win/loss metrics computation completed.")
-        return data
-
+    # ── 3. Public player-feature pipeline ────────────────────────────────
     @staticmethod
     def generate_new_player_features(data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Generate new features for the given player data.
-
-        Enhancements include team kills calculations and various efficiency metrics.
-
-        Args:
-            data (pd.DataFrame): The player data.
-
-        Returns:
-            pd.DataFrame: The player data with new features added.
-
-        """
         logger.info("Generating new player features...")
-        data_pipeline_logger.info("Generating new player features...")
-
-        required_columns = {
-            "teamid",
-            "gameid",
-            "position",
-            "kills",
-            "assists",
-            "deaths",
-            "totalgold",
-            "gamelength",
-            "total_cs",
-            "patch",
-            "result",
-            "playerid",
-        }
-        missing_columns = required_columns - set(data.columns)
-        if missing_columns:
-            logger.error(f"Missing required columns: {missing_columns}")
-            data_pipeline_logger.error(f"Missing required columns: {missing_columns}")
-            msg = f"Missing required columns: {missing_columns}"
-            raise ValueError(msg)
-
-        data = data.copy()
-        data["season"] = data["patch"].astype(str).str.split(".").str[0]
-
-        data["team_kills"] = data.groupby(["gameid", "teamid"])["kills"].transform(
-            "sum"
+        _check_required(
+            data,
+            required={
+                "teamid",
+                "gameid",
+                "position",
+                "kills",
+                "assists",
+                "deaths",
+                "totalgold",
+                "gamelength",
+                "total_cs",
+                "patch",
+                "result",
+                "playerid",
+            },
         )
 
-        data["kda"] = (data["kills"] + data["assists"]) / data["deaths"].replace(0, 1)
-        data["gold_efficiency"] = data["totalgold"] / data["gamelength"].replace(
-            0, np.nan
+        df = data.copy()
+        df["season"] = df["patch"].astype(str).str.split(".").str[0]
+
+        # Base per-game stats
+        df["team_kills"] = df.groupby(["gameid", "teamid"], observed=True)[
+            "kills"
+        ].transform("sum")
+        df["kda"] = np.divide(
+            df["kills"] + df["assists"], df["deaths"].replace(0, np.nan)
         )
-        data["xp_efficiency"] = data["total_cs"] / data["gamelength"].replace(0, np.nan)
-        data["kill_participation"] = (data["kills"] + data["assists"]) / data[
-            "team_kills"
-        ].replace(0, np.nan)
+        df["gold_efficiency"] = np.divide(
+            df["totalgold"], df["gamelength"].replace(0, np.nan)
+        )
+        df["xp_efficiency"] = np.divide(
+            df["total_cs"], df["gamelength"].replace(0, np.nan)
+        )
+        df["kill_participation"] = np.divide(
+            df["kills"] + df["assists"], df["team_kills"].replace(0, np.nan)
+        )
 
-        data = FeatureGenerator.compute_key_stats(data)
-        data = FeatureGenerator.compute_win_loss_metrics(data)
+        # Opponent context + historical means
+        df = FeatureGenerator.compute_key_stats(df)
+        df = FeatureGenerator.compute_win_loss_metrics(df)
 
-        position_dummies = pd.get_dummies(
-            data["position"], prefix="position"
-        ).reset_index(drop=True)
-        data = data.reset_index(drop=True)
-        data = pd.concat([data, position_dummies], axis=1)
+        # One-hot position
+        pos_dummies = pd.get_dummies(df["position"], prefix="position", dtype=np.uint8)
+        df = pd.concat(
+            [df.reset_index(drop=True), pos_dummies.reset_index(drop=True)], axis=1
+        )
 
-        logger.info("Player features generation completed.")
         data_pipeline_logger.info("Player features generation completed.")
-        return data
+        return df
 
     @staticmethod
     def generate_new_team_features(
