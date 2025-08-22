@@ -34,6 +34,10 @@ class ModelStoreError(RuntimeError):
     """Raised when pickling / unpickling a model fails."""
 
 
+class DataFrameStoreError(RuntimeError):
+    """Raised when saving a DataFrame to disk fails."""
+
+
 # --------------------------------------------------------------------------- #
 # Sorting helpers
 # --------------------------------------------------------------------------- #
@@ -105,11 +109,16 @@ parquet_loader = lambda p: load_file(p, file_type="parquet")  # noqa: E731
 # Model persistence
 # --------------------------------------------------------------------------- #
 def load_model(filepath: str | Path) -> Any:
-    """Unpickle a model from *filepath*."""
+    """
+    Unpickle a model from *filepath*.
+
+    WARNING: Only load models from trusted sources. Unpickling untrusted data is a security risk.
+    """
     path = Path(filepath)
     try:
         with path.open("rb") as f:
-            return pickle.load(f)
+            # Only load trusted pickle files. Never unpickle untrusted data!
+            return pickle.load(f)  # noqa: S301
     except FileNotFoundError as exc:
         msg = f"Model file not found: '{path}'"
         raise ModelStoreError(msg) from exc
@@ -130,9 +139,12 @@ def store_model(
         with dest.open("wb") as f:
             pickle.dump(model, f)
         logger.info("Stored model '%s' → %s", model_name, dest)
-    except Exception as exc:
+    except (DataFrameStoreError, OSError, pickle.PicklingError) as exc:
         logger.exception(
-            "Could not store model '%s' at '%s': %s", model_name, dest, exc
+            "Could not store model '%s' at '%s': %s",
+            model_name,
+            dest,
+            exc,  # noqa: TRY401
         )
         msg = f"Pickling failed for '{dest}': {exc}"
         raise ModelStoreError(msg) from exc
@@ -159,7 +171,7 @@ def load_training_data(
         )
         return team_df, player_df
     except Exception as exc:
-        logger.exception("Training data load failed: %s", exc)
+        logger.exception(f"Training data load failed: {exc}")  # noqa: TRY401
         msg = "Unable to load training data."
         raise FileLoadError(msg) from exc
 
@@ -187,12 +199,13 @@ def safe_store_df_as_parquet(
     try:
         df_to_write.to_parquet(out, compression="gzip")
         _log_to_all("info", "Saved DataFrame → %s (pandas)", out)
-    except Exception as exc1:
+    except (DataFrameStoreError, ImportError, OSError) as exc1:
         _log_to_all(
             "warning", "pandas.to_parquet failed (%s), falling back to polars", exc1
         )
         try:
-            import polars as pl
+            # TODO: does this make sense? I can find a smarter way to do this.
+            import polars as pl  # noqa: PLC0415
 
             pl.DataFrame(df_to_write).write_parquet(out, compression="gzip")
             _log_to_all("info", "Saved DataFrame → %s (polars)", out)

@@ -527,10 +527,10 @@ def get_league_teams(parquet_path: str) -> dict:
 
 def filter_teams_by_league(path1, path2, output_path):
     # Read the considered leagues from the first JSON file
-    with open(path1) as f:
+    with Path(path1).open() as f:
         considered_leagues = json.load(f)["considered_leagues"]
     # Read the teams by league from the second JSON file
-    with open(path2) as f:
+    with Path(path2).open() as f:
         teams_by_league = json.load(f)
     # Filter the teams by league based on the considered leagues
     filtered_teams = {
@@ -539,7 +539,7 @@ def filter_teams_by_league(path1, path2, output_path):
         if league in considered_leagues
     }
     # Write the filtered teams to a new JSON file
-    with open(output_path, "w") as f:
+    with Path(output_path).open("w") as f:
         json.dump(filtered_teams, f, indent=4)
 
 

@@ -42,7 +42,7 @@ _TS: Final = dt.datetime.now().strftime("%Y%m%d_%H%M%S")  # session timestamp
 # Enum of topics
 # --------------------------------------------------------------------------- #
 @unique
-class LOG_TOPIC(Enum):
+class LOG_TOPIC(Enum):  # noqa: N801
     """Pre-defined logger namespaces (extend as needed)."""
 
     DATA_PIPELINE = "DataPipelineLogger"
@@ -95,7 +95,7 @@ def create_logger(
     """
     Build (or fetch) a configured logger.
     """
-    logger_name = str(name) if not isinstance(name, str) else name
+    logger_name = name if isinstance(name, str) else str(name)
     lg = logging.getLogger(logger_name)
 
     if not lg.handlers:  # avoid duplicate handlers
