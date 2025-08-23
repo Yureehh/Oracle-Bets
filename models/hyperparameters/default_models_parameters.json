@@ -2,12 +2,14 @@
   "half_life": 10,
   "elo": {
     "k_factor": 32,
-    "initial": 1500
+    "initial": 1500,
+    "elo_divisor": 400
   },
   "glicko2": {
     "mu": 1500,
     "phi": 350,
-    "sigma": 0.06
+    "sigma": 0.06,
+    "tau": 0.5
   },
   "plackett_luce": {
     "mu": 25,
@@ -15,10 +17,28 @@
   },
   "trueskill": {
     "mu": 25,
-    "sigma": 8.333
+    "sigma": 8.333,
+    "beta": 4.167,
+    "draw_probability": 0.0
   },
   "whr": {
     "w2": 0.00005,
     "uncased": true
+  },
+  "leagues_elo": {
+    "initial_elo": 1500,
+    "k_factor": 32,
+    "elo_divisor": 400,
+    "decay_factor": 0.9
+  },
+  "shared": {
+    "decay_factor": 0.9,
+    "transfer_factor": 0.5,
+    "initial_elo_adjustment_factor": 0.5,
+    "position_reset_factor": 0.2
+  },
+  "optuna": {
+    "trials": 50,
+    "seed": 42
   }
 }

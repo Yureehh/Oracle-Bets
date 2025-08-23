@@ -43,9 +43,9 @@ BASE_DIR: Final[Path] = Path(os.getenv("BASE_DIR", Path.getcwd())).resolve()
 
 DATA_DIR: Final = BASE_DIR / "data"
 MODELS_DIR: Final = BASE_DIR / "models"
-REPORTS_DIR: Final = BASE_DIR / "reports"
 CONFIG_DIR: Final = BASE_DIR / "config"
 NOTEBOOKS_DIR: Final = BASE_DIR / "notebooks"
+REPORTS_DIR: Final = NOTEBOOKS_DIR / "reports"
 LOGS_DIR: Final = BASE_DIR / "logs"
 
 # --------------------------------------------------------------------------- #
