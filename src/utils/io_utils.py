@@ -144,7 +144,7 @@ def store_model(
             "Could not store model '%s' at '%s': %s",
             model_name,
             dest,
-            exc,  # noqa: TRY401
+            exc,
         )
         msg = f"Pickling failed for '{dest}': {exc}"
         raise ModelStoreError(msg) from exc
@@ -171,7 +171,7 @@ def load_training_data(
         )
         return team_df, player_df
     except Exception as exc:
-        logger.exception(f"Training data load failed: {exc}")  # noqa: TRY401
+        logger.exception(f"Training data load failed: {exc}")
         msg = "Unable to load training data."
         raise FileLoadError(msg) from exc
 

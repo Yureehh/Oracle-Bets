@@ -2,8 +2,10 @@
 Elo Rating System with Hyperparameter Tuning using Optuna
 
 This module contains functions to calculate Elo ratings for teams or players based on match results,
-with FireDucks-based performance optimizations.
+with performance-minded implementations and leak-free temporal evolution.
 """
+
+from __future__ import annotations
 
 import json
 from collections import defaultdict
@@ -34,6 +36,7 @@ data_pipeline_logger = instantiate_logger("data_pipeline")
 CROSS_COMPETITION_LEAGUES = considered_leagues_config["cross_league_competitions"]
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
 TRIALS_NUM = 50
+MAX_EXPONENT = 8.0  # To prevent overflow in expected outcome calc
 
 
 # ------------------------------------------------------------------------------
@@ -54,8 +57,7 @@ def is_major_league(league: str) -> bool:
 # ------------------------------------------------------------------------------
 def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
-    Ensures the DataFrame has all required columns, that 'date' is a datetime,
-    and that rows are sorted by the appropriate keys.
+    Ensure required columns, normalize dtypes, and sort rows by stable keys.
     """
     if entity.lower() not in ["team", "player"]:
         msg = "Entity must be 'team' or 'player'"
@@ -82,10 +84,12 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
         msg = f"Input DataFrame is missing required columns: {missing_columns}"
         raise ValueError(msg)
 
+    df = df.copy()
+
     # Convert 'date' to datetime
     if not pd.api.types.is_datetime64_any_dtype(df["date"]):
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        null_count = df["date"].isnull().sum()
+        null_count = df["date"].isna().sum()
         if null_count > 0:
             logger.warning(
                 f"{null_count} 'date' entries could not be converted; dropping them."
@@ -97,8 +101,8 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
 
     # Drop rows missing 'league' or 'result'
     if df["league"].isna().any() or df["result"].isna().any():
-        n_missing_leagues = df["league"].isnull().sum()
-        n_missing_results = df["result"].isnull().sum()
+        n_missing_leagues = df["league"].isna().sum()
+        n_missing_results = df["result"].isna().sum()
         logger.warning(
             f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them."
         )
@@ -107,8 +111,24 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
         )
         df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
 
-    # Sort keys
-    return df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
+    # Normalize 'result' to numeric 0/1 if needed
+    if not pd.api.types.is_numeric_dtype(df["result"]):
+        valmap = {
+            "W": 1,
+            "Win": 1,
+            "win": 1,
+            True: 1,
+            "L": 0,
+            "Loss": 0,
+            "loss": 0,
+            False: 0,
+        }
+        df["result"] = df["result"].map(valmap).astype("float64")
+
+    # Stable sort by canonical keys
+    return df.sort_values(by=get_sorting_keys(entity), kind="mergesort").reset_index(
+        drop=True
+    )
 
 
 # ------------------------------------------------------------------------------
@@ -116,8 +136,13 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
 # ------------------------------------------------------------------------------
 @njit
 def expected_outcome(elo_a: float, elo_b: float, elo_divisor: float) -> float:
-    """Calculate the expected match outcome between two Elo ratings."""
+    """Expected match outcome between two Elo totals (logistic on Elo gap)."""
     exponent = (elo_b - elo_a) / elo_divisor
+    # clamp exponent to avoid 10**overflow; ±8 gives ample dynamic range
+    if exponent > MAX_EXPONENT:
+        exponent = MAX_EXPONENT
+    elif exponent < -MAX_EXPONENT:
+        exponent = -MAX_EXPONENT
     return 1.0 / (1.0 + 10.0**exponent)
 
 
@@ -135,18 +160,13 @@ def aggregate_team_elo(
 ) -> float:
     """
     Aggregate Elo ratings for a group of entities in 'rows' (e.g., all players on a team).
-    Uses a merge-based approach for clarity.
+    Optimized to avoid building a full ratings DataFrame each call.
     """
     if rows.empty:
         return 0.0
-
-    # Build a small DataFrame of current Elo ratings
-    rating_data = [(eid, info["elo"]) for eid, info in elo_ratings.items()]
-    rating_df = pd.DataFrame(rating_data, columns=[entity_key, "elo"])
-
-    # Merge on the entity_key to get the Elo for each row
-    merged = rows[[entity_key]].merge(rating_df, on=entity_key, how="left")
-    return merged["elo"].fillna(0).sum()
+    return (
+        rows[entity_key].map(lambda eid: elo_ratings.get(eid, {}).get("elo", 0.0)).sum()
+    )
 
 
 def handle_position_switch(
@@ -185,7 +205,7 @@ def linear_decay_reset(
     Elo is partially reset toward baseline by decay_factor.
     """
     for data in elo_ratings.values():
-        if data["season"] < current_season:
+        if data.get("season", current_season) < current_season:
             data["elo"] = baseline_elo + (data["elo"] - baseline_elo) * decay_factor
             data["season"] = current_season
     return elo_ratings  # Return the *same* dict reference
@@ -202,9 +222,9 @@ def handle_new_entity(
 ) -> None:
     """
     Initialize the Elo rating for a brand-new entity.
-    Use a partial adjustment based on the difference between the league's Elo and the average Elo.
+    Partial adjustment based on the league's Elo relative to average league Elo,
+    clamped to avoid extreme starts.
     """
-    # Cap max difference to avoid extreme starts
     max_diff = 0.2 * baseline_elo
 
     avg_league_elo = (
@@ -214,13 +234,8 @@ def handle_new_entity(
     )
     league_elo = league_elo_dict.get(new_league, baseline_elo)
 
-    # Additional partial adjustment factor
     init_adjustment = (league_elo - avg_league_elo) * init_adjust_factor
-    initial_rating = baseline_elo + init_adjustment
-
-    # Clamp extreme offsets
-    offset = clamp(initial_rating - baseline_elo, -max_diff, max_diff)
-    initial_rating = baseline_elo + offset
+    initial_rating = baseline_elo + clamp(init_adjustment, -max_diff, max_diff)
 
     elo_ratings[ent_id] = {
         "elo": initial_rating,
@@ -242,34 +257,29 @@ def handle_league_swap(
     Handle league transitions with partial adjustments for Elo ratings.
 
     If the league changes, adjust Elo based on the difference in league Elo ratings and whether
-    the entity is moving between minor and major leagues. Players moving from minor to major
-    leagues are penalized more heavily.
+    the entity is moving between minor and major leagues. Moves into a major league get a stronger penalty.
     """
     curr_league = elo_ratings[ent_id].get("league")
     if not curr_league or curr_league == new_league:
-        # No league swap needed
         elo_ratings[ent_id]["league"] = new_league
         return
 
     curr_is_major = is_major_league(curr_league)
     new_is_major = is_major_league(new_league)
 
-    # Retrieve league Elo values (if you want minimal adjustments, scale down `diff`)
     curr_elo_val = league_elo_dict.get(curr_league, baseline_elo)
     new_elo_val = league_elo_dict.get(new_league, baseline_elo)
     diff = new_elo_val - curr_elo_val
 
     old_elo = elo_ratings[ent_id]["elo"]
-    if "player" in ent_id.lower() and not curr_is_major and new_is_major:
-        # Minor to major transfer: penalize heavily
+    if not curr_is_major and new_is_major:
+        # Minor -> Major: penalize (lower confidence in prior rating)
         adjusted_diff = transfer_factor_minor_to_major * diff
         new_elo = old_elo - adjusted_diff
     else:
-        # Normal transfer
         adjusted_diff = transfer_factor * diff
         new_elo = old_elo + adjusted_diff
 
-    # Update Elo and league
     elo_ratings[ent_id]["elo"] = new_elo
     elo_ratings[ent_id]["league"] = new_league
 
@@ -311,12 +321,8 @@ def process_game(
 
     # Check/initialize each entity’s Elo rating
     for ent_id in entity_ids:
-        # Optional: convert ent_id to string or int consistently
-        # ent_id = str(ent_id)
+        new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
         if ent_id not in elo_ratings:
-            new_league = game_group.loc[
-                game_group[entity_key] == ent_id, "league"
-            ].iloc[0]
             handle_new_entity(
                 ent_id=ent_id,
                 elo_ratings=elo_ratings,
@@ -326,19 +332,15 @@ def process_game(
                 baseline_elo=baseline_elo,
                 init_adjust_factor=initial_elo_adjustment_factor,
             )
-        else:
-            new_league = game_group.loc[
-                game_group[entity_key] == ent_id, "league"
-            ].iloc[0]
-            if new_league not in CROSS_COMPETITION_LEAGUES:
-                handle_league_swap(
-                    ent_id=ent_id,
-                    new_league=new_league,
-                    elo_ratings=elo_ratings,
-                    league_elo_dict=league_elo_dict,
-                    baseline_elo=baseline_elo,
-                    transfer_factor=transfer_factor,
-                )
+        elif new_league not in CROSS_COMPETITION_LEAGUES:
+            handle_league_swap(
+                ent_id=ent_id,
+                new_league=new_league,
+                elo_ratings=elo_ratings,
+                league_elo_dict=league_elo_dict,
+                baseline_elo=baseline_elo,
+                transfer_factor=transfer_factor,
+            )
 
     # If dealing with players, handle position switching
     if entity.lower() == "player":
@@ -361,18 +363,18 @@ def process_game(
     blue_elo_sum = aggregate_team_elo(blue_rows, elo_ratings, entity_key)
     red_elo_sum = aggregate_team_elo(red_rows, elo_ratings, entity_key)
 
-    # Calculate expected outcomes
+    # Calculate expected outcomes (blue perspective)
     blue_expected = expected_outcome(blue_elo_sum, red_elo_sum, elo_divisor)
-    blue_result = blue_rows.iloc[0]["result"]
+    blue_result = float(blue_rows.iloc[0]["result"])
     red_result = 1.0 - blue_result
 
-    # Retrieve old Elos for logging
-    blue_ids = blue_rows[entity_key].values
-    red_ids = red_rows[entity_key].values
+    # Retrieve old Elos per entity (for per-row writeback)
+    blue_ids = blue_rows[entity_key].to_numpy()
+    red_ids = red_rows[entity_key].to_numpy()
     blue_old_elos = [elo_ratings[b]["elo"] for b in blue_ids]
     red_old_elos = [elo_ratings[r]["elo"] for r in red_ids]
 
-    # Update Elos
+    # Update Elos per entity
     blue_new_elos = [
         update_elo_rating(old, blue_expected, blue_result, k_factor)
         for old in blue_old_elos
@@ -388,7 +390,11 @@ def process_game(
     for i, rid in enumerate(red_ids):
         elo_ratings[rid]["elo"] = red_new_elos[i]
 
-    # Write columns back to df
+    # Write columns back to df (per row):
+    # - 'elo_before' = own entity Elo before
+    # - 'opp_elo_before' = single opponent Elo before
+    # - 'elo_win_likelihood' = blue_expected or 1 - blue_expected
+    # - 'elo_after' = own entity Elo after
     df.loc[blue_rows.index, "elo_before"] = blue_old_elos
     df.loc[blue_rows.index, "opp_elo_before"] = red_old_elos
     df.loc[blue_rows.index, "elo_win_likelihood"] = blue_expected
@@ -456,7 +462,7 @@ def tune_elo_hyperparameters(
                 ],
                 position_reset_factor=hyperparams["position_reset_factor"],
                 league_elo_dict=league_elo_dict,
-                show_progress=True,
+                show_progress=False,
             )
         except Exception as err:
             logger.error(f"Error during Elo computation in training phase: {err}")
@@ -498,7 +504,7 @@ def tune_elo_hyperparameters(
 def load_hyperparameters(path: Path) -> dict[str, float]:
     """
     Load hyperparameters from a JSON file if it exists.
-    Returns the loaded parameters or None if the file doesn't exist or loading fails.
+    Returns the loaded parameters or {} if the file doesn't exist or loading fails.
     """
     if path.exists():
         logger.info(f"Loading hyperparameters from {path}")
@@ -557,7 +563,7 @@ def split_and_validate_data(
         data_pipeline_logger.warning("DataFrame is empty after sorting.")
         return pd.DataFrame(), pd.DataFrame()
 
-    # Determine split date
+    # Primary split: start of the last year present
     try:
         split_year = df_sorted["date"].dt.year.max()
         split_date = pd.to_datetime(f"{split_year}-01-01")
@@ -568,9 +574,14 @@ def split_and_validate_data(
         )
         return pd.DataFrame(), pd.DataFrame()
 
-    # Split into training and validation sets
     df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
     df_valid = df_sorted[df_sorted["date"] >= split_date].reset_index(drop=True)
+
+    # Fallback: if train or valid is empty, do an 80/20 time split
+    if df_train.empty or df_valid.empty:
+        q80 = df_sorted["date"].quantile(0.8)
+        df_train = df_sorted[df_sorted["date"] < q80].reset_index(drop=True)
+        df_valid = df_sorted[df_sorted["date"] >= q80].reset_index(drop=True)
 
     # Validate group sizes
     expected_count = 10 if entity.lower() == "player" else 2
@@ -598,7 +609,8 @@ def initialize_validation_ratings(
 
     val_ratings = defaultdict(lambda: {"elo": initial_elo})
     for e_id, final_elo in last_elo_map.items():
-        val_ratings[e_id]["elo"] = final_elo
+        # final_elo should be scalar because we write scalar per row
+        val_ratings[e_id]["elo"] = float(final_elo)
     return val_ratings
 
 
@@ -609,13 +621,13 @@ def evaluate_validation(
     hyperparams: dict[str, float],
 ) -> float:
     """Evaluate the validation set and compute the log loss."""
-    expected_probs = []
+    expected_probs: list[float] = []
     df_valid_sorted = df_valid.sort_values(by=["date", "gameid"]).reset_index(drop=True)
     elo_divisor = hyperparams["elo_divisor"]
     k_factor = hyperparams["k_factor"]
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
-    for _, grp in df_valid_sorted.groupby(["date", "gameid"]):
+    for _, grp in df_valid_sorted.groupby(["date", "gameid"], sort=False):
         blue_side = grp[grp["side"] == "Blue"]
         red_side = grp[grp["side"] == "Red"]
 
@@ -623,11 +635,12 @@ def evaluate_validation(
         red_elo_sum = sum(val_ratings[rid]["elo"] for rid in red_side[entity_key])
 
         exp = expected_outcome(blue_elo_sum, red_elo_sum, elo_divisor)
-        result = blue_side.iloc[0]["result"]
+        result = float(blue_side.iloc[0]["result"])
 
+        # One probability per blue-row (team: 1, player: 5)
         expected_probs.extend([exp] * len(blue_side))
 
-        # Update Elo ratings for validation
+        # Update Elo ratings for validation trajectory
         for bid in blue_side[entity_key]:
             val_ratings[bid]["elo"] = update_elo_rating(
                 val_ratings[bid]["elo"], exp, result, k_factor
@@ -647,7 +660,6 @@ def evaluate_validation(
         data_pipeline_logger.error("Mismatch in lengths of y_true and y_pred.")
         return float("inf")
 
-    # Compute log loss
     return log_loss(y_true, y_pred)
 
 
@@ -680,26 +692,24 @@ def run_elo_computation(
     elo_ratings = defaultdict(
         lambda: {
             "elo": initial_elo,
-            "season": df["season"].min(),
+            "season": int(df["season"].min()),
             "league": None,
         }
     )
 
     # Pre-allocate output columns
     for col in ["elo_before", "opp_elo_before", "elo_win_likelihood", "elo_after"]:
-        df[col] = None
+        df[col] = pd.Series(index=df.index, dtype="float64")
 
     grouped = df.groupby(["date", "gameid"], sort=False)
     if show_progress:
         grouped = tqdm(grouped, desc="Processing games", total=grouped.ngroups)
 
     for _, game_grp in grouped:
-        # Always capture the returned dictionary to ensure
-        # we do not lose the updated reference
         elo_ratings = process_game(
             df=df,
             game_group=game_grp,
-            elo_ratings=elo_ratings,  # pass the same dict
+            elo_ratings=elo_ratings,
             k_factor=k_factor,
             entity=entity,
             entity_key=entity_key,
@@ -720,7 +730,7 @@ def calculate_elo(
     entity: str,
     league_elo_dict: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Main entry point for Elo computation"""
+    """Main entry point for Elo computation."""
     df_pre = preprocess_elo_dataframe(df, entity)
 
     # Attempt to load league Elo if not provided
@@ -738,7 +748,7 @@ def calculate_elo(
         df_pre, entity, hyperparameters_path, league_elo_dict
     )
 
-    # 4) Run final Elo computation
+    # Run final Elo computation
     return run_elo_computation(
         df=df_pre,
         entity=entity,

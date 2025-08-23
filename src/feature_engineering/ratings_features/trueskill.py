@@ -5,6 +5,8 @@ Mirrors the structure of the Plackett-Luce (and Elo/Glicko) modules, but uses
 the TrueSkill library from the `trueskill` package.
 """
 
+from __future__ import annotations
+
 import itertools
 import json
 import math
@@ -34,12 +36,13 @@ from utils.paths import (
 # ------------------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
 ts_config = config.get("trueskill", {})
-DEFAULT_MU = ts_config.get("mu", 25.0)
-DEFAULT_SIGMA = ts_config.get("sigma", 8.333)
-DEFAULT_BETA = ts_config.get(
-    "beta", DEFAULT_SIGMA / 2
-)  # Standard practice: beta = sigma/2
+DEFAULT_MU = float(ts_config.get("mu", 25.0))
+DEFAULT_SIGMA = float(ts_config.get("sigma", 8.333))
+DEFAULT_BETA = float(
+    ts_config.get("beta", DEFAULT_SIGMA / 2)
+)  # common rule: beta ~ sigma/2
 TRIALS_NUM = 50
+MIN_FLOAT = 1e-9  # For float comparisons
 
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
@@ -66,8 +69,8 @@ def is_major_league(league: str) -> bool:
 # ------------------------------------------------------------------------------
 def preprocess_trueskill_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
-    Validate the DataFrame's required columns, convert date to datetime, drop missing entries,
-    and sort by the appropriate keys. Mirrors the approach in Elo/Glicko/PL.
+    Validate columns, convert dates, drop missing, normalize result to 0/1, and stable-sort.
+    Mirrors the approach in Elo/Glicko/PL.
     """
     if entity.lower() not in ["team", "player"]:
         msg = "Entity must be 'team' or 'player'"
@@ -91,10 +94,12 @@ def preprocess_trueskill_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFram
         msg = f"Input DataFrame is missing required columns: {missing_cols}"
         raise ValueError(msg)
 
+    df = df.copy()
+
     # Convert 'date' to datetime
     if not pd.api.types.is_datetime64_any_dtype(df["date"]):
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        null_count = df["date"].isnull().sum()
+        null_count = df["date"].isna().sum()
         if null_count > 0:
             logger.warning(
                 f"{null_count} 'date' entries could not be converted; dropping them."
@@ -106,8 +111,8 @@ def preprocess_trueskill_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFram
 
     # Drop rows missing league or result
     if df["league"].isna().any() or df["result"].isna().any():
-        n_missing_league = df["league"].isnull().sum()
-        n_missing_result = df["result"].isnull().sum()
+        n_missing_league = df["league"].isna().sum()
+        n_missing_result = df["result"].isna().sum()
         logger.warning(
             f"{n_missing_league} 'league' and {n_missing_result} 'result' missing; dropping them."
         )
@@ -116,8 +121,24 @@ def preprocess_trueskill_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFram
         )
         df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
 
-    # Sort by date and game
-    return df.sort_values(by=get_sorting_keys(entity)).reset_index(drop=True)
+    # Normalize 'result' to numeric 0/1 if needed
+    if not pd.api.types.is_numeric_dtype(df["result"]):
+        valmap = {
+            "W": 1,
+            "Win": 1,
+            "win": 1,
+            True: 1,
+            "L": 0,
+            "Loss": 0,
+            "loss": 0,
+            False: 0,
+        }
+        df["result"] = df["result"].map(valmap).astype("float64")
+
+    # Stable sort by canonical keys
+    return df.sort_values(by=get_sorting_keys(entity), kind="mergesort").reset_index(
+        drop=True
+    )
 
 
 # ------------------------------------------------------------------------------
@@ -131,11 +152,12 @@ def create_ts_rating(mu: float, sigma: float) -> Rating:
 def expected_win_probability(
     team1: list[Rating], team2: list[Rating], beta: float
 ) -> float:
-    """Return the probability that team1 beats team2 using the TrueSkill formula."""
+    """Return the probability that team1 beats team2 using the TrueSkill analytic approximation."""
     delta_mu = sum(r.mu for r in team1) - sum(r.mu for r in team2)
     sum_sigma_sq = sum(r.sigma**2 for r in itertools.chain(team1, team2))
-    denom = math.sqrt(len(team1 + team2) * (beta**2) + sum_sigma_sq)
-    return trueskill.global_env().cdf(delta_mu / denom)
+    n_players = len(team1) + len(team2)
+    denom = math.sqrt(n_players * (beta**2) + sum_sigma_sq)
+    return float(trueskill.global_env().cdf(delta_mu / denom))
 
 
 def update_ts_ratings(
@@ -167,14 +189,11 @@ def linear_decay_reset(
     """
     for data in ts_ratings.values():
         if data["season"] < current_season:
-            old_rating = data["rating"]
-            new_mu = baseline_mu + (old_rating.mu - baseline_mu) * decay_factor
-            new_sigma = (
-                baseline_sigma + (old_rating.sigma - baseline_sigma) * decay_factor
-            )
+            old = data["rating"]
+            new_mu = baseline_mu + (old.mu - baseline_mu) * decay_factor
+            new_sigma = baseline_sigma + (old.sigma - baseline_sigma) * decay_factor
             data["rating"] = create_ts_rating(new_mu, new_sigma)
             data["season"] = current_season
-
     return ts_ratings  # return same dict reference
 
 
@@ -191,11 +210,9 @@ def handle_position_switch(
         return
     last_position = ts_ratings[entity_id].get("last_position")
     if last_position and last_position != new_position:
-        old_rating = ts_ratings[entity_id]["rating"]
-        new_mu = baseline_mu + (old_rating.mu - baseline_mu) * (
-            1.0 - position_reset_factor
-        )
-        new_sigma = baseline_sigma + (old_rating.sigma - baseline_sigma) * (
+        old = ts_ratings[entity_id]["rating"]
+        new_mu = baseline_mu + (old.mu - baseline_mu) * (1.0 - position_reset_factor)
+        new_sigma = baseline_sigma + (old.sigma - baseline_sigma) * (
             1.0 - position_reset_factor
         )
         ts_ratings[entity_id]["rating"] = create_ts_rating(new_mu, new_sigma)
@@ -214,17 +231,15 @@ def handle_new_entity(
 ) -> None:
     """Initialize a new entity rating, offset by partial league difference from average."""
     max_diff = 0.2 * baseline_mu
-    if league_elo_dict:
-        avg_league_elo = sum(league_elo_dict.values()) / len(league_elo_dict)
-    else:
-        avg_league_elo = baseline_mu
+    avg_league_elo = (
+        (sum(league_elo_dict.values()) / len(league_elo_dict))
+        if league_elo_dict
+        else baseline_mu
+    )
     league_elo = league_elo_dict.get(new_league, baseline_mu)
 
     init_adjust = (league_elo - avg_league_elo) * init_adjust_factor
-    initial_mu = baseline_mu + init_adjust
-
-    offset = clamp(initial_mu - baseline_mu, -max_diff, max_diff)
-    initial_mu = baseline_mu + offset
+    initial_mu = baseline_mu + clamp(init_adjust, -max_diff, max_diff)
 
     ts_ratings[ent_id] = {
         "rating": create_ts_rating(initial_mu, baseline_sigma),
@@ -259,32 +274,22 @@ def handle_league_swap(
     new_elo_val = league_elo_dict.get(new_league, baseline_mu)
     diff = new_elo_val - curr_elo_val
 
-    old_rating = ts_ratings[ent_id]["rating"]
-    old_mu = old_rating.mu
+    old_mu = ts_ratings[ent_id]["rating"].mu
+    max_shift = 0.2 * baseline_mu
 
-    # Define the maximum adjustment to prevent extreme changes
-    max_diff = 0.2 * baseline_mu
-
-    # Calculate adjusted difference based on the league swap type
     if (
         isinstance(ent_id, str)
         and "player" in ent_id.lower()
         and not curr_is_major
         and new_is_major
     ):
-        # Apply a bigger penalty for minor->major player transitions
-        adjusted_diff = transfer_factor_minor_to_major * diff
+        adjusted = transfer_factor_minor_to_major * diff
     else:
-        # Standard transfer adjustment
-        adjusted_diff = transfer_factor * diff
+        adjusted = transfer_factor * diff
 
-    # Clamp the adjusted difference to prevent extreme changes
-    adjusted_diff = clamp(adjusted_diff, -max_diff, max_diff)
+    adjusted = clamp(adjusted, -max_shift, max_shift)
+    new_mu = clamp(old_mu + adjusted, -baseline_mu, 3 * baseline_mu)
 
-    # Apply the adjusted difference to old_mu and clamp the result
-    new_mu = clamp(old_mu + adjusted_diff, -baseline_mu, 3 * baseline_mu)
-
-    # Update the rating and league
     ts_ratings[ent_id]["rating"] = create_ts_rating(new_mu, baseline_sigma)
     ts_ratings[ent_id]["league"] = new_league
 
@@ -322,44 +327,38 @@ def process_game(
         decay_factor=decay_factor,
     )
 
+    # Init/swap handling per-entity
     entity_ids = game_group[entity_key].unique()
     for ent_id in entity_ids:
+        new_league = game_group.loc[game_group[entity_key] == ent_id, "league"].iloc[0]
         if ent_id not in ts_ratings:
             handle_new_entity(
                 ent_id=ent_id,
                 ts_ratings=ts_ratings,
                 league_elo_dict=league_elo_dict,
-                new_league=game_group.loc[
-                    game_group[entity_key] == ent_id, "league"
-                ].iloc[0],
+                new_league=new_league,
                 current_season=current_season,
                 baseline_mu=baseline_mu,
                 baseline_sigma=baseline_sigma,
                 init_adjust_factor=initial_elo_adjustment_factor,
             )
-        else:
-            new_league = game_group.loc[
-                game_group[entity_key] == ent_id, "league"
-            ].iloc[0]
-            if new_league not in CROSS_LEAGUE_COMPETITIONS:
-                handle_league_swap(
-                    ent_id=ent_id,
-                    new_league=new_league,
-                    ts_ratings=ts_ratings,
-                    league_elo_dict=league_elo_dict,
-                    baseline_mu=baseline_mu,
-                    baseline_sigma=baseline_sigma,
-                    transfer_factor=transfer_factor,
-                )
+        elif new_league not in CROSS_LEAGUE_COMPETITIONS:
+            handle_league_swap(
+                ent_id=ent_id,
+                new_league=new_league,
+                ts_ratings=ts_ratings,
+                league_elo_dict=league_elo_dict,
+                baseline_mu=baseline_mu,
+                baseline_sigma=baseline_sigma,
+                transfer_factor=transfer_factor,
+            )
 
     # If entity=player, handle position switching
     if entity.lower() == "player":
         for _, row in game_group.iterrows():
-            ent_id = row[entity_key]
-            new_position = row.get("position")
             handle_position_switch(
-                entity_id=ent_id,
-                new_position=new_position,
+                entity_id=row[entity_key],
+                new_position=row.get("position"),
                 ts_ratings=ts_ratings,
                 baseline_mu=baseline_mu,
                 baseline_sigma=baseline_sigma,
@@ -374,59 +373,54 @@ def process_game(
         blue_side = blue_side.sort_values(by="position")
         red_side = red_side.sort_values(by="position")
 
-    blue_ids = blue_side[entity_key].values
-    red_ids = red_side[entity_key].values
+    blue_ids = blue_side[entity_key].to_numpy()
+    red_ids = red_side[entity_key].to_numpy()
 
-    # Current ratings
-    blue_ratings_before = [ts_ratings[b]["rating"] for b in blue_ids]
-    red_ratings_before = [ts_ratings[r]["rating"] for r in red_ids]
+    # Ratings before
+    blue_before = [ts_ratings[b]["rating"] for b in blue_ids]
+    red_before = [ts_ratings[r]["rating"] for r in red_ids]
 
-    # Determine match result: [0,1] => Blue wins, otherwise [1,0]
-    blue_result = blue_side.iloc[0]["result"]
-    ranks = [0, 1] if abs(blue_result - 1.0) < 1e-9 else [1, 0]
+    # Ranks from Blue's result
+    blue_result = float(blue_side.iloc[0]["result"])
+    ranks = [0, 1] if abs(blue_result - 1.0) < MIN_FLOAT else [1, 0]
 
     # Probability that Blue wins
-    prob_blue_wins = expected_win_probability(
-        blue_ratings_before, red_ratings_before, ts_model.beta
-    )
+    prob_blue = expected_win_probability(blue_before, red_before, ts_model.beta)
 
     # Update ratings
-    updated = update_ts_ratings(
-        ts_model, (blue_ratings_before, red_ratings_before), ranks=ranks
+    updated_blue, updated_red = update_ts_ratings(
+        ts_model, (blue_before, red_before), ranks=ranks
     )
-    updated_blue_ratings = updated[0]
-    updated_red_ratings = updated[1]
 
-    # Write updated ratings back to dictionary + DataFrame
+    # Write back per row (opp_* aligned 1:1 with positions)
     for i, idx in enumerate(blue_side.index):
         ent_id = blue_side.loc[idx, entity_key]
-        old_rating = blue_ratings_before[i]
-        new_rating = updated_blue_ratings[i]
+        old_rating = blue_before[i]
+        new_rating = updated_blue[i]
         ts_ratings[ent_id]["rating"] = new_rating
 
-        df.loc[idx, "trueskill_mu_before"] = old_rating.mu
-        df.loc[idx, "trueskill_sigma_before"] = old_rating.sigma
-        df.loc[idx, "opp_trueskill_mu_before"] = red_ratings_before[i].mu
-        df.loc[idx, "opp_trueskill_sigma_before"] = red_ratings_before[i].sigma
-        df.loc[idx, "trueskill_win_likelihood"] = prob_blue_wins
-        df.loc[idx, "trueskill_mu_after"] = new_rating.mu
-        df.loc[idx, "trueskill_sigma_after"] = new_rating.sigma
+        df.loc[idx, "trueskill_mu_before"] = float(old_rating.mu)
+        df.loc[idx, "trueskill_sigma_before"] = float(old_rating.sigma)
+        df.loc[idx, "opp_trueskill_mu_before"] = float(red_before[i].mu)
+        df.loc[idx, "opp_trueskill_sigma_before"] = float(red_before[i].sigma)
+        df.loc[idx, "trueskill_win_likelihood"] = float(prob_blue)
+        df.loc[idx, "trueskill_mu_after"] = float(new_rating.mu)
+        df.loc[idx, "trueskill_sigma_after"] = float(new_rating.sigma)
 
     for i, idx in enumerate(red_side.index):
         ent_id = red_side.loc[idx, entity_key]
-        old_rating = red_ratings_before[i]
-        new_rating = updated_red_ratings[i]
+        old_rating = red_before[i]
+        new_rating = updated_red[i]
         ts_ratings[ent_id]["rating"] = new_rating
 
-        df.loc[idx, "trueskill_mu_before"] = old_rating.mu
-        df.loc[idx, "trueskill_sigma_before"] = old_rating.sigma
-        df.loc[idx, "opp_trueskill_mu_before"] = blue_ratings_before[i].mu
-        df.loc[idx, "opp_trueskill_sigma_before"] = blue_ratings_before[i].sigma
-        df.loc[idx, "trueskill_win_likelihood"] = 1.0 - prob_blue_wins
-        df.loc[idx, "trueskill_mu_after"] = new_rating.mu
-        df.loc[idx, "trueskill_sigma_after"] = new_rating.sigma
+        df.loc[idx, "trueskill_mu_before"] = float(old_rating.mu)
+        df.loc[idx, "trueskill_sigma_before"] = float(old_rating.sigma)
+        df.loc[idx, "opp_trueskill_mu_before"] = float(blue_before[i].mu)
+        df.loc[idx, "opp_trueskill_sigma_before"] = float(blue_before[i].sigma)
+        df.loc[idx, "trueskill_win_likelihood"] = float(1.0 - prob_blue)
+        df.loc[idx, "trueskill_mu_after"] = float(new_rating.mu)
+        df.loc[idx, "trueskill_sigma_after"] = float(new_rating.sigma)
 
-    # Return the updated dictionary to ensure we don't lose any changes
     return ts_ratings
 
 
@@ -456,6 +450,7 @@ def tune_trueskill_hyperparameters(
 
     def objective(trial: optuna.trial.Trial) -> float:
         hyperparams = suggest_trueskill_hyperparameters(trial)
+
         df_train, df_valid = split_and_validate_data(df, entity)
         if df_train.empty or df_valid.empty:
             logger.warning("Training or validation data is empty after splitting.")
@@ -562,8 +557,8 @@ def split_and_validate_data(
     df: pd.DataFrame, entity: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Sort, then split the DataFrame into training and validation sets by year boundary,
-    verifying the group size (2 for teams, 10 for players).
+    Sort, then split the DataFrame into training and validation sets by year boundary;
+    fallback to 80/20 time split if necessary; verify the group size (2 for teams, 10 for players).
     """
     df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
     if df_sorted.empty:
@@ -584,7 +579,12 @@ def split_and_validate_data(
     df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
     df_valid = df_sorted[df_sorted["date"] >= split_date].reset_index(drop=True)
 
-    # Verify group sizes
+    # Fallback: 80/20 time split if either side is empty
+    if df_train.empty or df_valid.empty:
+        q80 = df_sorted["date"].quantile(0.8)
+        df_train = df_sorted[df_sorted["date"] < q80].reset_index(drop=True)
+        df_valid = df_sorted[df_sorted["date"] >= q80].reset_index(drop=True)
+
     expected_count = 10 if entity.lower() == "player" else 2
     for subset, name in [(df_train, "Training"), (df_valid, "Validation")]:
         if not subset.empty:
@@ -609,8 +609,6 @@ def initialize_validation_ratings(
     from the training results to initialize validation ratings. If an entity never appeared,
     start from the baseline (mu, sigma).
     """
-    from collections import defaultdict
-
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
     final_mu_map = (
@@ -621,10 +619,11 @@ def initialize_validation_ratings(
     )
 
     val_ratings = defaultdict(lambda: {"rating": create_ts_rating(mu, sigma)})
-    for e_id in final_mu_map:
-        if pd.notna(final_mu_map[e_id]) and pd.notna(final_sigma_map[e_id]):
+    for e_id, final_mu in final_mu_map.items():
+        final_sigma = final_sigma_map.get(e_id, sigma)
+        if pd.notna(final_mu) and pd.notna(final_sigma):
             val_ratings[e_id]["rating"] = create_ts_rating(
-                final_mu_map[e_id], final_sigma_map[e_id]
+                float(final_mu), float(final_sigma)
             )
 
     return val_ratings
@@ -643,7 +642,7 @@ def evaluate_validation(
       - Compare vs. actual result
       - Update ratings in a simplified loop
     """
-    expected_probs = []
+    expected_probs: list[float] = []
     df_valid_sorted = df_valid.sort_values(by=["date", "gameid"]).reset_index(drop=True)
     ts_model = TrueSkill(
         mu=hyperparams["mu"],
@@ -653,7 +652,7 @@ def evaluate_validation(
     )
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
-    for _, grp in df_valid_sorted.groupby(["date", "gameid"]):
+    for _, grp in df_valid_sorted.groupby(["date", "gameid"], sort=False):
         blue_side = grp[grp["side"] == "Blue"]
         red_side = grp[grp["side"] == "Red"]
 
@@ -661,30 +660,27 @@ def evaluate_validation(
             blue_side = blue_side.sort_values(by="position")
             red_side = red_side.sort_values(by="position")
 
-        blue_ids = blue_side[entity_key].values
-        red_ids = red_side[entity_key].values
+        blue_ids = blue_side[entity_key].to_numpy()
+        red_ids = red_side[entity_key].to_numpy()
 
         blue_ratings = [val_ratings[b]["rating"] for b in blue_ids]
         red_ratings = [val_ratings[r]["rating"] for r in red_ids]
 
         prob_blue = expected_win_probability(blue_ratings, red_ratings, ts_model.beta)
-        result = blue_side.iloc[0]["result"]  # 1 => Blue wins, 0 => Red wins
+        result = float(blue_side.iloc[0]["result"])  # 1 => Blue wins, 0 => Red wins
 
         expected_probs.extend([prob_blue] * len(blue_side))
 
         # Update ratings for validation
-        if abs(result - 1.0) < 1e-9:
-            # Blue wins => ranks=[0,1]
-            updated = update_ts_ratings(ts_model, (blue_ratings, red_ratings), [0, 1])
-        else:
-            # Red wins => ranks=[1,0]
-            updated = update_ts_ratings(ts_model, (blue_ratings, red_ratings), [1, 0])
+        ranks = [0, 1] if abs(result - 1.0) < MIN_FLOAT else [1, 0]
+        updated_blue, updated_red = update_ts_ratings(
+            ts_model, (blue_ratings, red_ratings), ranks=ranks
+        )
 
-        # Write updated ratings back
         for i, b_id in enumerate(blue_ids):
-            val_ratings[b_id]["rating"] = updated[0][i]
+            val_ratings[b_id]["rating"] = updated_blue[i]
         for i, r_id in enumerate(red_ids):
-            val_ratings[r_id]["rating"] = updated[1][i]
+            val_ratings[r_id]["rating"] = updated_red[i]
 
     # Evaluate log loss
     y_true = df_valid_sorted.loc[df_valid_sorted["side"] == "Blue", "result"]
@@ -719,32 +715,28 @@ def run_trueskill_computation(
     """
     Main procedure to update TrueSkill ratings across the entire DataFrame:
       1. Group matches by (date, gameid)
-      2. For each match, call `process_game` (capture returned dictionary!)
+      2. For each match, call `process_game`
       3. Return a DataFrame with new columns:
-         trueskill_mu_before, trueskill_sigma_before, trueskill_mu_after,
-         trueskill_sigma_after, trueskill_win_likelihood, etc.
+         trueskill_mu_before, trueskill_sigma_before, opp_trueskill_mu_before,
+         opp_trueskill_sigma_before, trueskill_mu_after, trueskill_sigma_after,
+         trueskill_win_likelihood
     """
     df = df.copy()
     entity_key = "teamid" if entity.lower() == "team" else "playerid"
 
     # Initialize a TrueSkill model
-    ts_model = TrueSkill(
-        mu=mu,
-        sigma=sigma,
-        beta=beta,
-        draw_probability=0.0,
-    )
+    ts_model = TrueSkill(mu=mu, sigma=sigma, beta=beta, draw_probability=0.0)
 
     # Store entity ratings in a dictionary
     ts_ratings = defaultdict(
         lambda: {
             "rating": create_ts_rating(mu, sigma),
-            "season": df["season"].min(),
+            "season": int(df["season"].min()),
             "league": None,
         }
     )
 
-    # Pre-allocate output columns
+    # Pre-allocate numeric columns
     for col in [
         "trueskill_mu_before",
         "trueskill_sigma_before",
@@ -754,7 +746,7 @@ def run_trueskill_computation(
         "trueskill_mu_after",
         "trueskill_sigma_after",
     ]:
-        df[col] = None
+        df[col] = pd.Series(index=df.index, dtype="float64")
 
     grouped = df.groupby(["date", "gameid"], sort=False)
     if show_progress:
