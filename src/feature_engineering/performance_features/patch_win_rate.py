@@ -5,6 +5,8 @@ This module provides functionality to compute the patch games count and win rate
 using an Exponentially Weighted Mean (EWM) model.
 """
 
+from __future__ import annotations
+
 import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
@@ -17,31 +19,74 @@ HALF_LIFE = config_params["half_life"]
 EPSILON = 1e-8  # Small constant to prevent division by zero
 
 
+def _validate_inputs(df: pd.DataFrame, identity: str) -> None:
+    required = {identity, "patch", "result"}
+    missing = required - set(df.columns)
+    if missing:
+        msg = f"Input DataFrame is missing required columns: {missing}"
+        raise ValueError(msg)
+    # Ensure result is numeric 0/1
+    if not pd.api.types.is_numeric_dtype(df["result"]):
+        valmap = {
+            "W": 1,
+            "Win": 1,
+            "win": 1,
+            "Won": 1,
+            "won": 1,
+            True: 1,
+            "L": 0,
+            "Loss": 0,
+            "loss": 0,
+            "Lose": 0,
+            "lose": 0,
+            False: 0,
+        }
+        df["result"] = df["result"].map(valmap).astype("float64")
+
+
 def compute_ema_patch(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     """
     Compute Exponentially Weighted Mean (EWM) for patch win rates grouped by identity and patch.
 
-    Args:
-        df (pd.DataFrame): The input DataFrame containing match data.
-        identity (str): The identity column to group by (e.g., 'playerid' or 'teamid').
-
-    Returns:
-        pd.DataFrame: DataFrame with computed EWM for patch win rates.
-
+    Returns columns:
+      - ema_patch_win_rate_before: EMA prior to the current game (leak-free; shifted per-group)
+      - ema_patch_win_rate_after:  EMA including the current game
+      - ema_patch_games_before:   EMA-weighted games count prior to the current game
+      - ema_patch_games_after:    EMA-weighted games count including the current game
     """
     df = df.copy()
-    grouped = df.groupby([identity, "patch"])["result"]
+    _validate_inputs(df, identity)
 
-    # Compute EMA before and after for win rate
-    df["ema_patch_win_rate_before"] = grouped.transform(
-        lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True)
-        .mean()
+    # Grouping (assumes df is already sorted in calling function)
+    g_result = df.groupby([identity, "patch"], sort=False)["result"]
+
+    # Win rate EMA
+    ema_after = g_result.transform(
+        lambda x: x.ewm(halflife=HALF_LIFE, adjust=True, ignore_na=True).mean()
+    )
+    # >>> change 1: shift WITHIN group, not globally
+    ema_before = ema_after.groupby([df[identity], df["patch"]], sort=False).shift()
+
+    # A neutral prior for the first game in the patch (no history): 0.5
+    df["ema_patch_win_rate_before"] = ema_before.fillna(0.5)
+    df["ema_patch_win_rate_after"] = ema_after
+
+    # EMA-weighted "games count" (trust signal)
+    ones = pd.Series(1.0, index=df.index)
+    g_ones = ones.groupby([df[identity], df["patch"]], sort=False)
+    games_ema_after = g_ones.transform(
+        lambda x: x.ewm(halflife=HALF_LIFE, adjust=True).sum()
+    )
+    # >>> change 2: shift WITHIN group, not globally
+    games_ema_before = (
+        games_ema_after.groupby([df[identity], df["patch"]], sort=False)
         .shift()
-        .bfill()
+        .fillna(0.0)
     )
-    df["ema_patch_win_rate_after"] = grouped.transform(
-        lambda x: x.ewm(halflife=HALF_LIFE, adjust=False, ignore_na=True).mean()
-    )
+
+    df["ema_patch_games_before"] = games_ema_before
+    df["ema_patch_games_after"] = games_ema_after
+
     return df
 
 
@@ -49,35 +94,22 @@ def calculate_patch_win_likelihood(
     ema_win_rate: pd.Series, opp_ema_win_rate: pd.Series
 ) -> pd.Series:
     """
-    Calculate the EMA patch win likelihood.
-
-    Args:
-        ema_win_rate (pd.Series): The EMA win rate for the entity.
-        opp_ema_win_rate (pd.Series): The EMA win rate for the opponent.
-
-    Returns:
-        pd.Series: The calculated patch win likelihood.
-
+    Calculate the EMA patch win likelihood (symmetric ratio).
+    NOTE: We keep full precision (no rounding) for modeling.
     """
-    total_win_rate = ema_win_rate + opp_ema_win_rate + EPSILON
-    win_likelihood = ema_win_rate / total_win_rate
-    return round(win_likelihood, 3)
+    denom = ema_win_rate.add(opp_ema_win_rate).add(EPSILON)
+    return ema_win_rate.div(denom).clip(0.0, 1.0)
 
 
 def patch_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
     Compute patch-wise EWM computation integrated with games count and win rates.
 
-    Args:
-        df (pd.DataFrame): The input DataFrame containing match data.
-        entity (str): The entity type ('player' or 'team').
-
-    Returns:
-        pd.DataFrame: DataFrame with computed patch win rates and EWM.
-
-    Raises:
-        ValueError: If the entity is not 'player' or 'team'.
-
+    Adds columns:
+      - ema_patch_win_rate_before / after
+      - ema_patch_games_before / after
+      - opp_ema_patch_win_rate_before
+      - patch_win_likelihood
     """
     if entity.lower() not in {"player", "team"}:
         msg = "Entity must be either 'player' or 'team'."
@@ -86,20 +118,17 @@ def patch_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFram
     identity = get_identity(entity)
     df = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
 
-    # Compute EMA along with games and win rates
+    # Compute EMA features
     df = compute_ema_patch(df, identity)
 
-    # Compute Opponent Columns
+    # Opponent columns (keep existing helper signature)
     df["opp_ema_patch_win_rate_before"] = get_opponent(
         df["ema_patch_win_rate_before"].tolist(), entity=entity
     )
 
-    # Calculate win likelihood based on EMA
-    df["patch_win_likelihood"] = df.apply(
-        lambda row: calculate_patch_win_likelihood(
-            row["ema_patch_win_rate_before"], row["opp_ema_patch_win_rate_before"]
-        ),
-        axis=1,
+    # Vectorized likelihood (no per-row apply)
+    df["patch_win_likelihood"] = calculate_patch_win_likelihood(
+        df["ema_patch_win_rate_before"], df["opp_ema_patch_win_rate_before"]
     )
 
     return df.reset_index(drop=True)

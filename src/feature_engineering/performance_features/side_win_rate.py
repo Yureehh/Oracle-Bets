@@ -5,6 +5,9 @@ This module provides functionality to compute the side win rate for a given enti
 using an Exponentially Weighted Mean (EWM) model.
 """
 
+from __future__ import annotations
+
+import numpy as np
 import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
@@ -17,134 +20,165 @@ HALF_LIFE = config_params["half_life"]
 EPSILON = 1e-8  # Small constant to prevent division by zero
 
 
-def compute_ema_side(
-    df: pd.DataFrame, side: str, identity: str, half_life: float
-) -> pd.DataFrame:
+def _validate_inputs(df: pd.DataFrame, identity: str) -> None:
+    """Ensure required columns exist and result is numeric 0/1."""
+    required = {identity, "side", "result"}
+    missing = required - set(df.columns)
+    if missing:
+        msg = f"Input DataFrame is missing required columns: {missing}"
+        raise ValueError(msg)
+
+    if not pd.api.types.is_numeric_dtype(df["result"]):
+        valmap = {
+            "W": 1,
+            "Win": 1,
+            "win": 1,
+            "Won": 1,
+            "won": 1,
+            True: 1,
+            "L": 0,
+            "Loss": 0,
+            "loss": 0,
+            "Lose": 0,
+            "lose": 0,
+            False: 0,
+        }
+        df["result"] = df["result"].map(valmap).astype("float64")
+
+
+def _compute_side_ema_all(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     """
-    Compute Exponentially Weighted Mean (EWM) for a specific side ('Red' or 'Blue').
+    Compute EWM side win rates (before/after) and EMA-weighted games counts
+    for both 'Blue' and 'Red' sides in a single pass.
 
-    Args:
-        df (pd.DataFrame): The input DataFrame containing match data.
-        side (str): The side to compute EWM for ('Red' or 'Blue').
-        identity (str): The identity column to group by (e.g., 'playerid' or 'teamid').
-        half_life (float): The half-life for the EWM calculation.
-
-    Returns:
-        pd.DataFrame: DataFrame with computed EWM for the specified side,
-                      containing columns for "before" and "after" EWM.
-
+    Adds:
+      - ema_blue_side_before / after
+      - ema_red_side_before / after
+      - ema_blue_side_games_before / after
+      - ema_red_side_games_before / after
     """
-    # Filter rows for the given side and copy to avoid modifying original df
-    side_df = df[df["side"] == side].copy()
-    side_lower = side.lower()
-    ema_col = f"ema_{side_lower}_side"
+    df = df.copy()
+    _validate_inputs(df, identity)
 
-    # Group by identity to compute "before" and "after" EWM
-    group = side_df.groupby(identity)["result"]
+    # Group by (identity, side), assuming proper chronological sorting upstream
+    g = df.groupby([identity, "side"], sort=False)["result"]
 
-    # "before" uses .shift() to ensure current row's data isn't included in its own historical average
-    side_df[f"{ema_col}_before"] = (
-        group.transform(
-            lambda x: x.ewm(halflife=half_life, adjust=False, ignore_na=True).mean()
-        )
+    # EMA win-rate per group
+    ema_after_all = g.transform(
+        lambda s: s.ewm(halflife=HALF_LIFE, adjust=True, ignore_na=True).mean()
+    )
+    ema_before_all = g.transform(
+        lambda s: s.ewm(halflife=HALF_LIFE, adjust=True, ignore_na=True).mean().shift()
+    )
+
+    # EMA "games" (trust) per group
+    games_after_all = g.transform(
+        lambda s: pd.Series(1.0, index=s.index)
+        .ewm(halflife=HALF_LIFE, adjust=True)
+        .sum()
+    )
+    # IMPORTANT: shift per-group (not globally)
+    games_before_all = g.transform(
+        lambda s: pd.Series(1.0, index=s.index)
+        .ewm(halflife=HALF_LIFE, adjust=True)
+        .sum()
         .shift()
-        .bfill()  # bfill ensures no NaN at the first record. You may consider leaving it NaN.
     )
 
-    # "after" includes the current row (no shift)
-    side_df[f"{ema_col}_after"] = group.transform(
-        lambda x: x.ewm(halflife=half_life, adjust=False, ignore_na=True).mean()
+    # Allocate side-specific columns, then assign by mask
+    for col in [
+        "ema_blue_side_before",
+        "ema_blue_side_after",
+        "ema_red_side_before",
+        "ema_red_side_after",
+        "ema_blue_side_games_before",
+        "ema_blue_side_games_after",
+        "ema_red_side_games_before",
+        "ema_red_side_games_after",
+    ]:
+        df[col] = np.nan
+
+    blue_mask = df["side"].eq("Blue")
+    red_mask = df["side"].eq("Red")
+
+    df.loc[blue_mask, "ema_blue_side_before"] = ema_before_all[blue_mask]
+    df.loc[blue_mask, "ema_blue_side_after"] = ema_after_all[blue_mask]
+    df.loc[blue_mask, "ema_blue_side_games_before"] = games_before_all[blue_mask]
+    df.loc[blue_mask, "ema_blue_side_games_after"] = games_after_all[blue_mask]
+
+    df.loc[red_mask, "ema_red_side_before"] = ema_before_all[red_mask]
+    df.loc[red_mask, "ema_red_side_after"] = ema_after_all[red_mask]
+    df.loc[red_mask, "ema_red_side_games_before"] = games_before_all[red_mask]
+    df.loc[red_mask, "ema_red_side_games_after"] = games_after_all[red_mask]
+
+    # Carry past values of the *other* side forward (ffill only to avoid future leak)
+    by_id = df.groupby(identity, sort=False)
+    ffill_cols = [
+        "ema_blue_side_before",
+        "ema_blue_side_after",
+        "ema_red_side_before",
+        "ema_red_side_after",
+        "ema_blue_side_games_before",
+        "ema_blue_side_games_after",
+        "ema_red_side_games_before",
+        "ema_red_side_games_after",
+    ]
+    df[ffill_cols] = by_id[ffill_cols].ffill()
+
+    # Neutral priors where history is missing
+    df["ema_blue_side_before"] = df["ema_blue_side_before"].fillna(0.5)
+    df["ema_red_side_before"] = df["ema_red_side_before"].fillna(0.5)
+    df["ema_blue_side_games_before"] = df["ema_blue_side_games_before"].fillna(0.0)
+    df["ema_red_side_games_before"] = df["ema_red_side_games_before"].fillna(0.0)
+
+    return df
+
+
+def _side_likelihood_vectorized(df: pd.DataFrame) -> pd.Series:
+    """
+    P(win) = my_side_before / (my_side_before + opp_side_before + EPSILON)
+    Uses opponent’s EMA for the *opposite* side.
+    """
+    is_blue = df["side"].eq("Blue")
+    my_before = np.where(is_blue, df["ema_blue_side_before"], df["ema_red_side_before"])
+    opp_before = np.where(
+        is_blue, df["opp_ema_red_side_before"], df["opp_ema_blue_side_before"]
     )
-
-    return side_df
-
-
-def calculate_side_win_likelihood(row: pd.Series) -> float | None:
-    """
-    Calculate the EMA side win likelihood for a given row.
-
-    Args:
-        row (pd.Series): A row from the DataFrame containing match data.
-
-    Returns:
-        Optional[float]: Calculated EMA side win likelihood, or None if not computable.
-
-    """
-    side = row["side"].lower()  # "red" or "blue"
-    opposite_side = "red" if side == "blue" else "blue"
-
-    # Column for the entity's side
-    ema_side_col = f"ema_{side}_side_before"
-    # Opponent column: "opp_ema_red_side_before" or "opp_ema_blue_side_before"
-    opp_ema_side_col = f"opp_{ema_side_col.replace(side, opposite_side)}"
-
-    ema_side = row.get(ema_side_col)
-    opp_ema_side = row.get(opp_ema_side_col)
-
-    if pd.notnull(ema_side) and pd.notnull(opp_ema_side):
-        total = ema_side + opp_ema_side + EPSILON
-        return round(ema_side / total, 3)
-    return None
+    denom = my_before + opp_before + EPSILON
+    return (my_before / denom).clip(0.0, 1.0)
 
 
 def side_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     """
     Generate an Exponentially Weighted Mean (EWM) model for side win rates.
 
-    Args:
-        df (pd.DataFrame): The input DataFrame containing match data.
-        entity (str): The entity type ('player' or 'team').
-
-    Returns:
-        pd.DataFrame: A DataFrame with columns for EWM side win rates before/after,
-                      opponent side EWM, and a side win likelihood score.
-
+    Adds columns:
+      - ema_blue_side_before / after
+      - ema_red_side_before / after
+      - ema_blue_side_games_before / after
+      - ema_red_side_games_before / after
+      - opp_ema_blue_side_before / opp_ema_red_side_before
+      - side_win_likelihood
     """
     if entity.lower() not in {"player", "team"}:
         msg = "Entity must be either 'player' or 'team'."
         raise ValueError(msg)
 
-    # Sort the DataFrame to ensure rows are in correct order for EWM
-    df = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
     identity = get_identity(entity)
+    df = df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
 
-    # --- 1) Compute EWM for both Red and Blue sides ---
-    red_side_df = compute_ema_side(df, "Red", identity, HALF_LIFE)
-    blue_side_df = compute_ema_side(df, "Blue", identity, HALF_LIFE)
+    # Single-pass EMA features for both sides
+    df = _compute_side_ema_all(df, identity)
 
-    # Combine both side DataFrames
-    combined_df = pd.concat([red_side_df, blue_side_df], ignore_index=True)
-    combined_df = combined_df.sort_values(get_sorting_keys(entity)).reset_index(
-        drop=True
+    # Opponent EMA “before” columns
+    df["opp_ema_blue_side_before"] = get_opponent(
+        df["ema_blue_side_before"].tolist(), entity=entity
+    )
+    df["opp_ema_red_side_before"] = get_opponent(
+        df["ema_red_side_before"].tolist(), entity=entity
     )
 
-    # The columns to fill forward/backward
-    ema_columns = [
-        "ema_blue_side_before",
-        "ema_red_side_before",
-        "ema_blue_side_after",
-        "ema_red_side_after",
-    ]
+    # Vectorized likelihood
+    df["side_win_likelihood"] = _side_likelihood_vectorized(df)
 
-    # Fill missing values within each group (ffill then bfill)
-    combined_df[ema_columns] = (
-        combined_df.groupby(identity)[ema_columns]
-        .apply(lambda grp: grp.ffill().bfill())
-        .reset_index(drop=True)
-    )
-
-    # --- 2) Compute opponent EMA side values (using "before" columns) ---
-    for clr in ["red", "blue"]:
-        ema_col = f"ema_{clr}_side_before"
-        opp_ema_col = f"opp_{ema_col}"
-        combined_df[opp_ema_col] = get_opponent(
-            combined_df[ema_col].tolist(), entity=entity
-        )
-
-    # --- 3) Calculate side win likelihood ---
-    combined_df["side_win_likelihood"] = combined_df.apply(
-        calculate_side_win_likelihood, axis=1
-    )
-
-    # Final sort to maintain consistent ordering
-    return combined_df.sort_values(get_sorting_keys(entity)).reset_index(drop=True)
+    return df.reset_index(drop=True)

@@ -42,8 +42,6 @@ class FeatureGenerator:
             .agg(
                 enemyTeamKills=("kills", "sum"),
                 enemyTeamDeaths=("deaths", "sum"),
-                enemyTeamDamages=("damagetochampions", "sum"),
-                enemyTeamGolds=("totalgold", "sum"),
                 enemyTeamTotalCS=("total_cs", "sum"),
                 enemyTeamWardPlaced=("wpm", "sum"),
                 enemyTeamWardKilled=("wcpm", "sum"),
@@ -69,11 +67,9 @@ class FeatureGenerator:
                 "kills",
                 "assists",
                 "deaths",
-                "damagetochampions",
                 "damagetakenperminute",
                 "damagemitigatedperminute",
                 "gamelength",
-                "totalgold",
                 "total_cs",
                 "wpm",
                 "wcpm",
@@ -94,8 +90,6 @@ class FeatureGenerator:
         denom_cols = [
             "enemyTeamKills",
             "enemyTeamDeaths",
-            "enemyTeamDamages",
-            "enemyTeamGolds",
             "enemyTeamWardPlaced",
         ]
         df[denom_cols] = df[denom_cols].replace(0, np.nan)  # avoid /0
@@ -105,15 +99,6 @@ class FeatureGenerator:
             df["enemyTeamKills"] + df["kills"] + df["assists"],
         )
         df["d_ratio"] = np.divide(df["deaths"], df["enemyTeamDeaths"])
-        df["damages_ratio"] = np.divide(df["damagetochampions"], df["enemyTeamDamages"])
-        df["damage_tanked_ratio"] = np.divide(
-            df["damagetakenperminute"] * df["gamelength"], df["enemyTeamDamages"]
-        )
-        df["damage_mitigated_ratio"] = np.divide(
-            df["damagemitigatedperminute"] * df["gamelength"], df["enemyTeamDamages"]
-        )
-        df["gold_ratio"] = np.divide(df["totalgold"], df["enemyTeamGolds"])
-        df["cs_to_gold_ratio"] = np.divide(df["total_cs"], df["enemyTeamGolds"])
         df["wards_placed_ratio"] = np.divide(
             df["wpm"] * df["gamelength"], df["enemyTeamWardPlaced"]
         )
@@ -164,7 +149,9 @@ class FeatureGenerator:
         _add_expanding(["playerid", "patch"], "patch")
 
         # Propagate NaNs so every row has both win & loss histories where possible
-        df = df.fillna(method="ffill").fillna(method="bfill")
+        pd.set_option("future.no_silent_downcasting", True)  # noqa: FBT003
+        df = df.ffill().bfill()
+        df = df.infer_objects(copy=False)  # TODO: what does this do?
 
         return df
 
@@ -181,7 +168,6 @@ class FeatureGenerator:
                 "kills",
                 "assists",
                 "deaths",
-                "totalgold",
                 "gamelength",
                 "total_cs",
                 "patch",
@@ -199,9 +185,6 @@ class FeatureGenerator:
         ].transform("sum")
         df["kda"] = np.divide(
             df["kills"] + df["assists"], df["deaths"].replace(0, np.nan)
-        )
-        df["gold_efficiency"] = np.divide(
-            df["totalgold"], df["gamelength"].replace(0, np.nan)
         )
         df["xp_efficiency"] = np.divide(
             df["total_cs"], df["gamelength"].replace(0, np.nan)
@@ -354,16 +337,12 @@ def _add_rolling_mean(
     window: int,
 ) -> pd.DataFrame:
     """Rolling mean of the *previous* `window` rows inside each group."""
+    # Ensure chronological order within each group before rolling
     df = df.sort_values([*group_cols, "date"], kind="mergesort")
 
     for col in value_cols:
-        rolled = (
-            df.groupby(group_cols, observed=True)[col]
-            .shift()  # → leak-free
-            .rolling(window, min_periods=1)
-            .mean()
-            .reset_index(level=group_cols, drop=True)
+        df[f"{prefix}{col}"] = df.groupby(group_cols, observed=True)[col].transform(
+            lambda s: s.shift().rolling(window, min_periods=1).mean()
         )
-        df[f"{prefix}{col}"] = rolled
 
     return df

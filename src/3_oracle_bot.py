@@ -25,8 +25,8 @@ from discord_predictions.discord import (
     handle_command_error,
     validate_and_predict,
 )
-from entities.team import Team
 from ingestion.schedule import PandaScoreSchedule
+from utils.entities.team import Team
 from utils.logger import logger
 from utils.paths import SCHEDULE
 

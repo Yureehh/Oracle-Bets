@@ -23,7 +23,7 @@ import datetime as dt
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 import boto3
 import pandas as pd
@@ -52,11 +52,11 @@ from utils.paths import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 # ───────────────────────────────  env / logging  ──────────────────────────────
 load_dotenv()
-
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 
@@ -72,29 +72,37 @@ AWS_ID_ENV: Final[str] = "ACCESS_ID"
 AWS_SECRET_ENV: Final[str] = "SECRET_ID"  # noqa: S105
 
 YEARS_BACK: Final[int] = 3
+Entity = Literal["team", "player"]
 
 
-# ───────────────────────────────  small helpers  ─────────────────────────────
+# ───────────────────────────────  helpers  ────────────────────────────────────
 def _years_to_process() -> list[str]:
+    """Return the most recent `YEARS_BACK` seasons (descending) as strings."""
     now = dt.date.today().year
     return [str(y) for y in range(now, now - YEARS_BACK, -1)]
 
 
 def _parallelise(
-    fn, team_df: pd.DataFrame, player_df: pd.DataFrame
+    fn: Callable[..., pd.DataFrame],
+    team_df: pd.DataFrame,
+    player_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run rating/metric fn on team & player frames concurrently."""
-    with ThreadPoolExecutor() as pool:
+    """
+    Run a function on team & player frames concurrently.
+    Exceptions in either branch will propagate on .result().
+    """
+    with ThreadPoolExecutor(max_workers=2) as pool:
         f_team = pool.submit(fn, team_df, entity="team")
         f_player = pool.submit(fn, player_df, entity="player")
         return f_team.result(), f_player.result()
 
 
-def _require_env(key: str) -> str:  # fail-fast helper
+def _require_env(key: str) -> str:
+    """Fail-fast env lookup that raises a pipeline-specific error."""
     val = os.getenv(key)
     if not val:
         msg = f"Environment variable '{key}' not set"
-        raise RuntimeError(msg)
+        raise DataGeneratorError(msg)
     return val
 
 
@@ -138,11 +146,11 @@ class DataGenerator:
             return raw
         except (BotoCoreError, ClientError) as exc:  # AWS-side errors
             msg = f"S3 ingest failed: {exc}"
-            raise RuntimeError(msg) from exc
+            raise DataGeneratorError(msg) from exc
 
     # ───────────────────────  split & persist  ───────────────────────────
     def clean_and_store_data(self, raw: pd.DataFrame) -> None:
-        # sourcery skip: class-extract-method
+        """Split raw into team/player, sort deterministically, persist interim."""
         self.team_data = (
             self.oracle.clean_data(raw, "team")
             .sort_values(get_sorting_keys("team"))
@@ -154,18 +162,18 @@ class DataGenerator:
             .reset_index(drop=True)
         )
 
-        safe_store_df_as_parquet(
-            self.team_data, INTERIM_TEAM_DATA, [logger, data_pipeline_logger]
+        self._store_team_and_player(
+            INTERIM_TEAM_DATA,
+            INTERIM_PLAYER_DATA,
+            "Interim Parquet files written.",
         )
-        safe_store_df_as_parquet(
-            self.player_data, INTERIM_PLAYER_DATA, [logger, data_pipeline_logger]
-        )
-        _dbl("Interim Parquet files written.")
 
     # ───────────────────────  enrichment  ────────────────────────────────
     def _enrich_ratings(self) -> None:
         _dbl("Adding ratings …")
+        # League ELO for teams first (writes league artefacts used by other models)
         self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
+        # Player + Team ratings, in parallel per model
         for fn in (
             self.rating_models.compute_elo,
             self.rating_models.compute_glicko2,
@@ -178,11 +186,13 @@ class DataGenerator:
 
     def _enrich_performance(self) -> None:
         _dbl("Adding performance metrics …")
+        # Entity EMA stats (team+player) in parallel
         self.team_data, self.player_data = _parallelise(
             PerformanceMetrics.add_entity_ema_statistics,
             self.team_data,
             self.player_data,
         )
+        # Team-level side/patch/season EMAs (intentionally teams only)
         for fn in (
             PerformanceMetrics.add_side_win_rate_ewm,
             PerformanceMetrics.add_patch_win_rate_ewm,
@@ -191,6 +201,7 @@ class DataGenerator:
             self.team_data = fn(self.team_data, entity="team")
 
     def generate_features(self) -> None:
+        """Feature generator: team then player."""
         self.team_data = self.feature_generator.generate_new_team_features(
             self.team_data
         )
@@ -199,6 +210,7 @@ class DataGenerator:
         )
 
     def enrich_datasets(self) -> None:
+        """Run feature gen, ratings, performance; persist processed artefacts."""
         self.generate_features()
         self._enrich_ratings()
         self._enrich_performance()
@@ -206,43 +218,70 @@ class DataGenerator:
 
     # ───────────────────────  persist processed  ────────────────────────
     def _store_enriched(self) -> None:
+        self._store_team_and_player(
+            PROCESSED_TEAMS, PROCESSED_PLAYERS, "Processed Parquet files written."
+        )
+
+    def _store_team_and_player(
+        self, team_path: Path | str, player_path: Path | str, log_msg: str
+    ) -> None:
         safe_store_df_as_parquet(
-            self.team_data, PROCESSED_TEAMS, [logger, data_pipeline_logger]
+            self.team_data, team_path, [logger, data_pipeline_logger]
         )
         safe_store_df_as_parquet(
-            self.player_data, PROCESSED_PLAYERS, [logger, data_pipeline_logger]
+            self.player_data, player_path, [logger, data_pipeline_logger]
         )
-        _dbl("Processed Parquet files written.")
+        _dbl(log_msg)
 
     # ───────────────────────  training / flattened  ──────────────────────
     def _extract(
         self,
         df: pd.DataFrame,
         conf: Path,
-        entity: str,
-        kind: str,  # "training" | "flattened"
+        entity: Entity,
+        kind: Literal["training", "flattened"],
     ) -> None:
+        """
+        Materialise either training (uses *_before columns) or flattened
+        inference tables (uses last row per entity, *_after columns).
+        """
         cfg = json_loader(conf)
         key = "flattened_cols" if kind == "flattened" else f"{entity}_features"
         cols: list[str] = cfg[key]
 
         missing = set(cols) - set(df.columns)
         if missing:
-            msg = f"{entity} missing cols: {missing}"
-            raise ValueError(msg)
+            msg = f"{entity} missing cols for {kind}: {missing}"
+            raise DataGeneratorError(msg)
 
         if kind == "flattened":
+            # last row per entity, drop _after suffix for cleaner inference columns
             after = {c: c.replace("_after", "") for c in cols if "_after" in c}
             out = (
                 df.sort_values([f"{entity}id", "date"])
-                .groupby(f"{entity}id")
+                .groupby(f"{entity}id", sort=False)
                 .tail(1)[cols]
                 .rename(columns=after)
             )
             dest = PROCESSED_DIR / f"flattened_{entity}s.parquet"
         else:
-            before = {c: c.replace("_before", "") for c in cols if "_before" in c}
-            out = df[cols].rename(columns=before)
+            # training uses *_before; auto-append opponent EMA columns
+            before_map = {
+                c: c.replace("_before", "") for c in cols if c.endswith("_before")
+            }
+
+            # Candidate opponent columns only for EMA-before features you listed
+            ema_before_cols = [
+                c for c in cols if c.startswith("ema_") and c.endswith("_before")
+            ]
+            opp_candidates = [f"opp_{c}" for c in ema_before_cols]
+            opp_existing = [c for c in opp_candidates if c in df.columns]
+
+            # Final column set (dedup while preserving order)
+            cols_final = list(dict.fromkeys([*cols, *opp_existing]))
+
+            # Rename only your own *_before columns; opponent cols stay as-is
+            out = df.loc[:, cols_final].rename(columns=before_map)
             dest = PROCESSED_DIR / f"training_{entity}_data.parquet"
 
         safe_store_df_as_parquet(out, dest, [logger, data_pipeline_logger])
@@ -263,7 +302,6 @@ class DataGenerator:
 
         raw = self.ingest_data_from_s3()
         self.clean_and_store_data(raw)
-        # MISSING
         self.enrich_datasets()
         self.extract_both_training_data()
         self.flatten_both_inference_data()

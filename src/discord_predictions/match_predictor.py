@@ -12,7 +12,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from entities.team import Team
 from feature_engineering.ratings_features.glicko import (
     DEFAULT_MU,
     DEFAULT_PHI,
@@ -30,6 +29,7 @@ from feature_engineering.ratings_features.trueskill import (
     win_probability as trueskill_win_probability,
 )
 from prediction_models.gbdt_model import GradientBoostingModel
+from utils.entities.team import Team
 from utils.io_utils import load_model
 from utils.paths import (
     LEAGUE_ELO,

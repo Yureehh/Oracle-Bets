@@ -195,9 +195,11 @@ def pivot_games_to_wide(df: pd.DataFrame) -> pd.DataFrame:
         index=["date", "gameid", "season"],
         columns="side",
         values=["teamid", "league", "result"],
+        aggfunc="first",  # <- critical change
+        observed=True,  # <- small speed/footprint win for categoricals
     ).reset_index()
 
-    # Flatten columns robustly
+    # Flatten columns robustly (unchanged)
     flat_cols: list[str] = []
     for col in df_wide.columns.to_flat_index():
         if isinstance(col, tuple):

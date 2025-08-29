@@ -39,7 +39,7 @@ def _create_directory(directory: Path) -> None:
 # --------------------------------------------------------------------------- #
 # Base & top-level dirs
 # --------------------------------------------------------------------------- #
-BASE_DIR: Final[Path] = Path(os.getenv("BASE_DIR", Path.getcwd())).resolve()
+BASE_DIR: Final[Path] = Path(os.getenv("BASE_DIR", Path.cwd())).resolve()
 
 DATA_DIR: Final = BASE_DIR / "data"
 MODELS_DIR: Final = BASE_DIR / "models"

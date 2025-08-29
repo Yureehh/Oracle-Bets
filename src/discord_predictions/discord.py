@@ -12,7 +12,7 @@ import pandas as pd
 
 import discord_predictions.match_predictor as match_predictor_module
 from discord_predictions.best_ofs import BestOfs
-from entities.team import Team
+from utils.entities.team import Team
 from utils.io_utils import json_loader, parquet_loader
 from utils.paths import DISCORD_CONFIG, FLATTENED_PLAYERS, FLATTENED_TEAMS
 
@@ -267,9 +267,7 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
         f"{data['ema_dpm'].iloc[0]:.2f}",
         f"{data['ema_egpm'].iloc[0]:.2f}",
         f"{data['ema_vspm'].iloc[0]:.2f}",
-        f"{data['ema_earnedgoldshare'].iloc[0] * 100:.2f}%",
         f"{data['ema_damageshare'].iloc[0] * 100:.2f}%",
-        f"{data['ema_gold_efficiency'].iloc[0]:.2f}",
         f"{data['ema_xp_efficiency'].iloc[0]:.2f}",
     ]
 

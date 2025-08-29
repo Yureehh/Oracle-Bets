@@ -6,7 +6,10 @@ It provides static methods to enrich game data with statistical features such as
 moving averages (EMA) for entities like players or teams.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Final, Literal
 
 import pandas as pd
 
@@ -23,8 +26,10 @@ from feature_engineering.performance_features.side_win_rate import (
     side_win_rate_ewm_performance,
 )
 
+Entity = Literal["player", "team"]
 
-@dataclass
+
+@dataclass()
 class PerformanceMetrics:
     """
     A stateless utility class for performance metrics calculations.
@@ -33,10 +38,12 @@ class PerformanceMetrics:
     """
 
     # Common columns needed for all methods (customize as needed)
-    REQUIRED_COLUMNS = {"result", "patch", "season", "side"}
+    REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(
+        {"result", "patch", "season", "side"}
+    )
 
     @staticmethod
-    def validate_input_data(df: pd.DataFrame, entity: str) -> None:
+    def validate_input_data(df: pd.DataFrame, entity: Entity) -> None:
         """
         Validates the input DataFrame and entity type.
 
@@ -47,11 +54,11 @@ class PerformanceMetrics:
         if entity not in {"player", "team"}:
             msg = f"Invalid entity '{entity}': must be either 'player' or 'team'."
             raise ValueError(msg)
-        if df.empty:
-            msg = "Input DataFrame is empty."
-            raise ValueError(msg)
         if not isinstance(df, pd.DataFrame):
             msg = "Input data must be a Pandas DataFrame."
+            raise TypeError(msg)
+        if df.empty:
+            msg = "Input DataFrame is empty."
             raise ValueError(msg)
         missing = PerformanceMetrics.REQUIRED_COLUMNS - set(df.columns)
         if missing:
@@ -59,7 +66,7 @@ class PerformanceMetrics:
             raise ValueError(msg)
 
     @staticmethod
-    def add_entity_ema_statistics(df: pd.DataFrame, entity: str) -> pd.DataFrame:
+    def add_entity_ema_statistics(df: pd.DataFrame, entity: Entity) -> pd.DataFrame:
         """
         Enriches the DataFrame with entity-specific exponentially weighted moving average statistics.
 
@@ -71,7 +78,7 @@ class PerformanceMetrics:
         return enrich_entity_ema_statistics(df, entity)
 
     @staticmethod
-    def add_side_win_rate_ewm(df: pd.DataFrame, entity: str) -> pd.DataFrame:
+    def add_side_win_rate_ewm(df: pd.DataFrame, entity: Entity) -> pd.DataFrame:
         """
         Calculates and appends side win rate statistics using an exponentially weighted mean model.
 
@@ -83,7 +90,7 @@ class PerformanceMetrics:
         return side_win_rate_ewm_performance(df, entity)
 
     @staticmethod
-    def add_season_win_rate_ewm(df: pd.DataFrame, entity: str) -> pd.DataFrame:
+    def add_season_win_rate_ewm(df: pd.DataFrame, entity: Entity) -> pd.DataFrame:
         """
         Computes and integrates the season win rate EWM model into the DataFrame.
 
@@ -95,7 +102,7 @@ class PerformanceMetrics:
         return season_win_rate_ewm_performance(df, entity)
 
     @staticmethod
-    def add_patch_win_rate_ewm(df: pd.DataFrame, entity: str) -> pd.DataFrame:
+    def add_patch_win_rate_ewm(df: pd.DataFrame, entity: Entity) -> pd.DataFrame:
         """
         Computes and integrates the patch win rate EWM model into the DataFrame.
 
