@@ -1,13 +1,19 @@
+# discord_predictions/match_predictor.py
 """
-Lol Oracle Match Predictor
+LoL Oracle – Match Predictor
 
-This module predicts the outcomes of upcoming games using various rating
-models and a Gradient Boosting Decision Tree (GBDT) prediction model.
+- Loads artifacts once (LRU-cached parquet reads + lazy model loading).
+- Clean rating helpers (Elo, Glicko-2, Plackett–Luce, TrueSkill, League Elo).
+- Safe probability math (clipping + strict validation).
+- Robust team + player feature assembly (mirrors training-time transforms).
 """
 
-import pickle
+from __future__ import annotations
+
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -26,10 +32,9 @@ from feature_engineering.ratings_features.plackett_luce import (
 )
 from feature_engineering.ratings_features.trueskill import Rating as TrueskillRating
 from feature_engineering.ratings_features.trueskill import (
-    win_probability as trueskill_win_probability,
+    expected_win_probability as trueskill_win_probability,
 )
 from prediction_models.gbdt_model import GradientBoostingModel
-from utils.entities.team import Team
 from utils.io_utils import load_model
 from utils.paths import (
     LEAGUE_ELO,
@@ -37,322 +42,279 @@ from utils.paths import (
     OUTCOME_PREDICTION_FINAL_FEATURES,
     OUTCOME_PREDICTION_MODEL_PATH,
     TEAM_LEAGUES_MAPPING,
+    WHOLE_HISTORY_RATING_PATH,
 )
 
-# Constants
-PREDICTION_PRECISION = 3
-ELO_FACTOR = 400
-RATING_DECIMALS = 3
+if TYPE_CHECKING:
+    from discord_predictions.team import Team
+
+# ── constants ────────────────────────────────────────────────────────────── #
+
+PREDICTION_PRECISION = 3  # for final np.round
+ELO_FACTOR = 400.0
+RATING_DECIMALS = 3  # for human-facing rounded rating-based probs
+_PROB_EPS = 1e-12  # small epsilon for clipping
+_ROLES = ("top", "jng", "mid", "bot", "sup")
+
+
+# ── cached parquet reads ─────────────────────────────────────────────────── #
+
+
+@lru_cache(maxsize=4)
+def _read_parquet_cached(path: str) -> pd.DataFrame:
+    try:
+        return pd.read_parquet(path, engine="fastparquet")
+    except (ImportError, ValueError):
+        # fallback to pyarrow if available
+        return pd.read_parquet(path)
+
+
+# ── probability helpers ──────────────────────────────────────────────────── #
+
+
+def _clip01(x: float | np.ndarray | pd.Series) -> Any:
+    return np.clip(x, 0.0 + _PROB_EPS, 1.0 - _PROB_EPS)
+
+
+def _to_float(x: Any) -> float:
+    return float(x)  # raises if NaN/None; good for surfacing issues early
+
+
+# ── rating models (team-level scalar + player-level vector support) ──────── #
+
+
+def _elo_prob(t1, t2) -> Any:
+    """
+    Logistic Elo win prob for Team 1.
+    Accepts scalars, Series, or ndarrays (vectorized as needed).
+    """
+    t1v = np.asarray(t1)
+    t2v = np.asarray(t2)
+    return _clip01(1.0 / (1.0 + 10.0 ** ((t2v - t1v) / ELO_FACTOR)))
+
+
+def _glicko2_prob(team1_mus, team1_phis, team2_mus, team2_phis) -> float:
+    """
+    Glicko-2 team vs team (scalar). Aggregates by team average with impact reduction.
+    """
+    # normalize to list of floats
+    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, (float, int)):
+        t1_mus = list(team1_mus)
+        t1_phis = list(team1_phis)
+        t2_mus = list(team2_mus)
+        t2_phis = list(team2_phis)
+    else:
+        t1_mus = [team1_mus]
+        t1_phis = [team1_phis]
+        t2_mus = [team2_mus]
+        t2_phis = [team2_phis]
+
+    blue = [
+        GlickoRating(_to_float(mu), _to_float(phi))
+        for mu, phi in zip(t1_mus, t1_phis, strict=False)
+    ]
+    red = [
+        GlickoRating(_to_float(mu), _to_float(phi))
+        for mu, phi in zip(t2_mus, t2_phis, strict=False)
+    ]
+
+    model = Glicko2(mu=DEFAULT_MU, phi=DEFAULT_PHI, sigma=DEFAULT_SIGMA)
+    mean_blue = calculate_mean_rating(blue)
+    mean_red = calculate_mean_rating(red)
+    mean_impact = sum(model.reduce_impact(r) for r in blue) / max(1, len(blue))
+    return float(_clip01(model.expect_score(mean_blue, mean_red, mean_impact)))
+
+
+def _pl_prob(team1_mus, team1_sigmas, team2_mus, team2_sigmas) -> float:
+    """
+    Plackett–Luce (scalar, team vs team). Aggregates players as a lineup of ratings.
+    """
+    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, (float, int)):
+        t1_mus = list(team1_mus)
+        t1_sig = list(team1_sigmas)
+        t2_mus = list(team2_mus)
+        t2_sig = list(team2_sigmas)
+    else:
+        t1_mus = [team1_mus]
+        t1_sig = [team1_sigmas]
+        t2_mus = [team2_mus]
+        t2_sig = [team2_sigmas]
+
+    model = PlackettLuce()
+    t1 = [
+        model.rating(_to_float(mu), _to_float(s))
+        for mu, s in zip(t1_mus, t1_sig, strict=False)
+    ]
+    t2 = [
+        model.rating(_to_float(mu), _to_float(s))
+        for mu, s in zip(t2_mus, t2_sig, strict=False)
+    ]
+    prob = pl_win_probability(model, t1, t2)
+    return float(_clip01(prob))
+
+
+def _ts_prob(team1_mus, team1_sigmas, team2_mus, team2_sigmas) -> float:
+    """
+    TrueSkill (scalar, team vs team). Aggregates players as lineup of ratings.
+    """
+    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, (float, int)):
+        t1_mus = list(team1_mus)
+        t1_sig = list(team1_sigmas)
+        t2_mus = list(team2_mus)
+        t2_sig = list(team2_sigmas)
+    else:
+        t1_mus = [team1_mus]
+        t1_sig = [team1_sigmas]
+        t2_mus = [team2_mus]
+        t2_sig = [team2_sigmas]
+
+    t1 = [
+        TrueskillRating(_to_float(mu), _to_float(s))
+        for mu, s in zip(t1_mus, t1_sig, strict=False)
+    ]
+    t2 = [
+        TrueskillRating(_to_float(mu), _to_float(s))
+        for mu, s in zip(t2_mus, t2_sig, strict=False)
+    ]
+    return float(_clip01(trueskill_win_probability(t1, t2)))
+
+
+# ── predictor ────────────────────────────────────────────────────────────── #
 
 
 @dataclass
 class MatchPredictor:
-    """Predicts the outcome of matches between two teams using various rating models and a GBDT prediction model."""
+    """
+    Predicts match outcomes using:
+      - team/player ratings (Elo, Glicko-2, PL, TrueSkill, League Elo)
+      - trained GBDT outcome model (lightgbm)
+      - optional Whole-History Rating (WHR) for raw ID-based head-to-head
+    """
 
-    outcome_prediction_model: Any = field(default=None, init=False)
-    team_to_league: pd.DataFrame = field(default=None, init=False)
-    league_to_elo: pd.DataFrame = field(default=None, init=False)
+    outcome_model: Any = field(default=None, init=False, repr=False)
+    whr_model: Any = field(default=None, init=False, repr=False)
+    team_to_league: pd.DataFrame = field(default=None, init=False, repr=False)
+    league_to_elo: pd.DataFrame = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initializes the MatchPredictor by loading necessary models and data."""
+        # artifacts: load lazily but fail fast if missing
+        self._load_artifacts()
+
+    # ── artifacts ───────────────────────────────────────────────────────── #
+
+    def _load_artifacts(self) -> None:
+        # sourcery skip: remove-redundant-exception, simplify-single-exception-tuple
         try:
-            self.load_models_and_data()
+            self.outcome_model = load_model(OUTCOME_PREDICTION_MODEL_PATH)
         except Exception as e:
-            msg = f"Failed to initialize MatchPredictor: {e}"
+            msg = f"Failed to load outcome model: {e}"
             raise RuntimeError(msg) from e
 
-    def load_models_and_data(self) -> None:
-        """Loads the outcome prediction model and necessary dataframes from predefined paths."""
         try:
-            self.outcome_prediction_model = load_model(OUTCOME_PREDICTION_MODEL_PATH)
-            self.team_to_league = pd.read_parquet(
-                TEAM_LEAGUES_MAPPING, engine="fastparquet"
-            )
-            self.league_to_elo = pd.read_parquet(LEAGUE_ELO, engine="fastparquet")
-        except FileNotFoundError as e:
-            msg = f"Required file not found: {e}"
-            raise FileNotFoundError(msg) from e
+            self.whr_model = load_model(WHOLE_HISTORY_RATING_PATH)
+        except (Exception, ImportError):
+            # WHR is optional; only used if whr_prediction() is called explicitly
+            self.whr_model = None
+
+        try:
+            self.team_to_league = _read_parquet_cached(str(TEAM_LEAGUES_MAPPING))
+            self.league_to_elo = _read_parquet_cached(str(LEAGUE_ELO))
         except Exception as e:
-            msg = f"Error loading models and data: {e}"
+            msg = f"Failed to load mapping/elo parquet: {e}"
             raise RuntimeError(msg) from e
 
-    @staticmethod
-    def is_iterable(obj: Any) -> bool:
-        """
-        Checks if the provided object is iterable.
-
-        Args:
-            obj (Any): The object to check.
-
-        Returns:
-            bool: True if iterable, False otherwise.
-
-        """
-        return isinstance(obj, list | tuple | np.ndarray)
-
-    @staticmethod
-    def aggregate_stats(stats: float | list[float]) -> float:
-        """
-        Aggregates statistics by summing if iterable, else returns the value as is.
-
-        Args:
-            stats (Union[float, List[float]]): The statistics to aggregate.
-
-        Returns:
-            float: Aggregated statistics.
-
-        """
-        if MatchPredictor.is_iterable(stats):
-            return sum(stats)
-        return stats
+    # ── rating-based predictions (scalar) ───────────────────────────────── #
 
     @staticmethod
     def elo_prediction(
-        team1_elo: float | list[float], team2_elo: float | list[float]
-    ) -> float:
-        """
-        Predicts the win probability based on ELO rating differences.
-
-        Args:
-            team1_elo (Union[float, List[float]]): ELO ratings for Team 1.
-            team2_elo (Union[float, List[float]]): ELO ratings for Team 2.
-
-        Returns:
-            float: Predicted win probability for Team 1.
-
-        """
-        team1_elo_sum = MatchPredictor.aggregate_stats(team1_elo)
-        team2_elo_sum = MatchPredictor.aggregate_stats(team2_elo)
-        prediction = 1 / (1 + 10 ** ((team2_elo_sum - team1_elo_sum) / ELO_FACTOR))
-        return round(prediction, RATING_DECIMALS)
-
-    @staticmethod
-    def gl2_prediction(
-        team1_mus: float | list[float],
-        team1_phis: float | list[float],
-        team2_mus: float | list[float],
-        team2_phis: float | list[float],
-    ) -> float:
-        """
-        Predicts the win probability based on Glicko-2 ratings.
-
-        Args:
-            team1_mus (Union[float, List[float]]): Glicko-2 mu values for Team 1.
-            team1_phis (Union[float, List[float]]): Glicko-2 phi values for Team 1.
-            team2_mus (Union[float, List[float]]): Glicko-2 mu values for Team 2.
-            team2_phis (Union[float, List[float]]): Glicko-2 phi values for Team 2.
-
-        Returns:
-            float: Predicted win probability for Team 1.
-
-        """
-        if not MatchPredictor.is_iterable(team1_mus):
-            team1_mus = [team1_mus]
-            team1_phis = [team1_phis]
-            team2_mus = [team2_mus]
-            team2_phis = [team2_phis]
-
-        blue_ratings = [
-            GlickoRating(mu, phi)
-            for mu, phi in zip(team1_mus, team1_phis, strict=False)
-        ]
-        red_ratings = [
-            GlickoRating(mu, phi)
-            for mu, phi in zip(team2_mus, team2_phis, strict=False)
-        ]
-        model = Glicko2(mu=DEFAULT_MU, phi=DEFAULT_PHI, sigma=DEFAULT_SIGMA)
-
-        mean_blue_rating = calculate_mean_rating(blue_ratings)
-        mean_red_rating = calculate_mean_rating(red_ratings)
-        mean_blue_impact = sum(
-            model.reduce_impact(rating) for rating in blue_ratings
-        ) / len(blue_ratings)
-        prediction = model.expect_score(
-            mean_blue_rating, mean_red_rating, mean_blue_impact
+        team1_elo: float | Iterable[float], team2_elo: float | Iterable[float]
+    ) -> Any:
+        prob = _elo_prob(team1_elo, team2_elo)
+        # keep vectorization for Series; round only scalars
+        return (
+            np.round(prob, RATING_DECIMALS)
+            if np.ndim(prob)
+            else round(float(prob), RATING_DECIMALS)
         )
-        return round(prediction, RATING_DECIMALS)
 
     @staticmethod
-    def pl_prediction(
-        team1_mus: float | list[float],
-        team1_sigmas: float | list[float],
-        team2_mus: float | list[float],
-        team2_sigmas: float | list[float],
-    ) -> float:
-        """
-        Predicts the win probability based on Plackett-Luce model.
-
-        Args:
-            team1_mus (Union[float, List[float]]): Plackett-Luce mu values for Team 1.
-            team1_sigmas (Union[float, List[float]]): Plackett-Luce sigma values for Team 1.
-            team2_mus (Union[float, List[float]]): Plackett-Luce mu values for Team 2.
-            team2_sigmas (Union[float, List[float]]): Plackett-Luce sigma values for Team 2.
-
-        Returns:
-            float: Predicted win probability for Team 1.
-
-        """
-        if not MatchPredictor.is_iterable(team1_mus):
-            team1_mus = [team1_mus]
-            team1_sigmas = [team1_sigmas]
-            team2_mus = [team2_mus]
-            team2_sigmas = [team2_sigmas]
-
-        model = PlackettLuce()
-        team1_ratings = [
-            model.rating(mu, sigma)
-            for mu, sigma in zip(team1_mus, team1_sigmas, strict=False)
-        ]
-        team2_ratings = [
-            model.rating(mu, sigma)
-            for mu, sigma in zip(team2_mus, team2_sigmas, strict=False)
-        ]
-        prediction = pl_win_probability(model, team1_ratings, team2_ratings)[0]
-        return round(prediction, RATING_DECIMALS)
+    def glicko2_prediction(team1_mus, team1_phis, team2_mus, team2_phis) -> float:
+        return round(
+            _glicko2_prob(team1_mus, team1_phis, team2_mus, team2_phis), RATING_DECIMALS
+        )
 
     @staticmethod
-    def trueskill_prediction(
-        team1_mus: float | list[float],
-        team1_sigmas: float | list[float],
-        team2_mus: float | list[float],
-        team2_sigmas: float | list[float],
-    ) -> float:
-        """
-        Predicts the win probability based on TrueSkill ratings.
+    def pl_prediction(team1_mus, team1_sigmas, team2_mus, team2_sigmas) -> float:
+        return round(
+            _pl_prob(team1_mus, team1_sigmas, team2_mus, team2_sigmas), RATING_DECIMALS
+        )
 
-        Args:
-            team1_mus (Union[float, List[float]]): TrueSkill mu values for Team 1.
-            team1_sigmas (Union[float, List[float]]): TrueSkill sigma values for Team 1.
-            team2_mus (Union[float, List[float]]): TrueSkill mu values for Team 2.
-            team2_sigmas (Union[float, List[float]]): TrueSkill sigma values for Team 2.
-
-        Returns:
-            float: Predicted win probability for Team 1.
-
-        """
-        if not MatchPredictor.is_iterable(team1_mus):
-            team1_mus = [team1_mus]
-            team1_sigmas = [team1_sigmas]
-            team2_mus = [team2_mus]
-            team2_sigmas = [team2_sigmas]
-
-        team1_ratings = [
-            TrueskillRating(mu, sigma)
-            for mu, sigma in zip(team1_mus, team1_sigmas, strict=False)
-        ]
-        team2_ratings = [
-            TrueskillRating(mu, sigma)
-            for mu, sigma in zip(team2_mus, team2_sigmas, strict=False)
-        ]
-        prediction = trueskill_win_probability(team1_ratings, team2_ratings)
-        return round(prediction, RATING_DECIMALS)
+    @staticmethod
+    def trueskill_prediction(team1_mus, team1_sigmas, team2_mus, team2_sigmas) -> float:
+        return round(
+            _ts_prob(team1_mus, team1_sigmas, team2_mus, team2_sigmas), RATING_DECIMALS
+        )
 
     def whr_prediction(self, blue_team_id: int, red_team_id: int) -> float:
         """
-        Predicts the win probability based on Whole History Rating (WHR).
-
-        Args:
-            blue_team_id (int): Team ID for the Blue team.
-            red_team_id (int): Team ID for the Red team.
-
-        Returns:
-            float: Predicted win probability for the Blue team.
-
+        WHR-based win probability for (blue_team_id vs red_team_id).
+        Requires a loaded WHR model with .probability_future_match(b, r) -> [p_blue, p_red]
         """
+        if self.whr_model is None:
+            msg = "WHR model not loaded; cannot compute WHR prediction."
+            raise RuntimeError(msg)
         try:
-            win_likelihood = self.outcome_prediction_model.probability_future_match(
-                blue_team_id, red_team_id
-            )
-            return round(win_likelihood[0], RATING_DECIMALS)
-        except AttributeError as e:
-            msg = "WHR model is not loaded or not available."
-            raise AttributeError(msg) from e
+            p = self.whr_model.probability_future_match(blue_team_id, red_team_id)
+            return round(float(_clip01(p[0])), RATING_DECIMALS)
         except Exception as e:
             msg = f"Error during WHR prediction: {e}"
             raise RuntimeError(msg) from e
 
-    def league_elo_prediction(self, team1_id: float, team2_id: float) -> float:
+    def league_elo_prediction(self, team1_id: int, team2_id: int) -> float:
         """
-        Predicts the win probability based on league ELO ratings.
-
-        Args:
-            team1_id (float): Team ID for Team 1.
-            team2_id (float): Team ID for Team 2.
-
-        Returns:
-            float: Predicted win probability for Team 1.
-
+        League-level Elo logistic probability (Team 1 vs Team 2), using team->league mapping.
         """
-        team1_league_row = self.team_to_league[
-            self.team_to_league["teamid"] == team1_id
-        ]
-        team2_league_row = self.team_to_league[
-            self.team_to_league["teamid"] == team2_id
-        ]
+        t2l = self.team_to_league
+        l2e = self.league_to_elo
 
-        if team1_league_row.empty or team2_league_row.empty:
+        t1_row = t2l.loc[t2l["teamid"] == team1_id]
+        t2_row = t2l.loc[t2l["teamid"] == team2_id]
+        if t1_row.empty or t2_row.empty:
             msg = "Team ID not found in team-to-league mapping."
             raise ValueError(msg)
 
-        team1_league = team1_league_row["league"].values[0]
-        team2_league = team2_league_row["league"].values[0]
+        t1_league = t1_row["league"].iloc[0]
+        t2_league = t2_row["league"].iloc[0]
 
-        team1_league_elo_row = self.league_to_elo[
-            self.league_to_elo["league"] == team1_league
-        ]
-        team2_league_elo_row = self.league_to_elo[
-            self.league_to_elo["league"] == team2_league
-        ]
-
-        if team1_league_elo_row.empty or team2_league_elo_row.empty:
+        e1 = l2e.loc[l2e["league"] == t1_league, "elo"]
+        e2 = l2e.loc[l2e["league"] == t2_league, "elo"]
+        if e1.empty or e2.empty:
             msg = "League not found in ELO ratings."
             raise ValueError(msg)
 
-        team1_league_elo = team1_league_elo_row["elo"].values[0]
-        team2_league_elo = team2_league_elo_row["elo"].values[0]
+        prob = _elo_prob(float(e1.iloc[0]), float(e2.iloc[0]))
+        return round(float(prob), RATING_DECIMALS)
 
-        prediction = 1 / (
-            1 + 10 ** ((team2_league_elo - team1_league_elo) / ELO_FACTOR)
-        )
-        return round(prediction, RATING_DECIMALS)
+    # ── simple WR-based heuristics ──────────────────────────────────────── #
 
     @staticmethod
     def side_wr_prediction(team1_side_wr: float, team2_side_wr: float) -> float:
-        """
-        Predicts the win probability based on side win rates.
-
-        Args:
-            team1_side_wr (float): Team 1 side win rate.
-            team2_side_wr (float): Team 2 side win rate.
-
-        Returns:
-            float: Predicted win probability for Team 1.
-
-        """
-        total_wr = team1_side_wr + team2_side_wr
-        if total_wr == 0:
-            return 0.5  # Default to 50% if no data is available
-        prediction = team1_side_wr / total_wr
-        return round(prediction, RATING_DECIMALS)
+        # sourcery skip: remove-unnecessary-cast
+        total = float(team1_side_wr) + float(team2_side_wr)
+        if total <= 0.0:
+            return 0.5
+        return round(float(team1_side_wr) / total, RATING_DECIMALS)
 
     @staticmethod
     def patch_season_wr_prediction(team1_wr: float, team2_wr: float) -> float:
-        """
-        Predicts the win probability based on patch or season win rates.
+        total = team1_wr + team2_wr
+        return 0.5 if total <= 0.0 else round(team1_wr / total, RATING_DECIMALS)
 
-        Args:
-            team1_wr (float): Team 1 win rate.
-            team2_wr (float): Team 2 win rate.
+    # ── feature assembly (teams) ────────────────────────────────────────── #
 
-        Returns:
-            float: Predicted win probability for Team 1.
-
-        """
-        total_wr = team1_wr + team2_wr
-        if total_wr == 0:
-            return 0.5  # Default to 50% if no data is available
-        prediction = team1_wr / total_wr
-        return round(prediction, RATING_DECIMALS)
+    @staticmethod
+    def _drop_columns(s: pd.Series, cols: list[str]) -> pd.Series:
+        return s.drop(labels=cols, errors="ignore")
 
     def apply_stat_modifications(
         self,
@@ -361,384 +323,228 @@ class MatchPredictor:
         account_for_side: bool,
     ) -> tuple[pd.Series, pd.Series]:
         """
-        Applies statistical predictions to modify team statistics based on game side and other predictive metrics.
-
-        Args:
-            team1_stats (pd.Series): Statistics for Team 1.
-            team2_stats (pd.Series): Statistics for Team 2.
-            account_for_side (bool): Whether to account for side win rates.
-
-        Returns:
-            Tuple[pd.Series, pd.Series]: Modified statistics for Team 1 and Team 2.
-
+        Build derived likelihood features for team rows.
+        Returns copies (originals untouched).
         """
-        team1_stats = team1_stats.copy()
-        team2_stats = team2_stats.copy()
-
-        # Apply different prediction models
-        team1_stats["elo_win_likelihood"] = self.elo_prediction(
-            team1_stats["elo"], team2_stats["elo"]
+        t1 = team1_stats.copy()
+        t2 = team2_stats.copy()
+        # Rating-based likelihoods
+        t1["elo_win_likelihood"] = self.elo_prediction(t1["elo"], t2["elo"])
+        t1["glicko2_win_likelihood"] = self.glicko2_prediction(
+            t1["glicko2_mu"], t1["glicko2_phi"], t2["glicko2_mu"], t2["glicko2_phi"]
         )
-        team1_stats["gl2_win_likelihood"] = self.gl2_prediction(
-            team1_stats["gl2_mu"],
-            team1_stats["gl2_phi"],
-            team2_stats["gl2_mu"],
-            team2_stats["gl2_phi"],
+        t1["pl_win_likelihood"] = self.pl_prediction(
+            t1["pl_mu"], t1["pl_sigma"], t2["pl_mu"], t2["pl_sigma"]
         )
-        team1_stats["pl_win_likelihood"] = self.pl_prediction(
-            team1_stats["pl_mu"],
-            team1_stats["pl_sigma"],
-            team2_stats["pl_mu"],
-            team2_stats["pl_sigma"],
+        t1["trueskill_win_likelihood"] = self.trueskill_prediction(
+            t1["trueskill_mu"],
+            t1["trueskill_sigma"],
+            t2["trueskill_mu"],
+            t2["trueskill_sigma"],
         )
-        team1_stats["trueskill_win_likelihood"] = self.trueskill_prediction(
-            team1_stats["trueskill_mu"],
-            team1_stats["trueskill_sigma"],
-            team2_stats["trueskill_mu"],
-            team2_stats["trueskill_sigma"],
+        t1["league_elo_win_likelihood"] = self.league_elo_prediction(
+            t1["teamid"], t2["teamid"]
         )
-        team1_stats["league_elo_win_likelihood"] = self.league_elo_prediction(
-            team1_stats["teamid"], team2_stats["teamid"]
-        )
+        # Side / patch / season likelihoods
         if account_for_side:
-            side_key_team1 = f"ema_{team1_stats['side'].lower()}_side"
-            side_key_team2 = f"ema_{team2_stats['side'].lower()}_side"
-            team1_side_wr = team1_stats.get(side_key_team1, 0.0)
-            team2_side_wr = team2_stats.get(side_key_team2, 0.0)
-            team1_stats["side_win_likelihood"] = self.side_wr_prediction(
-                team1_side_wr, team2_side_wr
-            )
+            s1_key = f"ema_{str(t1['side']).casefold()}_side"
+            s2_key = f"ema_{str(t2['side']).casefold()}_side"
+            t1_side_wr = float(t1.get(s1_key, 0.0))
+            t2_side_wr = float(t2.get(s2_key, 0.0))
+            t1["side_win_likelihood"] = self.side_wr_prediction(t1_side_wr, t2_side_wr)
         else:
-            team1_stats["side_win_likelihood"] = 0.5
-        team1_stats["patch_win_likelihood"] = self.patch_season_wr_prediction(
-            team1_stats["ema_patch_win_rate"], team2_stats["ema_patch_win_rate"]
-        )
-        team1_stats["season_win_likelihood"] = self.patch_season_wr_prediction(
-            team1_stats["ema_season_win_rate"], team2_stats["ema_season_win_rate"]
-        )
+            t1["side_win_likelihood"] = 0.5
 
-        # Drop unnecessary columns
-        drop_columns = [
+        t1["patch_win_likelihood"] = self.patch_season_wr_prediction(
+            t1["ema_patch_win_rate"], t2["ema_patch_win_rate"]
+        )
+        t1["season_win_likelihood"] = self.patch_season_wr_prediction(
+            t1["ema_season_win_rate"], t2["ema_season_win_rate"]
+        )
+        # Slim columns down (keep only usable features)
+        base_drop = [
             "teamid",
             "date",
-            "ema_red_side",
-            "ema_blue_side",
             "league_elo",
             "elo",
-            "gl2_mu",
-            "gl2_phi",
+            "glicko2_mu",
+            "glicko2_phi",
             "pl_mu",
             "pl_sigma",
             "trueskill_mu",
             "trueskill_sigma",
+            "ema_red_side",
+            "ema_blue_side",
         ]
-        team1_stats = self.drop_unnecessary_columns(team1_stats, drop_columns)
-        team2_stats = self.drop_unnecessary_columns(
-            team2_stats, [*drop_columns, "teamname", "gameid"]
-        )
-
-        return team1_stats, team2_stats
-
-    @staticmethod
-    def drop_unnecessary_columns(stats: pd.Series, columns_to_drop: list) -> pd.Series:
-        """
-        Drops unnecessary columns from the statistics.
-
-        Args:
-            stats (pd.Series): The statistics to clean.
-            columns_to_drop (list): List of columns to drop.
-
-        Returns:
-            pd.Series: Cleaned statistics.
-
-        """
-        return stats.drop(labels=columns_to_drop, errors="ignore")
+        t1 = self._drop_columns(t1, base_drop)
+        t2 = self._drop_columns(t2, [*base_drop, "teamname", "gameid"])
+        return t1, t2
 
     def calculate_team_stats(
         self, team1: Team, team2: Team, account_for_side: bool
     ) -> pd.DataFrame:
-        """
-        Combines and modifies team stats for further processing and analysis.
-
-        Args:
-            team1 (Team): Team 1 data.
-            team2 (Team): Team 2 data.
-            account_for_side (bool): Whether to account for side win rates.
-
-        Returns:
-            pd.DataFrame: Combined team statistics.
-
-        """
-        team1_stats, team2_stats = self.apply_stat_modifications(
+        t1, t2 = self.apply_stat_modifications(
             team1.team_stats, team2.team_stats, account_for_side
         )
-        team2_stats = team2_stats.add_prefix("opp_")
-        return pd.concat([team1_stats.to_frame().T, team2_stats.to_frame().T], axis=1)
+        t2 = t2.add_prefix("opp_")
+        return pd.concat([t1.to_frame().T, t2.to_frame().T], axis=1)
+
+    # ── feature assembly (players) ──────────────────────────────────────── #
 
     def apply_player_stat_modifications(
-        self, player1_stats: pd.DataFrame, player2_stats: pd.DataFrame
+        self, p1: pd.DataFrame, p2: pd.DataFrame
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Applies statistical predictions to modify player statistics based on game side and other predictive metrics.
-
-        Args:
-            player1_stats (pd.DataFrame): Player 1 statistics.
-            player2_stats (pd.DataFrame): Player 2 statistics.
-
-        Returns:
-            Tuple[pd.DataFrame, pd.DataFrame]: Modified player statistics for Player 1 and Player 2.
-
+        Row-wise (per role) likelihoods for players; returns copies.
         """
-        player1_stats = player1_stats.copy()
-        player2_stats = player2_stats.copy()
+        a = p1.copy()
+        b = p2.copy()
 
-        # Apply different prediction models
-        player1_stats["elo_win_likelihood"] = self.elo_prediction(
-            player1_stats["elo"], player2_stats["elo"]
-        )
-        player1_stats["gl2_win_likelihood"] = self.gl2_prediction(
-            player1_stats["gl2_mu"],
-            player1_stats["gl2_phi"],
-            player2_stats["gl2_mu"],
-            player2_stats["gl2_phi"],
-        )
-        player1_stats["pl_win_likelihood"] = self.pl_prediction(
-            player1_stats["pl_mu"],
-            player1_stats["pl_sigma"],
-            player2_stats["pl_mu"],
-            player2_stats["pl_sigma"],
-        )
-        player1_stats["trueskill_win_likelihood"] = self.trueskill_prediction(
-            player1_stats["trueskill_mu"],
-            player1_stats["trueskill_sigma"],
-            player2_stats["trueskill_mu"],
-            player2_stats["trueskill_sigma"],
-        )
+        # Elo is vectorizable
+        a["elo_win_likelihood"] = self.elo_prediction(a["elo"], b["elo"])
 
-        # Drop unnecessary columns
-        player_drop_columns = [
+        # Glicko-2 / PL / TrueSkill computed row-wise (each role vs role)
+        a["glicko2_win_likelihood"] = [
+            self.glicko2_prediction(mu1, phi1, mu2, phi2)
+            for mu1, phi1, mu2, phi2 in zip(
+                a["glicko2_mu"],
+                a["glicko2_phi"],
+                b["glicko2_mu"],
+                b["glicko2_phi"],
+                strict=False,
+            )
+        ]
+        a["pl_win_likelihood"] = [
+            self.pl_prediction(mu1, s1, mu2, s2)
+            for mu1, s1, mu2, s2 in zip(
+                a["pl_mu"], a["pl_sigma"], b["pl_mu"], b["pl_sigma"], strict=False
+            )
+        ]
+        a["trueskill_win_likelihood"] = [
+            self.trueskill_prediction(mu1, s1, mu2, s2)
+            for mu1, s1, mu2, s2 in zip(
+                a["trueskill_mu"],
+                a["trueskill_sigma"],
+                b["trueskill_mu"],
+                b["trueskill_sigma"],
+                strict=False,
+            )
+        ]
+
+        drop_cols = [
             "date",
             "playername",
             "elo",
-            "gl2_mu",
-            "gl2_phi",
+            "glicko2_mu",
+            "glicko2_phi",
             "pl_mu",
             "pl_sigma",
             "trueskill_mu",
             "trueskill_sigma",
         ]
-        player1_stats = player1_stats.drop(columns=player_drop_columns, errors="ignore")
-        player2_stats = player2_stats.drop(
-            columns=[*player_drop_columns, "gameid", "teamname"], errors="ignore"
-        )
-
-        return player1_stats, player2_stats
+        a = a.drop(columns=drop_cols, errors="ignore")
+        b = b.drop(columns=[*drop_cols, "gameid", "teamname"], errors="ignore")
+        return a, b
 
     def calculate_player_stats(self, team1: Team, team2: Team) -> pd.DataFrame:
-        """
-        Handles player statistics similar to team statistics with modifications based on game side.
-
-        Args:
-            team1 (Team): Team 1 data.
-            team2 (Team): Team 2 data.
-
-        Returns:
-            pd.DataFrame: Combined player statistics.
-
-        """
-        player1_stats, player2_stats = self.apply_player_stat_modifications(
+        a, b = self.apply_player_stat_modifications(
             team1.player_stats, team2.player_stats
         )
-        player2_stats = player2_stats.rename(
-            columns=lambda x: f"opp_{x}" if x != "position" else x
-        )
-        return pd.merge(
-            player1_stats,
-            player2_stats,
-            on="position",
-            how="inner",
-            validate="many_to_many",
-        )
+        b = b.rename(columns=lambda c: f"opp_{c}" if c != "position" else c)
+        # safe merge on 'position' (roles)
+        return a.merge(b, on="position", how="inner", validate="many_to_many")
+
+    # ── preprocessing / model IO ────────────────────────────────────────── #
 
     @staticmethod
     def pivot_player_data(player_data: pd.DataFrame) -> pd.DataFrame:
         """
-        Pivots player data to prepare for merging with team data by grouping numeric and non-numeric columns.
-
-        Args:
-            player_data (pd.DataFrame): Raw player data.
-
-        Returns:
-            pd.DataFrame: Pivoted player data.
-
+        Pivot per-role players into wide columns like 'top_kda', 'jng_dpm', ...
         """
-        numeric_cols = player_data.select_dtypes(include=["number"]).columns
-        non_numeric_cols = player_data.columns.difference(numeric_cols)
+        numeric = player_data.select_dtypes(include=["number"]).columns
+        non_numeric = player_data.columns.difference(numeric)
 
-        agg_funcs = dict.fromkeys(numeric_cols, "mean")
-        agg_funcs.update(
-            {
-                col: "first"
-                for col in non_numeric_cols
-                if col not in ["position", "side"]
-            }
+        agg = dict.fromkeys(numeric, "mean")
+        agg.update(
+            {col: "first" for col in non_numeric if col not in {"position", "side"}}
         )
 
-        player_data_pivoted = player_data.pivot_table(
-            index=["gameid", "teamname"],
-            columns="position",
-            aggfunc=agg_funcs,
-            fill_value=0,
+        pivot = player_data.pivot_table(
+            index=["gameid", "teamname"], columns="position", aggfunc=agg, fill_value=0
         )
-        player_data_pivoted.columns = [
-            f"{pos}_{field}" for pos, field in player_data_pivoted.columns
-        ]
-        return player_data_pivoted.reset_index()
+
+        # ⬇️ IMPORTANT: MultiIndex is (field, position), so unpack as (field, pos)
+        pivot.columns = [f"{pos}_{field}" for field, pos in pivot.columns]
+        return pivot.reset_index()
 
     @staticmethod
     def merge_datasets(
-        team_data: pd.DataFrame, player_data_pivoted: pd.DataFrame
+        team_df: pd.DataFrame, player_pivot: pd.DataFrame
     ) -> pd.DataFrame:
-        """
-        Merges team data with pivoted player data by game ID and team name, removing redundant columns.
-
-        Args:
-            team_data (pd.DataFrame): Team data.
-            player_data_pivoted (pd.DataFrame): Pivoted player data.
-
-        Returns:
-            pd.DataFrame: Merged dataset.
-
-        """
-        prediction_data = pd.merge(
-            team_data,
-            player_data_pivoted,
+        merged = team_df.merge(
+            player_pivot,
             on=["gameid", "teamname"],
             how="inner",
             validate="many_to_many",
         )
-
-        columns_to_drop = (
+        drop = (
             ["gameid", "teamname"]
-            + [f"{pos}_gameid" for pos in ["top", "jng", "mid", "bot", "sup"]]
-            + [f"{pos}_teamname" for pos in ["top", "jng", "mid", "bot", "sup"]]
+            + [f"{r}_gameid" for r in _ROLES]
+            + [f"{r}_teamname" for r in _ROLES]
         )
-
-        return prediction_data.drop(columns=columns_to_drop, errors="ignore")
+        return merged.drop(columns=drop, errors="ignore")
 
     def preprocess_data(
-        self, team_data: pd.DataFrame, player_data: pd.DataFrame
+        self, team_df: pd.DataFrame, player_df: pd.DataFrame
     ) -> pd.DataFrame:
-        """
-        Processes team and player data by pivoting player data and merging it with team data.
+        pivot = self.pivot_player_data(player_df)
+        return self.merge_datasets(team_df, pivot)
 
-        Args:
-            team_data (pd.DataFrame): Team data.
-            player_data (pd.DataFrame): Player data.
-
-        Returns:
-            pd.DataFrame: Preprocessed data ready for prediction.
-
-        """
-        player_data_pivoted = self.pivot_player_data(player_data)
-        return self.merge_datasets(team_data, player_data_pivoted)
-
-    def keep_necessary_columns(self, final_stats: pd.DataFrame) -> pd.DataFrame:
-        """
-        Keeps only the necessary columns for the prediction model.
-
-        Args:
-            final_stats (pd.DataFrame): DataFrame containing all features.
-
-        Returns:
-            pd.DataFrame: DataFrame with only the required features.
-
-        """
+    def keep_necessary_columns(self, X: pd.DataFrame) -> pd.DataFrame:
         try:
-            with open(OUTCOME_PREDICTION_FINAL_FEATURES, "rb") as f:
-                final_features = pickle.load(f)
-            final_stats = final_stats.reindex(columns=final_features)
-            return self.convert_data_types(final_stats)
-        except FileNotFoundError as e:
-            msg = f"Feature file not found: {e}"
-            raise FileNotFoundError(msg) from e
+            final_features: list[str] = load_model(OUTCOME_PREDICTION_FINAL_FEATURES)
         except Exception as e:
-            msg = f"Error keeping necessary columns: {e}"
+            msg = f"Failed to load final features list: {e}"
             raise RuntimeError(msg) from e
 
-    def convert_data_types(self, final_stats: pd.DataFrame) -> pd.DataFrame:
-        """
-        Converts columns to numeric where possible, otherwise converts to category type.
+        X = X.reindex(columns=final_features)
+        return self.convert_data_types(X)
 
-        Args:
-            final_stats (pd.DataFrame): DataFrame to convert.
-
-        Returns:
-            pd.DataFrame: DataFrame with converted data types.
-
-        """
+    def convert_data_types(self, X: pd.DataFrame) -> pd.DataFrame:
         try:
-            with open(OUTCOME_PREDICTION_CATEGORICAL_FEATURES, "rb") as f:
-                categorical_features = pickle.load(f)
-
-            final_stats = final_stats.copy()
-            for col in final_stats.columns:
-                if col in categorical_features:
-                    final_stats[col] = final_stats[col].astype("category")
-                else:
-                    final_stats[col] = pd.to_numeric(final_stats[col], errors="coerce")
-
-            return final_stats
-        except FileNotFoundError as e:
-            msg = f"Categorical features file not found: {e}"
-            raise FileNotFoundError(msg) from e
-        except Exception as e:
-            msg = f"Error converting data types: {e}"
-            raise RuntimeError(msg) from e
-
-    def predict_outcomes(self, final_stats: pd.DataFrame) -> np.ndarray:
-        """
-        Uses the predictive model to estimate outcomes based on preprocessed final stats.
-
-        Args:
-            final_stats (pd.DataFrame): Preprocessed data.
-
-        Returns:
-            np.ndarray: Prediction probabilities.
-
-        """
-        try:
-            final_stats = GradientBoostingModel.process_players_likelihood_columns(
-                final_stats
+            cat_features: list[str] = load_model(
+                OUTCOME_PREDICTION_CATEGORICAL_FEATURES
             )
-            final_stats = GradientBoostingModel.fuse_opposing_team_features(final_stats)
-            final_stats = self.keep_necessary_columns(final_stats)
-            return round(
-                self.outcome_prediction_model.predict_proba(final_stats),
-                PREDICTION_PRECISION,
-            )
-        except AttributeError as e:
-            msg = f"Prediction model not properly loaded: {e}"
-            raise AttributeError(msg) from e
         except Exception as e:
-            msg = f"Error during prediction: {e}"
+            msg = f"Failed to load categorical features list: {e}"
             raise RuntimeError(msg) from e
+
+        X = X.copy()
+        for col in X.columns:
+            if col in cat_features:
+                X[col] = X[col].astype("category")
+            else:
+                X[col] = pd.to_numeric(X[col], errors="coerce")
+        return X
+
+    def predict_outcomes(self, X: pd.DataFrame) -> np.ndarray:
+        """
+        Mirror training-time transforms + predict_proba.
+        Returns shape (n, 2) array.
+        """
+        # players_* aggregation and opposing-feature fusion (same as training)
+        X = GradientBoostingModel.process_players_likelihood_columns(X)
+        X = GradientBoostingModel.fuse_opposing_team_features(X)
+        X = self.keep_necessary_columns(X)
+
+        proba = self.outcome_model.predict_proba(X)
+        return np.round(proba, PREDICTION_PRECISION)
+
+    # ── end-to-end API ──────────────────────────────────────────────────── #
 
     def calculate_team_and_player_stats(
         self, team1: Team, team2: Team, account_for_side: bool
     ) -> pd.DataFrame:
-        """
-        Calculates combined team and player statistics for prediction.
-
-        Args:
-            team1 (Team): Team 1 data.
-            team2 (Team): Team 2 data.
-            account_for_side (bool): Whether to account for side win rates.
-
-        Returns:
-            pd.DataFrame: Combined statistics ready for preprocessing.
-
-        """
         team_stats = self.calculate_team_stats(team1, team2, account_for_side)
         player_stats = self.calculate_player_stats(team1, team2)
         return self.preprocess_data(team_stats, player_stats)
@@ -747,26 +553,17 @@ class MatchPredictor:
         self, team1: Team, team2: Team, account_for_side: bool = True
     ) -> dict[str, float]:
         """
-        Predicts the outcome of a match between two teams.
-
-        Args:
-            team1 (Team): Team 1 data.
-            team2 (Team): Team 2 data.
-            account_for_side (bool, optional): Whether to account for side win rates. Defaults to True.
-
         Returns:
-            Dict[str, float]: Prediction probabilities for Team 1 and Team 2.
+            {
+                "team1_win_probability": P(team1 wins),
+                "team2_win_probability": P(team2 wins)
+            }
 
         """
-        try:
-            final_stats = self.calculate_team_and_player_stats(
-                team1, team2, account_for_side
-            )
-            predictions = self.predict_outcomes(final_stats)
-            return {
-                "team1_win_probability": float(predictions[0][1]),
-                "team2_win_probability": float(predictions[0][0]),
-            }
-        except Exception as e:
-            msg = f"Error predicting match outcome: {e}"
-            raise RuntimeError(msg) from e
+        X = self.calculate_team_and_player_stats(team1, team2, account_for_side)
+        proba = self.predict_outcomes(X)
+        # class 1 assumed "win" for team1 (same as training)
+        return {
+            "team1_win_probability": float(proba[0, 1]),
+            "team2_win_probability": float(proba[0, 0]),
+        }

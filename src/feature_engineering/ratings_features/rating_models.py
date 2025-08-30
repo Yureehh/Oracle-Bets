@@ -69,7 +69,6 @@ class Ratings:
         return calculate_trueskill(df, entity, league_elo_dict=league_elo_dict)
 
     def compute_whr(self, df: pd.DataFrame, entity: Entity) -> pd.DataFrame:
-        # return calculate_whr(df, entity)
         msg = "Whole History Rating is currently disabled."
         raise NotImplementedError(msg)
 
@@ -172,6 +171,7 @@ class Ratings:
         Infer robust merge keys present in both frames.
         Prefers a strict key set but gracefully falls back if some are missing.
         """
+        MIN_DISCRIMINATIVE_KEY_LEN = 3
         candidates_by_priority = [
             [
                 "date",
@@ -188,7 +188,9 @@ class Ratings:
         rcols = set(right.columns)
         for keys in candidates_by_priority:
             k = [c for c in keys if c in lcols and c in rcols]
-            if len(k) >= 3:  # require minimally discriminative key
+            if (
+                len(k) >= MIN_DISCRIMINATIVE_KEY_LEN
+            ):  # require minimally discriminative key
                 return k
         # Last resort: intersect on whatever common keys exist (not ideal, but prevents crashes)
         common = [

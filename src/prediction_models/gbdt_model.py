@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_numeric_dtype
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
@@ -100,51 +101,49 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             "result",  # typical classification target name
         ]
 
-    def fuse_opposing_team_features(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Replace each feature f with f - opp_f, then drop opp_f."""
-        X = X.copy()
-        try:
-            # Team-level opp_*
-            opp_cols = [c for c in X.columns if c.startswith("opp_")]
-            for col in opp_cols:
-                base = col[4:]
-                if base in X.columns:
+    @staticmethod
+    def fuse_opposing_team_features(df: pd.DataFrame) -> pd.DataFrame:
+        X = df.copy()
+
+        # Team-level opp_* → base - opp_base  (numeric only)
+        opp_cols = [c for c in X.columns if c.startswith("opp_")]
+        for col in opp_cols:
+            base = col[4:]
+            if (
+                base in X.columns
+                and is_numeric_dtype(X[base])
+                and is_numeric_dtype(X[col])
+            ):
+                X[base] = X[base] - X[col]
+            # Drop opp_* regardless (strings like opp_side shouldn’t survive)
+            X = X.drop(columns=[col], errors="ignore")
+
+        # Role-specific "<role>_opp_*" → "<role>_*" (numeric only)
+        roles = ("top", "jng", "mid", "bot", "sup")
+        for role in roles:
+            prefix = f"{role}_opp_"
+            for col in [c for c in X.columns if c.startswith(prefix)]:
+                base = f"{role}_" + col.split(prefix, 1)[1]
+                if (
+                    base in X.columns
+                    and is_numeric_dtype(X[base])
+                    and is_numeric_dtype(X[col])
+                ):
                     X[base] = X[base] - X[col]
-                X = X.drop(columns=[col])
+                X = X.drop(columns=[col], errors="ignore")
 
-            # Role-specific: "<role>_opp_*" → "<role>_*"
-            for role in ["top", "jng", "mid", "bot", "sup"]:
-                prefix = f"{role}_opp_"
-                to_drop = []
-                for col in [c for c in X.columns if c.startswith(prefix)]:
-                    base = col.replace(prefix, f"{role}_")
-                    if base in X.columns:
-                        X[base] = X[base] - X[col]
-                    to_drop.append(col)
-                if to_drop:
-                    X = X.drop(columns=to_drop)
+        logger.info("Opposing feature fusion complete.")
+        return X
 
-            logger.info("Opposing feature fusion complete.")
-            return X
-        except Exception as e:
-            logger.error("Opposing fusion failed: %s", e)
-            raise
-
-    def process_players_likelihood_columns(self, df, agg: str = "mean"):
+    @staticmethod
+    def process_players_likelihood_columns(
+        df: pd.DataFrame, agg: str = "mean"
+    ) -> pd.DataFrame:
         """
         Aggregate per-role *_likelihood columns into players_*_likelihood.
-
-        Expects role-prefixed columns like:
-        top_elo_win_likelihood, jng_elo_win_likelihood, ...
-
-        Team-level *_likelihood columns with no role prefix
-        (e.g. elo_win_likelihood) are left unchanged.
         """
         df = df.copy()
-
-        # Match: role + "_" + "<anything>_likelihood"  → capture the "<anything>_likelihood" as the stem
         role_pat = re.compile(r"^(top|jng|mid|bot|sup)_(.+_likelihood)$")
-
         role_cols = [c for c in df.columns if role_pat.match(c)]
         if not role_cols:
             logger.info(
@@ -152,7 +151,6 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             )
             return df
 
-        # Group columns by their stem, e.g. 'elo_win_likelihood'
         stems: dict[str, list[str]] = {}
         for c in role_cols:
             m = role_pat.match(c)

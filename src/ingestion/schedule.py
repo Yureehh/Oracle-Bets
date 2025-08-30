@@ -12,6 +12,7 @@ import datetime as dt
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import pandas as pd
@@ -299,6 +300,52 @@ class PandaScoreSchedule:
     @staticmethod
     def _should_stop_fetching(df: pd.DataFrame, end_dt: dt.datetime) -> bool:
         return df[START_DATETIME_COLUMN].min() > end_dt
+
+    @staticmethod
+    def load_schedule(
+        path: str | os.PathLike, leagues: str | None = None
+    ) -> pd.DataFrame:
+        """
+        Load a previously saved schedule DataFrame from disk.
+
+        Supports Parquet (.parquet/.pq/.parq) and CSV. Returns a DataFrame,
+        optionally filtered by comma-separated league names (case-insensitive).
+        """
+        p = os.fspath(path)
+        if not Path(p).exists():
+            msg = f"Schedule file not found: {p}"
+            raise FileNotFoundError(msg)
+
+        df: pd.DataFrame | None = None
+
+        # Try Parquet first (fastparquet -> pyarrow fallback)
+        try:
+            if p.lower().endswith((".parquet", ".pq", ".parq")):
+                try:
+                    df = pd.read_parquet(p, engine="fastparquet")
+                except (ImportError, ValueError):
+                    df = pd.read_parquet(p)
+            else:
+                # Try reading as Parquet anyway; if it fails, we'll try CSV
+                try:
+                    df = pd.read_parquet(p)
+                except Exception:  # noqa: BLE001
+                    df = None
+            if df is None:
+                df = pd.read_csv(p)
+        except Exception as e:
+            msg = f"Failed to load schedule file '{p}': {e}"
+            raise ScheduleError(msg) from e
+
+        if "league" not in df.columns:
+            msg = "Schedule file missing required 'league' column."
+            raise DataValidationError(msg)
+
+        if leagues:
+            df = PandaScoreSchedule.filter_by_league(df, leagues)
+
+        schedule_logger.info("Loaded local schedule '%s' with %s rows.", p, len(df))
+        return df.reset_index(drop=True)
 
 
 if __name__ == "__main__":

@@ -150,7 +150,7 @@ def create_ts_rating(mu: float, sigma: float) -> Rating:
 
 
 def expected_win_probability(
-    team1: list[Rating], team2: list[Rating], beta: float
+    team1: list[Rating], team2: list[Rating], beta: float = DEFAULT_BETA
 ) -> float:
     """Return the probability that team1 beats team2 using the TrueSkill analytic approximation."""
     delta_mu = sum(r.mu for r in team1) - sum(r.mu for r in team2)

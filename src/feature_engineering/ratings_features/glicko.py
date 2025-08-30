@@ -134,8 +134,8 @@ def preprocess_glicko2_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
 
     # Drop rows missing 'league' or 'result'
     if df["league"].isna().any() or df["result"].isna().any():
-        n_missing_leagues = df["league"].isnull().sum()
-        n_missing_results = df["result"].isnull().sum()
+        n_missing_leagues = df["league"].isna().sum()
+        n_missing_results = df["result"].isna().sum()
         logger.warning(
             f"{n_missing_leagues} 'league' and {n_missing_results} 'result' missing; dropping them."
         )
@@ -189,8 +189,8 @@ def linear_decay_reset(
 ) -> dict[int | str, dict[str, Any]]:
     """Partially decay mu toward baseline if old season < current_season."""
     for entity_id, data in glicko2_ratings.items():
-        old_rating: Rating = data["rating"]
         if data["season"] < current_season:
+            old_rating: Rating = data["rating"]
             delta_mu = old_rating.mu - baseline_mu
             reset_mu = baseline_mu + delta_mu * decay_factor
             glicko2_ratings[entity_id]["rating"] = Rating(

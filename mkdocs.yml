@@ -3,7 +3,7 @@
 site_name: "Yureeh Match Modeling Documentation"  # Name of the site
 site_description: "Documentation for the Yureeh Match Modeling Project"
 site_author: "Yureeh"
-site_url: "https://github.com/MRittinghouse/esports-analytics"  # TODO: Update this URL to mine
+site_url: "https://github.com/Yureehh/Oracle-Bets"  # URL of the site
 
 theme:
   name: "material"  # Use the Material theme

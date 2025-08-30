@@ -1,216 +1,169 @@
+# discord_predictions/best_ofs.py
 """
-BestOfs Module
+Best-of series probabilities + Discord formatters.
 
-This module contains the BestOfs class, which is used to calculate the results of different best-of series.
+- Keeps original math (bo1/bo2/bo3/bo5 dict helpers).
+- Adds class BestOfs.* methods that return preformatted strings:
+    * best_of_one(name1, p1, name2, p2)
+    * best_of_two(name1, p1, name2, p2)
+    * best_of_three(name1, p1, name2, p2)
+    * best_of_five(name1, p1, name2, p2)
 """
+
+from __future__ import annotations
+
+from math import isclose
+
+_ABS_TOL = 1e-6
+
+
+def _canon(p1: float, p2: float | None) -> tuple[float, float]:
+    if not (0.0 <= p1 <= 1.0):
+        msg = f"p1 must be in [0,1], got {p1!r}"
+        raise ValueError(msg)
+    p2 = (1.0 - p1) if p2 is None else p2
+    if not (0.0 <= p2 <= 1.0):
+        msg = f"p2 must be in [0,1], got {p2!r}"
+        raise ValueError(msg)
+    if not isclose(p1 + p2, 1.0, rel_tol=0.0, abs_tol=_ABS_TOL):
+        msg = f"p1 + p2 must equal 1 (got {p1 + p2:.8f})"
+        raise ValueError(msg)
+    return p1, 1.0 - p1  # canonicalize to avoid drift
+
+
+def _pct(x: float) -> str:
+    return f"{x * 100:.2f}%"
+
+
+# ---------- original dict-returning helpers (kept for reuse) ---------- #
+
+
+def bo1(p1: float, p2: float | None = None) -> dict[str, float]:
+    p1, p2 = _canon(p1, p2)
+    return {"t1": p1, "t2": p2}
+
+
+def bo2(p1: float, p2: float | None = None) -> dict[str, float]:
+    p1, p2 = _canon(p1, p2)
+    t1_2_0 = p1 * p1
+    t2_0_2 = p2 * p2
+    tie_1_1 = 2.0 * p1 * p2
+    assert isclose(t1_2_0 + tie_1_1 + t2_0_2, 1.0, abs_tol=1e-9)
+    return {"t1_2_0": t1_2_0, "tie_1_1": tie_1_1, "t2_0_2": t2_0_2}
+
+
+def bo3(p1: float, p2: float | None = None) -> dict[str, float]:
+    p1, p2 = _canon(p1, p2)
+    t1_2_0 = p1**2
+    t1_2_1 = 2.0 * (p1**2) * p2
+    t2_2_0 = p2**2
+    t2_2_1 = 2.0 * (p2**2) * p1
+    t1_series = t1_2_0 + t1_2_1
+    t2_series = t2_2_0 + t2_2_1
+    exactly_3 = 2.0 * p1 * p2
+    t1_at_least_one = 1.0 - (p2**2)
+    t2_at_least_one = 1.0 - (p1**2)
+    assert isclose(t1_series + t2_series, 1.0, abs_tol=1e-9)
+    return {
+        "t1_series": t1_series,
+        "t2_series": t2_series,
+        "t1_2_0": t1_2_0,
+        "t1_2_1": t1_2_1,
+        "t2_2_0": t2_2_0,
+        "t2_2_1": t2_2_1,
+        "t1_at_least_one": t1_at_least_one,
+        "t2_at_least_one": t2_at_least_one,
+        "exactly_3": exactly_3,
+    }
+
+
+def bo5(p1: float, p2: float | None = None) -> dict[str, float]:
+    p1, p2 = _canon(p1, p2)
+    t1_3_0 = p1**3
+    t1_3_1 = 3.0 * (p1**3) * p2
+    t1_3_2 = 6.0 * (p1**3) * (p2**2)
+    t2_0_3 = p2**3
+    t2_1_3 = 3.0 * (p2**3) * p1
+    t2_2_3 = 6.0 * (p2**3) * (p1**2)
+    t1_series = t1_3_0 + t1_3_1 + t1_3_2
+    t2_series = t2_0_3 + t2_1_3 + t2_2_3
+    exactly_3 = t1_3_0 + t2_0_3
+    at_least_4 = 1.0 - exactly_3
+    exactly_5 = 6.0 * (p1**2) * (p2**2)
+    t1_at_least_one = 1.0 - (p2**3)
+    t2_at_least_one = 1.0 - (p1**3)
+    assert isclose(t1_series + t2_series, 1.0, abs_tol=1e-9)
+    return {
+        "t1_series": t1_series,
+        "t2_series": t2_series,
+        "t1_3_0": t1_3_0,
+        "t1_3_1": t1_3_1,
+        "t1_3_2": t1_3_2,
+        "t2_0_3": t2_0_3,
+        "t2_1_3": t2_1_3,
+        "t2_2_3": t2_2_3,
+        "t1_at_least_one": t1_at_least_one,
+        "t2_at_least_one": t2_at_least_one,
+        "exactly_3": exactly_3,
+        "at_least_4": at_least_4,
+        "exactly_5": exactly_5,
+    }
+
+
+# ---------- Discord-facing class (what your bot expects) ---------- #
 
 
 class BestOfs:
-    """Calculate the likelihood of each team winning a best-of series given their odds."""
-
-    PROB_SUM_ERROR_MESSAGE = "Probabilities do not sum to 1."
-    TOLERANCE = 1e-5
-
     @staticmethod
-    def validate_probabilities(*probs: float) -> None:
-        """
-        Validate that the sum of provided probabilities is equal to 1.
-
-        Args:
-            *probs (float): Probabilities to validate.
-
-        Raises:
-            ValueError: If the sum of probabilities does not equal 1 within the defined tolerance.
-
-        """
-        total = sum(probs)
-        if abs(total - 1.0) > BestOfs.TOLERANCE:
-            raise ValueError(BestOfs.PROB_SUM_ERROR_MESSAGE)
-
-    @staticmethod
-    def _format_percentage(prob: float) -> str:
-        """
-        Format a probability as a percentage string.
-
-        Args:
-            prob (float): Probability value between 0 and 1.
-
-        Returns:
-            str: Formatted percentage string.
-
-        """
-        return f"{prob * 100:.2f}%"
-
-    @staticmethod
-    def best_of_one(t1_name: str, t1_odds: float, t2_name: str, t2_odds: float) -> str:
-        """
-        Calculate the likelihood of each team winning a best-of-one series.
-
-        Args:
-            t1_name (str): Name of Team 1.
-            t1_odds (float): Probability of Team 1 winning a single game.
-            t2_name (str): Name of Team 2.
-            t2_odds (float): Probability of Team 2 winning a single game.
-
-        Returns:
-            str: Formatted string with likelihoods.
-
-        """
-        BestOfs.validate_probabilities(t1_odds, t2_odds)
-
+    def best_of_one(t1: str, p1: float, t2: str, p2: float | None = None) -> str:
+        d = bo1(p1, p2)
         return (
-            f"Overall Likelihood Of {t1_name} To Win Game: {BestOfs._format_percentage(t1_odds)}\n\n"
-            f"Overall Likelihood Of {t2_name} To Win Game: {BestOfs._format_percentage(t2_odds)}"
+            f"**BO1 – Single Game Win Probabilities**\n"
+            f"• {t1}: {_pct(d['t1'])}\n"
+            f"• {t2}: {_pct(d['t2'])}"
         )
 
     @staticmethod
-    def best_of_two(t1_name: str, t1_odds: float, t2_name: str, t2_odds: float) -> str:
-        """
-        Calculate the likelihood of each team winning a best-of-two series (allowing for tie results).
-
-        Args:
-            t1_name (str): Name of Team 1.
-            t1_odds (float): Probability of Team 1 winning a single game.
-            t2_name (str): Name of Team 2.
-            t2_odds (float): Probability of Team 2 winning a single game.
-
-        Returns:
-            str: Formatted string with likelihoods.
-
-        """
-        BestOfs.validate_probabilities(t1_odds, t2_odds)
-
-        # Possible outcomes: Team1 wins 2-0, Team2 wins 2-0, or a tie (1-1)
-        t1_win_2 = t1_odds**2
-        t2_win_2 = t2_odds**2
-        tie = (
-            2 * t1_odds * t2_odds
-        )  # Two ways the series can tie: T1 wins one game, T2 wins the other
-
-        BestOfs.validate_probabilities(t1_win_2 + t2_win_2 + tie)
-
+    def best_of_two(t1: str, p1: float, t2: str, p2: float | None = None) -> str:
+        d = bo2(p1, p2)
         return (
-            f"Likelihood Of {t1_name} To Win a single game: {BestOfs._format_percentage(t1_odds)}\n"
-            f"Likelihood Of {t2_name} To Win a single game: {BestOfs._format_percentage(t2_odds)}\n\n"
-            f"\tProbability {t1_name} wins 2-0: {BestOfs._format_percentage(t1_win_2)}\n"
-            f"\tProbability {t2_name} wins 2-0: {BestOfs._format_percentage(t2_win_2)}\n\n"
-            f"\tProbability of a Tie (1-1): {BestOfs._format_percentage(tie)}"
+            f"**BO2 – Series Outcomes**\n"
+            f"• {t1} 2–0: {_pct(d['t1_2_0'])}\n"
+            f"• 1–1 Tie: {_pct(d['tie_1_1'])}\n"
+            f"• {t2} 2–0: {_pct(d['t2_0_2'])}"
         )
 
     @staticmethod
-    def best_of_three(
-        t1_name: str, t1_odds: float, t2_name: str, t2_odds: float
-    ) -> str:
-        """
-        Calculate the likelihood of each team winning a best-of-three series.
-
-        Args:
-            t1_name (str): Name of Team 1.
-            t1_odds (float): Probability of Team 1 winning a single game.
-            t2_name (str): Name of Team 2.
-            t2_odds (float): Probability of Team 2 winning a single game.
-
-        Returns:
-            str: Formatted string with likelihoods.
-
-        """
-        BestOfs.validate_probabilities(t1_odds, t2_odds)
-
-        # Team 1 outcomes
-        t1_win_2_0 = t1_odds**2  # Wins first two games
-        t1_win_2_1 = 2 * t1_odds**2 * t2_odds  # Wins in three games
-
-        # Team 2 outcomes
-        t2_win_2_0 = t2_odds**2
-        t2_win_2_1 = 2 * t2_odds**2 * t1_odds
-
-        # Overall series win probabilities
-        t1_win_series = t1_win_2_0 + t1_win_2_1
-        t2_win_series = t2_win_2_0 + t2_win_2_1
-
-        # Validate probabilities
-        BestOfs.validate_probabilities(t1_win_series + t2_win_series)
-
-        # At least one win probabilities
-        t1_win_at_least_one = t1_win_series + t2_win_2_1
-        t2_win_at_least_one = t2_win_series + t1_win_2_1
-
-        # Exactly three games
-        exactly_three_games = t1_win_2_1 + t2_win_2_1
-
+    def best_of_three(t1: str, p1: float, t2: str, p2: float | None = None) -> str:
+        d = bo3(p1, p2)
         return (
-            f"Likelihood Of {t1_name} To Win a single game: {BestOfs._format_percentage(t1_odds)}\n"
-            f"Likelihood Of {t2_name} To Win a single game: {BestOfs._format_percentage(t2_odds)}\n\n"
-            f"Overall Likelihood Of {t1_name} To Win Series: {BestOfs._format_percentage(t1_win_series)}\n\n"
-            f"\tProbability {t1_name} wins 2-0: {BestOfs._format_percentage(t1_win_2_0)}\n"
-            f"\tProbability {t1_name} wins 2-1: {BestOfs._format_percentage(t1_win_2_1)}\n\n"
-            f"Overall Likelihood Of {t2_name} To Win Series: {BestOfs._format_percentage(t2_win_series)}\n\n"
-            f"\tProbability {t2_name} wins 2-0: {BestOfs._format_percentage(t2_win_2_0)}\n"
-            f"\tProbability {t2_name} wins 2-1: {BestOfs._format_percentage(t2_win_2_1)}\n\n"
-            f"Overall likelihoods of each team winning at least 1 game:\n\n"
-            f"\tProbability {t1_name} wins at least 1 game: {BestOfs._format_percentage(t1_win_at_least_one)}\n"
-            f"\tProbability {t2_name} wins at least 1 game: {BestOfs._format_percentage(t2_win_at_least_one)}\n\n"
-            f"Overall Likelihood Of Exactly 3 Games: {BestOfs._format_percentage(exactly_three_games)}"
+            f"**BO3 – Series Win Probabilities**\n"
+            f"• {t1} wins series: {_pct(d['t1_series'])}\n"
+            f"• {t2} wins series: {_pct(d['t2_series'])}\n\n"
+            f"**BO3 – Scorelines**\n"
+            f"• {t1} 2–0: {_pct(d['t1_2_0'])}\n"
+            f"• {t1} 2–1: {_pct(d['t1_2_1'])}\n"
+            f"• {t2} 2–0: {_pct(d['t2_2_0'])}\n"
+            f"• {t2} 2–1: {_pct(d['t2_2_1'])}\n"
+            f"• Exactly 3 games: {_pct(d['exactly_3'])}"
         )
 
     @staticmethod
-    def best_of_five(t1_name: str, t1_odds: float, t2_name: str, t2_odds: float) -> str:
-        """
-        Calculate the likelihood of each team winning a best-of-five series.
-
-        Args:
-            t1_name (str): Name of Team 1.
-            t1_odds (float): Probability of Team 1 winning a single game.
-            t2_name (str): Name of Team 2.
-            t2_odds (float): Probability of Team 2 winning a single game.
-
-        Returns:
-            str: Formatted string with likelihoods.
-
-        """
-        BestOfs.validate_probabilities(t1_odds, t2_odds)
-
-        # Team 1 outcomes
-        t1_win_3_0 = t1_odds**3
-        t1_win_3_1 = 3 * t1_odds**3 * t2_odds
-        t1_win_3_2 = 6 * t1_odds**3 * t2_odds**2
-
-        # Team 2 outcomes
-        t2_win_3_0 = t2_odds**3
-        t2_win_3_1 = 3 * t2_odds**3 * t1_odds
-        t2_win_3_2 = 6 * t2_odds**3 * t1_odds**2
-
-        # Overall series win probabilities
-        t1_win_series = t1_win_3_0 + t1_win_3_1 + t1_win_3_2
-        t2_win_series = t2_win_3_0 + t2_win_3_1 + t2_win_3_2
-
-        # Validate probabilities
-        BestOfs.validate_probabilities(t1_win_series + t2_win_series)
-
-        # At least one win probabilities
-        t1_win_at_least_one = t1_win_series + t2_win_3_1 + t2_win_3_2
-        t2_win_at_least_one = t2_win_series + t1_win_3_1 + t1_win_3_2
-
-        # Game counts
-        exactly_three_games = t1_win_3_0 + t2_win_3_0
-        at_least_four_games = t1_win_3_1 + t1_win_3_2 + t2_win_3_1 + t2_win_3_2
-        exactly_five_games = t1_win_3_2 + t2_win_3_2
-
+    def best_of_five(t1: str, p1: float, t2: str, p2: float | None = None) -> str:
+        d = bo5(p1, p2)
         return (
-            f"Likelihood Of {t1_name} To Win a single game: {BestOfs._format_percentage(t1_odds)}\n"
-            f"Likelihood Of {t2_name} To Win a single game: {BestOfs._format_percentage(t2_odds)}\n\n"
-            f"Overall Likelihood Of {t1_name} To Win Series: {BestOfs._format_percentage(t1_win_series)}\n\n"
-            f"\tProbability {t1_name} wins 3-0: {BestOfs._format_percentage(t1_win_3_0)}\n"
-            f"\tProbability {t1_name} wins 3-1: {BestOfs._format_percentage(t1_win_3_1)}\n"
-            f"\tProbability {t1_name} wins 3-2: {BestOfs._format_percentage(t1_win_3_2)}\n\n"
-            f"Overall Likelihood Of {t2_name} To Win Series: {BestOfs._format_percentage(t2_win_series)}\n\n"
-            f"\tProbability {t2_name} wins 3-0: {BestOfs._format_percentage(t2_win_3_0)}\n"
-            f"\tProbability {t2_name} wins 3-1: {BestOfs._format_percentage(t2_win_3_1)}\n"
-            f"\tProbability {t2_name} wins 3-2: {BestOfs._format_percentage(t2_win_3_2)}\n\n"
-            f"Overall likelihoods of each team winning at least 1 game:\n\n"
-            f"\tProbability {t1_name} wins at least 1 game: {BestOfs._format_percentage(t1_win_at_least_one)}\n"
-            f"\tProbability {t2_name} wins at least 1 game: {BestOfs._format_percentage(t2_win_at_least_one)}\n\n"
-            f"Overall Likelihood Of Exactly 3 Games: {BestOfs._format_percentage(exactly_three_games)}\n\n"
-            f"Overall Likelihood Of At Least 4 Games: {BestOfs._format_percentage(at_least_four_games)}\n\n"
-            f"Overall Likelihood Of Exactly 5 Games: {BestOfs._format_percentage(exactly_five_games)}"
+            f"**BO5 – Series Win Probabilities**\n"
+            f"• {t1} wins series: {_pct(d['t1_series'])}\n"
+            f"• {t2} wins series: {_pct(d['t2_series'])}\n\n"
+            f"**BO5 – Scorelines**\n"
+            f"• {t1} 3–0: {_pct(d['t1_3_0'])}\n"
+            f"• {t1} 3–1: {_pct(d['t1_3_1'])}\n"
+            f"• {t1} 3–2: {_pct(d['t1_3_2'])}\n"
+            f"• {t2} 3–0: {_pct(d['t2_0_3'])}\n"
+            f"• {t2} 3–1: {_pct(d['t2_1_3'])}\n"
+            f"• {t2} 3–2: {_pct(d['t2_2_3'])}\n\n"
+            f"**BO5 – Length**\n"
+            f"• Exactly 3 games: {_pct(d['exactly_3'])}\n"
+            f"• At least 4 games: {_pct(d['at_least_4'])}\n"
+            f"• Exactly 5 games: {_pct(d['exactly_5'])}"
         )

@@ -1,10 +1,11 @@
+# run_bot.py
 """
 League of Legends Esports Prediction Bot.
 
-This bot provides commands for a League of Legends esports prediction model.
-Users can request predictions and view information such as team rosters,
-player profiles, match schedules, and betting odds.
+Commands for predictions, team/player info, schedules, and betting utilities.
 """
+
+from __future__ import annotations
 
 import os
 
@@ -12,7 +13,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from discord_predictions.discord import (
+from discord_predictions.discord_utils import (
     calculate_kelly_criterion,
     calculate_odds,
     calculate_prob,
@@ -25,163 +26,174 @@ from discord_predictions.discord import (
     handle_command_error,
     validate_and_predict,
 )
+from discord_predictions.team import Team
 from ingestion.schedule import PandaScoreSchedule
-from utils.entities.team import Team
 from utils.logger import logger
 from utils.paths import SCHEDULE
 
-# Load environment variables from .env file
+# ── env & bot setup ─────────────────────────────────────────────────────── #
+
 load_dotenv()
 
-# Constants
-DISCORD_TOKEN_ENV = "DISCORD_TOKEN"
-PANDASCORE_API_KEY_ENV = "PANDASCORE_API_KEY"  # pragma: allowlist secret
+DISCORD_TOKEN_ENV = "DISCORD_TOKEN"  # noqa: S105
 BOT_COMMAND_PREFIX = "!"
-BOT_DESCRIPTION = "A comprehensive League of Legends esports prediction bot."
+BOT_DESCRIPTION = "LoL esports prediction & betting helper."
 
-# Initialize bot with command prefix and description
 intents = discord.Intents.default()
-intents.message_content = True  # Enable message content intent
+intents.message_content = True
+
 bot = commands.Bot(
     command_prefix=BOT_COMMAND_PREFIX,
     description=BOT_DESCRIPTION,
     intents=intents,
 )
 
+# ── helpers ─────────────────────────────────────────────────────────────── #
+
+
+def _split_two_rosters(rosters: str | None) -> tuple[str | None, str | None]:
+    """
+    Accepts either:
+      - "p1,p2,p3,p4,p5 | q1,q2,q3,q4,q5"  (pipe-separated rosters), or
+      - "p1,p2,p3,p4,p5" (blue only; red left empty), or
+      - None
+    Returns (blue_roster_str, red_roster_str)
+    """
+    if not rosters:
+        return None, None
+    if "|" in rosters:
+        left, right = rosters.split("|", 1)
+        return left.strip(), right.strip()
+    return rosters.strip(), None
+
+
+# ── lifecycle ───────────────────────────────────────────────────────────── #
+
 
 @bot.event
 async def on_ready():
-    """Event handler for when the bot is ready."""
-    logger.info(f"{bot.user} has connected to Discord!")
+    logger.info("%s has connected to Discord!", bot.user)
 
 
-# Utility Commands
+# ── utility commands ────────────────────────────────────────────────────── #
 
 
 @bot.command(name="code", aliases=["github", "repository", "git", "source"])
-async def code(ctx):
-    """Sends a message with the GitHub repository link."""
+async def code(ctx: commands.Context):
+    """Link to the repository."""
     response = (
-        "This model is entirely open-source!\nWe'd love to discuss ideas or contributions!\n"
-        "Check the link at: https://github.com/MRittinghouse/esports-analytics"
+        "This model is open source. Ideas & contributions welcome!\n"
+        "GitHub: https://github.com/Yureehh/Oracle-Bets"
     )
     await ctx.send(response)
 
 
 @bot.command(name="leagues", aliases=["league", "show_leagues", "show_league"])
-async def leagues(ctx):
-    """Displays the list of supported leagues."""
+async def leagues(ctx: commands.Context):
+    """List supported leagues in the schedule file."""
     try:
         leagues = PandaScoreSchedule.load_schedule(SCHEDULE)["league"].unique()
-        response = format_leagues_message(sorted(leagues))
-    except Exception as e:
-        response = handle_command_error(
-            e, additional_info="Could not retrieve league information."
+        await ctx.send(format_leagues_message(sorted(leagues)))
+    except FileNotFoundError as e:
+        await ctx.send(
+            handle_command_error(e, "Could not retrieve league information.")
         )
-    await ctx.send(response)
 
 
 @bot.command(name="schedule")
-async def schedule(ctx, leagues: str | None = None):
-    """Displays the upcoming schedule for the specified leagues."""
+async def schedule(ctx: commands.Context, leagues: str | None = None):
+    """Show upcoming schedule. Optionally filter by comma-separated leagues."""
     try:
         schedule_df = PandaScoreSchedule.load_schedule(SCHEDULE, leagues)
-        response = format_schedule_message(schedule_df)
-    except Exception as e:
-        response = handle_command_error(
-            e, additional_info="Could not retrieve schedule."
-        )
-    await ctx.send(response)
+        await ctx.send(format_schedule_message(schedule_df))
+    except FileNotFoundError as e:
+        await ctx.send(handle_command_error(e, "Could not retrieve schedule."))
 
 
-# Profile and Roster Commands
+# ── roster / profiles ───────────────────────────────────────────────────── #
 
 
 @bot.command(name="team_roster", aliases=["roster"])
-async def roster(ctx, team: str | None = None):
-    """Displays the roster for the specified team."""
+async def roster(ctx: commands.Context, team: str | None = None):
+    """Show roster for a team."""
     if not team:
         await ctx.send("Please provide a team name.")
         return
-    message = await ctx.send(content="```Extracting...```")
+    msg = await ctx.send(content="```Extracting...```")
     try:
-        team_data = Team(name=team).get_team_info()
-        output = convert_to_discord_markdown(team_data)
-    except Exception as e:
-        output = handle_command_error(
-            e, additional_info="Could not extract roster information."
+        team_df = Team(name=team).get_team_info()
+        await msg.edit(content=convert_to_discord_markdown(team_df))
+    except Exception as e:  # noqa: BLE001
+        await msg.edit(
+            content=handle_command_error(e, "Could not extract roster information.")
         )
-    await message.edit(content=output)
 
 
 @bot.command(name="team_rosters", aliases=["rosters"])
-async def rosters(ctx, teams: str | None = None):
-    """Displays the roster for the specified teams."""
+async def rosters(ctx: commands.Context, teams: str | None = None):
+    """Show rosters for multiple teams. Usage: !rosters T1, G2, JDG"""
     if not teams:
-        await ctx.send("Please provide a list of team names separated by commas.")
+        await ctx.send(
+            "Provide team names separated by commas, e.g., `!rosters T1, G2`."
+        )
         return
-    message = await ctx.send(content="```Extracting...```")
+    msg = await ctx.send(content="```Extracting...```")
     output = ""
-    team_names = [team.strip() for team in teams.split(",")]
-    for team_name in team_names:
+    for team_name in (t.strip() for t in teams.split(",")):
         try:
-            team_data = Team(name=team_name).get_team_info()
-            output += convert_to_discord_markdown(team_data)
-        except Exception as e:
+            team_df = Team(name=team_name).get_team_info()
+            output += convert_to_discord_markdown(team_df)
+        except Exception as e:  # noqa: BLE001
             output += handle_command_error(
-                e,
-                additional_info=f"Could not extract roster information for {team_name}.\n",
+                e, f"Could not extract roster for {team_name}.\n"
             )
-    await message.edit(content=output)
+    await msg.edit(content=output)
 
 
 @bot.command(name="team_profile", aliases=["team"])
-async def team_profile(ctx, team_name: str | None = None):
-    """Displays the profile for the specified team."""
+async def team_profile(ctx: commands.Context, team_name: str | None = None):
+    """Show team profile."""
     if not team_name:
         await ctx.send("Please provide a team name.")
         return
     try:
         profile, error = await get_formatted_team_profile(team_name)
-        response = profile if profile else error
-    except Exception as e:
-        response = handle_command_error(
-            e, additional_info="Could not retrieve team profile."
-        )
-    await ctx.send(response)
+        await ctx.send(profile or error)
+    except Exception as e:  # noqa: BLE001
+        await ctx.send(handle_command_error(e, "Could not retrieve team profile."))
 
 
 @bot.command(name="player_profile", aliases=["player"])
-async def player_profile(ctx, player_name: str | None = None, verbose: str = "False"):
-    """Displays the profile for the specified player."""
+async def player_profile(
+    ctx: commands.Context, player_name: str | None = None, verbose: str = "False"
+):
+    """Show player profile. Add `True` for more stats: `!player Faker True`"""
     if not player_name:
         await ctx.send("Please provide a player name.")
         return
-    verbose = verbose.lower() in ["true", "1", "t", "y", "yes"]
+    show_more = verbose.lower() in {"true", "1", "t", "y", "yes"}
     try:
-        profile, error = await get_formatted_player_profile(player_name, verbose)
-        response = profile if profile else error
-    except Exception as e:
-        response = handle_command_error(
-            e, additional_info="Could not retrieve player profile."
-        )
-    await ctx.send(response)
+        profile, error = await get_formatted_player_profile(player_name, show_more)
+        await ctx.send(profile or error)
+    except Exception as e:  # noqa: BLE001
+        await ctx.send(handle_command_error(e, "Could not retrieve player profile."))
 
 
-# Prediction Commands
+# ── predictions (bo1/bo2/bo3/bo5) ───────────────────────────────────────── #
 
 
 @bot.command(name="bo1", aliases=["predict", "prediction", "match", "BO1"])
 async def bo1(
-    ctx,
+    ctx: commands.Context,
     blue_team_name: str | None = None,
     red_team_name: str | None = None,
     rosters: str | None = None,
 ):
-    """Predicts the outcome of a best-of-one match between two teams."""
-    blue_roster_str, red_roster_str = (
-        ([*rosters.split(","), None, None])[:2] if rosters else (None, None)
-    )
+    """
+    Predict a best-of-one. Optional rosters:
+    `!bo1 T1 G2 "t1top,t1jng,t1mid,t1adc,t1sup | g2top,g2jng,g2mid,g2adc,g2sup"`
+    """
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict(
         ctx,
         blue_team_name,
@@ -198,15 +210,13 @@ async def bo1(
     aliases=["sided_predict", "sided_prediction", "sided_match", "sided_BO1"],
 )
 async def sided_bo1(
-    ctx,
+    ctx: commands.Context,
     blue_team_name: str | None = None,
     red_team_name: str | None = None,
     rosters: str | None = None,
 ):
-    """Predicts the outcome of a best-of-one match between two teams with side considerations."""
-    blue_roster_str, red_roster_str = (
-        ([*rosters.split(","), None, None])[:2] if rosters else (None, None)
-    )
+    """Best-of-one with side consideration (Blue/Red advantages)."""
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict(
         ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", True
     )
@@ -214,15 +224,16 @@ async def sided_bo1(
 
 @bot.command(name="bo2", aliases=["BO2"])
 async def bo2(
-    ctx,
+    ctx: commands.Context,
     blue_team_name: str | None = None,
     red_team_name: str | None = None,
     rosters: str | None = None,
 ):
-    """Predicts the outcome of a best-of-two match between two teams."""
-    blue_roster_str, red_roster_str = (
-        ([*rosters.split(","), None, None])[:2] if rosters else (None, None)
-    )
+    """
+    Predict a best-of-two (supports 2-0 / 1-1 / 0-2 series formats).
+    Optional rosters string: see `!bo1`.
+    """
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict(
         ctx,
         blue_team_name,
@@ -236,15 +247,13 @@ async def bo2(
 
 @bot.command(name="bo3", aliases=["BO3"])
 async def bo3(
-    ctx,
+    ctx: commands.Context,
     blue_team_name: str | None = None,
     red_team_name: str | None = None,
     rosters: str | None = None,
 ):
-    """Predicts the outcome of a best-of-three match between two teams."""
-    blue_roster_str, red_roster_str = (
-        ([*rosters.split(","), None, None])[:2] if rosters else (None, None)
-    )
+    """Predict a best-of-three. Optional rosters string: see `!bo1`."""
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict(
         ctx,
         blue_team_name,
@@ -258,15 +267,13 @@ async def bo3(
 
 @bot.command(name="bo5", aliases=["BO5"])
 async def bo5(
-    ctx,
+    ctx: commands.Context,
     blue_team_name: str | None = None,
     red_team_name: str | None = None,
     rosters: str | None = None,
 ):
-    """Predicts the outcome of a best-of-five match between two teams."""
-    blue_roster_str, red_roster_str = (
-        ([*rosters.split(","), None, None])[:2] if rosters else (None, None)
-    )
+    """Predict a best-of-five. Optional rosters string: see `!bo1`."""
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict(
         ctx,
         blue_team_name,
@@ -278,106 +285,107 @@ async def bo5(
     )
 
 
-# Odds and Betting Commands
+# ── betting utils ───────────────────────────────────────────────────────── #
 
 
 @bot.command(name="odds", aliases=["prob_to_odds", "win_probability_to_odds"])
 async def convert_win_probability_to_odds(
-    ctx, win_probability: str | None = None, to_decimal: str = "True"
+    ctx: commands.Context, win_probability: str | None = None, to_decimal: str = "True"
 ):
-    """Converts a win probability to odds."""
+    """Convert probability (e.g., `0.64` or `64%`) to odds. `to_decimal=True|False`"""
     if not win_probability:
         await ctx.send("Please provide a win probability.")
         return
-    to_decimal = to_decimal.lower() in ["true", "1", "t", "y", "yes"]
+    to_dec = to_decimal.lower() in {"true", "1", "t", "y", "yes"}
     try:
-        win_probability = convert_odds(win_probability)
-        if not (0 <= win_probability <= 1):
+        p = convert_odds(win_probability)
+        if not (0 <= p <= 1):
             msg = "Win probability must be between 0% and 100%."
-            raise ValueError(msg)
-        odds = calculate_odds(win_probability, to_decimal)
-        odds_type = "decimal" if to_decimal else "fractional"
-        await ctx.send(
-            f"The {odds_type} odds for a win probability of {win_probability * 100:.2f}% are {odds}."
-        )
+            raise ValueError(msg)  # noqa: TRY301
+        odds = calculate_odds(p, to_dec)
+        kind = "decimal" if to_dec else "fractional"
+        await ctx.send(f"{kind.capitalize()} odds for {p * 100:.2f}%: {odds}")
     except ValueError as ve:
         await ctx.send(str(ve))
 
 
 @bot.command(name="prob", aliases=["odds_to_prob", "odds_to_win_probability"])
-async def convert_odds_to_win_probability(ctx, odds: str | None = None):
-    """Converts decimal odds to a win probability."""
+async def convert_odds_to_win_probability(
+    ctx: commands.Context, odds: str | None = None
+):
+    """Convert decimal odds to win probability."""
     if not odds:
         await ctx.send("Please provide odds.")
         return
     try:
-        odds = float(odds)
-        if odds <= 1:
+        o = float(odds)
+        if o <= 1:
             msg = "Odds must be greater than 1."
-            raise ValueError(msg)
-        win_probability = calculate_prob(odds)
-        await ctx.send(
-            f"The win probability for odds of {odds} is {win_probability * 100:.2f}%."
-        )
+            raise ValueError(msg)  # noqa: TRY301
+        p = calculate_prob(o)
+        await ctx.send(f"Implied win probability for odds {o}: {p * 100:.2f}%")
     except ValueError as ve:
         await ctx.send(str(ve))
 
 
 @bot.command(name="kelly", aliases=["kelly_criterion"])
 async def kelly_criterion(
-    ctx, bookmaker_odds: str | None = None, win_probability: str | None = None
+    ctx: commands.Context,
+    bookmaker_odds: str | None = None,
+    win_probability: str | None = None,
 ):
-    """Calculates the Kelly Criterion based on the given win probability and bookmaker odds."""
+    """Half-Kelly suggestion for decimal odds and probability (e.g., `!kelly 2.1 55%`)."""
     if not bookmaker_odds or not win_probability:
-        await ctx.send("Please provide both bookmaker odds and a win probability.")
+        await ctx.send(
+            "Provide both bookmaker odds and a win probability (e.g., `!kelly 2.1 55%`)."
+        )
         return
     try:
-        bookmaker_odds = float(bookmaker_odds)
-        win_probability = convert_odds(win_probability)
-        if not (0 <= win_probability <= 1):
+        o = float(bookmaker_odds)
+        p = convert_odds(win_probability)
+        if not (0 <= p <= 1):
             msg = "Win probability must be between 0% and 100%."
-            raise ValueError(msg)
-        if bookmaker_odds <= 1:
+            raise ValueError(msg)  # noqa: TRY301
+        if o <= 1:
             msg = "Bookmaker odds must be greater than 1."
-            raise ValueError(msg)
-        kelly_fraction = calculate_kelly_criterion(bookmaker_odds, win_probability)
+            raise ValueError(msg)  # noqa: TRY301
+        f = calculate_kelly_criterion(o, p)  # half-Kelly
         await ctx.send(
-            f"Given bookmaker odds of {bookmaker_odds} and a win probability of {win_probability * 100:.2f}%:\n"
-            f"The Kelly Criterion suggests betting {kelly_fraction * 100:.2f}% of your bankroll."
+            f"For odds {o} and win prob {p * 100:.2f}%: bet **{f * 100:.2f}%** of bankroll (half-Kelly)."
         )
     except ValueError as ve:
         await ctx.send(str(ve))
 
 
-# Administrative Commands
+# ── admin ───────────────────────────────────────────────────────────────── #
 
 
 @bot.command(name="kill", aliases=["stop"])
 @commands.is_owner()
-async def kill(ctx):
-    """Shuts down the bot. Only the bot owner can use this command."""
+async def kill(ctx: commands.Context):
+    """Shutdown (owner only)."""
     try:
         logger.info("Shutting down the bot...")
         await bot.close()
-        logger.info("Bot has been successfully shut down.")
-    except Exception as e:
-        logger.error(f"Failed to shut down bot properly: {e}")
+        logger.info("Bot shut down.")
+    except Exception as e:  # noqa: BLE001
+        logger.error("Failed to shut down bot properly: %s", e)
         await ctx.send("Failed to shut down the bot properly.")
 
 
-# Bot Runner
+# ── runner ──────────────────────────────────────────────────────────────── #
 
 
-def run_bot():
-    """Runs the Discord bot."""
+def run_bot() -> None:
+    """Start the Discord bot."""
     try:
-        discord_token = os.getenv(DISCORD_TOKEN_ENV)
-        if not discord_token:
-            logger.error("Discord token is not set in environment variables.")
+        token = os.getenv(DISCORD_TOKEN_ENV)
+        if not token:
+            logger.error("Environment variable %s is missing.", DISCORD_TOKEN_ENV)
             return
-        bot.run(discord_token)
-    except Exception as e:
-        logger.error(f"Failed to start the bot: {e}")
+        bot.run(token)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Failed to start bot: %s", e)
 
 
 if __name__ == "__main__":
