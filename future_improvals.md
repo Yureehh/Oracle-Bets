@@ -50,3 +50,7 @@ Side baseline priors: include blue_winrate_league_patch (EWM). The model will le
 Drift monitoring: track population stability (PSI) across patches/leagues for key features and rating deltas so you know when to retune.
 
 Profit-aware evaluation: besides logloss & calibration curves, track backtested expected value vs. implied odds (with margin removed) and Betting ROC (profit curve).
+
+# TODOs
+- Add code documentation with MKDocs
+- Re-do notebooks with new data and new features

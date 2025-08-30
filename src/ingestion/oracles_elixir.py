@@ -153,7 +153,7 @@ class OraclesElixir:
         )
 
         # Replace common null spellings
-        with pd.option_context("future.no_silent_downcasting", True):  # noqa: FBT003
+        with pd.option_context("future.no_silent_downcasting", True):
             df.loc[:, :] = df.replace(NULL_REPLACEMENTS, pd.NA)
 
         # Game length seconds → minutes

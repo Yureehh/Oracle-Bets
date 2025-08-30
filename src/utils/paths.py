@@ -42,10 +42,10 @@ def _create_directory(directory: Path) -> None:
 BASE_DIR: Final[Path] = Path(os.getenv("BASE_DIR", Path.cwd())).resolve()
 
 DATA_DIR: Final = BASE_DIR / "data"
-MODELS_DIR: Final = BASE_DIR / "models"
 CONFIG_DIR: Final = BASE_DIR / "config"
+MODELS_DIR: Final = BASE_DIR / "models"
 NOTEBOOKS_DIR: Final = BASE_DIR / "notebooks"
-REPORTS_DIR: Final = NOTEBOOKS_DIR / "reports"
+REPORTS_DIR: Final = BASE_DIR / "reports"
 LOGS_DIR: Final = BASE_DIR / "logs"
 
 # --------------------------------------------------------------------------- #
@@ -62,6 +62,7 @@ PROCESSED_PLAYERS_DIR: Final = PROCESSED_DIR / "players"
 # --------------------------------------------------------------------------- #
 DISCORD_CONFIG: Final = CONFIG_DIR / "discord_config.json"
 DATA_INGESTION_DIR: Final = CONFIG_DIR / "data_ingestion"
+LEAGUES_INGESTION: Final = DATA_INGESTION_DIR / "leagues_handling"
 TARGET_FEATURES: Final = CONFIG_DIR / "target_features.json"
 TRAINING_AND_INPUT_COLS_DIR: Final = CONFIG_DIR / "training"
 
@@ -70,7 +71,7 @@ IMPORT_COLUMNS: Final = DATA_INGESTION_DIR / "import_columns.json"
 TEAM_REPLACEMENTS_AND_INVALID_GAMES: Final = (
     DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
 )
-CONSIDERED_LEAGUES: Final = DATA_INGESTION_DIR / "considered_leagues.json"
+CONSIDERED_LEAGUES: Final = LEAGUES_INGESTION / "considered_leagues.json"
 
 # --------------------------------------------------------------------------- #
 # Concrete data artefacts
@@ -108,25 +109,33 @@ MODEL_ARTIFACTS: Final = MODELS_DIR / "artifacts"
 LEAGUE_ELO: Final = MODEL_ARTIFACTS / "league_elo.parquet"
 TEAM_LEAGUES_MAPPING: Final = MODEL_ARTIFACTS / "team_league_mapping.parquet"
 WHOLE_HISTORY_RATING_PATH: Final = MODEL_ARTIFACTS / "whr.pkl"
-OUTCOME_PREDICTION_MODEL_PATH: Final = MODEL_ARTIFACTS / "OutcomePrediction.pkl"
+OUTCOME_PREDICTION_MODEL_PATH: Final = (
+    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction.pkl"
+)
 OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "OutcomePrediction_categorical_features.pkl"
+    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_categorical_features.pkl"
 )
 OUTCOME_PREDICTION_FINAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "OutcomePrediction_final_features.pkl"
+    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_final_features.pkl"
 )
 OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODEL_ARTIFACTS / "OutcomePrediction_best_hyperparameters.pkl"
+    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_best_hyperparameters.pkl"
 )
-GAMELENGTH_PREDICTION_MODEL_PATH: Final = MODEL_ARTIFACTS / "GamelengthPrediction.pkl"
+GAMELENGTH_PREDICTION_MODEL_PATH: Final = (
+    MODEL_ARTIFACTS / "GamelengthPrediction" / "GamelengthPrediction.pkl"
+)
 GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "GamelengthPrediction_categorical_features.pkl"
+    MODEL_ARTIFACTS
+    / "GamelengthPrediction"
+    / "GamelengthPrediction_categorical_features.pkl"
 )
 GAMELENGTH_PREDICTION_FINAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "GamelengthPrediction_final_features.pkl"
+    MODEL_ARTIFACTS / "GamelengthPrediction" / "GamelengthPrediction_final_features.pkl"
 )
 GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODEL_ARTIFACTS / "GamelengthPrediction_best_hyperparameters.pkl"
+    MODEL_ARTIFACTS
+    / "GamelengthPrediction"
+    / "GamelengthPrediction_best_hyperparameters.pkl"
 )
 
 # Hyper-parameter grids
@@ -153,7 +162,6 @@ ENTITY_TRUESKILL_HYPERPARAMETERS: Final = (
 # Reports & figures
 # --------------------------------------------------------------------------- #
 FIGURES_DIR: Final = REPORTS_DIR / "figures"
-FEATURE_IMP_DIR: Final = FIGURES_DIR / "feature_importances"
 INSIGHTS_DIR: Final = REPORTS_DIR / "evaluation_insights"
 
 # --------------------------------------------------------------------------- #
@@ -170,7 +178,7 @@ _directories: list[Path] = [
     MODEL_ARTIFACTS,
     REPORTS_DIR,
     FIGURES_DIR,
-    FEATURE_IMP_DIR,
+    FIGURES_DIR,
     INSIGHTS_DIR,
     CONFIG_DIR,
     DATA_INGESTION_DIR,

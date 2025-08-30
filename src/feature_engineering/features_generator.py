@@ -149,7 +149,7 @@ class FeatureGenerator:
         _add_expanding(["playerid", "patch"], "patch")
 
         # Propagate NaNs so every row has both win & loss histories where possible
-        pd.set_option("future.no_silent_downcasting", True)  # noqa: FBT003
+        pd.set_option("future.no_silent_downcasting", True)
         df = df.ffill().bfill()
         df = df.infer_objects(copy=False)  # TODO: what does this do?
 

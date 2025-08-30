@@ -1,139 +1,167 @@
 """
 Models Training
 
-This script initializes and trains needed models for the project.
-It loads training data, initializes and trains the models, and stores the trained models.
-The models are outcome prediction, game length prediction, total kills prediction, and total towers prediction.
+Initializes and trains the project's models using team & player training tables.
+Outputs serialized models to MODELS_DIR.
+
+Models covered:
+- Outcome prediction (classification)
+# - Gamelength prediction (regression)
+# - Total kills prediction (regression)
+# - Total towers prediction (regression)
 """
 
-import datetime as dt
+from __future__ import annotations
 
-import pandas as pd
+import datetime as dt
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from prediction_models.lightgbm_model import ModelFactory
 from utils.io_utils import load_training_data, store_model
 from utils.logger import logger
-from utils.paths import MODELS_DIR, TRAINING_PLAYER_DATA, TRAINING_TEAM_DATA
+from utils.paths import (
+    MODEL_ARTIFACTS,
+    TRAINING_PLAYER_DATA,
+    TRAINING_TEAM_DATA,
+)
 
-# Constants
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pandas as pd
+
+# ───────────────────────────────  types / config  ─────────────────────────────
+
+ProblemType = Literal["classification", "regression"]
 MODEL_FILE_EXTENSION = "pkl"
 
-# List of models to train with their configurations
-MODELS_TO_TRAIN = [
-    {
-        "model_name": "OutcomePrediction",
-        "target_column": "result",
-        "problem_type": "classification",
-    },
-    # {
-    #     "model_name": "GamelengthPrediction",
-    #     "target_column": "gamelength",
-    #     "problem_type": "regression",
-    # },
-    # {
-    #     "model_name": "TotalKillsPrediction",
-    #     "target_column": "total_kills",
-    #     "problem_type": "regression",
-    # },
-    # {
-    #     "model_name": "TotalTowersPrediction",
-    #     "target_column": "total_towers",
-    #     "problem_type": "regression",
-    # },
-]
+
+@dataclass(frozen=True)
+class ModelConfig:
+    model_name: str
+    target_column: str
+    problem_type: ProblemType
+    validate: bool = True
+
+
+# Enable/disable models here
+MODELS_TO_TRAIN: tuple[ModelConfig, ...] = (
+    ModelConfig(
+        model_name="OutcomePrediction",
+        target_column="result",
+        problem_type="classification",
+    ),
+    # ModelConfig("GamelengthPrediction", "gamelength", "regression"),  # noqa: ERA001
+    # ModelConfig("TotalKillsPrediction", "total_kills", "regression"),  # noqa: ERA001
+    # ModelConfig("TotalTowersPrediction", "total_towers", "regression"),  # noqa: ERA001
+)
+
+
+# ───────────────────────────────  helpers  ───────────────────────────────────
+
+
+def _model_path(name: str, ext: str = MODEL_FILE_EXTENSION) -> Path:
+    # Always store under models/artifacts/<Name>/<Name>.<ext>
+    return MODEL_ARTIFACTS / name / f"{name}.{ext}"
+
+
+def _check_target_presence(team_df: pd.DataFrame, target: str) -> None:
+    """
+    Minimal guard: team targets (result / gamelength / totals) must exist
+    in the team training table before we hand off to the model pipeline.
+    """
+    if target not in team_df.columns:
+        msg = (
+            f"Target column '{target}' not found in team training data "
+            f"(available: {len(team_df.columns)} columns)."
+        )
+        raise ValueError(msg)
+
+
+# ───────────────────────────────  core training  ─────────────────────────────
 
 
 def initialize_and_train_model(
-    model_name: str,
+    cfg: ModelConfig,
     training_team_data: pd.DataFrame,
     training_player_data: pd.DataFrame,
-    target_column_name: str,
-    problem_type: str,
-    validate: bool = True,
-) -> None:
+) -> Path | None:
     """
-    Initialize and train the model.
-
-    Args:
-        model_name (str): Name of the model to be trained.
-        training_team_data (pd.DataFrame): DataFrame containing team-level features.
-        training_player_data (pd.DataFrame): DataFrame containing player-level features.
-        target_column_name (str): The name of the target column in the data.
-        problem_type (str): Type of the problem ('classification' or 'regression').
-        validate (bool): Whether to perform model validation. Defaults to True.
-
-    Raises:
-        Exception: If training fails.
-
+    Initialize, train (and optionally validate) a model defined by `cfg`.
+    Returns the stored model path on success.
     """
-    try:
-        model = ModelFactory.create_model(
-            model_name=model_name,
-            problem_type=problem_type,
-            training_team_data=training_team_data,
-            training_player_data=training_player_data,
-        )
+    _check_target_presence(training_team_data, cfg.target_column)
 
-        logger.info(
-            f"Initialized {model_name} model for {problem_type} problem. Starting training process..."
-        )
-        start_time = dt.datetime.now()
+    logger.info(
+        f"Initializing '{cfg.model_name}' "
+        f"({cfg.problem_type}) with target='{cfg.target_column}'…"
+    )
 
-        model.preprocess_data(target_col=target_column_name)
-        trained_model = model.train_and_validate_model(
-            target_col=target_column_name, validate=validate
-        )
-        elapsed_time = (dt.datetime.now() - start_time).total_seconds()
+    model = ModelFactory.create_model(
+        model_name=cfg.model_name,
+        problem_type=cfg.problem_type,
+        training_team_data=training_team_data,
+        training_player_data=training_player_data,
+    )
 
-        logger.info(
-            f"{model_name} model training and evaluation completed in {elapsed_time:.2f} seconds"
-        )
+    start = dt.datetime.now()
+    # Allow model to do its own splits/joins/feature selection internally
+    model.preprocess_data(target_col=cfg.target_column)
 
-        model_path = MODELS_DIR / f"{model_name}.{MODEL_FILE_EXTENSION}"
-        store_model(model_path, trained_model, model_name, logger)
-        logger.info(f"Stored trained model at {model_path}\n")
+    logger.info(f"Training '{cfg.model_name}' (validate={cfg.validate})…")
+    trained_model = model.train_and_validate_model(
+        target_col=cfg.target_column, validate=cfg.validate
+    )
+    elapsed = (dt.datetime.now() - start).total_seconds()
 
-    except Exception as e:
-        logger.error(f"Failed to train {model_name} model: {e}")
-        raise
+    logger.info(f"'{cfg.model_name}' training complete in {elapsed:.2f}s.")
+
+    path = _model_path(cfg.model_name)
+    store_model(path, trained_model, cfg.model_name, logger)
+    logger.info(f"Stored trained model: {path}\n")
+
+    return path
 
 
 def train_models() -> None:
-    """Train all models defined in MODELS_TO_TRAIN."""
+    """Train all configured models using shared training tables."""
     try:
-        logger.info("Loading training data...")
-        training_team_data, training_player_data = load_training_data(
+        logger.info("Loading training data…")
+        team_df, player_df = load_training_data(
             TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA, logger
         )
-        logger.info("Training data loaded successfully.\n")
     except Exception as e:
-        logger.error(f"Failed to load training data: {e}")
+        logger.exception(f"Failed to load training data: {e}")
         raise
 
-    for model_info in MODELS_TO_TRAIN:
-        model_name = model_info["model_name"]
-        target_column = model_info["target_column"]
-        problem_type = model_info["problem_type"]
+    trained: list[str] = []
+    failed: list[str] = []
 
+    for cfg in MODELS_TO_TRAIN:
         try:
             initialize_and_train_model(
-                model_name=model_name,
-                training_team_data=training_team_data,
-                training_player_data=training_player_data,
-                target_column_name=target_column,
-                problem_type=problem_type,
+                cfg=cfg,
+                training_team_data=team_df,
+                training_player_data=player_df,
             )
-        except Exception as e:
-            logger.error(f"An error occurred while training {model_name}: {e}")
-            continue  # Proceed to the next model
+            trained.append(cfg.model_name)
+        except (Exception, KeyboardInterrupt) as e:
+            failed.append(cfg.model_name)
+            logger.exception(f"Training failed for '{cfg.model_name}': {e}")
 
-    logger.info("All models training process completed.\n")
+    # Summary
+    if trained:
+        logger.info(f"Successfully trained: {', '.join(trained)}")
+    if failed:
+        logger.warning(f"Failed: {', '.join(failed)}")
+    logger.info("All model training tasks finished.\n")
 
+
+# ───────────────────────────────  cli entrypoint  ─────────────────────────────
 
 if __name__ == "__main__":
     try:
         train_models()
-    except KeyboardInterrupt:
-        logger.error("Training models interrupted by user.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during model training: {e}")
+    except (KeyboardInterrupt, Exception) as e:
+        logger.exception(f"Unexpected error during model training: {e}")
