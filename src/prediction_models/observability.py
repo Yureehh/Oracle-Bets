@@ -343,7 +343,7 @@ class MLObservabilityMixin:
             elif metric == "mse":
                 errors = (y_true - y_pred) ** 2
             else:
-                raise ValueError("metric must be 'mae' or 'mse'")  # noqa: EM101, TRY301
+                raise ValueError("metric must be 'mae' or 'mse'")  # noqa: TRY301
             curve = [float(np.mean(errors[:i])) for i in range(1, len(errors) + 1)]
             fig = plt.figure(figsize=(10, 5))
             plt.plot(range(1, len(curve) + 1), curve, marker="o")

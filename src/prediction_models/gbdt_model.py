@@ -6,7 +6,7 @@ Subclasses (e.g., LightGBMModel) only need to implement:
 
 This base also provides a full train_and_validate_model(...) orchestration that:
   • builds X/y from the preprocessed table
-  • performs grouped+stratified splits (gameid, league [+ season if present])
+  • performs grouped+stratified splits (gameid, league [+ season if present]) or temporal split
   • prunes features (missingness, low variance, high correlation) using TRAIN ONLY
   • casts categoricals, imputes missing values (median / "Unknown")
   • trains the subclass model, then runs evaluation + observability artifacts
@@ -40,7 +40,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 from prediction_models.data_preprocessor import DataPreprocessor
 from prediction_models.observability import MLObservabilityMixin
 from utils.logger import logger
-from utils.paths import FIGURES_DIR, INSIGHTS_DIR, MODEL_ARTIFACTS
+from utils.paths import FIGURES_DIR, INSIGHTS_DIR, MODEL_ARTIFACTS, PROCESSED_TEAMS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -54,6 +54,7 @@ HIGH_CORR_THRESHOLD = 0.90
 MAX_MISSING_FRAC = 0.40  # drop features missing >40% on TRAIN
 RANDOM_STATE = 42
 MIN_SHAPE_FOR_CORR = 2  # min numeric cols to run high-corr pruning
+BINARY_CLASS_UNIQUE_VALUES = 2
 
 
 @dataclass
@@ -103,6 +104,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
     @staticmethod
     def fuse_opposing_team_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Turn opp_* columns into in-situ diffs (base - opp_base), then drop the opp_* columns."""
         X = df.copy()
 
         # Team-level opp_* → base - opp_base  (numeric only)
@@ -132,7 +134,6 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     X[base] = X[base] - X[col]
                 X = X.drop(columns=[col], errors="ignore")
 
-        logger.info("Opposing feature fusion complete.")
         return X
 
     @staticmethod
@@ -163,11 +164,6 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 df[cols].max(axis=1) if agg == "max" else df[cols].mean(axis=1)
             )
 
-        logger.info(
-            "Aggregated %d role-based *_likelihood stems into players_* (agg=%s).",
-            len(stems),
-            agg,
-        )
         return out
 
     def _drop_high_missing(
@@ -304,6 +300,59 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
         logger.info(
             "Split -> train: %d, val: %d, test: %d rows",
+            len(X_train),
+            len(X_val),
+            len(X_test),
+        )
+        return X_train, X_val, X_test, y_train, y_val, y_test
+
+    # ─────────────────────── Temporal (time-ordered) split ─────────────────── #
+
+    @staticmethod
+    def temporal_train_val_test_split(
+        X_with_meta: pd.DataFrame,
+        y: pd.Series,
+        date_col: str = "date",
+        group_col: str = "gameid",
+        val_size: float = VALIDATION_SIZE,
+        test_size: float = TEST_SIZE,
+    ) -> tuple[
+        pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series
+    ]:
+        """
+        Time-ordered split by unique groups (gameid). Keeps both sides together.
+        Uses the group's min(date) to order games.
+        """
+        required = {group_col, date_col}
+        if not required.issubset(X_with_meta.columns):
+            raise ValueError(f"Missing required columns {sorted(required)}")
+
+        g = X_with_meta[[group_col, date_col]].drop_duplicates(subset=group_col).copy()
+        g[date_col] = pd.to_datetime(g[date_col], errors="coerce")
+        g = g.sort_values(date_col).dropna(subset=[date_col])
+        if g.empty:
+            raise ValueError("No valid dates for temporal split.")
+
+        n = len(g)
+        n_test = max(1, int(round(n * test_size)))
+        n_val = max(1, int(round((n - n_test) * val_size)))
+        n_train = max(1, n - n_val - n_test)
+
+        gids_train = set(g.iloc[:n_train][group_col])
+        gids_val = set(g.iloc[n_train : n_train + n_val][group_col])
+        gids_test = set(g.iloc[n_train + n_val :][group_col])
+
+        def _sel(gids: set[Any]) -> tuple[pd.DataFrame, pd.Series]:
+            Xp = X_with_meta[X_with_meta[group_col].isin(gids)]
+            yp = y.loc[Xp.index]
+            return Xp, yp
+
+        X_train, y_train = _sel(gids_train)
+        X_val, y_val = _sel(gids_val)
+        X_test, y_test = _sel(gids_test)
+
+        logger.info(
+            "Temporal split -> train: %d, val: %d, test: %d rows",
             len(X_train),
             len(X_val),
             len(X_test),
@@ -532,6 +581,28 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             logger.error("Validation failed: %s", e)
             raise
 
+    # ─────────────────────────── Helpers (meta drop with logging) ─────────────────────────── #
+
+    def _strip_meta_from_features(self, X: pd.DataFrame, name: str) -> pd.DataFrame:
+        """
+        Drop all meta columns (including 'date') from a feature frame.
+        Logs exactly what was removed to avoid any ambiguity.
+        """
+        meta = [c for c in self._meta_columns() if c in X.columns]
+        if not meta:
+            logger.debug("No meta columns to drop from %s features.", name)
+            return X
+        before = X.shape[1]
+        X2 = X.drop(columns=meta, errors="ignore")
+        removed = [c for c in meta if c not in X2.columns or c not in X.columns]
+        logger.debug(
+            "Dropped %d meta columns from %s features: %s",
+            before - X2.shape[1],
+            name,
+            ", ".join(removed),
+        )
+        return X2
+
     # ─────────────────────────── Public orchestrator ────────────────────────── #
 
     def train_and_validate_model(  # noqa: PLR0912, PLR0915
@@ -547,7 +618,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         compute_perm_importance: bool = False,
         compute_shap: bool = True,
         store_cohorts: bool = True,
-    ):  # sourcery skip: low-code-quality
+        temporal_split: bool = True,
+    ):
         """
         Main entrypoint used by the training script.
 
@@ -575,29 +647,54 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         if process_player_likelihoods:
             X = self.process_players_likelihood_columns(X, agg="mean")
 
-        # Attach back the split keys to the temporary X for the splitter
+        # If 'date' is missing (preprocessor may drop it), reattach via PROCESSED_TEAMS
+        if "date" not in meta_df.columns:
+            try:
+                team_dates = self._safe_read_parquet(PROCESSED_TEAMS)[
+                    ["gameid", "date"]
+                ].drop_duplicates()
+                meta_df = meta_df.merge(
+                    team_dates, on="gameid", how="left", validate="m:1"
+                )
+            except (FileNotFoundError, KeyError, ValueError) as e:
+                logger.warning("Could not reattach 'date' for temporal split: %s", e)
+
+        # Attach back split keys (includes season if present)
         split_keys = ["gameid", "league"] + (
             ["season"] if "season" in meta_df.columns else []
         )
-        X_for_split = pd.concat([X, meta_df[split_keys]], axis=1)
+        extra_split_cols = ["date"] if "date" in meta_df.columns else []
+        X_for_split = pd.concat([X, meta_df[split_keys + extra_split_cols]], axis=1)
 
-        # Splits (grouped by gameid, stratified by league)
-        X_train, X_val, X_test, y_train, y_val, y_test = (
-            self.grouped_stratified_train_val_test_split(
-                X_for_split,
-                y,
-                val_size=VALIDATION_SIZE,
-                test_size=TEST_SIZE,
-                random_state=RANDOM_STATE,
+        # Choose splitter (temporal if 'date' is available)
+        if temporal_split and "date" in X_for_split.columns:
+            X_train, X_val, X_test, y_train, y_val, y_test = (
+                self.temporal_train_val_test_split(
+                    X_for_split,
+                    y,
+                    date_col="date",
+                    group_col="gameid",
+                    val_size=VALIDATION_SIZE,
+                    test_size=TEST_SIZE,
+                )
             )
-        )
+        else:
+            X_train, X_val, X_test, y_train, y_val, y_test = (
+                self.grouped_stratified_train_val_test_split(
+                    X_for_split,
+                    y,
+                    val_size=VALIDATION_SIZE,
+                    test_size=TEST_SIZE,
+                    random_state=RANDOM_STATE,
+                )
+            )
 
-        # Drop meta keys from actual feature matrices
-        X_train = X_train.drop(columns=["gameid", "league"], errors="ignore")
-        X_val = X_val.drop(columns=["gameid", "league"], errors="ignore")
-        X_test = X_test.drop(columns=["gameid", "league"], errors="ignore")
+        # ── CRITICAL: drop meta (incl. 'date') from the actual feature matrices, with logs ── #
+        X_train = self._strip_meta_from_features(X_train, "train")
+        X_val = self._strip_meta_from_features(X_val, "val")
+        X_test = self._strip_meta_from_features(X_test, "test")
 
-        # Record eval identifiers for artifacts
+        # Record eval identifiers for artifacts (sourced from meta_df, not features)
         eval_gameids = (
             meta_df.loc[X_test.index, "gameid"]
             if "gameid" in meta_df
@@ -631,15 +728,31 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         X_val = X_val.drop(columns=drop_corr, errors="ignore")
         X_test = X_test.drop(columns=drop_corr, errors="ignore")
 
-        # Categorical casting (detect on concat to include unseen cats safely)
-        all_parts = pd.concat([X_train, X_val, X_test], axis=0, copy=False)
-        X_all_cat, categorical_features = self.preprocess_categorical_features(
-            all_parts
-        )
-        # Re-split back
-        X_train = X_all_cat.iloc[: len(X_train)].copy()
-        X_val = X_all_cat.iloc[len(X_train) : len(X_train) + len(X_val)].copy()
-        X_test = X_all_cat.iloc[len(X_train) + len(X_val) :].copy()
+        # ── CATEGORICAL CASTING (TRAIN-ONLY), then align val/test ── #
+        X_train, categorical_features = self.preprocess_categorical_features(X_train)
+
+        # Record train categories (+ ensure Unknown exists)
+        cat_levels = {c: list(X_train[c].cat.categories) for c in categorical_features}
+        for c in categorical_features:
+            if "Unknown" not in cat_levels[c]:
+                cat_levels[c].append("Unknown")
+            X_train[c] = X_train[c].cat.set_categories(cat_levels[c])
+
+        def _apply_cat_levels(Xp: pd.DataFrame) -> pd.DataFrame:
+            Xp = Xp.copy()
+            for c in categorical_features:
+                if c not in Xp.columns:
+                    continue
+                vals = Xp[c]
+                # Compare on object to avoid dtype mismatches; unseen -> "Unknown"
+                known = pd.Index(cat_levels[c]).astype("object")
+                mask_known = pd.Series(vals).astype("object").isin(known)
+                vals = vals.where(mask_known, "Unknown")
+                Xp[c] = pd.Categorical(vals, categories=cat_levels[c])
+            return Xp
+
+        X_val = _apply_cat_levels(X_val)
+        X_test = _apply_cat_levels(X_test)
 
         # Impute
         X_train, medians = self._impute_train_numeric(X_train)
@@ -653,6 +766,49 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         train_cols = list(X_train.columns)
         X_val = self._align_like_train(train_cols, X_val)
         X_test = self._align_like_train(train_cols, X_test)
+
+        # ── Operator checks (#6): detect suspicious single-feature leakage signals ── #
+        try:
+            # 6a) Top single-feature AUCs (TRAIN ONLY, numeric cols)
+            if self.problem_type == "classification":
+                num = X_train.select_dtypes("number")
+                if not num.empty and y_train.nunique() == BINARY_CLASS_UNIQUE_VALUES:
+                    aucs = num.apply(
+                        lambda s: roc_auc_score(
+                            y_train, pd.Series(s).fillna(s.median())
+                        ),
+                        axis=0,
+                    )
+                    HIGH_SINGLE_FEATURE_AUC = 0.95
+                    high = aucs[aucs > HIGH_SINGLE_FEATURE_AUC].sort_values(
+                        ascending=False
+                    )
+                    if len(high):
+                        logger.warning(
+                            "Single-feature AUC > %.2f on TRAIN: %s",
+                            HIGH_SINGLE_FEATURE_AUC,
+                            ", ".join(f"{k}={v:.3f}" for k, v in high.items()),
+                        )
+        except (ValueError, IndexError) as e:
+            logger.warning("Single-feature AUC check failed: %s", e)
+
+        try:
+            # 6b) Pure (single-class) categorical buckets on TRAIN
+            if self.problem_type == "classification":
+                obj = X_train.select_dtypes("category")
+                hits: list[str] = []
+                for c in obj.columns:
+                    tab = pd.crosstab(X_train[c], y_train)
+                    pure = (tab.max(axis=1) == tab.sum(axis=1)).sum()
+                    if pure > 0:
+                        hits.append(c)
+                if hits:
+                    logger.warning(
+                        "Categoricals with pure (single-class) buckets on TRAIN: %s",
+                        ", ".join(hits),
+                    )
+        except (ValueError, KeyError) as e:
+            logger.warning("Pure-bucket categorical check failed: %s", e)
 
         # Persist features metadata
         self.store_model_features(pd.Index(train_cols))

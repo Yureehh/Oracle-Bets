@@ -328,7 +328,8 @@ class MatchPredictor:
         """
         t1 = team1_stats.copy()
         t2 = team2_stats.copy()
-        # Rating-based likelihoods
+
+        # Rating-based likelihoods (Team1 vs Team2)
         t1["elo_win_likelihood"] = self.elo_prediction(t1["elo"], t2["elo"])
         t1["glicko2_win_likelihood"] = self.glicko2_prediction(
             t1["glicko2_mu"], t1["glicko2_phi"], t2["glicko2_mu"], t2["glicko2_phi"]
@@ -345,10 +346,11 @@ class MatchPredictor:
         t1["league_elo_win_likelihood"] = self.league_elo_prediction(
             t1["teamid"], t2["teamid"]
         )
+
         # Side / patch / season likelihoods
         if account_for_side:
-            s1_key = f"ema_{str(t1['side']).casefold()}_side"
-            s2_key = f"ema_{str(t2['side']).casefold()}_side"
+            s1_key = f"ema_{str(t1.get('side', '')).casefold()}_side"
+            s2_key = f"ema_{str(t2.get('side', '')).casefold()}_side"
             t1_side_wr = float(t1.get(s1_key, 0.0))
             t2_side_wr = float(t2.get(s2_key, 0.0))
             t1["side_win_likelihood"] = self.side_wr_prediction(t1_side_wr, t2_side_wr)
@@ -356,15 +358,16 @@ class MatchPredictor:
             t1["side_win_likelihood"] = 0.5
 
         t1["patch_win_likelihood"] = self.patch_season_wr_prediction(
-            t1["ema_patch_win_rate"], t2["ema_patch_win_rate"]
+            float(t1.get("ema_patch_win_rate", 0.0)),
+            float(t2.get("ema_patch_win_rate", 0.0)),
         )
         t1["season_win_likelihood"] = self.patch_season_wr_prediction(
-            t1["ema_season_win_rate"], t2["ema_season_win_rate"]
+            float(t1.get("ema_season_win_rate", 0.0)),
+            float(t2.get("ema_season_win_rate", 0.0)),
         )
-        # Slim columns down (keep only usable features)
+
+        # Drop raw ratings/ids from features (keep meta like gameid/teamname/side for merges)
         base_drop = [
-            "teamid",
-            "date",
             "league_elo",
             "elo",
             "glicko2_mu",
@@ -375,19 +378,38 @@ class MatchPredictor:
             "trueskill_sigma",
             "ema_red_side",
             "ema_blue_side",
+            # leave teamid, gameid, teamname, side on t1; on t2 we drop id/name/date below
         ]
-        t1 = self._drop_columns(t1, base_drop)
-        t2 = self._drop_columns(t2, [*base_drop, "teamname", "gameid"])
+        t1 = t1.drop(labels=base_drop, errors="ignore")
+        t2 = t2.drop(labels=[*base_drop, "teamname", "gameid", "date"], errors="ignore")
+
         return t1, t2
 
     def calculate_team_stats(
         self, team1: Team, team2: Team, account_for_side: bool
     ) -> pd.DataFrame:
-        t1, t2 = self.apply_stat_modifications(
-            team1.team_stats, team2.team_stats, account_for_side
-        )
-        t2 = t2.add_prefix("opp_")
-        return pd.concat([t1.to_frame().T, t2.to_frame().T], axis=1)
+        # Ensure 'side' is present for side WR lookup
+        t1_stats = team1.team_stats.copy()
+        t2_stats = team2.team_stats.copy()
+        if "side" not in t1_stats.index:
+            t1_stats["side"] = team1.side or ""
+        if "side" not in t2_stats.index:
+            t2_stats["side"] = team2.side or ""
+
+        # Build derived likelihoods + drop raw ratings
+        t1, t2 = self.apply_stat_modifications(t1_stats, t2_stats, account_for_side)
+
+        # IMPORTANT: keep opponent *only for EMA-based features* (training parity)
+        # (e.g., ema_*, including ema_patch_win_rate, ema_season_win_rate, etc.)
+        opp_keys = [k for k in t2.index if str(k).startswith("ema_")]
+        t2_ema_only = t2[opp_keys]
+
+        # Assemble one-row frame: own features + opp_ EMA features
+        t1_df = t1.to_frame().T
+        opp_df = t2_ema_only.to_frame().T
+        opp_df.columns = [f"opp_{c}" for c in opp_df.columns]
+
+        return pd.concat([t1_df, opp_df], axis=1)
 
     # ── feature assembly (players) ──────────────────────────────────────── #
 
@@ -400,10 +422,8 @@ class MatchPredictor:
         a = p1.copy()
         b = p2.copy()
 
-        # Elo is vectorizable
+        # Pairwise likelihoods (role vs role)
         a["elo_win_likelihood"] = self.elo_prediction(a["elo"], b["elo"])
-
-        # Glicko-2 / PL / TrueSkill computed row-wise (each role vs role)
         a["glicko2_win_likelihood"] = [
             self.glicko2_prediction(mu1, phi1, mu2, phi2)
             for mu1, phi1, mu2, phi2 in zip(
@@ -431,6 +451,7 @@ class MatchPredictor:
             )
         ]
 
+        # Drop raw rating columns (keep id/meta like gameid/side/teamname/position on 'a')
         drop_cols = [
             "date",
             "playername",
@@ -443,55 +464,74 @@ class MatchPredictor:
             "trueskill_sigma",
         ]
         a = a.drop(columns=drop_cols, errors="ignore")
-        b = b.drop(columns=[*drop_cols, "gameid", "teamname"], errors="ignore")
+
+        # On opponent side keep ONLY EMA-based numeric stats for parity; drop meta/ids entirely
+        b = b.drop(columns=[*drop_cols, "gameid", "teamname", "side"], errors="ignore")
+        ema_cols = [c for c in b.columns if c.startswith("ema_")]
+        b = b[["position", *ema_cols]]
+
+        # Prefix opponent columns (except 'position') and merge by role
+        b = b.rename(columns=lambda c: f"opp_{c}" if c != "position" else c)
+
         return a, b
 
     def calculate_player_stats(self, team1: Team, team2: Team) -> pd.DataFrame:
         a, b = self.apply_player_stat_modifications(
             team1.player_stats, team2.player_stats
         )
-        b = b.rename(columns=lambda c: f"opp_{c}" if c != "position" else c)
-        # safe merge on 'position' (roles)
+
+        # Ensure pivot keys exist on the player rows we keep
+        if "gameid" not in a.columns:
+            a["gameid"] = team1.team_stats.get("gameid", np.nan)
+        if "side" not in a.columns:
+            # Use the bot’s declared side; fallback to whatever might be in the team snapshot
+            a["side"] = (team1.side or str(team1.team_stats.get("side", ""))).strip()
+
+        # Merge per-role rows
         return a.merge(b, on="position", how="inner", validate="many_to_many")
 
     # ── preprocessing / model IO ────────────────────────────────────────── #
 
-    @staticmethod
-    def pivot_player_data(player_data: pd.DataFrame) -> pd.DataFrame:
+    def pivot_player_data(self, player_data: pd.DataFrame) -> pd.DataFrame:
         """
         Pivot per-role players into wide columns like 'top_kda', 'jng_dpm', ...
+        Parity with training: pivot by (gameid, side).
         """
         numeric = player_data.select_dtypes(include=["number"]).columns
         non_numeric = player_data.columns.difference(numeric)
 
         agg = dict.fromkeys(numeric, "mean")
+        # Don't aggregate 'position' or 'side' as values; they are pivot column / index
         agg.update(
             {col: "first" for col in non_numeric if col not in {"position", "side"}}
         )
 
         pivot = player_data.pivot_table(
-            index=["gameid", "teamname"], columns="position", aggfunc=agg, fill_value=0
+            index=["gameid", "side"],
+            columns="position",
+            aggfunc=agg,
+            fill_value=0,
         )
-
-        # ⬇️ IMPORTANT: MultiIndex is (field, position), so unpack as (field, pos)
-        pivot.columns = [f"{pos}_{field}" for field, pos in pivot.columns]
+        # MultiIndex is (field, position) -> make '<pos>_<field>'
+        pivot.columns = [
+            f"{pos}_{field}" for field, pos in pivot.columns.to_flat_index()
+        ]
         return pivot.reset_index()
 
-    @staticmethod
     def merge_datasets(
-        team_df: pd.DataFrame, player_pivot: pd.DataFrame
+        self, team_df: pd.DataFrame, player_pivot: pd.DataFrame
     ) -> pd.DataFrame:
         merged = team_df.merge(
             player_pivot,
-            on=["gameid", "teamname"],
+            on=["gameid", "side"],
             how="inner",
             validate="many_to_many",
         )
-        drop = (
-            ["gameid", "teamname"]
-            + [f"{r}_gameid" for r in _ROLES]
-            + [f"{r}_teamname" for r in _ROLES]
-        )
+        # Drop meta keys and role-propagated meta
+        drop = ["gameid", "side", "teamname"]
+        drop += [f"{r}_gameid" for r in _ROLES]
+        drop += [f"{r}_side" for r in _ROLES]
+        drop += [f"{r}_teamname" for r in _ROLES]
         return merged.drop(columns=drop, errors="ignore")
 
     def preprocess_data(
@@ -532,9 +572,9 @@ class MatchPredictor:
         Mirror training-time transforms + predict_proba.
         Returns shape (n, 2) array.
         """
-        # players_* aggregation and opposing-feature fusion (same as training)
-        X = GradientBoostingModel.process_players_likelihood_columns(X)
+        # TRAINING ORDER: fuse first, then aggregate *_likelihood
         X = GradientBoostingModel.fuse_opposing_team_features(X)
+        X = GradientBoostingModel.process_players_likelihood_columns(X)
         X = self.keep_necessary_columns(X)
 
         proba = self.outcome_model.predict_proba(X)
