@@ -383,12 +383,12 @@ class MatchPredictor:
         t1 = t1.drop(labels=base_drop, errors="ignore")
         t2 = t2.drop(labels=[*base_drop, "teamname", "gameid", "date"], errors="ignore")
 
-        return t1, t2
+        return t1
 
     def calculate_team_stats(
         self, team1: Team, team2: Team, account_for_side: bool
     ) -> pd.DataFrame:
-        # Ensure 'side' is present for side WR lookup
+        # Ensure 'side' is present (needed for side-based WR lookups + later merge)
         t1_stats = team1.team_stats.copy()
         t2_stats = team2.team_stats.copy()
         if "side" not in t1_stats.index:
@@ -396,20 +396,31 @@ class MatchPredictor:
         if "side" not in t2_stats.index:
             t2_stats["side"] = team2.side or ""
 
-        # Build derived likelihoods + drop raw ratings
-        t1, t2 = self.apply_stat_modifications(t1_stats, t2_stats, account_for_side)
+        # 1) Team1 vs Team2 -> own features
+        t1_fwd = self.apply_stat_modifications(t1_stats, t2_stats, account_for_side)
 
-        # IMPORTANT: keep opponent *only for EMA-based features* (training parity)
-        # (e.g., ema_*, including ema_patch_win_rate, ema_season_win_rate, etc.)
-        opp_keys = [k for k in t2.index if str(k).startswith("ema_")]
-        t2_ema_only = t2[opp_keys]
+        # 2) Team2 vs Team1 -> source for opponent features
+        t2_mirr = self.apply_stat_modifications(t2_stats, t1_stats, account_for_side)
 
-        # Assemble one-row frame: own features + opp_ EMA features
-        t1_df = t1.to_frame().T
-        opp_df = t2_ema_only.to_frame().T
-        opp_df.columns = [f"opp_{c}" for c in opp_df.columns]
+        # 3) Left row (own features) — ensure merge keys exist
+        gid = t1_stats.get("gameid", np.nan)
+        sde = (team1.side or str(t1_stats.get("side", ""))).strip()
 
-        return pd.concat([t1_df, opp_df], axis=1)
+        left = t1_fwd.to_frame().T
+        left["gameid"] = gid
+        left["side"] = sde
+
+        # 4) Right row (opponent features) — keep all *_win_likelihood + any ema_* used in training
+        opp_keep = [c for c in t2_mirr.index if c.endswith("_win_likelihood")]
+        opp_keep += [c for c in t2_mirr.index if c.startswith("ema_")]
+
+        opp_payload = {f"opp_{c}": t2_mirr.get(c, np.nan) for c in opp_keep}
+        right = pd.DataFrame([{**opp_payload, "gameid": gid, "side": sde}])
+
+        # 5) Proper one-to-one merge on keys -> single wide row
+        return left.merge(
+            right, on=["gameid", "side"], how="left", validate="one_to_one"
+        )
 
     # ── feature assembly (players) ──────────────────────────────────────── #
 
@@ -494,8 +505,10 @@ class MatchPredictor:
 
     def pivot_player_data(self, player_data: pd.DataFrame) -> pd.DataFrame:
         """
-        Pivot per-role players into wide columns like 'top_kda', 'jng_dpm', ...
-        Parity with training: pivot by (gameid, side).
+        Pivot per-role players into wide columns, matching training naming:
+        - own:        <pos>_<field>      (e.g., top_ema_kda)
+        - opponent:   opp_<pos>_<field>  (e.g., opp_top_ema_kda)
+        Pivot index matches training parity: (gameid, side).
         """
         numeric = player_data.select_dtypes(include=["number"]).columns
         non_numeric = player_data.columns.difference(numeric)
@@ -512,10 +525,20 @@ class MatchPredictor:
             aggfunc=agg,
             fill_value=0,
         )
-        # MultiIndex is (field, position) -> make '<pos>_<field>'
-        pivot.columns = [
-            f"{pos}_{field}" for field, pos in pivot.columns.to_flat_index()
-        ]
+
+        # Columns are MultiIndex like (field, position). We want:
+        #   - if field starts with 'opp_', name -> 'opp_<pos>_<field[4:]>',
+        #   - else name -> '<pos>_<field>'
+        new_cols = []
+        for field, pos in pivot.columns.to_flat_index():  # noqa: F402
+            field = str(field)  # noqa: PLW2901
+            pos = str(pos)  # noqa: PLW2901
+            if field.startswith("opp_"):
+                new_cols.append(f"opp_{pos}_{field[4:]}")
+            else:
+                new_cols.append(f"{pos}_{field}")
+        pivot.columns = new_cols
+
         return pivot.reset_index()
 
     def merge_datasets(
@@ -572,8 +595,11 @@ class MatchPredictor:
         Mirror training-time transforms + predict_proba.
         Returns shape (n, 2) array.
         """
-        # TRAINING ORDER: fuse first, then aggregate *_likelihood
-        X = GradientBoostingModel.fuse_opposing_team_features(X)
+        # If we already built team-level opp_* columns, don't re-fuse them.
+        if not any(c.startswith("opp_") for c in X.columns):
+            X = GradientBoostingModel.fuse_opposing_team_features(X)
+
+        # players_* aggregation
         X = GradientBoostingModel.process_players_likelihood_columns(X)
         X = self.keep_necessary_columns(X)
 
