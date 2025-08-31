@@ -362,10 +362,9 @@ def process_game(
     # Team means, expected outcome
     blue_mean_rating = calculate_mean_rating(blue_old_ratings)
     red_mean_rating = calculate_mean_rating(red_old_ratings)
-    mean_blue_impact = glicko2_model.reduce_impact(blue_mean_rating)
-
+    opp_impact = glicko2_model.reduce_impact(red_mean_rating)
     blue_expected = glicko2_model.expect_score(
-        blue_mean_rating, red_mean_rating, mean_blue_impact
+        blue_mean_rating, red_mean_rating, opp_impact
     )
     result = float(blue_rows.iloc[0]["result"])
     red_result = 1.0 - result
@@ -638,8 +637,8 @@ def evaluate_validation(
             sigma=hyperparams["sigma"],
         )
 
-        mean_blue_impact = model.reduce_impact(blue_team_rating)
-        exp = model.expect_score(blue_team_rating, red_team_rating, mean_blue_impact)
+        opp_impact = model.reduce_impact(red_team_rating)
+        exp = model.expect_score(blue_team_rating, red_team_rating, opp_impact)
         result = float(blue_side.iloc[0]["result"])
 
         expected_probs.extend([exp] * len(blue_side))

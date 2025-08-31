@@ -15,7 +15,7 @@ from utils.paths import DEFAULT_MODELS_PARAMETERS
 
 # Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)
-HALF_LIFE = config_params["half_life"]
+HALF_LIFE: float = float(config_params["half_life"])
 EPSILON = 1e-8  # Small constant to prevent division by zero
 
 
@@ -65,7 +65,7 @@ def compute_ema_season(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     ema_after = g_result.transform(
         lambda x: x.ewm(halflife=HALF_LIFE, adjust=True, ignore_na=True).mean()
     )
-    ema_before = ema_after.shift()  # leak-free
+    ema_before = ema_after.groupby([df[identity], df["season"]], sort=False).shift()
     df["ema_season_win_rate_before"] = ema_before.fillna(0.5)  # neutral prior
     df["ema_season_win_rate_after"] = ema_after
 
@@ -75,7 +75,11 @@ def compute_ema_season(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     games_after = g_ones.transform(
         lambda x: x.ewm(halflife=HALF_LIFE, adjust=True).sum()
     )
-    games_before = games_after.shift().fillna(0.0)
+    games_before = (
+        games_after.groupby([df[identity], df["season"]], sort=False)
+        .shift()
+        .fillna(0.0)
+    )
 
     df["ema_season_games_before"] = games_before
     df["ema_season_games_after"] = games_after

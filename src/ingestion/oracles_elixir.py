@@ -410,35 +410,25 @@ class OraclesElixir:
     ) -> pd.DataFrame:
         """
         Enrich the DataFrame with opponent metrics based on *split_on*.
-        Raises OraclesElixirError if *split_on* is not 'player' or 'team'.
         """
+        # 🔒 Ensure strict block ordering immediately before mirroring
+        df = OraclesElixir.sort_data(oracles_elixir_data, split_on)
+
         metrics: dict[str, Any] = {
-            "teamid": oracles_elixir_data["teamid"].fillna(
-                oracles_elixir_data["teamname"]
-            ),
-            "opponentteam": get_opponent(
-                oracles_elixir_data["teamname"].tolist(), split_on
-            ),
-            "opponentteamid": get_opponent(
-                oracles_elixir_data["teamid"].tolist(), split_on
-            ),
+            "teamid": df["teamid"].fillna(df["teamname"]),
+            "opponentteam": get_opponent(df["teamname"].tolist(), split_on),
+            "opponentteamid": get_opponent(df["teamid"].tolist(), split_on),
         }
         if split_on == "player":
             metrics |= {
-                "playerid": oracles_elixir_data["playerid"].fillna(
-                    oracles_elixir_data["playername"]
-                ),
-                "opponentplayername": get_opponent(
-                    oracles_elixir_data["playername"].tolist(), split_on
-                ),
-                "opponentplayerid": get_opponent(
-                    oracles_elixir_data["playerid"].tolist(), split_on
-                ),
+                "playerid": df["playerid"].fillna(df["playername"]),
+                "opponentplayername": get_opponent(df["playername"].tolist(), split_on),
+                "opponentplayerid": get_opponent(df["playerid"].tolist(), split_on),
             }
-        df = oracles_elixir_data.assign(**metrics)
+        out = df.assign(**metrics)
         logger.info("Enriched data with opponent metrics.")
         data_pipeline_logger.info("Enriched data with opponent metrics.")
-        return df
+        return out
 
     @staticmethod
     def filter_leagues(oracles_elixir_data: pd.DataFrame) -> pd.DataFrame:

@@ -114,3 +114,6 @@ site/
 
 # Testing script
 test.py
+
+# TXT files
+*.txt

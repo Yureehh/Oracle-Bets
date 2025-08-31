@@ -15,7 +15,7 @@ from utils.paths import DEFAULT_MODELS_PARAMETERS
 
 # Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)
-HALF_LIFE = config_params["half_life"]
+HALF_LIFE: float = float(config_params["half_life"])
 EPSILON = 1e-8  # Small constant to prevent division by zero
 
 
