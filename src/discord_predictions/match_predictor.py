@@ -98,7 +98,7 @@ def _glicko2_prob(team1_mus, team1_phis, team2_mus, team2_phis) -> float:
     Glicko-2 team vs team (scalar). Aggregates by team average with impact reduction.
     """
     # normalize to list of floats
-    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, (float, int)):
+    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, float | int):
         t1_mus = list(team1_mus)
         t1_phis = list(team1_phis)
         t2_mus = list(team2_mus)
@@ -129,7 +129,7 @@ def _pl_prob(team1_mus, team1_sigmas, team2_mus, team2_sigmas) -> float:
     """
     Plackett–Luce (scalar, team vs team). Aggregates players as a lineup of ratings.
     """
-    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, (float, int)):
+    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, float | int):
         t1_mus = list(team1_mus)
         t1_sig = list(team1_sigmas)
         t2_mus = list(team2_mus)
@@ -157,7 +157,7 @@ def _ts_prob(team1_mus, team1_sigmas, team2_mus, team2_sigmas) -> float:
     """
     TrueSkill (scalar, team vs team). Aggregates players as lineup of ratings.
     """
-    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, (float, int)):
+    if isinstance(team1_mus, Iterable) and not isinstance(team1_mus, float | int):
         t1_mus = list(team1_mus)
         t1_sig = list(team1_sigmas)
         t2_mus = list(team2_mus)

@@ -240,7 +240,7 @@ class DataGenerator:
         conf: Path,
         entity: Entity,
         kind: Literal["training", "flattened"],
-    ) -> None:
+    ) -> None:  # sourcery skip: use-named-expression
         """
         Materialise either training (uses *_before columns) or flattened
         inference tables (uses last row per entity, *_after columns).
@@ -263,7 +263,7 @@ class DataGenerator:
                 .tail(1)[cols]
                 .rename(columns=after)
             )
-            dest = PROCESSED_DIR / f"flattened_{entity}s.parquet"
+            dest = PROCESSED_DIR / f"{entity}s" / f"flattened_{entity}s.parquet"
         else:
             # training uses *_before; auto-append opponent EMA columns
             before_map = {

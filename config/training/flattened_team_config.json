@@ -18,10 +18,8 @@
     "trueskill_sigma_after",
     "league_elo_after",
 
-    "patch_avg_gamelength",
     "season_avg_gamelength",
     "team_season_avg_gamelength",
-    "team_patch_avg_gamelength",
 
     "ema_gamelength_after",
 
@@ -90,9 +88,6 @@
 
     "ema_blue_side_after",
     "ema_red_side_after",
-
-    "ema_patch_win_rate_after",
-    "ema_patch_games_after",
 
     "ema_season_win_rate_after",
     "ema_season_games_after"
