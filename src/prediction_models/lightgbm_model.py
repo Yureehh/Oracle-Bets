@@ -19,6 +19,7 @@ import numpy as np
 import optuna
 from sklearn.metrics import f1_score, log_loss, mean_absolute_error
 
+from prediction_models.gbdt_model import DEFAULT_TRIALS as _TRIALS_CAP
 from prediction_models.gbdt_model import GradientBoostingModel
 from utils.io_utils import load_model
 from utils.logger import logger
@@ -32,7 +33,6 @@ if TYPE_CHECKING:
 _DEFAULT_N_ESTIMATORS = 3000
 _EARLY_STOP_ROUNDS = 100
 _RANDOM_STATE = 42
-_TRIALS_CAP = 100  # clamp HPO for laptops
 
 
 class _LGBWithThreshold:
