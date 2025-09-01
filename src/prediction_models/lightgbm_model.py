@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 _DEFAULT_N_ESTIMATORS = 3000
 _EARLY_STOP_ROUNDS = 100
 _RANDOM_STATE = 42
-_TRIALS_CAP = 200  # clamp HPO for laptops
+_TRIALS_CAP = 100  # clamp HPO for laptops
 
 
 class _LGBWithThreshold:

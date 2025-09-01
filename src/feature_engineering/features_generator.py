@@ -151,9 +151,7 @@ class FeatureGenerator:
         # Propagate NaNs so every row has both win & loss histories where possible
         pd.set_option("future.no_silent_downcasting", True)
         df = df.ffill().bfill()
-        df = df.infer_objects(copy=False)  # TODO: what does this do?
-
-        return df
+        return df.infer_objects(copy=False)  # TODO: what does this do?
 
     # ── 3. Public player-feature pipeline ────────────────────────────────
     @staticmethod

@@ -88,8 +88,8 @@ SCHEDULE: Final = PROCESSED_DIR / "schedule.parquet"
 FLATTENED_TEAMS: Final = PROCESSED_TEAMS_DIR / "flattened_teams.parquet"
 FLATTENED_PLAYERS: Final = PROCESSED_PLAYERS_DIR / "flattened_players.parquet"
 
-TRAINING_TEAM_DATA: Final = PROCESSED_TEAMS_DIR / "training_team_data.parquet"
-TRAINING_PLAYER_DATA: Final = PROCESSED_PLAYERS_DIR / "training_player_data.parquet"
+TRAINING_TEAM_DATA: Final = PROCESSED_TEAMS_DIR / "training_teams.parquet"
+TRAINING_PLAYER_DATA: Final = PROCESSED_PLAYERS_DIR / "training_players.parquet"
 
 TRAINING_TEAM_CONFIG: Final = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
 FLATTENED_TEAM_CONFIG: Final = (

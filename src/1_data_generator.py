@@ -240,7 +240,7 @@ class DataGenerator:
         conf: Path,
         entity: Entity,
         kind: Literal["training", "flattened"],
-    ) -> None:
+    ) -> None:  # sourcery skip: use-named-expression
         """
         Materialise either training (uses *_before columns) or flattened
         inference tables (uses last row per entity, *_after columns).
@@ -263,7 +263,7 @@ class DataGenerator:
                 .tail(1)[cols]
                 .rename(columns=after)
             )
-            dest = PROCESSED_DIR / f"flattened_{entity}s.parquet"
+            dest = PROCESSED_DIR / f"{entity}s" / f"flattened_{entity}s.parquet"
         else:
             # training uses *_before; auto-append opponent EMA columns
             before_map = {
@@ -282,7 +282,7 @@ class DataGenerator:
 
             # Rename only your own *_before columns; opponent cols stay as-is
             out = df.loc[:, cols_final].rename(columns=before_map)
-            dest = PROCESSED_DIR / entity / f"training_{entity}s.parquet"
+            dest = PROCESSED_DIR / f"{entity}s" / f"training_{entity}s.parquet"
 
         safe_store_df_as_parquet(out, dest, [logger, data_pipeline_logger])
         _dbl(f"{kind.title()} {entity} saved: {len(out)} rows.")
