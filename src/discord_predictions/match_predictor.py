@@ -491,14 +491,15 @@ class MatchPredictor:
             team1.player_stats, team2.player_stats
         )
 
-        # Ensure pivot keys exist on the player rows we keep
-        if "gameid" not in a.columns:
-            a["gameid"] = team1.team_stats.get("gameid", np.nan)
-        if "side" not in a.columns:
-            # Use the bot’s declared side; fallback to whatever might be in the team snapshot
-            a["side"] = (team1.side or str(team1.team_stats.get("side", ""))).strip()
+        # Nuke any stale 'side' from parquet & stamp the current orientation
+        a = a.drop(columns=["side"], errors="ignore")
+        b = b.drop(columns=["side"], errors="ignore")
 
-        # Merge per-role rows
+        gid = team1.team_stats.get("gameid", np.nan)
+        sde = (team1.side or str(team1.team_stats.get("side", ""))).strip().title()
+        a["gameid"] = gid
+        a["side"] = sde
+
         return a.merge(b, on="position", how="inner", validate="many_to_many")
 
     # ── preprocessing / model IO ────────────────────────────────────────── #
@@ -561,6 +562,8 @@ class MatchPredictor:
         self, team_df: pd.DataFrame, player_df: pd.DataFrame
     ) -> pd.DataFrame:
         pivot = self.pivot_player_data(player_df)
+        # Print team_df gameid and side for debugging
+        # DO the same for pivot
         return self.merge_datasets(team_df, pivot)
 
     def keep_necessary_columns(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -602,7 +605,6 @@ class MatchPredictor:
         # players_* aggregation
         X = GradientBoostingModel.process_players_likelihood_columns(X)
         X = self.keep_necessary_columns(X)
-
         proba = self.outcome_model.predict_proba(X)
         return np.round(proba, PREDICTION_PRECISION)
 

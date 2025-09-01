@@ -282,7 +282,7 @@ class DataGenerator:
 
             # Rename only your own *_before columns; opponent cols stay as-is
             out = df.loc[:, cols_final].rename(columns=before_map)
-            dest = PROCESSED_DIR / entity / f"training_{entity}s.parquet"
+            dest = PROCESSED_DIR / f"{entity}s" / f"training_{entity}s.parquet"
 
         safe_store_df_as_parquet(out, dest, [logger, data_pipeline_logger])
         _dbl(f"{kind.title()} {entity} saved: {len(out)} rows.")
