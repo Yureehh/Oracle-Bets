@@ -54,3 +54,4 @@ Profit-aware evaluation: besides logloss & calibration curves, track backtested 
 # TODOs
 - Add code documentation with MKDocs
 - Re-do notebooks with new data and new features
+- Come aggiustare i diversi gruppi in LCK / LPL coi team forti del gruppo sotto che sembrano broken ma sucano

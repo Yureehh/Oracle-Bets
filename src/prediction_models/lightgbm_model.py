@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 # Lightweight, good defaults for laptop runs
 _DEFAULT_N_ESTIMATORS = 3000
-_EARLY_STOP_ROUNDS = 100
+_EARLY_STOP_ROUNDS = 1
 _RANDOM_STATE = 42
 
 
