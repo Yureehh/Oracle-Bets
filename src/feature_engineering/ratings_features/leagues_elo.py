@@ -16,6 +16,7 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
+from utils.league_taxonomy import get_league_strength_prior
 from utils.logger import instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
@@ -249,6 +250,7 @@ def merge_wide_results_back(
         "league_elo_before",
         "opp_league_elo_before",
         "league_elo_win_likelihood",
+        "league_elo_prior_win_likelihood",
         "league_elo_after",
     ]
     df_tall = pd.concat([df_blue[keep_cols], df_red[keep_cols]], ignore_index=True)
@@ -266,6 +268,7 @@ def merge_wide_results_back(
             "league_elo_before",
             "opp_league_elo_before",
             "league_elo_win_likelihood",
+            "league_elo_prior_win_likelihood",
             "league_elo_after",
         }
     )
@@ -515,6 +518,8 @@ def leagues_elo_computation(
         "opp_league_elo_before_red": [],
         "league_elo_win_likelihood_blue": [],
         "league_elo_win_likelihood_red": [],
+        "league_elo_prior_win_likelihood_blue": [],
+        "league_elo_prior_win_likelihood_red": [],
         "league_elo_after_blue": [],
         "league_elo_after_red": [],
     }
@@ -599,9 +604,16 @@ def process_elo_for_row(
 
     blue_before = float(league_elo_ratings[blue_league]["elo"])
     red_before = float(league_elo_ratings[red_league]["elo"])
+    blue_prior = get_league_strength_prior(blue_league)
+    red_prior = get_league_strength_prior(red_league)
 
     if blue_league != red_league:
         exp_blue = expected_outcome(blue_before, red_before, elo_divisor)
+        exp_blue_prior = expected_outcome(
+            blue_before + blue_prior,
+            red_before + red_prior,
+            elo_divisor,
+        )
         exp_red = 1.0 - exp_blue
         new_blue = update_elo_rating(
             blue_before, exp_blue, float(blue_result), k_factor
@@ -609,6 +621,7 @@ def process_elo_for_row(
         new_red = update_elo_rating(red_before, exp_red, float(red_result), k_factor)
     else:
         exp_blue = 0.5
+        exp_blue_prior = 0.5
         new_blue = blue_before
         new_red = red_before
 
@@ -621,6 +634,8 @@ def process_elo_for_row(
     wide_columns["opp_league_elo_before_red"].append(blue_before)
     wide_columns["league_elo_win_likelihood_blue"].append(exp_blue)
     wide_columns["league_elo_win_likelihood_red"].append(1.0 - exp_blue)
+    wide_columns["league_elo_prior_win_likelihood_blue"].append(exp_blue_prior)
+    wide_columns["league_elo_prior_win_likelihood_red"].append(1.0 - exp_blue_prior)
     wide_columns["league_elo_after_blue"].append(new_blue)
     wide_columns["league_elo_after_red"].append(new_red)
 
@@ -644,6 +659,8 @@ def finalize_dataframe(
         "opp_league_elo_before_red": "opp_league_elo_before",
         "league_elo_win_likelihood_blue": "league_elo_win_likelihood",
         "league_elo_win_likelihood_red": "league_elo_win_likelihood",
+        "league_elo_prior_win_likelihood_blue": "league_elo_prior_win_likelihood",
+        "league_elo_prior_win_likelihood_red": "league_elo_prior_win_likelihood",
         "league_elo_after_blue": "league_elo_after",
         "league_elo_after_red": "league_elo_after",
     }
