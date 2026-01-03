@@ -69,6 +69,7 @@ def _build_handler(*, log_file: Path | None, fmt: str, mode: str) -> logging.Han
     formatter = logging.Formatter(fmt, datefmt=ISO_TIME_FMT)
     if log_file:
         try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
             handler: logging.Handler = logging.FileHandler(
                 log_file, mode=mode, encoding="utf-8"
             )
@@ -99,7 +100,13 @@ def create_logger(
     lg = logging.getLogger(logger_name)
 
     if not lg.handlers:  # avoid duplicate handlers
-        lg.setLevel(level if isinstance(level, int) else logging.getLevelName(level))
+        if isinstance(level, str):
+            level_val = logging.getLevelNamesMapping(level.upper())
+            if isinstance(level_val, str):
+                level_val = logging.INFO
+        else:
+            level_val = level
+        lg.setLevel(level_val)
         lg.propagate = False
         lg.addHandler(_build_handler(log_file=log_file, fmt=fmt, mode=mode))
 

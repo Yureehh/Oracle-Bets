@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-from utils.io_utils import json_loader
+from utils.io_utils import FileLoadError, json_loader
 from utils.paths import CONSIDERED_LEAGUES, LEAGUE_STRENGTH_PRIORS
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ def _load_taxonomy() -> dict[str, Any]:
 def _load_strength_priors() -> dict[str, float]:
     try:
         priors: dict[str, float] = json_loader(LEAGUE_STRENGTH_PRIORS)
-    except FileNotFoundError:
+    except FileLoadError:
         return {}
     return {str(k): float(v) for k, v in priors.items()}
 

@@ -136,10 +136,11 @@ def store_model(
     """Pickle *model* to *path* and log the outcome."""
     dest = Path(path)
     try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
         with dest.open("wb") as f:
             pickle.dump(model, f)
         logger.info("Stored model '%s' → %s", model_name, dest)
-    except (DataFrameStoreError, OSError, pickle.PicklingError) as exc:
+    except (OSError, pickle.PicklingError) as exc:
         logger.exception(
             "Could not store model '%s' at '%s': %s",
             model_name,
@@ -190,6 +191,7 @@ def safe_store_df_as_parquet(
     """
     loggers = loggers or [_log]
     out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
     df_to_write = pd.DataFrame(df)  # guarantee pandas-compatible
 
     def _log_to_all(level: str, msg: str, *args: Any) -> None:
@@ -199,13 +201,14 @@ def safe_store_df_as_parquet(
     try:
         df_to_write.to_parquet(out, compression="gzip")
         _log_to_all("info", "Saved DataFrame → %s (pandas)", out)
-    except (DataFrameStoreError, ImportError, OSError) as exc1:
+    except (ImportError, OSError, ValueError) as exc1:
         _log_to_all(
             "warning", "pandas.to_parquet failed (%s), falling back to polars", exc1
         )
         try:
+            print("ERROR WRITING PARQUET WITH PANDAS, TRYING POLARS")  # noqa: T201
             # TODO: does this make sense? I can find a smarter way to do this.
-            import polars as pl
+            import polars as pl  # noqa: PLC0415
 
             pl.DataFrame(df_to_write).write_parquet(out, compression="gzip")
             _log_to_all("info", "Saved DataFrame → %s (polars)", out)
@@ -216,4 +219,4 @@ def safe_store_df_as_parquet(
                 exc2,
             )
             msg = f"Could not write parquet at '{out}': {exc2}"
-            raise FileLoadError(msg) from exc2
+            raise DataFrameStoreError(msg) from exc2

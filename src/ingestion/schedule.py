@@ -23,7 +23,9 @@ from dotenv import load_dotenv
 # --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
+from utils.io_utils import safe_store_df_as_parquet
 from utils.logger import LOG_TOPIC, instantiate_logger  # your helper
+from utils.paths import SCHEDULE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -69,8 +71,18 @@ PANDASCORE_BASE_URL = "https://api.pandascore.co/lol/matches/upcoming"
 ACCEPT_JSON_HEADER: dict[str, str] = {"Accept": "application/json"}
 DEFAULT_PER_PAGE = 100
 START_DATETIME_COLUMN = "Start (UTC)"
+DEFAULT_REFRESH_HOURS = 48.0
 
 load_dotenv()
+
+
+def _schedule_is_stale(path: str | os.PathLike, max_age_hours: float) -> bool:
+    try:
+        mtime = Path(path).stat().st_mtime
+    except FileNotFoundError:
+        return True
+    age_hours = (time.time() - mtime) / 3600.0
+    return age_hours >= max_age_hours
 
 
 # --------------------------------------------------------------------------- #
@@ -354,8 +366,64 @@ class PandaScoreSchedule:
         return df.reset_index(drop=True)
 
 
+def fetch_and_store_schedule(
+    *,
+    start_datetime: dt.datetime | None = None,
+    window_days: int = 7,
+    leagues: str | None = None,
+    save_path: str | os.PathLike | None = SCHEDULE,
+) -> pd.DataFrame:
+    """
+    Fetch upcoming matches, persist to disk, and return a DataFrame.
+    """
+    start_dt = start_datetime or dt.datetime.now(dt.UTC)
+    schedule = PandaScoreSchedule()
+    df = schedule.get_schedule(start_datetime=start_dt, max_day_range=window_days)
+    if save_path is not None:
+        safe_store_df_as_parquet(df, save_path, [schedule_logger])
+        schedule_logger.info("Schedule stored to %s (%s rows).", save_path, len(df))
+    else:
+        schedule_logger.info("Fetched %s upcoming matches (no file output).", len(df))
+    if leagues:
+        return PandaScoreSchedule.filter_by_league(df, leagues).reset_index(drop=True)
+    return df.reset_index(drop=True)
+
+
+def get_or_update_schedule(
+    *,
+    leagues: str | None = None,
+    window_days: int = 7,
+    save_path: str | os.PathLike = SCHEDULE,
+    max_age_hours: float | None = DEFAULT_REFRESH_HOURS,
+    force_refresh: bool = True,
+) -> pd.DataFrame:
+    """
+    Load the stored schedule; fetch and persist if forced, missing, invalid, or stale.
+    """
+    try:
+        if force_refresh:
+            schedule_logger.info("Force-refreshing schedule at %s.", save_path)
+            return fetch_and_store_schedule(
+                window_days=window_days, leagues=leagues, save_path=save_path
+            )
+        if max_age_hours is not None and _schedule_is_stale(save_path, max_age_hours):
+            schedule_logger.info(
+                "Schedule at %s is stale (>%s hours); refreshing.",
+                save_path,
+                max_age_hours,
+            )
+            return fetch_and_store_schedule(
+                window_days=window_days, leagues=leagues, save_path=save_path
+            )
+        return PandaScoreSchedule.load_schedule(save_path, leagues)
+    except (FileNotFoundError, ScheduleError, DataValidationError):
+        return fetch_and_store_schedule(
+            window_days=window_days, leagues=leagues, save_path=save_path
+        )
+
+
 if __name__ == "__main__":
     # Example usage
     schedule = PandaScoreSchedule()
-    schedule_df = schedule.get_schedule(start_datetime="2025-08-01T00:00:00Z")
+    schedule_df = schedule.get_schedule(start_datetime=dt.datetime.now(dt.UTC))
     schedule_logger.info("Schedule DataFrame:\n%s", schedule_df.head())

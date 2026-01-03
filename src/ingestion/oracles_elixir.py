@@ -24,7 +24,7 @@ import awswrangler as wr
 import pandas as pd
 from dotenv import load_dotenv
 
-from utils.io_utils import get_sorting_keys, json_loader
+from utils.io_utils import FileLoadError, get_sorting_keys, json_loader
 from utils.logger import LOG_TOPIC, instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
@@ -205,15 +205,14 @@ class OraclesElixir:
     def replace_team_names(oracles_elixir_data: pd.DataFrame) -> pd.DataFrame:
         """
         Replace incorrect team names based on a JSON file.
-        Raises FileNotFoundError if the JSON file is missing.
-        Raises json.JSONDecodeError if the JSON file is malformed.
+        Raises FileLoadError if the JSON file is missing or malformed.
         """
         try:
             file_data: dict[str, Any] = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
             replacements: list[list[dict[str, Any]]] = file_data.get(
                 "team_name_replacements", []
             )
-        except (FileNotFoundError, json.JSONDecodeError) as exc:
+        except FileLoadError as exc:
             logger.error("Team replacements file error: %s", exc)
             data_pipeline_logger.exception("Team replacements file error")
             raise
@@ -318,7 +317,7 @@ class OraclesElixir:
         try:
             cfg = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
             manual = set(cfg.get("invalid_games", []))
-        except FileNotFoundError:
+        except FileLoadError:
             manual = set()  # fail soft – log + carry on
             logger.warning(
                 "%s not found – no manual invalid_games applied.",
@@ -354,18 +353,15 @@ class OraclesElixir:
         Subset the DataFrame to only include relevant columns based on *split_on*.
         Raises OraclesElixirError if *split_on* is not 'player' or 'team'.
         """
-        try:
-            with Path(IMPORT_COLUMNS).open(encoding="utf-8") as f:
-                columns = json.load(f)
-            if split_on not in columns:
-                msg = "Must split on either 'player' or 'team'."
-                raise OraclesElixirError(msg)
-        except FileNotFoundError:
-            logger.error("Import columns file not found at %s.", IMPORT_COLUMNS)
-            raise
-        except json.JSONDecodeError as exc:
-            logger.error("Error decoding JSON from %s: %s", IMPORT_COLUMNS, exc)
-            raise
+        if columns is None:
+            try:
+                columns = json_loader(IMPORT_COLUMNS)
+            except FileLoadError as exc:
+                logger.error("Import columns file error at %s: %s", IMPORT_COLUMNS, exc)
+                raise
+        if split_on not in columns:
+            msg = "Must split on either 'player' or 'team'."
+            raise OraclesElixirError(msg)
 
         rename_map = {
             "earned gpm": "egpm",

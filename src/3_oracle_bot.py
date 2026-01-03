@@ -28,7 +28,7 @@ from discord_predictions.discord_utils import (
     validate_and_predict_props,
 )
 from discord_predictions.team import Team
-from ingestion.schedule import PandaScoreSchedule
+from ingestion.schedule import fetch_and_store_schedule, get_or_update_schedule
 from utils.logger import logger
 from utils.paths import SCHEDULE
 
@@ -93,9 +93,11 @@ async def code(ctx: commands.Context):
 async def leagues(ctx: commands.Context):
     """List supported leagues in the schedule file."""
     try:
-        leagues = PandaScoreSchedule.load_schedule(SCHEDULE)["league"].unique()
+        leagues = get_or_update_schedule(save_path=SCHEDULE, force_refresh=True)[
+            "league"
+        ].unique()
         await ctx.send(format_leagues_message(sorted(leagues)))
-    except FileNotFoundError as e:
+    except Exception as e:
         await ctx.send(
             handle_command_error(e, "Could not retrieve league information.")
         )
@@ -105,10 +107,37 @@ async def leagues(ctx: commands.Context):
 async def schedule(ctx: commands.Context, leagues: str | None = None):
     """Show upcoming schedule. Optionally filter by comma-separated leagues."""
     try:
-        schedule_df = PandaScoreSchedule.load_schedule(SCHEDULE, leagues)
+        schedule_df = get_or_update_schedule(
+            leagues=leagues, save_path=SCHEDULE, force_refresh=True
+        )
         await ctx.send(format_schedule_message(schedule_df))
-    except FileNotFoundError as e:
+    except Exception as e:
         await ctx.send(handle_command_error(e, "Could not retrieve schedule."))
+
+
+@bot.command(
+    name="schedule_update",
+    aliases=["update_schedule", "refresh_schedule", "schedule_refresh"],
+)
+async def schedule_update(
+    ctx: commands.Context,
+    leagues: str | None = None,
+    window_days: str | None = None,
+):
+    """Fetch and store upcoming schedule, then display it."""
+    days = 7
+    if window_days:
+        if not window_days.isdigit() or int(window_days) <= 0:
+            await ctx.send("Window days must be a positive integer.")
+            return
+        days = int(window_days)
+    try:
+        schedule_df = fetch_and_store_schedule(
+            window_days=days, leagues=leagues, save_path=SCHEDULE
+        )
+        await ctx.send(format_schedule_message(schedule_df))
+    except Exception as e:
+        await ctx.send(handle_command_error(e, "Could not update schedule."))
 
 
 # ── roster / profiles ───────────────────────────────────────────────────── #
