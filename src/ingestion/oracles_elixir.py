@@ -508,6 +508,8 @@ def get_league_teams(parquet_path: str) -> dict:
     to its list of unique team names.
     """
     df = pd.read_parquet(parquet_path)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date"].dt.year == df["date"].dt.year.max()]
     return df.groupby("league")["teamname"].unique().apply(list).to_dict()
 
 
@@ -530,11 +532,11 @@ def filter_teams_by_league(path1, path2, output_path):
 
 
 if __name__ == "__main__":
-    raw_data_path = r"data\raw\raw_data.parquet"
-    cons_leagues_path = r"config\data_ingestion\considered_leagues.json"
-    team_by_league_path = r"config\data_ingestion\leagues_handling\teams_by_league.json"
+    raw_data_path = r"data/raw/raw_data.parquet"
+    cons_leagues_path = r"config/data_ingestion/considered_leagues.json"
+    team_by_league_path = r"config/data_ingestion/extras/teams_by_league.json"
     filtered_teams_by_league_path = (
-        r"config\data_ingestion\leagues_handling\filtered_teams_by_league.json"
+        r"config/data_ingestion/extras/filtered_teams_by_league.json"
     )
 
     league_teams = get_league_teams(raw_data_path)

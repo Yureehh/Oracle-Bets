@@ -1,6 +1,8 @@
 {
   "considered_leagues": [
     "AL",
+    "ASI",
+    "Asia Master",
     "CBLOL",
     "CDF",
     "DCup",
@@ -11,16 +13,17 @@
     "EWC",
     "FST",
     "GLL",
+    "HLL",
     "HM",
     "IC",
     "KeSPA",
+    "LAS",
     "LCK",
     "LCKC",
     "LCP",
     "LDL",
     "LEC",
     "LFL",
-    "LFL2",
     "LIT",
     "LCP",
     "LJL",
@@ -41,6 +44,8 @@
     "WLDs"
   ],
   "cross_league_competitions": [
+    "ASI",
+    "Asia Master",
     "CDF",
     "DCup",
     "EM",

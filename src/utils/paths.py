@@ -62,7 +62,7 @@ PROCESSED_PLAYERS_DIR: Final = PROCESSED_DIR / "players"
 # --------------------------------------------------------------------------- #
 DISCORD_CONFIG: Final = CONFIG_DIR / "discord_config.json"
 DATA_INGESTION_DIR: Final = CONFIG_DIR / "data_ingestion"
-LEAGUES_INGESTION: Final = DATA_INGESTION_DIR / "leagues_handling"
+EXTRAS_DIR: Final = DATA_INGESTION_DIR / "extras"
 TARGET_FEATURES: Final = CONFIG_DIR / "target_features.json"
 TRAINING_AND_INPUT_COLS_DIR: Final = CONFIG_DIR / "training"
 
@@ -71,8 +71,8 @@ IMPORT_COLUMNS: Final = DATA_INGESTION_DIR / "import_columns.json"
 TEAM_REPLACEMENTS_AND_INVALID_GAMES: Final = (
     DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
 )
-CONSIDERED_LEAGUES: Final = LEAGUES_INGESTION / "considered_leagues.json"
-LEAGUE_PRIOR_SETTINGS: Final = LEAGUES_INGESTION / "league_prior_settings.json"
+CONSIDERED_LEAGUES: Final = DATA_INGESTION_DIR / "considered_leagues.json"
+LEAGUE_PRIOR_SETTINGS: Final = DATA_INGESTION_DIR / "league_prior_settings.json"
 
 # --------------------------------------------------------------------------- #
 # Concrete data artefacts
@@ -223,7 +223,7 @@ _directories: list[Path] = [
     INSIGHTS_DIR,
     CONFIG_DIR,
     DATA_INGESTION_DIR,
-    LEAGUES_INGESTION,
+    EXTRAS_DIR,
     TRAINING_AND_INPUT_COLS_DIR,
     NOTEBOOKS_DIR,
     LOGS_DIR,

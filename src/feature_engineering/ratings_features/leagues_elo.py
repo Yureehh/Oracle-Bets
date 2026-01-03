@@ -723,7 +723,7 @@ def store_leagues_elo(
 def store_league_strength_priors(league_elo_df: pd.DataFrame) -> None:
     """
     Derive league strength priors from the league Elo table and persist to JSON.
-    Defaults can be tuned in config/data_ingestion/leagues_handling/league_prior_settings.json
+    Defaults can be tuned in config/data_ingestion/league_prior_settings.json
     (including `calibration_mode`: "global" or "tiered").
     """
     settings = {
