@@ -15,7 +15,10 @@ import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
 from utils.logger import instantiate_logger, logger
-from utils.league_taxonomy import add_league_taxonomy_columns
+from utils.league_taxonomy import (
+    add_league_taxonomy_columns,
+    get_league_strength_prior,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -246,8 +249,14 @@ class FeatureGenerator:
         df = data.copy()
         df = add_league_taxonomy_columns(df, league_col="league")
         df["season"] = df["patch"].astype(str).str.split(".").str[0]
+        df["league_strength_prior_calibrated"] = df["league"].map(
+            get_league_strength_prior
+        )
         df["opp_league_strength_prior"] = get_opponent(
             df["league_strength_prior"].tolist(), entity="team"
+        )
+        df["opp_league_strength_prior_calibrated"] = get_opponent(
+            df["league_strength_prior_calibrated"].tolist(), entity="team"
         )
 
         # ── Game-level context ───────────────────────────────────────────────

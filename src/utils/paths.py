@@ -72,7 +72,7 @@ TEAM_REPLACEMENTS_AND_INVALID_GAMES: Final = (
     DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
 )
 CONSIDERED_LEAGUES: Final = LEAGUES_INGESTION / "considered_leagues.json"
-LEAGUE_TAXONOMY: Final = CONFIG_DIR / "league_taxonomy.json"
+LEAGUE_PRIOR_SETTINGS: Final = LEAGUES_INGESTION / "league_prior_settings.json"
 
 # --------------------------------------------------------------------------- #
 # Concrete data artefacts
@@ -115,6 +115,7 @@ FLATTENED_PLAYER_CONFIG: Final = (
 MODEL_ARTIFACTS: Final = MODELS_DIR / "artifacts"
 LEAGUE_ELO: Final = MODEL_ARTIFACTS / "league_elo.parquet"
 TEAM_LEAGUES_MAPPING: Final = MODEL_ARTIFACTS / "team_league_mapping.parquet"
+LEAGUE_STRENGTH_PRIORS: Final = MODEL_ARTIFACTS / "league_strength_priors.json"
 WHOLE_HISTORY_RATING_PATH: Final = MODEL_ARTIFACTS / "whr.pkl"
 OUTCOME_PREDICTION_MODEL_PATH: Final = (
     MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction.pkl"

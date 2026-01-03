@@ -13,15 +13,25 @@ from typing import Any
 import pandas as pd
 
 from utils.io_utils import json_loader
-from utils.paths import LEAGUE_TAXONOMY
+from utils.paths import CONSIDERED_LEAGUES, LEAGUE_STRENGTH_PRIORS
 
 
 @lru_cache(maxsize=1)
 def _load_taxonomy() -> dict[str, Any]:
-    data: dict[str, Any] = json_loader(LEAGUE_TAXONOMY)
-    data.setdefault("defaults", {})
-    data.setdefault("leagues", {})
-    return data
+    data: dict[str, Any] = json_loader(CONSIDERED_LEAGUES)
+    taxonomy = data.get("league_taxonomy", {})
+    taxonomy.setdefault("defaults", {})
+    taxonomy.setdefault("leagues", {})
+    return taxonomy
+
+
+@lru_cache(maxsize=1)
+def _load_strength_priors() -> dict[str, float]:
+    try:
+        priors: dict[str, float] = json_loader(LEAGUE_STRENGTH_PRIORS)
+    except FileNotFoundError:
+        return {}
+    return {str(k): float(v) for k, v in priors.items()}
 
 
 def get_league_taxonomy(league: str | None) -> dict[str, Any]:
@@ -44,7 +54,18 @@ def get_league_taxonomy(league: str | None) -> dict[str, Any]:
     }
 
 
+def get_config_strength_prior(league: str | None) -> float:
+    """Strength prior from static taxonomy config only (no calibration)."""
+    return float(get_league_taxonomy(league)["strength_prior"])
+
+
 def get_league_strength_prior(league: str | None) -> float:
+    """Strength prior from calibrated priors when available, else taxonomy defaults."""
+    if league is None:
+        return float(get_league_taxonomy(None)["strength_prior"])
+    priors = _load_strength_priors()
+    if str(league) in priors:
+        return float(priors[str(league)])
     return float(get_league_taxonomy(league)["strength_prior"])
 
 

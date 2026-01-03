@@ -16,12 +16,14 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
-from utils.league_taxonomy import get_league_strength_prior
+from utils.league_taxonomy import get_config_strength_prior
 from utils.logger import instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
     LEAGUE_ELO,
     LEAGUES_ELO_HYPERPARAMETERS,
+    LEAGUE_PRIOR_SETTINGS,
+    LEAGUE_STRENGTH_PRIORS,
     TEAM_LEAGUES_MAPPING,
 )
 
@@ -604,8 +606,8 @@ def process_elo_for_row(
 
     blue_before = float(league_elo_ratings[blue_league]["elo"])
     red_before = float(league_elo_ratings[red_league]["elo"])
-    blue_prior = get_league_strength_prior(blue_league)
-    red_prior = get_league_strength_prior(red_league)
+    blue_prior = get_config_strength_prior(blue_league)
+    red_prior = get_config_strength_prior(red_league)
 
     if blue_league != red_league:
         exp_blue = expected_outcome(blue_before, red_before, elo_divisor)
@@ -679,7 +681,8 @@ def store_results(
 ) -> None:
     """Store belonging leagues and league Elo ratings."""
     store_belonging_leagues(belonging_league)
-    store_leagues_elo(league_elo_ratings)
+    league_elo_df = store_leagues_elo(league_elo_ratings)
+    store_league_strength_priors(league_elo_df)
 
 
 def store_belonging_leagues(
@@ -699,7 +702,9 @@ def store_belonging_leagues(
     )
 
 
-def store_leagues_elo(league_elo_ratings: dict[str, dict[str, float | int]]) -> None:
+def store_leagues_elo(
+    league_elo_ratings: dict[str, dict[str, float | int]]
+) -> pd.DataFrame:
     """Store the Elo ratings for leagues."""
     league_elo_df = (
         pd.DataFrame(
@@ -711,6 +716,46 @@ def store_leagues_elo(league_elo_ratings: dict[str, dict[str, float | int]]) -> 
         .reset_index(drop=True)
     )
     safe_store_df_as_parquet(league_elo_df, LEAGUE_ELO, [logger, data_pipeline_logger])
+    return league_elo_df
+
+
+def store_league_strength_priors(league_elo_df: pd.DataFrame) -> None:
+    """
+    Derive league strength priors from the league Elo table and persist to JSON.
+    Defaults can be tuned in config/data_ingestion/leagues_handling/league_prior_settings.json.
+    """
+    settings = {"prior_scale": 0.25, "max_abs_prior": 200.0}
+    try:
+        cfg = json_loader(LEAGUE_PRIOR_SETTINGS)
+        settings["prior_scale"] = float(cfg.get("prior_scale", settings["prior_scale"]))
+        settings["max_abs_prior"] = float(
+            cfg.get("max_abs_prior", settings["max_abs_prior"])
+        )
+    except FileNotFoundError:
+        pass
+
+    if league_elo_df.empty:
+        return
+
+    median = float(league_elo_df["elo"].median())
+    scale = float(settings["prior_scale"])
+    max_abs = float(settings["max_abs_prior"])
+
+    priors = (
+        league_elo_df.set_index("league")["elo"]
+        .apply(lambda v: max(-max_abs, min(max_abs, (v - median) * scale)))
+        .to_dict()
+    )
+    try:
+        with LEAGUE_STRENGTH_PRIORS.open("w") as f:
+            json.dump(priors, f, indent=2)
+        logger.info("Stored league strength priors to %s.", LEAGUE_STRENGTH_PRIORS)
+        data_pipeline_logger.info(
+            "Stored league strength priors to %s.", LEAGUE_STRENGTH_PRIORS
+        )
+    except Exception as e:
+        logger.error("Failed to save league strength priors: %s", e)
+        data_pipeline_logger.exception("Failed to save league strength priors.")
 
 
 # ----------------------------------------------------------------------

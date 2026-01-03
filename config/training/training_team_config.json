@@ -7,6 +7,7 @@
     "league_region",
     "league_tier",
     "league_strength_prior",
+    "league_strength_prior_calibrated",
 
     "gameid",
     "side",
@@ -18,6 +19,7 @@
     "league_elo_win_likelihood",
     "league_elo_prior_win_likelihood",
     "opp_league_strength_prior",
+    "opp_league_strength_prior_calibrated",
 
     "side_win_likelihood",
     "season_win_likelihood",

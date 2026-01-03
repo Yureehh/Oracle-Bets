@@ -36,7 +36,11 @@ from feature_engineering.ratings_features.trueskill import (
 )
 from prediction_models.gbdt_model import GradientBoostingModel
 from utils.io_utils import load_model
-from utils.league_taxonomy import get_league_strength_prior, get_league_taxonomy
+from utils.league_taxonomy import (
+    get_config_strength_prior,
+    get_league_strength_prior,
+    get_league_taxonomy,
+)
 from utils.paths import (
     GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES,
     GAMELENGTH_PREDICTION_FINAL_FEATURES,
@@ -326,8 +330,8 @@ class MatchPredictor:
         """
         t1_league = self._resolve_team_league(team1_id)
         t2_league = self._resolve_team_league(team2_id)
-        e1 = self._resolve_league_elo(t1_league) + get_league_strength_prior(t1_league)
-        e2 = self._resolve_league_elo(t2_league) + get_league_strength_prior(t2_league)
+        e1 = self._resolve_league_elo(t1_league) + get_config_strength_prior(t1_league)
+        e2 = self._resolve_league_elo(t2_league) + get_config_strength_prior(t2_league)
         prob = _elo_prob(e1, e2)
         return round(float(prob), RATING_DECIMALS)
 
@@ -372,7 +376,9 @@ class MatchPredictor:
         t1["league_region"] = t1_tax["region"]
         t1["league_tier"] = t1_tax["tier"]
         t1["league_strength_prior"] = t1_tax["strength_prior"]
+        t1["league_strength_prior_calibrated"] = get_league_strength_prior(t1_league)
         t2["league_strength_prior"] = t2_tax["strength_prior"]
+        t2["league_strength_prior_calibrated"] = get_league_strength_prior(t2_league)
 
         # Rating-based likelihoods (Team1 vs Team2)
         t1["elo_win_likelihood"] = self.elo_prediction(t1["elo"], t2["elo"])
@@ -461,8 +467,9 @@ class MatchPredictor:
         # 4) Right row (opponent features) — keep all *_win_likelihood + any ema_* used in training
         opp_keep = [c for c in t2_mirr.index if c.endswith("_win_likelihood")]
         opp_keep += [c for c in t2_mirr.index if c.startswith("ema_")]
-        if "league_strength_prior" in t2_mirr.index:
-            opp_keep.append("league_strength_prior")
+        for col in ("league_strength_prior", "league_strength_prior_calibrated"):
+            if col in t2_mirr.index:
+                opp_keep.append(col)
 
         opp_payload = {f"opp_{c}": t2_mirr.get(c, np.nan) for c in opp_keep}
         right = pd.DataFrame([{**opp_payload, "gameid": gid, "side": sde}])
