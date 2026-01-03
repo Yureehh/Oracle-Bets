@@ -18,12 +18,12 @@ from utils.league_taxonomy import (
     add_league_taxonomy_columns,
     get_league_strength_prior,
 )
-from utils.logger import instantiate_logger, logger
+from utils.logger import LOG_TOPIC, instantiate_logger, logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-data_pipeline_logger = instantiate_logger("data_pipeline")
+data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 # ────────────────────────────────────────────────────────────────────────────
 # Helpers/constants shared by multiple methods

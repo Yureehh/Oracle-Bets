@@ -23,12 +23,12 @@ from dotenv import load_dotenv
 # --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
-from utils.logger import instantiate_logger  # your helper
+from utils.logger import LOG_TOPIC, instantiate_logger  # your helper
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-schedule_logger = instantiate_logger("schedule_generation")
+schedule_logger = instantiate_logger(LOG_TOPIC.SCHEDULE_GENERATION)
 
 # --------------------------------------------------------------------------- #
 # Exceptions
@@ -133,16 +133,15 @@ class PandaScoreSchedule:
         start_datetime: str | dt.datetime,
         end_datetime: str | dt.datetime | None = None,
         max_day_range: int = 14,
-        time_format: str = "%Y-%m-%dT%H:%M:%S%z",
+        time_format: str | None = "%Y-%m-%dT%H:%M:%S%z",
         leagues: str | None = None,
     ) -> pd.DataFrame:
         """Return a DataFrame of upcoming matches within the given time window."""
+        start_dt = self._parse_datetime(start_datetime)
         if end_datetime is None:
-            end_datetime = parser.isoparse(start_datetime) + dt.timedelta(
-                days=max_day_range
-            )
+            end_datetime = start_dt + dt.timedelta(days=max_day_range)
         start_dt, end_dt = self._validate_and_parse_dates(
-            start_datetime, end_datetime, max_day_range
+            start_dt, end_datetime, max_day_range
         )
 
         schedule_df = pd.DataFrame()
@@ -277,15 +276,22 @@ class PandaScoreSchedule:
         matches: list[dict[str, Any]],
         start_dt: dt.datetime,
         end_dt: dt.datetime,
-        time_format: str,
+        time_format: str | None,
     ) -> pd.DataFrame:
         games_df = self._parse_matches_response(matches)
-        games_df[START_DATETIME_COLUMN] = pd.to_datetime(
-            games_df[START_DATETIME_COLUMN],
-            format=time_format,
-            errors="coerce",
-            utc=True,
-        )
+        raw_times = games_df[START_DATETIME_COLUMN]
+        if time_format:
+            parsed = pd.to_datetime(
+                raw_times,
+                format=time_format,
+                errors="coerce",
+                utc=True,
+            )
+            if parsed.isna().all():
+                parsed = pd.to_datetime(raw_times, errors="coerce", utc=True)
+        else:
+            parsed = pd.to_datetime(raw_times, errors="coerce", utc=True)
+        games_df[START_DATETIME_COLUMN] = parsed
         games_df = games_df.dropna(subset=[START_DATETIME_COLUMN])
         mask = (games_df[START_DATETIME_COLUMN] >= start_dt) & (
             games_df[START_DATETIME_COLUMN] <= end_dt

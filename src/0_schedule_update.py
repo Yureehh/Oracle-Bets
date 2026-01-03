@@ -1,5 +1,5 @@
 """
-schedule_fetcher.py – helper around `PandaScoreSchedule`
+0_schedule_update.py – helper around `PandaScoreSchedule`
 
 Used by the Discord bot (or any other caller) to keep an up-to-date Parquet
 schedule _and/or_ an in-memory DataFrame.
@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Final
 from dateutil import parser
 from dotenv import load_dotenv
 
-from ingestion.schedule import PandaScoreSchedule
+from ingestion.schedule import PandaScoreSchedule, ScheduleError
 from utils.io_utils import safe_store_df_as_parquet
 from utils.logger import LOG_TOPIC, instantiate_logger
 from utils.paths import SCHEDULE
@@ -40,10 +40,6 @@ LOG = instantiate_logger(LOG_TOPIC.SCHEDULE_GENERATION)
 
 TIME_FMT: Final = "%Y-%m-%dT%H:%M:%SZ"
 MAX_RANGE_DAYS: Final = 7
-
-
-class ScheduleFetchError(Exception):
-    """Custom error for schedule fetching issues."""
 
 
 def _to_utc(dt_or_str: dt.datetime | str | None) -> dt.datetime:
@@ -145,6 +141,6 @@ def main(
 if __name__ == "__main__":  # pragma: no cover
     try:
         main(start_datetime="2025-08-01T00:00:00Z", window_days=MAX_RANGE_DAYS)
-    except ScheduleFetchError:
+    except ScheduleError:
         LOG.exception("Failed to fetch schedule. Exiting with error.")
         sys.exit(1)

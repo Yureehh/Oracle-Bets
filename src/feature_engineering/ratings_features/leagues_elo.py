@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
 from utils.league_taxonomy import get_config_strength_prior, get_league_taxonomy
-from utils.logger import instantiate_logger, logger
+from utils.logger import LOG_TOPIC, instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
     LEAGUE_ELO,
@@ -33,7 +33,7 @@ from utils.paths import (
 # ----------------------------------------------------------------------
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 CROSS_LEAGUE_COMPETITIONS = set(considered_leagues_config["cross_league_competitions"])
-data_pipeline_logger = instantiate_logger("data_pipeline")
+data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 ROWS_PER_TEAM = 2  # one per side
 TRIALS_NUM = 50
