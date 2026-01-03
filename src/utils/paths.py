@@ -72,6 +72,7 @@ TEAM_REPLACEMENTS_AND_INVALID_GAMES: Final = (
     DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
 )
 CONSIDERED_LEAGUES: Final = LEAGUES_INGESTION / "considered_leagues.json"
+LEAGUE_PRIOR_SETTINGS: Final = LEAGUES_INGESTION / "league_prior_settings.json"
 
 # --------------------------------------------------------------------------- #
 # Concrete data artefacts
@@ -92,11 +93,17 @@ TRAINING_TEAM_DATA: Final = PROCESSED_TEAMS_DIR / "training_teams.parquet"
 TRAINING_PLAYER_DATA: Final = PROCESSED_PLAYERS_DIR / "training_players.parquet"
 
 TRAINING_TEAM_CONFIG: Final = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
+TRAINING_TEAM_CONFIG_COMPACT: Final = (
+    TRAINING_AND_INPUT_COLS_DIR / "training_team_config_compact.json"
+)
 FLATTENED_TEAM_CONFIG: Final = (
     TRAINING_AND_INPUT_COLS_DIR / "flattened_team_config.json"
 )
 TRAINING_PLAYER_CONFIG: Final = (
     TRAINING_AND_INPUT_COLS_DIR / "training_player_config.json"
+)
+TRAINING_PLAYER_CONFIG_COMPACT: Final = (
+    TRAINING_AND_INPUT_COLS_DIR / "training_player_config_compact.json"
 )
 FLATTENED_PLAYER_CONFIG: Final = (
     TRAINING_AND_INPUT_COLS_DIR / "flattened_player_config.json"
@@ -108,6 +115,7 @@ FLATTENED_PLAYER_CONFIG: Final = (
 MODEL_ARTIFACTS: Final = MODELS_DIR / "artifacts"
 LEAGUE_ELO: Final = MODEL_ARTIFACTS / "league_elo.parquet"
 TEAM_LEAGUES_MAPPING: Final = MODEL_ARTIFACTS / "team_league_mapping.parquet"
+LEAGUE_STRENGTH_PRIORS: Final = MODEL_ARTIFACTS / "league_strength_priors.json"
 WHOLE_HISTORY_RATING_PATH: Final = MODEL_ARTIFACTS / "whr.pkl"
 OUTCOME_PREDICTION_MODEL_PATH: Final = (
     MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction.pkl"
@@ -136,6 +144,38 @@ GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Final = (
     MODEL_ARTIFACTS
     / "GamelengthPrediction"
     / "GamelengthPrediction_best_hyperparameters.pkl"
+)
+TOTAL_KILLS_PREDICTION_MODEL_PATH: Final = (
+    MODEL_ARTIFACTS / "TotalKillsPrediction" / "TotalKillsPrediction.pkl"
+)
+TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES: Final = (
+    MODEL_ARTIFACTS
+    / "TotalKillsPrediction"
+    / "TotalKillsPrediction_categorical_features.pkl"
+)
+TOTAL_KILLS_PREDICTION_FINAL_FEATURES: Final = (
+    MODEL_ARTIFACTS / "TotalKillsPrediction" / "TotalKillsPrediction_final_features.pkl"
+)
+TOTAL_KILLS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
+    MODEL_ARTIFACTS
+    / "TotalKillsPrediction"
+    / "TotalKillsPrediction_best_hyperparameters.pkl"
+)
+TOTAL_TOWERS_PREDICTION_MODEL_PATH: Final = (
+    MODEL_ARTIFACTS / "TotalTowersPrediction" / "TotalTowersPrediction.pkl"
+)
+TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES: Final = (
+    MODEL_ARTIFACTS
+    / "TotalTowersPrediction"
+    / "TotalTowersPrediction_categorical_features.pkl"
+)
+TOTAL_TOWERS_PREDICTION_FINAL_FEATURES: Final = (
+    MODEL_ARTIFACTS / "TotalTowersPrediction" / "TotalTowersPrediction_final_features.pkl"
+)
+TOTAL_TOWERS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
+    MODEL_ARTIFACTS
+    / "TotalTowersPrediction"
+    / "TotalTowersPrediction_best_hyperparameters.pkl"
 )
 
 # Hyper-parameter grids

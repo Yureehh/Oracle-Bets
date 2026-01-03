@@ -25,6 +25,7 @@ from discord_predictions.discord_utils import (
     get_formatted_team_profile,
     handle_command_error,
     validate_and_predict,
+    validate_and_predict_props,
 )
 from discord_predictions.team import Team
 from ingestion.schedule import PandaScoreSchedule
@@ -219,6 +220,34 @@ async def sided_bo1(
     blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict(
         ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", True
+    )
+
+
+@bot.command(name="props", aliases=["props_bo1", "bo1_props"])
+async def props(
+    ctx: commands.Context,
+    blue_team_name: str | None = None,
+    red_team_name: str | None = None,
+    rosters: str | None = None,
+):
+    """Predict single-game props: gamelength, total kills, total towers."""
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
+    await validate_and_predict_props(
+        ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, False
+    )
+
+
+@bot.command(name="sided_props", aliases=["props_sided", "sided_props_bo1"])
+async def sided_props(
+    ctx: commands.Context,
+    blue_team_name: str | None = None,
+    red_team_name: str | None = None,
+    rosters: str | None = None,
+):
+    """Predict single-game props with side consideration."""
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
+    await validate_and_predict_props(
+        ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, True
     )
 
 

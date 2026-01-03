@@ -47,6 +47,8 @@ from utils.paths import (
     PROCESSED_PLAYERS,
     PROCESSED_TEAMS,
     RAW_DATA,
+    TRAINING_PLAYER_CONFIG_COMPACT,
+    TRAINING_TEAM_CONFIG_COMPACT,
     TRAINING_PLAYER_CONFIG,
     TRAINING_TEAM_CONFIG,
 )
@@ -245,7 +247,17 @@ class DataGenerator:
         Materialise either training (uses *_before columns) or flattened
         inference tables (uses last row per entity, *_after columns).
         """
-        cfg = json_loader(conf)
+        config_path = conf
+        if kind == "training":
+            variant = os.getenv("TRAINING_CONFIG_VARIANT", "").casefold()
+            if variant == "compact":
+                config_path = (
+                    TRAINING_TEAM_CONFIG_COMPACT
+                    if entity == "team"
+                    else TRAINING_PLAYER_CONFIG_COMPACT
+                )
+
+        cfg = json_loader(config_path)
         key = "flattened_cols" if kind == "flattened" else f"{entity}_features"
         cols: list[str] = cfg[key]
 

@@ -36,12 +36,26 @@ from feature_engineering.ratings_features.trueskill import (
 )
 from prediction_models.gbdt_model import GradientBoostingModel
 from utils.io_utils import load_model
+from utils.league_taxonomy import (
+    get_config_strength_prior,
+    get_league_strength_prior,
+    get_league_taxonomy,
+)
 from utils.paths import (
+    GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES,
+    GAMELENGTH_PREDICTION_FINAL_FEATURES,
+    GAMELENGTH_PREDICTION_MODEL_PATH,
     LEAGUE_ELO,
     OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
     OUTCOME_PREDICTION_FINAL_FEATURES,
     OUTCOME_PREDICTION_MODEL_PATH,
+    TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES,
+    TOTAL_KILLS_PREDICTION_FINAL_FEATURES,
+    TOTAL_KILLS_PREDICTION_MODEL_PATH,
     TEAM_LEAGUES_MAPPING,
+    TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES,
+    TOTAL_TOWERS_PREDICTION_FINAL_FEATURES,
+    TOTAL_TOWERS_PREDICTION_MODEL_PATH,
     WHOLE_HISTORY_RATING_PATH,
 )
 
@@ -192,6 +206,9 @@ class MatchPredictor:
     """
 
     outcome_model: Any = field(default=None, init=False, repr=False)
+    gamelength_model: Any = field(default=None, init=False, repr=False)
+    total_kills_model: Any = field(default=None, init=False, repr=False)
+    total_towers_model: Any = field(default=None, init=False, repr=False)
     whr_model: Any = field(default=None, init=False, repr=False)
     team_to_league: pd.DataFrame = field(default=None, init=False, repr=False)
     league_to_elo: pd.DataFrame = field(default=None, init=False, repr=False)
@@ -215,6 +232,16 @@ class MatchPredictor:
         except (Exception, ImportError):
             # WHR is optional; only used if whr_prediction() is called explicitly
             self.whr_model = None
+
+        for model_name, path in (
+            ("gamelength", GAMELENGTH_PREDICTION_MODEL_PATH),
+            ("total_kills", TOTAL_KILLS_PREDICTION_MODEL_PATH),
+            ("total_towers", TOTAL_TOWERS_PREDICTION_MODEL_PATH),
+        ):
+            try:
+                setattr(self, f\"{model_name}_model\", load_model(path))
+            except Exception:
+                setattr(self, f\"{model_name}_model\", None)
 
         try:
             self.team_to_league = _read_parquet_cached(str(TEAM_LEAGUES_MAPPING))
@@ -270,29 +297,42 @@ class MatchPredictor:
             msg = f"Error during WHR prediction: {e}"
             raise RuntimeError(msg) from e
 
+    def _resolve_team_league(self, team_id: Any) -> str:
+        t2l = self.team_to_league
+        row = t2l.loc[t2l["teamid"].astype(str) == str(team_id)]
+        if row.empty:
+            msg = "Team ID not found in team-to-league mapping."
+            raise ValueError(msg)
+        return str(row["league"].iloc[0])
+
+    def _resolve_league_elo(self, league: str) -> float:
+        l2e = self.league_to_elo
+        e = l2e.loc[l2e["league"] == league, "elo"]
+        if e.empty:
+            msg = "League not found in ELO ratings."
+            raise ValueError(msg)
+        return float(e.iloc[0])
+
     def league_elo_prediction(self, team1_id: int, team2_id: int) -> float:
         """
         League-level Elo logistic probability (Team 1 vs Team 2), using team->league mapping.
         """
-        t2l = self.team_to_league
-        l2e = self.league_to_elo
+        t1_league = self._resolve_team_league(team1_id)
+        t2_league = self._resolve_team_league(team2_id)
+        e1 = self._resolve_league_elo(t1_league)
+        e2 = self._resolve_league_elo(t2_league)
+        prob = _elo_prob(e1, e2)
+        return round(float(prob), RATING_DECIMALS)
 
-        t1_row = t2l.loc[t2l["teamid"] == team1_id]
-        t2_row = t2l.loc[t2l["teamid"] == team2_id]
-        if t1_row.empty or t2_row.empty:
-            msg = "Team ID not found in team-to-league mapping."
-            raise ValueError(msg)
-
-        t1_league = t1_row["league"].iloc[0]
-        t2_league = t2_row["league"].iloc[0]
-
-        e1 = l2e.loc[l2e["league"] == t1_league, "elo"]
-        e2 = l2e.loc[l2e["league"] == t2_league, "elo"]
-        if e1.empty or e2.empty:
-            msg = "League not found in ELO ratings."
-            raise ValueError(msg)
-
-        prob = _elo_prob(float(e1.iloc[0]), float(e2.iloc[0]))
+    def league_elo_prior_prediction(self, team1_id: int, team2_id: int) -> float:
+        """
+        League-level Elo probability adjusted by league strength priors.
+        """
+        t1_league = self._resolve_team_league(team1_id)
+        t2_league = self._resolve_team_league(team2_id)
+        e1 = self._resolve_league_elo(t1_league) + get_config_strength_prior(t1_league)
+        e2 = self._resolve_league_elo(t2_league) + get_config_strength_prior(t2_league)
+        prob = _elo_prob(e1, e2)
         return round(float(prob), RATING_DECIMALS)
 
     # ── simple WR-based heuristics ──────────────────────────────────────── #
@@ -329,6 +369,17 @@ class MatchPredictor:
         t1 = team1_stats.copy()
         t2 = team2_stats.copy()
 
+        t1_league = t1.get("league") or self._resolve_team_league(t1.get("teamid"))
+        t2_league = t2.get("league") or self._resolve_team_league(t2.get("teamid"))
+        t1_tax = get_league_taxonomy(t1_league)
+        t2_tax = get_league_taxonomy(t2_league)
+        t1["league_region"] = t1_tax["region"]
+        t1["league_tier"] = t1_tax["tier"]
+        t1["league_strength_prior"] = t1_tax["strength_prior"]
+        t1["league_strength_prior_calibrated"] = get_league_strength_prior(t1_league)
+        t2["league_strength_prior"] = t2_tax["strength_prior"]
+        t2["league_strength_prior_calibrated"] = get_league_strength_prior(t2_league)
+
         # Rating-based likelihoods (Team1 vs Team2)
         t1["elo_win_likelihood"] = self.elo_prediction(t1["elo"], t2["elo"])
         t1["glicko2_win_likelihood"] = self.glicko2_prediction(
@@ -344,6 +395,9 @@ class MatchPredictor:
             t2["trueskill_sigma"],
         )
         t1["league_elo_win_likelihood"] = self.league_elo_prediction(
+            t1["teamid"], t2["teamid"]
+        )
+        t1["league_elo_prior_win_likelihood"] = self.league_elo_prior_prediction(
             t1["teamid"], t2["teamid"]
         )
 
@@ -413,6 +467,9 @@ class MatchPredictor:
         # 4) Right row (opponent features) — keep all *_win_likelihood + any ema_* used in training
         opp_keep = [c for c in t2_mirr.index if c.endswith("_win_likelihood")]
         opp_keep += [c for c in t2_mirr.index if c.startswith("ema_")]
+        for col in ("league_strength_prior", "league_strength_prior_calibrated"):
+            if col in t2_mirr.index:
+                opp_keep.append(col)
 
         opp_payload = {f"opp_{c}": t2_mirr.get(c, np.nan) for c in opp_keep}
         right = pd.DataFrame([{**opp_payload, "gameid": gid, "side": sde}])
@@ -566,21 +623,43 @@ class MatchPredictor:
         # DO the same for pivot
         return self.merge_datasets(team_df, pivot)
 
-    def keep_necessary_columns(self, X: pd.DataFrame) -> pd.DataFrame:
+    def _feature_paths_for(self, model_name: str) -> tuple[Any, Any]:
+        mapping = {
+            "outcome": (
+                OUTCOME_PREDICTION_FINAL_FEATURES,
+                OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
+            ),
+            "gamelength": (
+                GAMELENGTH_PREDICTION_FINAL_FEATURES,
+                GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES,
+            ),
+            "total_kills": (
+                TOTAL_KILLS_PREDICTION_FINAL_FEATURES,
+                TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES,
+            ),
+            "total_towers": (
+                TOTAL_TOWERS_PREDICTION_FINAL_FEATURES,
+                TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES,
+            ),
+        }
+        if model_name not in mapping:
+            raise ValueError(f"Unknown model name: {model_name}")
+        return mapping[model_name]
+
+    def keep_necessary_columns(self, X: pd.DataFrame, *, model_name: str) -> pd.DataFrame:
+        features_path, cats_path = self._feature_paths_for(model_name)
         try:
-            final_features: list[str] = load_model(OUTCOME_PREDICTION_FINAL_FEATURES)
+            final_features: list[str] = load_model(features_path)
         except Exception as e:
-            msg = f"Failed to load final features list: {e}"
+            msg = f"Failed to load final features list ({model_name}): {e}"
             raise RuntimeError(msg) from e
 
         X = X.reindex(columns=final_features)
-        return self.convert_data_types(X)
+        return self.convert_data_types(X, cats_path)
 
-    def convert_data_types(self, X: pd.DataFrame) -> pd.DataFrame:
+    def convert_data_types(self, X: pd.DataFrame, cats_path) -> pd.DataFrame:
         try:
-            cat_features: list[str] = load_model(
-                OUTCOME_PREDICTION_CATEGORICAL_FEATURES
-            )
+            cat_features: list[str] = load_model(cats_path)
         except Exception as e:
             msg = f"Failed to load categorical features list: {e}"
             raise RuntimeError(msg) from e
@@ -604,9 +683,22 @@ class MatchPredictor:
 
         # players_* aggregation
         X = GradientBoostingModel.process_players_likelihood_columns(X)
-        X = self.keep_necessary_columns(X)
+        X = self.keep_necessary_columns(X, model_name="outcome")
         proba = self.outcome_model.predict_proba(X)
         return np.round(proba, PREDICTION_PRECISION)
+
+    def _predict_regression(self, X: pd.DataFrame, *, model_name: str) -> float:
+        model = getattr(self, f\"{model_name}_model\", None)
+        if model is None:
+            msg = f\"{model_name} model not loaded. Train it first to enable predictions.\"
+            raise RuntimeError(msg)
+
+        if not any(c.startswith(\"opp_\") for c in X.columns):
+            X = GradientBoostingModel.fuse_opposing_team_features(X)
+        X = GradientBoostingModel.process_players_likelihood_columns(X)
+        X = self.keep_necessary_columns(X, model_name=model_name)
+        pred = model.predict(X)
+        return float(pred[0]) if len(pred) else float(\"nan\")
 
     # ── end-to-end API ──────────────────────────────────────────────────── #
 
@@ -635,3 +727,21 @@ class MatchPredictor:
             "team1_win_probability": float(proba[0, 1]),
             "team2_win_probability": float(proba[0, 0]),
         }
+
+    def predict_gamelength(
+        self, team1: Team, team2: Team, account_for_side: bool = True
+    ) -> float:
+        X = self.calculate_team_and_player_stats(team1, team2, account_for_side)
+        return self._predict_regression(X, model_name="gamelength")
+
+    def predict_total_kills(
+        self, team1: Team, team2: Team, account_for_side: bool = True
+    ) -> float:
+        X = self.calculate_team_and_player_stats(team1, team2, account_for_side)
+        return self._predict_regression(X, model_name="total_kills")
+
+    def predict_total_towers(
+        self, team1: Team, team2: Team, account_for_side: bool = True
+    ) -> float:
+        X = self.calculate_team_and_player_stats(team1, team2, account_for_side)
+        return self._predict_regression(X, model_name="total_towers")

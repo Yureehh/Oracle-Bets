@@ -4,6 +4,10 @@
     "league",
     "patch",
     "season",
+    "league_region",
+    "league_tier",
+    "league_strength_prior",
+    "league_strength_prior_calibrated",
 
     "gameid",
     "teamid",
