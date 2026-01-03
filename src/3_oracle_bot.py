@@ -124,7 +124,7 @@ async def roster(ctx: commands.Context, team: str | None = None):
     try:
         team_df = Team(name=team).get_team_info()
         await msg.edit(content=convert_to_discord_markdown(team_df))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         await msg.edit(
             content=handle_command_error(e, "Could not extract roster information.")
         )
@@ -144,7 +144,7 @@ async def rosters(ctx: commands.Context, teams: str | None = None):
         try:
             team_df = Team(name=team_name).get_team_info()
             output += convert_to_discord_markdown(team_df)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             output += handle_command_error(
                 e, f"Could not extract roster for {team_name}.\n"
             )
@@ -160,7 +160,7 @@ async def team_profile(ctx: commands.Context, team_name: str | None = None):
     try:
         profile, error = await get_formatted_team_profile(team_name)
         await ctx.send(profile or error)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         await ctx.send(handle_command_error(e, "Could not retrieve team profile."))
 
 
@@ -176,7 +176,7 @@ async def player_profile(
     try:
         profile, error = await get_formatted_player_profile(player_name, show_more)
         await ctx.send(profile or error)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         await ctx.send(handle_command_error(e, "Could not retrieve player profile."))
 
 
@@ -397,7 +397,7 @@ async def kill(ctx: commands.Context):
         logger.info("Shutting down the bot...")
         await bot.close()
         logger.info("Bot shut down.")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.error("Failed to shut down bot properly: %s", e)
         await ctx.send("Failed to shut down the bot properly.")
 
@@ -413,7 +413,7 @@ def run_bot() -> None:
             logger.error("Environment variable %s is missing.", DISCORD_TOKEN_ENV)
             return
         bot.run(token)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.error("Failed to start bot: %s", e)
 
 

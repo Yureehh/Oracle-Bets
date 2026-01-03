@@ -269,7 +269,7 @@ async def get_formatted_team_profile(team_name: str) -> tuple[str | None, str | 
         if team_profile is not None and not team_profile.empty:
             return format_team_profile(team_profile), None
         return None, f"Data for team '{team_name}' not found in the database."
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return None, handle_command_error(e, "Team profile retrieval failed.")
 
 
@@ -281,7 +281,7 @@ async def get_formatted_player_profile(
         if player_profile is not None and not player_profile.empty:
             return format_player_profile(player_profile, truncate), None
         return None, f"Data for player '{player_name}' not found in the database."
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return None, handle_command_error(e, "Player profile retrieval failed.")
 
 
@@ -479,7 +479,7 @@ async def predict_and_format_result(
         # stay under Discord limit
         await msg.edit(content=output[: MESSAGE_LIMIT - 1])
 
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         await msg.edit(
             content=handle_command_error(e, "Could not complete the prediction.")
         )
@@ -523,7 +523,7 @@ async def predict_and_format_props(
             f"- Expected total towers: **{total_towers:.2f}**\n"
         )
         await msg.edit(content=output[: MESSAGE_LIMIT - 1])
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         await msg.edit(
             content=handle_command_error(e, "Could not complete prop predictions.")
         )

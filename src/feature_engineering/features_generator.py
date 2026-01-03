@@ -14,11 +14,11 @@ import numpy as np
 import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
-from utils.logger import instantiate_logger, logger
 from utils.league_taxonomy import (
     add_league_taxonomy_columns,
     get_league_strength_prior,
 )
+from utils.logger import instantiate_logger, logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

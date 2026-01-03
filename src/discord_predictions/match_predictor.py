@@ -49,10 +49,10 @@ from utils.paths import (
     OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
     OUTCOME_PREDICTION_FINAL_FEATURES,
     OUTCOME_PREDICTION_MODEL_PATH,
+    TEAM_LEAGUES_MAPPING,
     TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES,
     TOTAL_KILLS_PREDICTION_FINAL_FEATURES,
     TOTAL_KILLS_PREDICTION_MODEL_PATH,
-    TEAM_LEAGUES_MAPPING,
     TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES,
     TOTAL_TOWERS_PREDICTION_FINAL_FEATURES,
     TOTAL_TOWERS_PREDICTION_MODEL_PATH,
@@ -239,9 +239,9 @@ class MatchPredictor:
             ("total_towers", TOTAL_TOWERS_PREDICTION_MODEL_PATH),
         ):
             try:
-                setattr(self, f\"{model_name}_model\", load_model(path))
+                setattr(self, f"{model_name}_model", load_model(path))
             except Exception:
-                setattr(self, f\"{model_name}_model\", None)
+                setattr(self, f"{model_name}_model", None)
 
         try:
             self.team_to_league = _read_parquet_cached(str(TEAM_LEAGUES_MAPPING))
@@ -646,7 +646,9 @@ class MatchPredictor:
             raise ValueError(f"Unknown model name: {model_name}")
         return mapping[model_name]
 
-    def keep_necessary_columns(self, X: pd.DataFrame, *, model_name: str) -> pd.DataFrame:
+    def keep_necessary_columns(
+        self, X: pd.DataFrame, *, model_name: str
+    ) -> pd.DataFrame:
         features_path, cats_path = self._feature_paths_for(model_name)
         try:
             final_features: list[str] = load_model(features_path)
@@ -688,17 +690,19 @@ class MatchPredictor:
         return np.round(proba, PREDICTION_PRECISION)
 
     def _predict_regression(self, X: pd.DataFrame, *, model_name: str) -> float:
-        model = getattr(self, f\"{model_name}_model\", None)
+        model = getattr(self, f"{model_name}_model", None)
         if model is None:
-            msg = f\"{model_name} model not loaded. Train it first to enable predictions.\"
+            msg = (
+                f"{model_name} model not loaded. Train it first to enable predictions."
+            )
             raise RuntimeError(msg)
 
-        if not any(c.startswith(\"opp_\") for c in X.columns):
+        if not any(c.startswith("opp_") for c in X.columns):
             X = GradientBoostingModel.fuse_opposing_team_features(X)
         X = GradientBoostingModel.process_players_likelihood_columns(X)
         X = self.keep_necessary_columns(X, model_name=model_name)
         pred = model.predict(X)
-        return float(pred[0]) if len(pred) else float(\"nan\")
+        return float(pred[0]) if len(pred) else float("nan")
 
     # ── end-to-end API ──────────────────────────────────────────────────── #
 

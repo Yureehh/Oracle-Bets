@@ -329,7 +329,7 @@ class PandaScoreSchedule:
                 # Try reading as Parquet anyway; if it fails, we'll try CSV
                 try:
                     df = pd.read_parquet(p)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     df = None
             if df is None:
                 df = pd.read_csv(p)

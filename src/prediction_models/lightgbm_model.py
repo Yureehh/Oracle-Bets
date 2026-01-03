@@ -126,7 +126,7 @@ class LightGBMModel(GradientBoostingModel):
                 lgb.log_evaluation(0),
             ]
             fit_kwargs["callbacks"] = callbacks
-        except Exception:  # noqa: BLE001
+        except Exception:
             fit_kwargs["early_stopping_rounds"] = _EARLY_STOP_ROUNDS
 
         model.fit(**fit_kwargs)
@@ -210,7 +210,7 @@ class LightGBMModel(GradientBoostingModel):
                     lgb.log_evaluation(0),
                 ]
                 fit_kwargs["callbacks"] = callbacks
-            except Exception:  # noqa: BLE001
+            except Exception:
                 fit_kwargs["early_stopping_rounds"] = _EARLY_STOP_ROUNDS
 
             clf.fit(**fit_kwargs)
@@ -249,7 +249,7 @@ class LightGBMModel(GradientBoostingModel):
                 hp = load_model(path)
                 if isinstance(hp, dict) and hp:
                     return hp
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("Failed to load cached hyperparameters from %s: %s", path, e)
         return None
 

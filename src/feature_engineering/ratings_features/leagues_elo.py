@@ -6,6 +6,7 @@ This script calculates league Elo ratings and uses Optuna to optimize hyperparam
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -16,14 +17,14 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
-from utils.league_taxonomy import get_config_strength_prior
+from utils.league_taxonomy import get_config_strength_prior, get_league_taxonomy
 from utils.logger import instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
     LEAGUE_ELO,
-    LEAGUES_ELO_HYPERPARAMETERS,
     LEAGUE_PRIOR_SETTINGS,
     LEAGUE_STRENGTH_PRIORS,
+    LEAGUES_ELO_HYPERPARAMETERS,
     TEAM_LEAGUES_MAPPING,
 )
 
@@ -703,7 +704,7 @@ def store_belonging_leagues(
 
 
 def store_leagues_elo(
-    league_elo_ratings: dict[str, dict[str, float | int]]
+    league_elo_ratings: dict[str, dict[str, float | int]],
 ) -> pd.DataFrame:
     """Store the Elo ratings for leagues."""
     league_elo_df = (
@@ -722,30 +723,58 @@ def store_leagues_elo(
 def store_league_strength_priors(league_elo_df: pd.DataFrame) -> None:
     """
     Derive league strength priors from the league Elo table and persist to JSON.
-    Defaults can be tuned in config/data_ingestion/leagues_handling/league_prior_settings.json.
+    Defaults can be tuned in config/data_ingestion/leagues_handling/league_prior_settings.json
+    (including `calibration_mode`: "global" or "tiered").
     """
-    settings = {"prior_scale": 0.25, "max_abs_prior": 200.0}
-    try:
+    settings = {
+        "prior_scale": 0.25,
+        "max_abs_prior": 200.0,
+        "calibration_mode": "global",
+    }
+    with contextlib.suppress(FileNotFoundError):
         cfg = json_loader(LEAGUE_PRIOR_SETTINGS)
         settings["prior_scale"] = float(cfg.get("prior_scale", settings["prior_scale"]))
         settings["max_abs_prior"] = float(
             cfg.get("max_abs_prior", settings["max_abs_prior"])
         )
-    except FileNotFoundError:
-        pass
-
+        settings["calibration_mode"] = str(
+            cfg.get("calibration_mode", settings["calibration_mode"])
+        )
     if league_elo_df.empty:
         return
 
-    median = float(league_elo_df["elo"].median())
     scale = float(settings["prior_scale"])
     max_abs = float(settings["max_abs_prior"])
+    mode = str(settings["calibration_mode"]).casefold()
+    if mode not in {"global", "tiered"}:
+        mode = "global"
 
-    priors = (
-        league_elo_df.set_index("league")["elo"]
-        .apply(lambda v: max(-max_abs, min(max_abs, (v - median) * scale)))
-        .to_dict()
-    )
+    league_elo = league_elo_df.set_index("league")["elo"]
+
+    def _clip(value: float) -> float:
+        return max(-max_abs, min(max_abs, value))
+
+    if mode == "tiered":
+        league_tiers = {
+            league: get_league_taxonomy(league)["tier"] for league in league_elo.index
+        }
+        tiers = league_elo.index.to_series().map(league_tiers.get)
+        tier_medians = league_elo.groupby(tiers).median().to_dict()
+        global_median = float(league_elo.median())
+
+        def _median_for(league: str) -> float:
+            tier = league_tiers.get(league)
+            return float(tier_medians.get(tier, global_median))
+
+        priors = {
+            league: _clip((elo - _median_for(league)) * scale)
+            for league, elo in league_elo.items()
+        }
+    else:
+        median = float(league_elo.median())
+        priors = {
+            league: _clip((elo - median) * scale) for league, elo in league_elo.items()
+        }
     try:
         with LEAGUE_STRENGTH_PRIORS.open("w") as f:
             json.dump(priors, f, indent=2)

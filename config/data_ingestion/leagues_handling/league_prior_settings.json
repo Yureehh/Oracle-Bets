@@ -1,4 +1,5 @@
 {
   "prior_scale": 0.25,
-  "max_abs_prior": 200
+  "max_abs_prior": 200,
+  "calibration_mode": "tiered"
 }

@@ -8,12 +8,13 @@ utilities to attach those columns to dataframes.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
-
-import pandas as pd
+from typing import TYPE_CHECKING, Any
 
 from utils.io_utils import json_loader
 from utils.paths import CONSIDERED_LEAGUES, LEAGUE_STRENGTH_PRIORS
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 @lru_cache(maxsize=1)

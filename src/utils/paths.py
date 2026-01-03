@@ -170,7 +170,9 @@ TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES: Final = (
     / "TotalTowersPrediction_categorical_features.pkl"
 )
 TOTAL_TOWERS_PREDICTION_FINAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "TotalTowersPrediction" / "TotalTowersPrediction_final_features.pkl"
+    MODEL_ARTIFACTS
+    / "TotalTowersPrediction"
+    / "TotalTowersPrediction_final_features.pkl"
 )
 TOTAL_TOWERS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
     MODEL_ARTIFACTS
