@@ -52,9 +52,9 @@ MODELS_TO_TRAIN: tuple[ModelConfig, ...] = (
         target_column="result",
         problem_type="classification",
     ),
-    # ModelConfig("GamelengthPrediction", "gamelength", "regression"),  # noqa: ERA001
-    # ModelConfig("TotalKillsPrediction", "total_kills", "regression"),  # noqa: ERA001
-    # ModelConfig("TotalTowersPrediction", "total_towers", "regression"),  # noqa: ERA001
+    ModelConfig("GamelengthPrediction", "gamelength", "regression"),
+    ModelConfig("TotalKillsPrediction", "total_kills", "regression"),
+    ModelConfig("TotalTowersPrediction", "total_towers", "regression"),
 )
 
 

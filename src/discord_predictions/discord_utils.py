@@ -485,6 +485,50 @@ async def predict_and_format_result(
         )
 
 
+async def predict_and_format_props(
+    ctx,
+    blue_team_name: str,
+    red_team_name: str,
+    blue_roster_str: str | None,
+    red_roster_str: str | None,
+    account_for_side: bool,
+) -> None:
+    """Predict game props (gamelength, total kills, total towers) for a single game."""
+    msg = await ctx.send(content="```Calculating prop predictions...```")
+    try:
+        blue_roster = (
+            process_roster(blue_roster_str) if blue_roster_str else get_empty_roster()
+        )
+        red_roster = (
+            process_roster(red_roster_str) if red_roster_str else get_empty_roster()
+        )
+        blue_team = Team(name=blue_team_name, side="Blue", roster=blue_roster)
+        red_team = Team(name=red_team_name, side="Red", roster=red_roster)
+
+        predictor = get_match_predictor()
+        gamelength = predictor.predict_gamelength(
+            blue_team, red_team, account_for_side=account_for_side
+        )
+        total_kills = predictor.predict_total_kills(
+            blue_team, red_team, account_for_side=account_for_side
+        )
+        total_towers = predictor.predict_total_towers(
+            blue_team, red_team, account_for_side=account_for_side
+        )
+
+        output = (
+            f"**Prop Predictions (single game)**\n"
+            f"- Expected game length: **{gamelength:.2f}** minutes\n"
+            f"- Expected total kills: **{total_kills:.2f}**\n"
+            f"- Expected total towers: **{total_towers:.2f}**\n"
+        )
+        await msg.edit(content=output[: MESSAGE_LIMIT - 1])
+    except Exception as e:  # noqa: BLE001
+        await msg.edit(
+            content=handle_command_error(e, "Could not complete prop predictions.")
+        )
+
+
 async def validate_and_predict(
     ctx,
     blue_team_name: str,
@@ -509,5 +553,30 @@ async def validate_and_predict(
         blue_roster_str,
         red_roster_str,
         match_type,
+        side_consideration,
+    )
+
+
+async def validate_and_predict_props(
+    ctx,
+    blue_team_name: str,
+    red_team_name: str,
+    blue_roster_str: str | None,
+    red_roster_str: str | None,
+    side_consideration: bool,
+):
+    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
+    if not blue_team_name or not red_team_name:
+        await ctx.send(PLEASE_PROVIDE_TEAMS)
+        return
+    if blue_team_name.casefold() == red_team_name.casefold():
+        await ctx.send(TEAMS_MUST_BE_DIFFERENT)
+        return
+    await predict_and_format_props(
+        ctx,
+        blue_team_name,
+        red_team_name,
+        blue_roster_str,
+        red_roster_str,
         side_consideration,
     )
