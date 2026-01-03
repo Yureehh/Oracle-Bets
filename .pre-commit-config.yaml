@@ -1,15 +1,17 @@
 repos:
   # Upgrade Python syntax
-  - repo: https://github.com/asottile/pyupgrade           # v3.20.0 is current  :contentReference[oaicite:4]{index=4}
+  - repo: https://github.com/asottile/pyupgrade
     rev: v3.20.0
     hooks:
       - id: pyupgrade
         args: ["--py311-plus"]
 
-  # Ruff (lint -> format, per docs)  :contentReference[oaicite:5]{index=5}
+  # Ruff (lint -> format, per docs)
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.4
     hooks:
+      - id: ruff
+        args: ["--fix", "--exit-non-zero-on-fix"]
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -46,5 +48,4 @@ repos:
       - id: python-check-mock-methods
       - id: python-use-type-annotations
       - id: python-check-blanket-noqa
-      - id: python-use-type-annotations
       - id: text-unicode-replacement-char

@@ -1,52 +1,58 @@
-# mkdocs.yml
-
-site_name: "Yureeh Match Modeling Documentation"  # Name of the site
-site_description: "Documentation for the Yureeh Match Modeling Project"
+site_name: "Oracle Bets"
+site_description: "Esports analytics and match outcome modeling for League of Legends."
 site_author: "Yureeh"
-site_url: "https://github.com/Yureehh/Oracle-Bets"  # URL of the site
+repo_url: "https://github.com/Yureehh/Oracle-Bets"
+repo_name: "Yureehh/Oracle-Bets"
+edit_uri: "edit/main/docs/"
 
 theme:
-  name: "material"  # Use the Material theme
+  name: "material"
   palette:
-    primary: "indigo"
-    accent: "pink"
+    - scheme: "default"
+      primary: "indigo"
+      accent: "teal"
   font:
     text: "Roboto"
     code: "Roboto Mono"
+  features:
+    - "navigation.instant"
+    - "navigation.tracking"
+    - "navigation.top"
+    - "content.code.copy"
 
-nav:  # Navigation structure
+nav:
   - Home: index.md
   - Getting Started:
       - Overview: getting_started/overview.md
       - Installation: getting_started/installation.md
-  # - Models:
-  #     - Team-Based Elo: models/team_based_elo.md
-  #     - Player-Based Elo: models/player_based_elo.md
-  #     - TrueSkill: models/trueskill.md
-  #     - EGPM Dominance: models/egpm_dominance.md
-  # - API Documentation:
-  #     - Data Generator: api/data_generator.md
-  #     - Match Predictor: api/match_predictor.md
-  # - Notebooks: notebooks.md
-  # - About: about.md
+      - Quickstart: getting_started/quickstart.md
+  - Pipeline: pipeline.md
+  - Models: models.md
+  - Predictions: predictions.md
+  - Configuration: configuration.md
+  - Contributing: contributing.md
 
-markdown_extensions:  # Optional Markdown extensions
-  - toc:  # Table of contents
+markdown_extensions:
+  - toc:
       permalink: true
   - admonition
-  - codehilite
+  - attr_list
+  - def_list
   - footnotes
   - md_in_html
-  - attr_list
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
 
-plugins:  # Optional plugins
+plugins:
   - search
-  - markdownextradata  # For passing dynamic data into markdown files
+  - markdownextradata
 
-extra_css:  # Optional custom CSS
-  - css/custom.css
-extra_javascript:  # Optional custom JavaScript
-  - js/custom.js
+extra_css:
+  - stylesheets/extra.css
+extra_javascript:
+  - javascripts/extra.js
 
-# Output settings
-site_dir: "site"  # Directory where the generated static files will go
+site_dir: "site"

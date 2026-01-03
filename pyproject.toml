@@ -1,6 +1,6 @@
 [project]
 name = "lol-oracle"
-version = "0.10.3"
+version = "1.0.0"
 description = "Esports analytics betting suite"
 authors = [{ name = "yureeh", email = "yureefabbri@gmail.com" }]
 readme = "README.md"
