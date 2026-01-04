@@ -13,9 +13,8 @@ import pickle
 from pathlib import Path
 from typing import Any, Final
 
-import pandas as pd
-
 from utils.logger import LOG_TOPIC, instantiate_logger
+from utils.pd import pd
 
 # --------------------------------------------------------------------------- #
 # Logging

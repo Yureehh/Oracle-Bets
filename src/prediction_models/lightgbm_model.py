@@ -26,7 +26,7 @@ from utils.logger import logger
 from utils.paths import MODEL_ARTIFACTS  # <-- artifacts root
 
 if TYPE_CHECKING:
-    import pandas as pd
+    from utils.pd import pd
 
 
 # Lightweight, good defaults for laptop runs

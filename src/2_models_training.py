@@ -29,7 +29,7 @@ from utils.paths import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pandas as pd
+    from utils.pd import pd
 
 # ───────────────────────────────  types / config  ─────────────────────────────
 

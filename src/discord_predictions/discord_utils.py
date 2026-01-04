@@ -16,13 +16,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 
 import discord_predictions.match_predictor as match_predictor_module
 from discord_predictions.best_ofs import BestOfs
 from discord_predictions.team import Team
 from utils.io_utils import json_loader, parquet_loader
 from utils.paths import DISCORD_CONFIG, FLATTENED_PLAYERS, FLATTENED_TEAMS
+from utils.pd import pd
 
 # ── config & constants ──────────────────────────────────────────────────── #
 

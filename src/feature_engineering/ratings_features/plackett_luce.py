@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import optuna
-import pandas as pd
 from openskill.models import PlackettLuce
 from sklearn.metrics import log_loss
 from tqdm import tqdm
@@ -27,6 +26,7 @@ from utils.paths import (
     ENTITY_PL_HYPERPARAMETERS,
     LEAGUE_ELO,
 )
+from utils.pd import pd
 
 # ------------------------------------------------------------------------------
 # 1. Global Config / Constants
@@ -35,7 +35,7 @@ config = json_loader(DEFAULT_MODELS_PARAMETERS)
 pl_config = config.get("plackett_luce", {})
 DEFAULT_MU = float(pl_config.get("mu", 25.0))
 DEFAULT_SIGMA = float(pl_config.get("sigma", 8.333))
-TRIALS_NUM = 50
+TRIALS_NUM = 25
 MIN_FLOAT = 1e-9  # For float comparisons
 
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)

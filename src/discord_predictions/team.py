@@ -13,10 +13,9 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-import pandas as pd
-
 from utils.logger import logger
 from utils.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
+from utils.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

@@ -16,7 +16,6 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import pandas as pd
 
 from feature_engineering.ratings_features.glicko import (
     DEFAULT_MU,
@@ -54,6 +53,7 @@ from utils.paths import (
     TOTAL_TOWERS_PREDICTION_MODEL_PATH,
     WHOLE_HISTORY_RATING_PATH,
 )
+from utils.pd import pd
 
 if TYPE_CHECKING:
     from discord_predictions.team import Team

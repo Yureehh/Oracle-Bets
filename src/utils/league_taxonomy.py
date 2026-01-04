@@ -14,7 +14,7 @@ from utils.io_utils import FileLoadError, json_loader
 from utils.paths import LEAGUE_STRENGTH_PRIORS, LEAGUE_TAXONOMY
 
 if TYPE_CHECKING:
-    import pandas as pd
+    from utils.pd import pd
 
 
 @lru_cache(maxsize=1)

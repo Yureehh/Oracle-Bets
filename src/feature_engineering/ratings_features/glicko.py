@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import optuna
-import pandas as pd
 from glicko2 import Glicko2, Rating
 from sklearn.metrics import log_loss
 from tqdm import tqdm
@@ -26,6 +25,7 @@ from utils.paths import (
     ENTITY_GLICKO_HYPERPARAMETERS,
     LEAGUE_ELO,
 )
+from utils.pd import pd
 
 # ----------------------------------------------------------------------
 # Global Config / Constants
@@ -36,7 +36,7 @@ data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
 CROSS_LEAGUE_COMPETITIONS = considered_leagues_config["cross_league_competitions"]
-TRIALS_NUM = 50
+TRIALS_NUM = 25
 
 # Default Glicko-2 parameters (parallel to how Elo had baseline ratings)
 DEFAULT_MU = config.get("glicko2", {}).get("mu", 1500.0)

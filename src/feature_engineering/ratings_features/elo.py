@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import optuna
-import pandas as pd
-from numba import njit
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
@@ -26,6 +24,12 @@ from utils.paths import (
     ENTITY_ELO_HYPERPARAMETERS,
     LEAGUE_ELO,
 )
+from utils.pd import pd
+
+try:
+    from numba import njit
+except Exception:
+    njit = None
 
 # ------------------------------------------------------------------------------
 # Global Config / Constants
@@ -35,7 +39,7 @@ considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 CROSS_COMPETITION_LEAGUES = considered_leagues_config["cross_league_competitions"]
 MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
-TRIALS_NUM = 50
+TRIALS_NUM = 25
 MAX_EXPONENT = 8.0  # To prevent overflow in expected outcome calc
 
 
@@ -132,13 +136,11 @@ def preprocess_elo_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------------------
-# 2. Core Elo Functions
+# 2. Core Elo Functions (Numba-accelerated when available)
 # ------------------------------------------------------------------------------
-@njit
-def expected_outcome(elo_a: float, elo_b: float, elo_divisor: float) -> float:
+def _expected_outcome_py(elo_a: float, elo_b: float, elo_divisor: float) -> float:
     """Expected match outcome between two Elo totals (logistic on Elo gap)."""
     exponent = (elo_b - elo_a) / elo_divisor
-    # clamp exponent to avoid 10**overflow; ±8 gives ample dynamic range
     if exponent > MAX_EXPONENT:
         exponent = MAX_EXPONENT
     elif exponent < -MAX_EXPONENT:
@@ -146,13 +148,19 @@ def expected_outcome(elo_a: float, elo_b: float, elo_divisor: float) -> float:
     return 1.0 / (1.0 + 10.0**exponent)
 
 
-@njit
-def update_elo_rating(
+def _update_elo_py(
     old_elo: float, expected: float, actual_result: float, k_factor: float
 ) -> float:
     """Update Elo rating based on the match result."""
-    adjustment = k_factor * (actual_result - expected)
-    return old_elo + adjustment
+    return old_elo + k_factor * (actual_result - expected)
+
+
+if njit is not None:
+    expected_outcome = njit(cache=True, fastmath=True)(_expected_outcome_py)  # type: ignore[assignment]
+    update_elo_rating = njit(cache=True, fastmath=True)(_update_elo_py)  # type: ignore[assignment]
+else:  # fallback when numba unavailable
+    expected_outcome = _expected_outcome_py
+    update_elo_rating = _update_elo_py
 
 
 def aggregate_team_elo(

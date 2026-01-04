@@ -11,8 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal
 
-import pandas as pd
-
 from feature_engineering.performance_features.entity_stats import (
     enrich_entity_ema_statistics,
 )
@@ -25,6 +23,7 @@ from feature_engineering.performance_features.season_win_rate import (
 from feature_engineering.performance_features.side_win_rate import (
     side_win_rate_ewm_performance,
 )
+from utils.pd import pd
 
 Entity = Literal["player", "team"]
 

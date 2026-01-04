@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
 from utils.io_utils import get_sorting_keys
@@ -20,6 +19,7 @@ from utils.league_taxonomy import (
     get_league_strength_prior,
 )
 from utils.logger import LOG_TOPIC, instantiate_logger, logger
+from utils.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

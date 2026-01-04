@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Literal
 
 import boto3
-import pandas as pd
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
@@ -56,6 +55,7 @@ from utils.paths import (
     TRAINING_TEAM_CONFIG,
     TRAINING_TEAM_CONFIG_COMPACT,
 )
+from utils.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Callable

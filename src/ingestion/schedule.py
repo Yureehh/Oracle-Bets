@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-import pandas as pd
 import requests
 from dateutil import parser
 from dotenv import load_dotenv
@@ -26,6 +25,7 @@ from dotenv import load_dotenv
 from utils.io_utils import safe_store_df_as_parquet
 from utils.logger import LOG_TOPIC, instantiate_logger  # your helper
 from utils.paths import SCHEDULE
+from utils.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

@@ -8,11 +8,11 @@ using an Exponentially Weighted Mean (EWM) model.
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
 from utils.io_utils import get_identity, get_sorting_keys, json_loader
 from utils.paths import DEFAULT_MODELS_PARAMETERS
+from utils.pd import pd
 
 # Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)

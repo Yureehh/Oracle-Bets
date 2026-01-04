@@ -215,7 +215,8 @@ dependencies = [
     { name = "botocore" },
     { name = "numpy" },
     { name = "packaging" },
-    { name = "pandas" },
+    { name = "pandas", version = "2.2.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pandas", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "pyarrow", version = "17.0.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
     { name = "pyarrow", version = "20.0.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "setuptools", marker = "python_full_version >= '3.12'" },
@@ -796,7 +797,8 @@ dependencies = [
     { name = "fsspec" },
     { name = "numpy" },
     { name = "packaging" },
-    { name = "pandas" },
+    { name = "pandas", version = "2.2.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pandas", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b4/66/862da14f5fde4eff2cedc0f51a8dc34ba145088e5041b45b2d57ac54f922/fastparquet-2024.11.0.tar.gz", hash = "sha256:e3b1fc73fd3e1b70b0de254bae7feb890436cb67e99458b88cb9bd3cc44db419", size = 467192, upload-time = "2024-11-15T19:30:10.413Z" }
 wheels = [
@@ -833,6 +835,74 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0a/10/c23352565a6544bdc5353e0b15fc1c563352101f30e24bf500207a54df9a/filelock-3.18.0.tar.gz", hash = "sha256:adbc88eabb99d2fec8c9c1b229b171f18afa655400173ddc653d5d01501fb9f2", size = 18075, upload-time = "2025-03-14T07:11:40.47Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4d/36/2a115987e2d8c300a974597416d9de88f2444426de9571f4b59b2cca3acc/filelock-3.18.0-py3-none-any.whl", hash = "sha256:c401f4f8377c4464e6db25fff06205fd89bdd83b65eb0488ed1b160f780e21de", size = 16215, upload-time = "2025-03-14T07:11:39.145Z" },
+]
+
+[[package]]
+name = "fireducks"
+version = "1.0.11"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+    "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+]
+dependencies = [
+    { name = "firefw", version = "1.0.11", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "numba", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pandas", version = "2.2.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pyarrow", version = "17.0.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+]
+
+[[package]]
+name = "fireducks"
+version = "1.3.3"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.13' and platform_machine != 'x86_64') or (python_full_version >= '3.13' and sys_platform != 'darwin')",
+    "(python_full_version == '3.12.*' and platform_machine != 'x86_64') or (python_full_version == '3.12.*' and sys_platform != 'darwin')",
+    "(python_full_version < '3.12' and platform_machine != 'x86_64') or (python_full_version < '3.12' and sys_platform != 'darwin')",
+]
+dependencies = [
+    { name = "firefw", version = "1.3.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
+    { name = "pandas", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
+    { name = "pyarrow", version = "20.0.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/b4/3379623fce12090f970f95c5769cae1dcb2214d1a3a3871ccad502233556/fireducks-1.3.3-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:8186da84f90ddd7a2514f3af01ef732c7d8ebdd05e5bf54ee48abe50c02b4ec5", size = 6697154, upload-time = "2025-07-29T01:30:14.227Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/f3/1defda1d722260c66f2050c05f67e324ea70c3c706d8b2a1a7c3569f0ff9/fireducks-1.3.3-cp311-cp311-manylinux_2_17_x86_64.whl", hash = "sha256:be82285946ba7b1469d1d1678354bc79dd29f959e0515622f4c086a244e4317c", size = 7668646, upload-time = "2025-07-29T01:30:17.088Z" },
+    { url = "https://files.pythonhosted.org/packages/01/b8/b779e934621e87937dc49e06ce5cb1ab2c29634d791a194f2668e594cd8d/fireducks-1.3.3-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:4bed50b77ea7427e75a93811db64540602bf6fa2f21d1b56bebcd559d28bec04", size = 7738192, upload-time = "2025-07-29T01:30:20.112Z" },
+    { url = "https://files.pythonhosted.org/packages/38/04/d6e514ebd622053c0e17321c37d74fc8f64b8c8dfab21f5453f9d964db3c/fireducks-1.3.3-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:a94199d51ac07808b3c73d82e06898ebd143a6757ebc098c89e159398c3d3634", size = 6701547, upload-time = "2025-07-29T01:30:23.281Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/2a/90ad6cad339b8619d7aebf896a1f0fe8c5c01620b306055dd033ec04b726/fireducks-1.3.3-cp312-cp312-manylinux_2_17_x86_64.whl", hash = "sha256:3e55e311b1820644a63333ef96b8bf9d2d6314b0c69c093329916210c494b072", size = 7669051, upload-time = "2025-07-29T01:30:26.218Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/f1/d0276aa092922a20fe1ce2d9dc272bd35b3336fbfccaa3e2f0ae0b513738/fireducks-1.3.3-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:fbe71802330ea1d5f78bfe596a12201d1ab8608ccaf1221c28d357beb5ec78f7", size = 7733029, upload-time = "2025-07-29T01:30:29.221Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/29/03164e597824b03c090d078550cf9f81b7374c09b947c6776ba273a940b6/fireducks-1.3.3-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:9749776e867e4246e2989354551e4bcff204a3b6edda83a7027eadbd1a648dd2", size = 6701477, upload-time = "2025-07-29T01:30:31.973Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/3e/05ef94b84d4e9c5845ec11193a531ad2a71976078aa716497f1f09f040d3/fireducks-1.3.3-cp313-cp313-manylinux_2_17_x86_64.whl", hash = "sha256:f4e05fcc6864cb7c2a7c6d311404d84db92acf46fd16c86626d59fc2b2a56dbf", size = 7669941, upload-time = "2025-07-29T01:30:35.026Z" },
+    { url = "https://files.pythonhosted.org/packages/18/ab/a44a65a4393863974c78f283d747428c360199232de34a25f73ad71240aa/fireducks-1.3.3-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:6414ed6a3b77c979bb8587f52435c460dbcb63c5aacebb90d83bf424e0ae1a1d", size = 7734200, upload-time = "2025-07-29T01:30:37.962Z" },
+]
+
+[[package]]
+name = "firefw"
+version = "1.0.11"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+    "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/df/299dc2ebc4f54effd4f3b79008b53e449ecf29d822b1778ac086b10b3ff9/firefw-1.0.11-py3-none-any.whl", hash = "sha256:af0dcf35bb3c92fdbc611fb3b6f3ba11eeb71c74dc7904ea76e4c11c2cec4b2b", size = 12681, upload-time = "2024-11-11T23:31:12.807Z" },
+]
+
+[[package]]
+name = "firefw"
+version = "1.3.3"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.13' and platform_machine != 'x86_64') or (python_full_version >= '3.13' and sys_platform != 'darwin')",
+    "(python_full_version == '3.12.*' and platform_machine != 'x86_64') or (python_full_version == '3.12.*' and sys_platform != 'darwin')",
+    "(python_full_version < '3.12' and platform_machine != 'x86_64') or (python_full_version < '3.12' and sys_platform != 'darwin')",
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/18/4f/33a216e55aa335c03adfaaa3d8282eb3142418ea5100223e66667ffe516c/firefw-1.3.3-py3-none-any.whl", hash = "sha256:561b95476a2100c9b18b77f13bf8d7f899d34950b2ecb950f7cc3b56b653aaa0", size = 12985, upload-time = "2025-07-29T01:30:49.782Z" },
 ]
 
 [[package]]
@@ -1339,13 +1409,16 @@ dependencies = [
     { name = "boto3" },
     { name = "discord" },
     { name = "fastparquet" },
+    { name = "fireducks", version = "1.0.11", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "fireducks", version = "1.3.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "glicko2" },
     { name = "lightgbm" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "openskill" },
     { name = "optuna" },
-    { name = "pandas" },
+    { name = "pandas", version = "2.2.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pandas", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "plotly" },
     { name = "polars" },
     { name = "python-dotenv" },
@@ -1383,6 +1456,7 @@ requires-dist = [
     { name = "coverage", marker = "extra == 'dev'", specifier = ">=7.4.4,<8.0.0" },
     { name = "discord", specifier = ">=2.3.2,<3.0.0" },
     { name = "fastparquet", specifier = ">=2024.5.0,<2025.0.0" },
+    { name = "fireducks", specifier = ">=1.0.11" },
     { name = "glicko2", git = "https://github.com/sublee/glicko2.git" },
     { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.29.4,<7.0.0" },
     { name = "lightgbm", specifier = ">=4.4.0,<5.0.0" },
@@ -1830,13 +1904,41 @@ wheels = [
 
 [[package]]
 name = "pandas"
+version = "2.2.3"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+    "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
+]
+dependencies = [
+    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "python-dateutil", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pytz", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "tzdata", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9c/d6/9f8431bacc2e19dca897724cd097b1bb224a6ad5433784a44b587c7c13af/pandas-2.2.3.tar.gz", hash = "sha256:4f18ba62b61d7e192368b84517265a99b4d7ee8912f8708660fb4a366cc82667", size = 4399213, upload-time = "2024-09-20T13:10:04.827Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/44/d9502bf0ed197ba9bf1103c9867d5904ddcaf869e52329787fc54ed70cc8/pandas-2.2.3-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:66108071e1b935240e74525006034333f98bcdb87ea116de573a6a0dccb6c039", size = 12602222, upload-time = "2024-09-20T13:08:56.254Z" },
+    { url = "https://files.pythonhosted.org/packages/17/a3/fb2734118db0af37ea7433f57f722c0a56687e14b14690edff0cdb4b7e58/pandas-2.2.3-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:b1d432e8d08679a40e2a6d8b2f9770a5c21793a6f9f47fdd52c5ce1948a5a8a9", size = 12529893, upload-time = "2024-09-20T13:09:09.655Z" },
+    { url = "https://files.pythonhosted.org/packages/64/22/3b8f4e0ed70644e85cfdcd57454686b9057c6c38d2f74fe4b8bc2527214a/pandas-2.2.3-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:f00d1345d84d8c86a63e476bb4955e46458b304b9575dcf71102b5c705320015", size = 12477643, upload-time = "2024-09-20T13:09:25.522Z" },
+    { url = "https://files.pythonhosted.org/packages/76/a3/a5d88146815e972d40d19247b2c162e88213ef51c7c25993942c39dbf41d/pandas-2.2.3-cp313-cp313t-macosx_10_13_x86_64.whl", hash = "sha256:3b71f27954685ee685317063bf13c7709a7ba74fc996b84fc6821c59b0f06468", size = 12615650, upload-time = "2024-09-20T13:09:38.685Z" },
+]
+
+[[package]]
+name = "pandas"
 version = "2.3.1"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.13' and platform_machine != 'x86_64') or (python_full_version >= '3.13' and sys_platform != 'darwin')",
+    "(python_full_version == '3.12.*' and platform_machine != 'x86_64') or (python_full_version == '3.12.*' and sys_platform != 'darwin')",
+    "(python_full_version < '3.12' and platform_machine != 'x86_64') or (python_full_version < '3.12' and sys_platform != 'darwin')",
+]
 dependencies = [
-    { name = "numpy" },
-    { name = "python-dateutil" },
-    { name = "pytz" },
-    { name = "tzdata" },
+    { name = "numpy", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
+    { name = "python-dateutil", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
+    { name = "pytz", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
+    { name = "tzdata", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d1/6f/75aa71f8a14267117adeeed5d21b204770189c0a0025acbdc03c337b28fc/pandas-2.3.1.tar.gz", hash = "sha256:0a95b9ac964fe83ce317827f80304d37388ea77616b1425f0ae41c9d2d0d7bb2", size = 4487493, upload-time = "2025-07-07T19:20:04.079Z" }
 wheels = [
@@ -2732,7 +2834,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
-    { name = "pandas" },
+    { name = "pandas", version = "2.2.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pandas", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/86/59/a451d7420a77ab0b98f7affa3a1d78a313d2f7281a57afb1a34bae8ab412/seaborn-0.13.2.tar.gz", hash = "sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7", size = 1457696, upload-time = "2024-01-25T13:21:52.551Z" }
 wheels = [
@@ -2757,7 +2860,8 @@ dependencies = [
     { name = "numba" },
     { name = "numpy" },
     { name = "packaging" },
-    { name = "pandas" },
+    { name = "pandas", version = "2.2.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pandas", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "slicer" },
@@ -2876,7 +2980,8 @@ dependencies = [
     { name = "gitpython" },
     { name = "numpy" },
     { name = "packaging" },
-    { name = "pandas" },
+    { name = "pandas", version = "2.2.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "pandas", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "pillow" },
     { name = "protobuf" },
     { name = "pyarrow", version = "17.0.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },

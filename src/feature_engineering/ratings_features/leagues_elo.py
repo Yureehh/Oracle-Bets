@@ -12,7 +12,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import optuna
-import pandas as pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
@@ -30,6 +29,7 @@ from utils.paths import (
     LEAGUES_ELO_HYPERPARAMETERS,
     TEAM_LEAGUES_MAPPING,
 )
+from utils.pd import pd
 
 # ----------------------------------------------------------------------
 # Global Config / Constants
@@ -39,7 +39,7 @@ CROSS_LEAGUE_COMPETITIONS = set(considered_leagues_config["cross_league_competit
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 ROWS_PER_TEAM = 2  # one per side
-TRIALS_NUM = 50
+TRIALS_NUM = 25
 MAX_EXPONENT = 8.0  # clamp for expected outcome stability
 
 
@@ -138,25 +138,12 @@ def map_team_to_league(
 
 
 # ----------------------------------------------------------------------
-# Core Elo helpers
+# Core Elo helpers (re-use Elo module, numba-accelerated when available)
 # ----------------------------------------------------------------------
-def expected_outcome(elo_a: float, elo_b: float, elo_divisor: float) -> float:
-    """
-    Calculate the expected match outcome between two aggregated Elo ratings with clamped exponent.
-    """
-    exponent = (elo_b - elo_a) / elo_divisor
-    if exponent > MAX_EXPONENT:
-        exponent = MAX_EXPONENT
-    elif exponent < -MAX_EXPONENT:
-        exponent = -MAX_EXPONENT
-    return 1.0 / (1.0 + 10.0**exponent)
-
-
-def update_elo_rating(
-    old_elo: float, expected: float, actual_result: float, k_factor: float
-) -> float:
-    """Update Elo rating based on match result."""
-    return old_elo + k_factor * (actual_result - expected)
+from feature_engineering.ratings_features.elo import (
+    expected_outcome,
+    update_elo_rating,
+)
 
 
 def linear_decay_reset_leagues_elo(
@@ -263,7 +250,7 @@ def merge_wide_results_back(
     ]
     df_tall = pd.concat([df_blue[keep_cols], df_red[keep_cols]], ignore_index=True)
 
-    merged = pd.merge(  # noqa: PD015
+    merged = pd.merge(
         df,
         df_tall,
         on=["date", "gameid", "season", "side"],

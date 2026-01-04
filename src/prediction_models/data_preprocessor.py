@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
-
 from utils.io_utils import json_loader
 from utils.logger import logger
 from utils.paths import TARGET_FEATURES
+from utils.pd import pd
 
 
 class DataPreprocessor:
@@ -116,9 +115,7 @@ class DataPreprocessor:
         )
 
         # Wide pivot via unstack on 'position'
-        wide = base.unstack(  # noqa: PD010
-            "position"
-        )  # MultiIndex columns: (col, position)
+        wide = base.unstack("position")  # MultiIndex columns: (col, position)
         # Normalize columns to "<pos>_<col>"
         wide.columns = [f"{pos}_{col}" for col, pos in wide.columns.to_flat_index()]
         self.player_data = wide.reset_index()

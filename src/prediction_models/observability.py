@@ -20,7 +20,6 @@ from typing import Any
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import scipy.stats as st
 import seaborn as sns
 import shap
@@ -39,6 +38,7 @@ from sklearn.metrics import (
 
 from utils.logger import logger
 from utils.paths import FIGURES_DIR, INSIGHTS_DIR, PROCESSED_TEAMS
+from utils.pd import pd
 
 sns.set_style("darkgrid")
 
@@ -563,7 +563,7 @@ class MLObservabilityMixin:
                         if y_proba is not None:
                             yp_prob = y_proba.loc[idx]
                             # Only compute AUC if both classes are present
-                            if yt.nunique() > 1:  # noqa: PD101
+                            if yt.nunique() > 1:
                                 row["roc_auc"] = float(roc_auc_score(yt, yp_prob))
                     else:
                         yp_f = yp.astype(float)

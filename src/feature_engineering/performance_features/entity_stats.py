@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-import pandas as pd
 from tqdm import tqdm
 
 from ingestion.oracles_elixir import get_opponent
@@ -22,6 +21,7 @@ from utils.paths import (
     FLATTENED_PLAYER_CONFIG,
     FLATTENED_TEAM_CONFIG,
 )
+from utils.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

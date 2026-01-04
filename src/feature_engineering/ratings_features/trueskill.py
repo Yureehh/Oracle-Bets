@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import optuna
-import pandas as pd
 import trueskill
 from sklearn.metrics import log_loss
 from tqdm import tqdm
@@ -30,6 +29,7 @@ from utils.paths import (
     ENTITY_TRUESKILL_HYPERPARAMETERS,
     LEAGUE_ELO,
 )
+from utils.pd import pd
 
 # ------------------------------------------------------------------------------
 # 1. Global Config / Constants
@@ -41,7 +41,7 @@ DEFAULT_SIGMA = float(ts_config.get("sigma", 8.333))
 DEFAULT_BETA = float(
     ts_config.get("beta", DEFAULT_SIGMA / 2)
 )  # common rule: beta ~ sigma/2
-TRIALS_NUM = 50
+TRIALS_NUM = 25
 MIN_FLOAT = 1e-9  # For float comparisons
 
 considered_leagues_config = json_loader(CONSIDERED_LEAGUES)

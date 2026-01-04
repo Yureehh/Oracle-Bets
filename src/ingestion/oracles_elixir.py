@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import awswrangler as wr
-import pandas as pd
 from dotenv import load_dotenv
 
 from utils.io_utils import FileLoadError, get_sorting_keys, json_loader
@@ -31,6 +30,7 @@ from utils.paths import (
     IMPORT_COLUMNS,
     TEAM_REPLACEMENTS_AND_INVALID_GAMES,
 )
+from utils.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

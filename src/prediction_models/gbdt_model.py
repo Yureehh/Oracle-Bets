@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import pandas as pd
 from pandas.api.types import is_numeric_dtype
 from sklearn.metrics import (
     accuracy_score,
@@ -41,6 +40,7 @@ from prediction_models.data_preprocessor import DataPreprocessor
 from prediction_models.observability import MLObservabilityMixin
 from utils.logger import logger
 from utils.paths import FIGURES_DIR, INSIGHTS_DIR, MODEL_ARTIFACTS, PROCESSED_TEAMS
+from utils.pd import pd
 
 if TYPE_CHECKING:
     from pathlib import Path
