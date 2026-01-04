@@ -7,7 +7,7 @@ Key configuration files live under `config/`.
 - `config/data_ingestion/import_columns.json` - columns to load from Oracle's Elixir.
 - `config/data_ingestion/team_name_replacements_and_invalid_games.json` - data cleanup rules.
 - `config/data_ingestion/considered_leagues.json` - leagues, taxonomy, and tiers.
-- `config/data_ingestion/league_prior_settings.json` - league prior calibration.
+- `config/data_ingestion/league_taxonomy.json` - league taxonomy + prior calibration settings.
 - `config/data_ingestion/extras/teams_by_league.json` - generated team lists by league.
 - `config/data_ingestion/extras/filtered_teams_by_league.json` - generated team lists filtered to considered leagues.
 

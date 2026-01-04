@@ -125,7 +125,7 @@ def apply_ema(df: pd.DataFrame, identity: str, columns: Iterable[str]) -> pd.Dat
     for col in tqdm(list(columns), desc="Calculating EMA"):
         grp = out.groupby(identity, sort=False, observed=True)[col]
         ema_after = grp.transform(_ema)
-        ema_before = ema_after.shift()
+        ema_before = ema_after.groupby(out[identity], sort=False).shift()
 
         new_cols[f"ema_{col}_after"] = ema_after
         new_cols[f"ema_{col}_before"] = ema_before

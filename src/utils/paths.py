@@ -72,7 +72,7 @@ TEAM_REPLACEMENTS_AND_INVALID_GAMES: Final = (
     DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
 )
 CONSIDERED_LEAGUES: Final = DATA_INGESTION_DIR / "considered_leagues.json"
-LEAGUE_PRIOR_SETTINGS: Final = DATA_INGESTION_DIR / "league_prior_settings.json"
+LEAGUE_TAXONOMY: Final = DATA_INGESTION_DIR / "league_taxonomy.json"
 
 # --------------------------------------------------------------------------- #
 # Concrete data artefacts

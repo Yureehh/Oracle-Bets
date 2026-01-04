@@ -17,12 +17,15 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
-from utils.league_taxonomy import get_config_strength_prior, get_league_taxonomy
+from utils.league_taxonomy import (
+    get_league_strength_prior,
+    get_league_taxonomy,
+    get_prior_settings,
+)
 from utils.logger import LOG_TOPIC, instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
     LEAGUE_ELO,
-    LEAGUE_PRIOR_SETTINGS,
     LEAGUE_STRENGTH_PRIORS,
     LEAGUES_ELO_HYPERPARAMETERS,
     TEAM_LEAGUES_MAPPING,
@@ -607,8 +610,8 @@ def process_elo_for_row(
 
     blue_before = float(league_elo_ratings[blue_league]["elo"])
     red_before = float(league_elo_ratings[red_league]["elo"])
-    blue_prior = get_config_strength_prior(blue_league)
-    red_prior = get_config_strength_prior(red_league)
+    blue_prior = get_league_strength_prior(blue_league)
+    red_prior = get_league_strength_prior(red_league)
 
     if blue_league != red_league:
         exp_blue = expected_outcome(blue_before, red_before, elo_divisor)
@@ -723,8 +726,8 @@ def store_leagues_elo(
 def store_league_strength_priors(league_elo_df: pd.DataFrame) -> None:
     """
     Derive league strength priors from the league Elo table and persist to JSON.
-    Defaults can be tuned in config/data_ingestion/league_prior_settings.json
-    (including `calibration_mode`: "global" or "tiered").
+    Defaults can be tuned in config/data_ingestion/league_taxonomy.json
+    (field: prior_settings; including `calibration_mode`: "global" or "tiered").
     """
     settings = {
         "prior_scale": 0.25,
@@ -732,7 +735,7 @@ def store_league_strength_priors(league_elo_df: pd.DataFrame) -> None:
         "calibration_mode": "global",
     }
     with contextlib.suppress(FileNotFoundError):
-        cfg = json_loader(LEAGUE_PRIOR_SETTINGS)
+        cfg = get_prior_settings()
         settings["prior_scale"] = float(cfg.get("prior_scale", settings["prior_scale"]))
         settings["max_abs_prior"] = float(
             cfg.get("max_abs_prior", settings["max_abs_prior"])

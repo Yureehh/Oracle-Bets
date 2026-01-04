@@ -36,11 +36,7 @@ from feature_engineering.ratings_features.trueskill import (
 )
 from prediction_models.gbdt_model import GradientBoostingModel
 from utils.io_utils import load_model
-from utils.league_taxonomy import (
-    get_config_strength_prior,
-    get_league_strength_prior,
-    get_league_taxonomy,
-)
+from utils.league_taxonomy import get_league_strength_prior, get_league_taxonomy
 from utils.paths import (
     GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES,
     GAMELENGTH_PREDICTION_FINAL_FEATURES,
@@ -330,8 +326,8 @@ class MatchPredictor:
         """
         t1_league = self._resolve_team_league(team1_id)
         t2_league = self._resolve_team_league(team2_id)
-        e1 = self._resolve_league_elo(t1_league) + get_config_strength_prior(t1_league)
-        e2 = self._resolve_league_elo(t2_league) + get_config_strength_prior(t2_league)
+        e1 = self._resolve_league_elo(t1_league) + get_league_strength_prior(t1_league)
+        e2 = self._resolve_league_elo(t2_league) + get_league_strength_prior(t2_league)
         prob = _elo_prob(e1, e2)
         return round(float(prob), RATING_DECIMALS)
 

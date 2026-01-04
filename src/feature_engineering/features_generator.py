@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from ingestion.oracles_elixir import get_opponent
+from utils.io_utils import get_sorting_keys
 from utils.league_taxonomy import (
     add_league_taxonomy_columns,
     get_league_strength_prior,
@@ -133,30 +134,49 @@ class FeatureGenerator:
         req = {"playerid", "season", "patch", "result", "kills", "deaths", "date"}
         _check_required(data, required=req)
 
-        df = data.copy().sort_values(["playerid", "date"], kind="mergesort")
+        df = (
+            data.copy()
+            .sort_values(["playerid", "date"], kind="mergesort")
+            .reset_index(drop=True)
+        )
+        if not pd.api.types.is_numeric_dtype(df["result"]):
+            valmap = {
+                "W": 1,
+                "Win": 1,
+                "win": 1,
+                "Won": 1,
+                "won": 1,
+                True: 1,
+                "L": 0,
+                "Loss": 0,
+                "loss": 0,
+                "Lose": 0,
+                "lose": 0,
+                False: 0,
+            }
+            df["result"] = df["result"].map(valmap).astype("float64")
 
-        def _add_expanding(by: list[str], scope: str) -> None:
+        def _prev_avg(by: list[str], metric: str, result_value: int) -> pd.Series:
+            mask = df["result"].eq(result_value)
+            grp = df.groupby(by, sort=False, observed=True)
+
+            prev_sum = grp[metric].transform(
+                lambda s: s.where(mask.loc[s.index], 0.0).cumsum().shift()
+            )
+            prev_count = grp["result"].transform(
+                lambda s: s.eq(result_value).cumsum().shift()
+            )
+            return prev_sum.div(prev_count.replace(0, np.nan))
+
+        for scope, group_cols in (
+            ("season", ["playerid", "season"]),
+            ("patch", ["playerid", "patch"]),
+        ):
             for metric in ("kills", "deaths"):
-                grp = df.groupby([*by, "result"], observed=True)[metric]
-                shifted_mean = (
-                    grp.cumsum().shift().div(grp.cumcount().replace(0, np.nan))
-                )
+                df[f"{metric}_prev_avg_{scope}_win"] = _prev_avg(group_cols, metric, 1)
+                df[f"{metric}_prev_avg_{scope}_loss"] = _prev_avg(group_cols, metric, 0)
 
-                win_col = f"{metric}_prev_avg_{scope}_win"
-                loss_col = f"{metric}_prev_avg_{scope}_loss"
-
-                df[win_col] = np.where(df["result"] == 1, shifted_mean, df.get(win_col))
-                df[loss_col] = np.where(
-                    df["result"] == 0, shifted_mean, df.get(loss_col)
-                )
-
-        _add_expanding(["playerid", "season"], "season")
-        _add_expanding(["playerid", "patch"], "patch")
-
-        # Propagate NaNs so every row has both win & loss histories where possible
-        pd.set_option("future.no_silent_downcasting", True)
-        df = df.ffill().bfill()
-        return df.infer_objects(copy=False)  # TODO: what does this do?
+        return df
 
     # ── 3. Public player-feature pipeline ────────────────────────────────
     @staticmethod
@@ -247,6 +267,7 @@ class FeatureGenerator:
         )
 
         df = data.copy()
+        df = df.sort_values(get_sorting_keys("team")).reset_index(drop=True)
         df = add_league_taxonomy_columns(df, league_col="league")
         df["season"] = df["patch"].astype(str).str.split(".").str[0]
         df["league_strength_prior_calibrated"] = df["league"].map(

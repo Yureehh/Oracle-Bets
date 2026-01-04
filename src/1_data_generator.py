@@ -35,8 +35,12 @@ from feature_engineering.performance_features.performance_metrics import (
     PerformanceMetrics,
 )
 from feature_engineering.ratings_features.rating_models import Ratings
-from ingestion.oracles_elixir import OraclesElixir
+from ingestion.oracles_elixir import OraclesElixir, get_opponent
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
+from utils.league_taxonomy import (
+    get_league_strength_prior,
+    refresh_league_taxonomy_cache,
+)
 from utils.logger import LOG_TOPIC, instantiate_logger, logger
 from utils.paths import (
     FLATTENED_PLAYER_CONFIG,
@@ -175,6 +179,7 @@ class DataGenerator:
         _dbl("Adding ratings …")
         # League ELO for teams first (writes league artefacts used by other models)
         self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
+        self._refresh_calibrated_league_priors()
         # Player + Team ratings, in parallel per model
         for fn in (
             self.rating_models.compute_elo,
@@ -185,6 +190,25 @@ class DataGenerator:
             self.team_data, self.player_data = _parallelise(
                 fn, self.team_data, self.player_data
             )
+
+    def _refresh_calibrated_league_priors(self) -> None:
+        """
+        Recompute calibrated league priors after league Elo is written to disk.
+        Ensures the in-memory columns use the newest calibrated mapping.
+        """
+        refresh_league_taxonomy_cache()
+        df = (
+            self.team_data.sort_values(get_sorting_keys("team"))
+            .reset_index(drop=True)
+            .copy()
+        )
+        df["league_strength_prior_calibrated"] = df["league"].map(
+            get_league_strength_prior
+        )
+        df["opp_league_strength_prior_calibrated"] = get_opponent(
+            df["league_strength_prior_calibrated"].tolist(), entity="team"
+        )
+        self.team_data = df
 
     def _enrich_performance(self) -> None:
         _dbl("Adding performance metrics …")

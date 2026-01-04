@@ -11,7 +11,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from utils.io_utils import FileLoadError, json_loader
-from utils.paths import CONSIDERED_LEAGUES, LEAGUE_STRENGTH_PRIORS
+from utils.paths import LEAGUE_STRENGTH_PRIORS, LEAGUE_TAXONOMY
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -19,11 +19,10 @@ if TYPE_CHECKING:
 
 @lru_cache(maxsize=1)
 def _load_taxonomy() -> dict[str, Any]:
-    data: dict[str, Any] = json_loader(CONSIDERED_LEAGUES)
-    taxonomy = data.get("league_taxonomy", {})
-    taxonomy.setdefault("defaults", {})
-    taxonomy.setdefault("leagues", {})
-    return taxonomy
+    data: dict[str, Any] = json_loader(LEAGUE_TAXONOMY)
+    data.setdefault("defaults", {})
+    data.setdefault("leagues", {})
+    return data
 
 
 @lru_cache(maxsize=1)
@@ -33,6 +32,22 @@ def _load_strength_priors() -> dict[str, float]:
     except FileLoadError:
         return {}
     return {str(k): float(v) for k, v in priors.items()}
+
+
+def refresh_league_taxonomy_cache() -> None:
+    """Clear cached league taxonomy + calibrated priors (useful after regen)."""
+    _load_taxonomy.cache_clear()
+    _load_strength_priors.cache_clear()
+
+
+def get_prior_settings() -> dict[str, Any]:
+    """Return calibration settings stored alongside league taxonomy."""
+    try:
+        taxonomy = _load_taxonomy()
+    except FileLoadError:
+        return {}
+    settings = taxonomy.get("prior_settings", {})
+    return settings if isinstance(settings, dict) else {}
 
 
 def get_league_taxonomy(league: str | None) -> dict[str, Any]:
