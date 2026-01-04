@@ -81,13 +81,16 @@ def process_game_group(
     games_batch = []
     blue_rows = group[group["side"] == "Blue"]
     red_rows = group[group["side"] == "Red"]
+    if "position" in group.columns:
+        blue_rows = blue_rows.sort_values("position")
+        red_rows = red_rows.sort_values("position")
 
     for blue_row, red_row in zip(
         blue_rows.itertuples(), red_rows.itertuples(), strict=False
     ):
         result = blue_row.result
-        blue_id = blue_row.entity_column
-        red_id = red_row.entity_column
+        blue_id = getattr(blue_row, entity_column)
+        red_id = getattr(red_row, entity_column)
         game_date = blue_row.date.strftime("%Y%m%d%H%M%S")
 
         game_data = format_game_data(blue_id, red_id, result, game_date)
@@ -180,6 +183,23 @@ def calculate_whr(
 
     sort_keys = get_sorting_keys(entity)
     df_sorted = df.sort_values(by=sort_keys).reset_index(drop=True)
+
+    if not pd.api.types.is_numeric_dtype(df_sorted["result"]):
+        valmap = {
+            "W": 1,
+            "Win": 1,
+            "win": 1,
+            "Won": 1,
+            "won": 1,
+            True: 1,
+            "L": 0,
+            "Loss": 0,
+            "loss": 0,
+            "Lose": 0,
+            "lose": 0,
+            False: 0,
+        }
+        df_sorted["result"] = df_sorted["result"].map(valmap).astype("float64")
 
     # Initialize columns for WHR ratings
     rating_columns = [

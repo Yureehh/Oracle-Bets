@@ -22,6 +22,7 @@
 
     "ema_dpm_before",
     "ema_damageshare_before",
+    "ema_earnedgoldshare_before",
 
     "ema_cspm_before",
     "ema_egpm_before",

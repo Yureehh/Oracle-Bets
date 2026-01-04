@@ -3,6 +3,8 @@
     "date",
     "league",
     "patch",
+    "playoffs",
+    "game",
     "season",
     "league_region",
     "league_tier",

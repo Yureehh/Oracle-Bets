@@ -101,6 +101,8 @@ class DataPreprocessor:
         numeric_cols = self.player_data.select_dtypes(
             include=["number"]
         ).columns.tolist()
+        # Never pivot per-player match outcomes into features
+        numeric_cols = [c for c in numeric_cols if c != "result"]
         if not numeric_cols:
             msg = "No numeric columns found in player data to pivot."
             raise ValueError(msg)

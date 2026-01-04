@@ -8,6 +8,7 @@
     "gameid",
     "side",
     "position",
+    "result",
 
     "elo_win_likelihood",
     "glicko2_win_likelihood",
@@ -19,6 +20,8 @@
     "ema_kills_before",
     "ema_deaths_before",
     "ema_assists_before",
+    "ema_doublekills_before",
+    "ema_pentakills_before",
     "ema_total_cs_before",
 
     "ema_kda_before",
@@ -30,6 +33,7 @@
 
     "ema_dpm_before",
     "ema_damageshare_before",
+    "ema_earnedgoldshare_before",
     "ema_damagetakenperminute_before",
     "ema_damagemitigatedperminute_before",
     "ema_damagetotowers_before",

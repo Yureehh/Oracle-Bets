@@ -27,6 +27,8 @@
     "ema_kills_after",
     "ema_deaths_after",
     "ema_assists_after",
+    "ema_doublekills_after",
+    "ema_pentakills_after",
     "ema_total_cs_after",
 
     "ema_kda_after",
@@ -38,6 +40,7 @@
 
     "ema_dpm_after",
     "ema_damageshare_after",
+    "ema_earnedgoldshare_after",
     "ema_damagetakenperminute_after",
     "ema_damagemitigatedperminute_after",
     "ema_damagetotowers_after",

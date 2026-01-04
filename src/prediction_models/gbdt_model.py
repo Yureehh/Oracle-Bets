@@ -99,6 +99,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             "season",
             "patch",
             "date",
+            "playoffs",
+            "game",
             "result",  # typical classification target name
         ]
 

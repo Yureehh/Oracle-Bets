@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -87,36 +87,62 @@ class OraclesElixir:
         else:
             year_list = [int(y) for y in years]
 
-        s3_paths = [
-            f"s3://{self.bucket}/{y}_LoL_esports_match_data_from_OraclesElixir.csv"
+        s3_paths = {
+            y: f"s3://{self.bucket}/{y}_LoL_esports_match_data_from_OraclesElixir.csv"
             for y in year_list
-        ]
+        }
 
         logger.info("Connecting to S3 bucket")
         data_pipeline_logger.info("Connecting to S3 bucket")
 
-        try:
-            with ThreadPoolExecutor() as pool:
-                frames = list(
-                    pool.map(
-                        lambda p: wr.s3.read_csv(
-                            p, boto3_session=self.session, low_memory=False
-                        ),  # type: ignore[arg-type]
-                        s3_paths,
+        results: dict[int, pd.DataFrame] = {}
+        missing: list[int] = []
+        with ThreadPoolExecutor() as pool:
+            futures = {
+                pool.submit(
+                    wr.s3.read_csv,
+                    path,
+                    boto3_session=self.session,
+                    low_memory=False,
+                ): year
+                for year, path in s3_paths.items()
+            }
+            for fut in as_completed(futures):
+                year = futures[fut]
+                path = s3_paths[year]
+                try:
+                    results[year] = fut.result()
+                except Exception as exc:
+                    if isinstance(exc, (FileNotFoundError, wr.exceptions.NoFilesFound)):
+                        missing.append(year)
+                        logger.warning(
+                            "No file found for year %s at %s; skipping.", year, path
+                        )
+                        data_pipeline_logger.warning(
+                            "No file found for year %s at %s; skipping.", year, path
+                        )
+                        continue
+                    logger.error("Failed to ingest data for year %s: %s", year, exc)
+                    data_pipeline_logger.exception(
+                        "Failed to ingest data for year %s.", year
                     )
-                )
-            df = pd.concat(frames, ignore_index=True)
-            logger.info("Successfully ingested data for years: %s", year_list)
-            data_pipeline_logger.info(
-                "Successfully ingested data for years: %s", year_list
-            )
-            return df
-        except Exception:
-            logger.error("Failed to ingest data for years: %s", year_list)
-            data_pipeline_logger.exception(
-                "Failed to ingest data for years: %s", year_list
-            )
-            raise  # propagate – caller decides how to recover
+                    raise
+
+        if not results:
+            msg = f"No Oracle Elixir files found for years: {year_list}"
+            logger.error(msg)
+            data_pipeline_logger.error(msg)
+            raise OraclesElixirError(msg)
+
+        frames = [results[y] for y in year_list if y in results]
+        df = pd.concat(frames, ignore_index=True)
+        loaded = [y for y in year_list if y in results]
+        logger.info("Successfully ingested data for years: %s", loaded)
+        data_pipeline_logger.info("Successfully ingested data for years: %s", loaded)
+        if missing:
+            logger.warning("Skipped missing years: %s", missing)
+            data_pipeline_logger.warning("Skipped missing years: %s", missing)
+        return df
 
     # --------------------------------------------------------------------- #
     # Formatting & basic cleaning

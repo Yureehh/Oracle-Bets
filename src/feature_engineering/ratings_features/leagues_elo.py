@@ -169,7 +169,9 @@ def linear_decay_reset_leagues_elo(
     Apply linear decay reset to league Elo ratings at the beginning of a new season.
     Returns a *new* dictionary with the updated Elo ratings.
     """
-    updated_elo_ratings: dict[str, dict[str, float | int]] = {}
+    updated_elo_ratings: dict[str, dict[str, float | int]] = defaultdict(
+        lambda: {"elo": baseline, "season": current_season}
+    )
     for league, data in elo_ratings.items():
         updated = dict(data)
         if int(data.get("season", current_season)) < current_season:
