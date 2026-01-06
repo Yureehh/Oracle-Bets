@@ -30,7 +30,7 @@ from utils.pd import pd
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-schedule_logger = instantiate_logger(LOG_TOPIC.SCHEDULE_GENERATION)
+schedule_logger = instantiate_logger(LOG_TOPIC.data_generation.schedule_GENERATION)
 
 # --------------------------------------------------------------------------- #
 # Exceptions

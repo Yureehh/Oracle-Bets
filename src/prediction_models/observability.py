@@ -56,6 +56,7 @@ class MLObservabilityMixin:
       - self.model_name: str
       - self.problem_type: str
       - self.directory: Path
+      - self.run_id: str  (optional; defaults to "default" if absent)
     """
 
     # ────────────────────────── internal helpers ────────────────────────── #
@@ -70,6 +71,27 @@ class MLObservabilityMixin:
             return pd.read_parquet(path, engine="fastparquet")
         except (ImportError, ValueError):
             return pd.read_parquet(path)
+
+    # Unified artifact locations (per-model / per-run)
+    @property
+    def fig_dir(self) -> Path:
+        run_id = getattr(self, "run_id", "default")
+        return FIGURES_DIR / self.model_name / run_id
+
+    @property
+    def insight_dir(self) -> Path:
+        run_id = getattr(self, "run_id", "default")
+        return INSIGHTS_DIR / self.model_name / run_id
+
+    def fig_path(self, filename: str) -> Path:
+        path = self.fig_dir / filename
+        self._ensure_dir(path)
+        return path
+
+    def insight_path(self, filename: str) -> Path:
+        path = self.insight_dir / filename
+        self._ensure_dir(path)
+        return path
 
     # ─────────────────────────── correlations ──────────────────────────── #
 
@@ -88,8 +110,7 @@ class MLObservabilityMixin:
             sns.heatmap(corr, cmap=cmap, cbar=True)
             plt.title("Correlation Matrix Heatmap")
             plt.tight_layout()
-            out = self.directory / f"{self.model_name}_Correlation_Matrix.png"
-            self._ensure_dir(out)
+            out = self.fig_path("correlation_matrix.png")
             plt.savefig(out, dpi=300, bbox_inches="tight")
             plt.close(fig)
             logger.info("Stored correlation heatmap for %s.", self.model_name)
@@ -108,8 +129,7 @@ class MLObservabilityMixin:
             )
             ax.set_title("Confusion Matrix")
             fig.tight_layout()
-            out = self.directory / f"{self.model_name}_Confusion_Matrix.png"
-            self._ensure_dir(out)
+            out = self.fig_path("confusion_matrix.png")
             fig.savefig(out, dpi=300)
             plt.close(fig)
             logger.info("Stored confusion matrix for %s.", self.model_name)
@@ -133,8 +153,7 @@ class MLObservabilityMixin:
             plt.grid(True, linestyle="--", alpha=0.6, axis="y")
             plt.grid(False, axis="x")
             plt.tight_layout()
-            out = self.directory / f"{self.model_name}_Accuracy_Over_Samples.png"
-            self._ensure_dir(out)
+            out = self.fig_path("accuracy_over_samples.png")
             plt.savefig(out, dpi=300)
             plt.close(fig)
             logger.info("Stored accuracy-over-samples for %s.", self.model_name)
@@ -153,8 +172,7 @@ class MLObservabilityMixin:
             CalibrationDisplay.from_predictions(y_true, y_proba, n_bins=10, ax=axs[2])
             axs[2].set_title("Calibration")
             fig.tight_layout()
-            out = self.directory / f"{self.model_name}_ROC_PR_Calibration.png"
-            self._ensure_dir(out)
+            out = self.fig_path("roc_pr_calibration.png")
             fig.savefig(out, dpi=300)
             plt.close(fig)
             logger.info("Stored ROC/PR/Calibration for %s.", self.model_name)
@@ -229,8 +247,7 @@ class MLObservabilityMixin:
             ax.grid(True, linestyle="--", alpha=0.6, axis="y")
             ax.grid(False, axis="x")
             fig.tight_layout()
-            out = self.directory / f"{self.model_name}_Historical_Accuracy.png"
-            self._ensure_dir(out)
+            out = self.fig_path("historical_accuracy.png")
             fig.savefig(out, dpi=300, transparent=True)
             plt.close(fig)
             logger.info("Stored historical accuracy for %s.", self.model_name)
@@ -302,8 +319,7 @@ class MLObservabilityMixin:
             ax.set_ylabel("MAE")
             ax.legend()
             fig.tight_layout()
-            out = self.directory / f"{self.model_name}_Historical_MAE_Over_Time.png"
-            self._ensure_dir(out)
+            out = self.fig_path("historical_mae_over_time.png")
             fig.savefig(out, dpi=300, transparent=True)
             plt.close(fig)
             logger.info("Stored historical MAE for %s.", self.model_name)
@@ -324,8 +340,7 @@ class MLObservabilityMixin:
             plt.ylabel("Predicted")
             plt.title("Regression Results")
             plt.tight_layout()
-            out = self.directory / f"{self.model_name}_Regression_Results.png"
-            self._ensure_dir(out)
+            out = self.fig_path("regression_results.png")
             plt.savefig(out, dpi=300)
             plt.close(fig)
             logger.info("Stored regression results for %s.", self.model_name)
@@ -351,11 +366,7 @@ class MLObservabilityMixin:
             plt.xlabel("Samples")
             plt.ylabel(metric.upper())
             plt.tight_layout()
-            out = (
-                self.directory
-                / f"{self.model_name}_Cumulative_{metric.upper()}_Over_Samples.png"
-            )
-            self._ensure_dir(out)
+            out = self.fig_path(f"cumulative_{metric.lower()}_over_samples.png")
             plt.savefig(out, dpi=300)
             plt.close(fig)
             logger.info("Stored regression error-over-samples for %s.", self.model_name)
@@ -383,8 +394,7 @@ class MLObservabilityMixin:
                     "Importance": [float(r[1]) for r in ranks],
                 }
             )
-            out_tbl = INSIGHTS_DIR / f"{self.model_name}_feature_importances.parquet"
-            self._ensure_dir(out_tbl)
+            out_tbl = self.insight_path("feature_importances.parquet")
             df.to_parquet(out_tbl, index=False, compression="gzip")
             self.plot_feature_importance(ranks)
             logger.info("Stored feature importances for %s.", self.model_name)
@@ -408,8 +418,7 @@ class MLObservabilityMixin:
             plt.title(f"Top {top_n} Feature Importances")
             plt.gca().invert_yaxis()
             plt.tight_layout()
-            out = FIGURES_DIR / f"{self.model_name}_feature_importance_plot.png"
-            self._ensure_dir(out)
+            out = self.fig_path("feature_importance.png")
             plt.savefig(out)
             plt.close(fig)
         except Exception as e:
@@ -443,8 +452,7 @@ class MLObservabilityMixin:
             )
             plt.title(f"Top {top_n} Permutation Importances")
             plt.tight_layout()
-            out = FIGURES_DIR / f"{self.model_name}_permutation_importance_plot.png"
-            self._ensure_dir(out)
+            out = self.fig_path("permutation_importance.png")
             plt.savefig(out)
             plt.close(fig)
             logger.info("Stored permutation importance for %s.", self.model_name)
@@ -482,8 +490,7 @@ class MLObservabilityMixin:
                 show=False,
             )
             plt.tight_layout()
-            out = FIGURES_DIR / f"{self.model_name}_shap_summary_plot.png"
-            self._ensure_dir(out)
+            out = self.fig_path("shap_summary.png")
             plt.savefig(out)
             plt.close()
 
@@ -503,8 +510,7 @@ class MLObservabilityMixin:
                         ],
                     }
                 )
-            out_tbl = INSIGHTS_DIR / f"{self.model_name}_top_shap_reasons.parquet"
-            self._ensure_dir(out_tbl)
+            out_tbl = self.insight_path("top_shap_reasons.parquet")
             pd.DataFrame(rows).to_parquet(out_tbl, index=False, compression="gzip")
             logger.info(
                 "Stored SHAP summary and per-row top reasons for %s.", self.model_name
@@ -515,7 +521,7 @@ class MLObservabilityMixin:
 
     # ───────────────────────── cohort / calibration ────────────────────── #
 
-    def store_cohort_metrics(  # noqa: PLR0912, PLR0915
+    def store_cohort_metrics(  # noqa: PLR0912
         self,
         df_eval: pd.DataFrame,
         y_true: pd.Series,
@@ -572,8 +578,7 @@ class MLObservabilityMixin:
                     out_rows.append(row)
 
             df = pd.DataFrame(out_rows)
-            out_tbl = INSIGHTS_DIR / f"{self.model_name}_cohort_metrics.parquet"
-            self._ensure_dir(out_tbl)
+            out_tbl = self.insight_path("cohort_metrics.parquet")
             df.to_parquet(out_tbl, index=False, compression="gzip")
 
             # Quick heatmap per cohort (classification: accuracy; regression: MAE)
@@ -589,8 +594,7 @@ class MLObservabilityMixin:
                     sns.heatmap(pivot, annot=True, fmt=".3f", cmap="viridis")
                     plt.title(f"{self.model_name} – {metric} by {coh}")
                     plt.tight_layout()
-                    out = FIGURES_DIR / f"{self.model_name}_{metric}_by_{coh}.png"
-                    self._ensure_dir(out)
+                    out = self.fig_path(f"{metric}_by_{coh}.png")
                     plt.savefig(out, dpi=300)
                     plt.close(fig)
 
@@ -620,8 +624,7 @@ class MLObservabilityMixin:
                 tbl["n"] * (tbl["bin_mean_p"] - tbl["bin_emp_rate"]).abs()
             ).sum() / tbl["n"].sum()
             tbl["ece"] = ece
-            out_tbl = INSIGHTS_DIR / f"{self.model_name}_calibration_table.parquet"
-            self._ensure_dir(out_tbl)
+            out_tbl = self.insight_path("calibration_table.parquet")
             tbl.to_parquet(out_tbl, index=False, compression="gzip")
             logger.info(
                 "Stored calibration table (ECE=%.4f) for %s.", ece, self.model_name
@@ -670,8 +673,7 @@ class MLObservabilityMixin:
                 )
 
             df = pd.DataFrame(rows)
-            out_tbl = INSIGHTS_DIR / f"{self.model_name}_decision_roi_curves.parquet"
-            self._ensure_dir(out_tbl)
+            out_tbl = self.insight_path("decision_roi_curves.parquet")
             df.to_parquet(out_tbl, index=False, compression="gzip")
 
             # Plot EV and ROI
@@ -686,8 +688,7 @@ class MLObservabilityMixin:
             ax2.set_ylabel("Realized ROI")
             fig.legend(loc="lower left")
             fig.tight_layout()
-            out = FIGURES_DIR / f"{self.model_name}_EV_ROI_curves.png"
-            self._ensure_dir(out)
+            out = self.fig_path("ev_roi_curves.png")
             fig.savefig(out, dpi=300)
             plt.close(fig)
             logger.info("Stored decision/ROI curves for %s.", self.model_name)
@@ -736,8 +737,7 @@ class MLObservabilityMixin:
                             return []
 
                     cards["reasons"] = [_get_reasons(i) for i in df_eval.index[:n]]
-            out_tbl = INSIGHTS_DIR / f"{self.model_name}_bet_cards.parquet"
-            self._ensure_dir(out_tbl)
+            out_tbl = self.insight_path("bet_cards.parquet")
             cards.to_parquet(out_tbl, index=False, compression="gzip")
             logger.info("Stored bet cards for %s.", self.model_name)
         except Exception as e:
@@ -782,8 +782,7 @@ class MLObservabilityMixin:
                     }
                 )
             df = pd.DataFrame(rows).sort_values("psi", ascending=False)
-            out_tbl = INSIGHTS_DIR / f"{self.model_name}_feature_psi.parquet"
-            self._ensure_dir(out_tbl)
+            out_tbl = self.insight_path("feature_psi.parquet")
             df.to_parquet(out_tbl, index=False, compression="gzip")
 
             # Plot top drifters
@@ -794,8 +793,7 @@ class MLObservabilityMixin:
             plt.axvline(0.3, color="red", linestyle="--", label="High (0.3)")
             plt.legend()
             plt.tight_layout()
-            out = FIGURES_DIR / f"{self.model_name}_feature_psi_top.png"
-            self._ensure_dir(out)
+            out = self.fig_path("feature_psi_top.png")
             plt.savefig(out, dpi=300)
             plt.close(fig)
             logger.info("Stored PSI drift report for %s.", self.model_name)
@@ -836,8 +834,7 @@ class MLObservabilityMixin:
                 data["avg_rank_spearman"] = float(np.nanmean(rhos)) if rhos else np.nan
 
             summary = pd.DataFrame(data).sort_values("mean_importance", ascending=False)
-            out_tbl = INSIGHTS_DIR / f"{self.model_name}_importance_stability.parquet"
-            self._ensure_dir(out_tbl)
+            out_tbl = self.insight_path("importance_stability.parquet")
             summary.to_parquet(out_tbl, index=False, compression="gzip")
             logger.info("Stored importance stability for %s.", self.model_name)
         except Exception as e:
@@ -872,8 +869,7 @@ class MLObservabilityMixin:
                 "code_version": code_version,
                 "data_hash": data_hash,
             }
-            out = INSIGHTS_DIR / f"{self.model_name}_model_card_{run_id}.json"
-            self._ensure_dir(out)
+            out = self.insight_path(f"model_card_{run_id}.json")
             out.write_text(json.dumps(card, indent=2))
             logger.info(
                 "Stored model card for %s (run_id=%s).", self.model_name, run_id

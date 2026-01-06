@@ -15,6 +15,7 @@ This base also provides a full train_and_validate_model(...) orchestration that:
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import json
 import pickle
 import re
@@ -39,7 +40,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 from prediction_models.data_preprocessor import DataPreprocessor
 from prediction_models.observability import MLObservabilityMixin
 from utils.logger import logger
-from utils.paths import FIGURES_DIR, INSIGHTS_DIR, MODEL_ARTIFACTS, PROCESSED_TEAMS
+from utils.paths import FIGURES_DIR, MODEL_ARTIFACTS, PROCESSED_TEAMS
 from utils.pd import pd
 
 if TYPE_CHECKING:
@@ -49,12 +50,64 @@ if TYPE_CHECKING:
 DEFAULT_TRIALS = 100
 VALIDATION_SIZE = 0.15
 TEST_SIZE = 0.15
-LOW_STD_THRESHOLD = 0.05
-HIGH_CORR_THRESHOLD = 0.90
+LOW_STD_THRESHOLD = 0.03  # coefficient of variation threshold (less aggressive)
+HIGH_CORR_THRESHOLD = 0.95  # Pearson correlation threshold (keep more features)
 MAX_MISSING_FRAC = 0.40  # drop features missing >40% on TRAIN
 RANDOM_STATE = 42
 MIN_SHAPE_FOR_CORR = 2  # min numeric cols to run high-corr pruning
 BINARY_CLASS_UNIQUE_VALUES = 2
+
+
+@dataclass
+class FeaturePipeline:
+    """
+    Train-time feature decisions (drops, categories, imputations) that can be
+    reapplied verbatim to validation/test/inference data to guarantee parity.
+    """
+
+    train_columns: list[str]
+    categorical_features: list[str]
+    categorical_levels: dict[str, list[str]]
+    numeric_medians: dict[str, float]
+    drop_high_missing: list[str]
+    drop_low_variance: list[str]
+    drop_high_correlation: list[str]
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Apply the stored pipeline to any dataframe (no label leakage)."""
+        Xp = X.drop(
+            columns=[
+                *self.drop_high_missing,
+                *self.drop_low_variance,
+                *self.drop_high_correlation,
+            ],
+            errors="ignore",
+        ).copy()
+
+        # Ensure every categorical column exists, then coerce unseen levels to "Unknown"
+        for col in self.categorical_features:
+            if col not in Xp.columns:
+                Xp[col] = "Unknown"
+        for col, levels in self.categorical_levels.items():
+            if col not in Xp.columns:
+                Xp[col] = "Unknown"
+            vals = pd.Series(Xp[col], index=Xp.index, dtype="object")
+            known = pd.Index(levels, dtype="object")
+            vals = vals.where(vals.isin(known), "Unknown")
+            Xp[col] = pd.Categorical(vals, categories=levels)
+
+        # Add any entirely-missing numeric features with their train medians
+        for col, median in self.numeric_medians.items():
+            if col not in Xp.columns:
+                Xp[col] = median
+
+        Xp = GradientBoostingModel._impute_apply_numeric(Xp, self.numeric_medians)
+        Xp = GradientBoostingModel._impute_categorical(Xp, self.categorical_features)
+        return GradientBoostingModel._align_like_train(
+            self.train_columns,
+            Xp,
+            categorical_features=self.categorical_features,
+        )
 
 
 @dataclass
@@ -65,6 +118,9 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     player_data: pd.DataFrame
     trials: int = DEFAULT_TRIALS
     directory: Path = FIGURES_DIR
+    run_id: str = field(
+        default_factory=lambda: dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    )
     training_data: pd.DataFrame = field(init=False)
 
     def __post_init__(self) -> None:
@@ -127,7 +183,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         for role in roles:
             prefix = f"{role}_opp_"
             for col in [c for c in X.columns if c.startswith(prefix)]:
-                base = f"{role}_" + col.split(prefix, 1)[1]
+                base = f"{role}_{col.split(prefix, 1)[1]}"
                 if (
                     base in X.columns
                     and is_numeric_dtype(X[base])
@@ -391,15 +447,29 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         return X
 
     @staticmethod
-    def _align_like_train(train_cols: list[str], X: pd.DataFrame) -> pd.DataFrame:
-        # add missing columns as 0; drop extras
+    def _align_like_train(
+        train_cols: list[str],
+        X: pd.DataFrame,
+        *,
+        categorical_features: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """
+        Align columns to the training set:
+          - add missing numeric columns as 0,
+          - add missing categorical columns as "Unknown",
+          - drop extras, and order identically to train_cols.
+        """
         X = X.copy()
+        categorical_features = categorical_features or []
         missing = [c for c in train_cols if c not in X.columns]
         for c in missing:
-            X[c] = 0
+            X[c] = "Unknown" if c in categorical_features else 0
         extras = [c for c in X.columns if c not in train_cols]
         if extras:
             X = X.drop(columns=extras)
+        for c in categorical_features:
+            if c in X.columns and X[c].dtype.name != "category":
+                X[c] = X[c].astype("category")
         return X[train_cols]
 
     @staticmethod
@@ -419,6 +489,50 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             X[c] = X[c].astype("category")
             X[c] = X[c].cat.set_categories(X[c].cat.categories)  # freeze categories
         return X, categorical_columns
+
+    # ─────────────────────────── Feature pipeline ─────────────────────────── #
+
+    def _fit_feature_pipeline(
+        self,
+        X_train: pd.DataFrame,
+        *,
+        drop_missing_threshold: float,
+        drop_low_std_threshold: float,
+        drop_high_corr_threshold: float,
+    ) -> tuple[pd.DataFrame, FeaturePipeline]:
+        """
+        Fit all train-only feature decisions (drops, categories, imputations)
+        and return the transformed train set + a reusable pipeline.
+        """
+        Xp = X_train.copy()
+
+        Xp, drop_high_miss = self._drop_high_missing(Xp, drop_missing_threshold)
+        Xp, drop_low_var = self.drop_low_std_columns(Xp, drop_low_std_threshold)
+        Xp, drop_corr = self.drop_highly_correlated_features(
+            Xp, drop_high_corr_threshold
+        )
+
+        Xp, categorical_features = self.preprocess_categorical_features(Xp)
+
+        cat_levels = {c: list(Xp[c].cat.categories) for c in categorical_features}
+        for c in categorical_features:
+            if "Unknown" not in cat_levels[c]:
+                cat_levels[c].append("Unknown")
+            Xp[c] = Xp[c].cat.set_categories(cat_levels[c])
+
+        Xp, medians = self._impute_train_numeric(Xp)
+        Xp = self._impute_categorical(Xp, categorical_features)
+
+        pipeline = FeaturePipeline(
+            train_columns=list(Xp.columns),
+            categorical_features=categorical_features,
+            categorical_levels=cat_levels,
+            numeric_medians=medians,
+            drop_high_missing=drop_high_miss,
+            drop_low_variance=drop_low_var,
+            drop_high_correlation=drop_corr,
+        )
+        return Xp, pipeline
 
     # ─────────────────────────────── Storage ──────────────────────────────── #
 
@@ -441,6 +555,12 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def store_categorical_features(self, categorical_features: list[str]) -> None:
         self._store_pickle(
             f"{self.model_name}_categorical_features.pkl", categorical_features
+        )
+
+    def store_feature_pipeline(self, pipeline: FeaturePipeline) -> None:
+        self._store_pickle(
+            f"{self.model_name}_feature_pipeline.pkl",
+            pipeline,
         )
 
     def store_best_hyperparameters(self, hyperparams: dict[str, Any]) -> None:
@@ -482,9 +602,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         """Persist metrics to JSON (drop non-serializable arrays like CM)."""
         payload = {k: v for k, v in metrics.items() if k != "cm"}
         try:
-            (INSIGHTS_DIR / f"{self.model_name}_metrics.json").write_text(
-                json.dumps(payload)
-            )
+            self.insight_path("metrics.json").write_text(json.dumps(payload))
             logger.info("Stored metrics for %s.", self.model_name)
         except Exception as e:
             logger.error("Storing metrics failed: %s", e)
@@ -531,7 +649,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             if proba is not None:
                 frame["proba"] = proba
             pd.DataFrame(frame).to_parquet(
-                INSIGHTS_DIR / f"{self.model_name}_predictions.parquet",
+                self.insight_path("predictions.parquet"),
                 index=False,
                 compression="gzip",
             )
@@ -621,7 +739,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         compute_shap: bool = True,
         store_cohorts: bool = True,
         temporal_split: bool = True,
-    ):
+    ):  # sourcery skip: low-code-quality
         """
         Main entrypoint used by the training script.
 
@@ -708,66 +826,24 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             else pd.Series(index=X_test.index, dtype=object)
         )
 
-        # ── PRUNING / CLEANING ON TRAIN ONLY (then apply to val/test) ── #
-        # Missingness
-        X_train, drop_high_miss = self._drop_high_missing(
-            X_train, drop_missing_threshold
+        # Fit feature pipeline on TRAIN (drop/missing/variance/corr/cats/impute)
+        # and reapply it to val/test to guarantee feature parity.
+        X_train, feature_pipeline = self._fit_feature_pipeline(
+            X_train,
+            drop_missing_threshold=drop_missing_threshold,
+            drop_low_std_threshold=drop_low_std_threshold,
+            drop_high_corr_threshold=drop_high_corr_threshold,
         )
-        X_val = X_val.drop(columns=drop_high_miss, errors="ignore")
-        X_test = X_test.drop(columns=drop_high_miss, errors="ignore")
+        X_val = feature_pipeline.transform(X_val)
+        X_test = feature_pipeline.transform(X_test)
+        categorical_features = feature_pipeline.categorical_features
+        train_cols = feature_pipeline.train_columns
 
-        # Low variance
-        X_train, drop_low_var = self.drop_low_std_columns(
-            X_train, drop_low_std_threshold
-        )
-        X_val = X_val.drop(columns=drop_low_var, errors="ignore")
-        X_test = X_test.drop(columns=drop_low_var, errors="ignore")
-
-        # High correlation
-        X_train, drop_corr = self.drop_highly_correlated_features(
-            X_train, drop_high_corr_threshold
-        )
-        X_val = X_val.drop(columns=drop_corr, errors="ignore")
-        X_test = X_test.drop(columns=drop_corr, errors="ignore")
-
-        # ── CATEGORICAL CASTING (TRAIN-ONLY), then align val/test ── #
-        X_train, categorical_features = self.preprocess_categorical_features(X_train)
-
-        # Record train categories (+ ensure Unknown exists)
-        cat_levels = {c: list(X_train[c].cat.categories) for c in categorical_features}
-        for c in categorical_features:
-            if "Unknown" not in cat_levels[c]:
-                cat_levels[c].append("Unknown")
-            X_train[c] = X_train[c].cat.set_categories(cat_levels[c])
-
-        def _apply_cat_levels(Xp: pd.DataFrame) -> pd.DataFrame:
-            Xp = Xp.copy()
-            for c in categorical_features:
-                if c not in Xp.columns:
-                    continue
-                vals = Xp[c]
-                # Compare on object to avoid dtype mismatches; unseen -> "Unknown"
-                known = pd.Index(cat_levels[c]).astype("object")
-                mask_known = pd.Series(vals).astype("object").isin(known)
-                vals = vals.where(mask_known, "Unknown")
-                Xp[c] = pd.Categorical(vals, categories=cat_levels[c])
-            return Xp
-
-        X_val = _apply_cat_levels(X_val)
-        X_test = _apply_cat_levels(X_test)
-
-        # Impute
-        X_train, medians = self._impute_train_numeric(X_train)
-        X_val = self._impute_apply_numeric(X_val, medians)
-        X_test = self._impute_apply_numeric(X_test, medians)
-        X_train = self._impute_categorical(X_train, categorical_features)
-        X_val = self._impute_categorical(X_val, categorical_features)
-        X_test = self._impute_categorical(X_test, categorical_features)
-
-        # Align val/test to train feature set (order + missing columns)
-        train_cols = list(X_train.columns)
-        X_val = self._align_like_train(train_cols, X_val)
-        X_test = self._align_like_train(train_cols, X_test)
+        # Explicit guardrail: eval splits must perfectly mirror train features
+        for split_name, X_split in {"val": X_val, "test": X_test}.items():
+            if list(X_split.columns) != train_cols:
+                msg = f"{split_name} columns misaligned with train features."
+                raise ValueError(msg)
 
         # ── Operator checks (#6): detect suspicious single-feature leakage signals ── #
         try:
@@ -815,6 +891,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         # Persist features metadata
         self.store_model_features(pd.Index(train_cols))
         self.store_categorical_features(categorical_features)
+        self.store_feature_pipeline(feature_pipeline)
 
         # ───────────────────────────── Train ───────────────────────────── #
         logger.info("Training %s on %d features …", self.model_name, len(train_cols))
@@ -877,6 +954,30 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     )
                 except (ValueError, AttributeError) as e:
                     logger.warning("Cohort metrics failed: %s", e)
+
+        # ───────────────────────── Traceability (model card) ───────────────────── #
+        try:
+            data_window = None
+            if "date" in meta_df.columns:
+                dates = pd.to_datetime(meta_df["date"], errors="coerce")
+                if dates.notna().any():
+                    data_window = {
+                        "min_date": str(dates.min().date()),
+                        "max_date": str(dates.max().date()),
+                    }
+            self.store_model_card(
+                run_id=self.run_id,
+                data_window=data_window,
+                n_rows_train=len(X_train),
+                n_rows_val=len(X_val),
+                n_rows_test=len(X_test),
+                features=train_cols,
+                hyperparams=None,
+                code_version=None,
+                data_hash=None,
+            )
+        except Exception as e:
+            logger.warning("Model card storage failed: %s", e)
 
         return model
 

@@ -9,19 +9,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from feature_engineering.ratings_features.elo import calculate_elo
-from feature_engineering.ratings_features.glicko import calculate_glicko2
-from feature_engineering.ratings_features.leagues_elo import calculate_leagues_elo
-from feature_engineering.ratings_features.plackett_luce import (
+from data_generation.feature_engineering.ratings_features.elo import calculate_elo
+from data_generation.feature_engineering.ratings_features.glicko import (
+    calculate_glicko2,
+)
+from data_generation.feature_engineering.ratings_features.leagues_elo import (
+    calculate_leagues_elo,
+)
+from data_generation.feature_engineering.ratings_features.plackett_luce import (
     calculate_plackett_luce,
 )
-from feature_engineering.ratings_features.trueskill import calculate_trueskill
+from data_generation.feature_engineering.ratings_features.trueskill import (
+    calculate_trueskill,
+)
 from utils.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-# from feature_engineering.ratings_features.wh import calculate_whr  # noqa: ERA001
+# from data_generation.feature_engineering.ratings_features.wh import calculate_whr  # noqa: ERA001
 
 Entity = Literal["team", "player"]
 ModelName = Literal["elo", "glicko2", "plackett_luce", "trueskill", "leagues_elo"]

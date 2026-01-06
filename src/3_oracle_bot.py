@@ -12,6 +12,10 @@ import os
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+from ingestion.data_generation.schedule import (
+    fetch_and_store_schedule,
+    get_or_update_schedule,
+)
 
 from discord_predictions.discord_utils import (
     calculate_kelly_criterion,
@@ -28,7 +32,6 @@ from discord_predictions.discord_utils import (
     validate_and_predict_props,
 )
 from discord_predictions.team import Team
-from ingestion.schedule import fetch_and_store_schedule, get_or_update_schedule
 from utils.logger import logger
 from utils.paths import SCHEDULE
 

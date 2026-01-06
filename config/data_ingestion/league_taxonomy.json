@@ -26,27 +26,27 @@
       "strength_prior": -60
     },
     "LEC": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "major",
       "strength_prior": 100
     },
     "LFL": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "LVP SL": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "NLC": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "PRM": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
@@ -71,7 +71,7 @@
       "strength_prior": -60
     },
     "LIT": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
@@ -111,37 +111,37 @@
       "strength_prior": -60
     },
     "UL": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "ESLOL": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "AL": {
-      "region": "APAC",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "HLL": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "GLL": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "HM": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
     "EBL": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "minor",
       "strength_prior": -60
     },
@@ -156,22 +156,22 @@
       "strength_prior": 0
     },
     "CDF": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "cross",
       "strength_prior": 0
     },
     "DCup": {
-      "region": "EU",
+      "region": "INTL",
       "tier": "cross",
       "strength_prior": 0
     },
     "EM": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "cross",
       "strength_prior": 0
     },
     "EPL": {
-      "region": "EU",
+      "region": "EMEA",
       "tier": "cross",
       "strength_prior": 0
     },

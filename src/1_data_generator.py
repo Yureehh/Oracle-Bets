@@ -29,12 +29,12 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
-from feature_engineering.features_generator import FeatureGenerator
-from feature_engineering.performance_features.performance_metrics import (
+from data_generation.feature_engineering.features_generator import FeatureGenerator
+from data_generation.feature_engineering.performance_features.performance_metrics import (
     PerformanceMetrics,
 )
-from feature_engineering.ratings_features.rating_models import Ratings
-from ingestion.oracles_elixir import OraclesElixir, get_opponent
+from data_generation.feature_engineering.ratings_features.rating_models import Ratings
+from data_generation.ingestion.oracles_elixir import OraclesElixir, get_opponent
 from utils.io_utils import get_sorting_keys, json_loader, safe_store_df_as_parquet
 from utils.league_taxonomy import (
     get_league_strength_prior,
@@ -323,7 +323,7 @@ class DataGenerator:
         safe_store_df_as_parquet(out, dest, [logger, data_pipeline_logger])
         _dbl(f"{kind.title()} {entity} saved: {len(out)} rows.")
 
-    def extract_both_training_data(self) -> None:
+    def extract_training_data(self) -> None:
         self._extract(self.team_data, TRAINING_TEAM_CONFIG, "team", "training")
         self._extract(self.player_data, TRAINING_PLAYER_CONFIG, "player", "training")
 
@@ -339,7 +339,7 @@ class DataGenerator:
         raw = self.ingest_data_from_s3()
         self.clean_and_store_data(raw)
         self.enrich_datasets()
-        self.extract_both_training_data()
+        self.extract_training_data()
         self.flatten_both_inference_data()
 
         elapsed = (dt.datetime.now() - start).total_seconds()

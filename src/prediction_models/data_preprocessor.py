@@ -172,8 +172,6 @@ class DataPreprocessor:
             for key in self.merge_keys
         ]
         self.training_data = self.training_data.drop(columns=drop_cols, errors="ignore")
-        # keep 'date' so temporal split works without reattach
-        self.training_data = self.training_data.drop(columns=drop_cols, errors="ignore")
 
     def _handle_regression_specifics(self, target_col: str) -> None:
         """

@@ -135,6 +135,12 @@ class OraclesElixir:
             raise OraclesElixirError(msg)
 
         frames = [results[y] for y in year_list if y in results]
+        if not frames:
+            raise OraclesElixirError("No Oracle Elixir frames to concatenate.")
+        # Filter out entirely empty frames to avoid dtype confusion (pandas future change)
+        frames = [f for f in frames if not f.empty]
+        if not frames:
+            raise OraclesElixirError("All Oracle Elixir frames were empty.")
         df = pd.concat(frames, ignore_index=True)
         loaded = [y for y in year_list if y in results]
         logger.info("Successfully ingested data for years: %s", loaded)

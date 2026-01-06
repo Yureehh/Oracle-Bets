@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from tqdm import tqdm
 
-from ingestion.oracles_elixir import get_opponent
+from data_generation.ingestion.oracles_elixir import get_opponent
 from utils.io_utils import get_identity, get_sorting_keys, json_loader
 from utils.paths import (
     DEFAULT_MODELS_PARAMETERS,
@@ -151,9 +151,8 @@ def apply_opponent_stats(
         before_name = f"ema_{col}_before"
         if before_name not in out.columns:
             continue
-        opp_cols[f"opp_{before_name}"] = get_opponent(
-            out[before_name].tolist(), entity=entity
-        )
+        vals = pd.Series(out[before_name].to_numpy().flatten())
+        opp_cols[f"opp_{before_name}"] = get_opponent(vals, entity=entity)
 
     if opp_cols:
         out = pd.concat([out, pd.DataFrame(opp_cols, index=out.index)], axis=1)

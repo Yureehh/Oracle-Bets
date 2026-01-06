@@ -129,6 +129,9 @@ OUTCOME_PREDICTION_FINAL_FEATURES: Final = (
 OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Final = (
     MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_best_hyperparameters.pkl"
 )
+OUTCOME_PREDICTION_FEATURE_PIPELINE: Final = (
+    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_feature_pipeline.pkl"
+)
 GAMELENGTH_PREDICTION_MODEL_PATH: Final = (
     MODEL_ARTIFACTS / "GamelengthPrediction" / "GamelengthPrediction.pkl"
 )
@@ -145,6 +148,11 @@ GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Final = (
     / "GamelengthPrediction"
     / "GamelengthPrediction_best_hyperparameters.pkl"
 )
+GAMELENGTH_PREDICTION_FEATURE_PIPELINE: Final = (
+    MODEL_ARTIFACTS
+    / "GamelengthPrediction"
+    / "GamelengthPrediction_feature_pipeline.pkl"
+)
 TOTAL_KILLS_PREDICTION_MODEL_PATH: Final = (
     MODEL_ARTIFACTS / "TotalKillsPrediction" / "TotalKillsPrediction.pkl"
 )
@@ -160,6 +168,11 @@ TOTAL_KILLS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
     MODEL_ARTIFACTS
     / "TotalKillsPrediction"
     / "TotalKillsPrediction_best_hyperparameters.pkl"
+)
+TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE: Final = (
+    MODEL_ARTIFACTS
+    / "TotalKillsPrediction"
+    / "TotalKillsPrediction_feature_pipeline.pkl"
 )
 TOTAL_TOWERS_PREDICTION_MODEL_PATH: Final = (
     MODEL_ARTIFACTS / "TotalTowersPrediction" / "TotalTowersPrediction.pkl"
@@ -178,6 +191,11 @@ TOTAL_TOWERS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
     MODEL_ARTIFACTS
     / "TotalTowersPrediction"
     / "TotalTowersPrediction_best_hyperparameters.pkl"
+)
+TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE: Final = (
+    MODEL_ARTIFACTS
+    / "TotalTowersPrediction"
+    / "TotalTowersPrediction_feature_pipeline.pkl"
 )
 
 # Hyper-parameter grids

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 # Lightweight, good defaults for laptop runs
 _DEFAULT_N_ESTIMATORS = 3000
-_EARLY_STOP_ROUNDS = 1
+_EARLY_STOP_ROUNDS = 50
 _RANDOM_STATE = 42
 
 
@@ -88,21 +88,26 @@ class LightGBMModel(GradientBoostingModel):
         else:
             logger.info("Loaded cached hyperparameters for %s.", self.model_name)
 
-        # Auto class-imbalance handling
-        if (
-            self.problem_type == "classification"
-            and "scale_pos_weight" not in best_params
-        ):
-            pos = float((y_train == 1).sum())
-            neg = float((y_train == 0).sum())
-            if pos > 0:
-                best_params["scale_pos_weight"] = max(1.0, neg / pos)
-
         params = dict(best_params)
         params.setdefault("n_estimators", _DEFAULT_N_ESTIMATORS)
         params.setdefault("verbosity", -1)
         params.setdefault("random_state", _RANDOM_STATE)
         params.setdefault("n_jobs", -1)
+        params.setdefault(
+            "objective",
+            "binary" if self.problem_type == "classification" else "regression",
+        )
+        params.setdefault(
+            "metric",
+            "binary_logloss" if self.problem_type == "classification" else "mae",
+        )
+
+        # Auto class-imbalance handling (always recomputed for current data)
+        if self.problem_type == "classification":
+            pos = float((y_train == 1).sum())
+            neg = float((y_train == 0).sum())
+            if pos > 0:
+                params["scale_pos_weight"] = max(1.0, neg / pos)
 
         model_cls = (
             lgb.LGBMClassifier
@@ -115,6 +120,7 @@ class LightGBMModel(GradientBoostingModel):
             "X": X_train,
             "y": y_train,
             "eval_set": [(X_val, y_val)],
+            "eval_metric": params.get("metric"),
         }
         if categorical_features:
             fit_kwargs["categorical_feature"] = categorical_features
@@ -150,6 +156,14 @@ class LightGBMModel(GradientBoostingModel):
         y_val: pd.Series,
     ) -> dict[str, Any]:
         """Optuna search with a compact space + early stopping. Good perf / runtime tradeoff for laptops."""
+
+        def _store_if_best(study: optuna.Study, trial: optuna.Trial) -> None:
+            """Persist hyperparameters whenever Optuna finds a new best."""
+            try:
+                if study.best_trial == trial:
+                    self.store_best_hyperparameters(trial.params)
+            except Exception as e:
+                logger.debug("Failed to store interim best hyperparameters: %s", e)
 
         def _objective(trial: optuna.Trial) -> float:
             params: dict[str, Any] = {
@@ -198,6 +212,7 @@ class LightGBMModel(GradientBoostingModel):
                 "X": X_train,
                 "y": y_train,
                 "eval_set": [(X_val, y_val)],
+                "eval_metric": params.get("metric"),
             }
             cat_cols = [
                 c for c in X_train.columns if str(X_train[c].dtype) == "category"
@@ -229,10 +244,17 @@ class LightGBMModel(GradientBoostingModel):
         )
         n_trials = min(self.trials, _TRIALS_CAP)
         logger.info("Optuna: running %d trials (cap).", n_trials)
-        study.optimize(_objective, n_trials=n_trials, show_progress_bar=False)
+        study.optimize(
+            _objective,
+            n_trials=n_trials,
+            show_progress_bar=False,
+            callbacks=[_store_if_best],
+        )
         logger.info(
             "Optuna best value: %.6f | params: %s", study.best_value, study.best_params
         )
+        # Ensure final best is stored even if callback failed silently
+        self.store_best_hyperparameters(study.best_params)
         return study.best_params
 
     # ─────────────────────────── utilities ─────────────────────────── #
@@ -257,7 +279,7 @@ class LightGBMModel(GradientBoostingModel):
     def _choose_threshold(y_true: pd.Series, proba: np.ndarray) -> float:
         """Pick F1-maximizing threshold on validation with a dense sweep."""
         best_thr, best_score = 0.5, -1.0
-        for t in np.linspace(0.1, 0.9, 161):
+        for t in np.linspace(0.02, 0.98, 193):
             score = f1_score(y_true, proba >= t, zero_division=0)
             if score > best_score:
                 best_score, best_thr = score, float(t)

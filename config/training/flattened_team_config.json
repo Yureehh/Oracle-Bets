@@ -84,8 +84,6 @@
     "ema_csdiffat20_after",
     "ema_csdiffat25_after",
 
-    "ema_teamkills_after",
-    "ema_teamdeaths_after",
     "ema_killsat10_after",
     "ema_deathsat10_after",
     "ema_killsat15_after",
@@ -97,9 +95,6 @@
     "ema_killsat25_after",
     "ema_assistsat25_after",
     "ema_deathsat25_after",
-
-    "ema_total_kills_after",
-    "ema_total_towers_after",
 
     "ema_blue_side_after",
     "ema_red_side_after",

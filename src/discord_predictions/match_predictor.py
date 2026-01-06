@@ -17,20 +17,26 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from feature_engineering.ratings_features.glicko import (
+from data_generation.feature_engineering.ratings_features.glicko import (
     DEFAULT_MU,
     DEFAULT_PHI,
     DEFAULT_SIGMA,
     Glicko2,
     calculate_mean_rating,
 )
-from feature_engineering.ratings_features.glicko import Rating as GlickoRating
-from feature_engineering.ratings_features.plackett_luce import PlackettLuce
-from feature_engineering.ratings_features.plackett_luce import (
+from data_generation.feature_engineering.ratings_features.glicko import (
+    Rating as GlickoRating,
+)
+from data_generation.feature_engineering.ratings_features.plackett_luce import (
+    PlackettLuce,
+)
+from data_generation.feature_engineering.ratings_features.plackett_luce import (
     predict_win_probability as pl_win_probability,
 )
-from feature_engineering.ratings_features.trueskill import Rating as TrueskillRating
-from feature_engineering.ratings_features.trueskill import (
+from data_generation.feature_engineering.ratings_features.trueskill import (
+    Rating as TrueskillRating,
+)
+from data_generation.feature_engineering.ratings_features.trueskill import (
     expected_win_probability as trueskill_win_probability,
 )
 from prediction_models.gbdt_model import GradientBoostingModel

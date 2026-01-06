@@ -8,7 +8,7 @@ Usage
 -----
 from utils.logger import instantiate_logger, LOG_TOPIC
 
-log = instantiate_logger(LOG_TOPIC.SCHEDULE_GENERATION)
+log = instantiate_logger(LOG_TOPIC.data_generation.schedule_GENERATION)
 log.info("Hello, Oracle-Bets!")
 """
 

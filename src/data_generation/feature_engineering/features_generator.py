@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ingestion.oracles_elixir import get_opponent
+from data_generation.ingestion.oracles_elixir import get_opponent
 from utils.io_utils import get_sorting_keys
 from utils.league_taxonomy import (
     add_league_taxonomy_columns,
@@ -30,6 +30,13 @@ data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 # Helpers/constants shared by multiple methods
 # ────────────────────────────────────────────────────────────────────────────
 _OPPOSITE_SIDE = {"Blue": "Red", "Red": "Blue"}  # quick side-flip
+
+
+# Replace zeros with NaN without using pandas' deprecated downcasting in replace
+def _zero_to_nan(series: pd.Series) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce")
+    return s.mask(s == 0)
+
 
 # ---------------------------------------------------------------------------
 
@@ -93,12 +100,8 @@ class FeatureGenerator:
     @staticmethod
     def _calculate_ratios(df: pd.DataFrame) -> pd.DataFrame:
         """Add efficiency / share ratios with safe divide-by-zero handling."""
-        denom_cols = [
-            "enemyTeamKills",
-            "enemyTeamDeaths",
-            "enemyTeamWardPlaced",
-        ]
-        df[denom_cols] = df[denom_cols].replace(0, np.nan)  # avoid /0
+        denom_cols = ["enemyTeamKills", "enemyTeamDeaths", "enemyTeamWardPlaced"]
+        df[denom_cols] = df[denom_cols].apply(_zero_to_nan)  # avoid /0, keep numeric
 
         df["ka_ratio"] = np.divide(
             df["kills"] + df["assists"],
@@ -134,47 +137,60 @@ class FeatureGenerator:
         req = {"playerid", "season", "patch", "result", "kills", "deaths", "date"}
         _check_required(data, required=req)
 
-        df = (
-            data.copy()
-            .sort_values(["playerid", "date"], kind="mergesort")
-            .reset_index(drop=True)
+        # Normalize inputs to numeric to avoid None/object arithmetic surprises
+        df = data.copy()
+        df["result"] = (
+            df["result"]
+            .map(
+                {
+                    "W": 1,
+                    "Win": 1,
+                    "win": 1,
+                    "Won": 1,
+                    "won": 1,
+                    True: 1,
+                    "L": 0,
+                    "Loss": 0,
+                    "loss": 0,
+                    "Lose": 0,
+                    "lose": 0,
+                    False: 0,
+                }
+            )
+            .astype("float64")
+            .fillna(0.0)
         )
-        if not pd.api.types.is_numeric_dtype(df["result"]):
-            valmap = {
-                "W": 1,
-                "Win": 1,
-                "win": 1,
-                "Won": 1,
-                "won": 1,
-                True: 1,
-                "L": 0,
-                "Loss": 0,
-                "loss": 0,
-                "Lose": 0,
-                "lose": 0,
-                False: 0,
-            }
-            df["result"] = df["result"].map(valmap).astype("float64")
+        df["kills"] = pd.to_numeric(df["kills"], errors="coerce").fillna(0.0)
+        df["deaths"] = pd.to_numeric(df["deaths"], errors="coerce").fillna(0.0)
+        df = df.sort_values(["playerid", "date"], kind="mergesort").reset_index(
+            drop=True
+        )
 
-        def _prev_avg(by: list[str], metric: str, result_value: int) -> pd.Series:
+        def _prev_avg(
+            by: list[str], result_value: int, metric_values: pd.Series
+        ) -> pd.Series:
+            """
+            Expanding mean of metric for rows matching result_value, grouped by `by`,
+            using only prior games (shifted).
+            """
             mask = df["result"].eq(result_value)
-            grp = df.groupby(by, sort=False, observed=True)
-
-            prev_sum = grp[metric].transform(
-                lambda s: s.where(mask.loc[s.index], 0.0).cumsum().shift()
-            )
-            prev_count = grp["result"].transform(
-                lambda s: s.eq(result_value).cumsum().shift()
-            )
-            return prev_sum.div(prev_count.replace(0, np.nan))
+            groups = df[by].apply(tuple, axis=1)
+            prev_sum = metric_values.where(mask, 0.0).groupby(groups).cumsum().shift()
+            prev_count = mask.groupby(groups).cumsum().shift()
+            return prev_sum.div(prev_count.mask(prev_count == 0))
 
         for scope, group_cols in (
             ("season", ["playerid", "season"]),
             ("patch", ["playerid", "patch"]),
         ):
             for metric in ("kills", "deaths"):
-                df[f"{metric}_prev_avg_{scope}_win"] = _prev_avg(group_cols, metric, 1)
-                df[f"{metric}_prev_avg_{scope}_loss"] = _prev_avg(group_cols, metric, 0)
+                metric_values = df[metric]
+                df[f"{metric}_prev_avg_{scope}_win"] = _prev_avg(
+                    group_cols, 1, metric_values
+                )
+                df[f"{metric}_prev_avg_{scope}_loss"] = _prev_avg(
+                    group_cols, 0, metric_values
+                )
 
         return df
 
@@ -208,14 +224,12 @@ class FeatureGenerator:
         df["team_kills"] = df.groupby(["gameid", "teamid"], observed=True)[
             "kills"
         ].transform("sum")
-        df["kda"] = np.divide(
-            df["kills"] + df["assists"], df["deaths"].replace(0, np.nan)
-        )
-        df["xp_efficiency"] = np.divide(
-            df["total_cs"], df["gamelength"].replace(0, np.nan)
-        )
+        deaths = _zero_to_nan(df["deaths"])
+        df["kda"] = np.divide(df["kills"] + df["assists"], deaths)
+        gamelength = _zero_to_nan(df["gamelength"])
+        df["xp_efficiency"] = np.divide(df["total_cs"], gamelength)
         df["kill_participation"] = np.divide(
-            df["kills"] + df["assists"], df["team_kills"].replace(0, np.nan)
+            df["kills"] + df["assists"], _zero_to_nan(df["team_kills"])
         )
 
         # Opponent context + historical means
@@ -358,9 +372,8 @@ def _add_expanding_mean(
 
     for col in value_cols:
         grp = df.groupby(group_cols, observed=True)[col]
-        df[f"{prefix}{col}"] = (
-            grp.cumsum().shift().div(grp.cumcount().replace(0, np.nan))
-        )
+        counts = grp.cumcount()
+        df[f"{prefix}{col}"] = grp.cumsum().shift().div(counts.mask(counts == 0))
 
     return df
 

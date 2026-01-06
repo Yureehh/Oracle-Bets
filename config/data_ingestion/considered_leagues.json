@@ -55,14 +55,5 @@
     "MSI",
     "WLDs"
   ],
-  "major_leagues": [
-    "LCK",
-    "LPL",
-    "LEC",
-    "LCP",
-    "LCS",
-    "LTA",
-    "LTA N",
-    "LTA S"
-  ]
+  "major_leagues": ["LCK", "LPL", "LEC", "LCP", "LCS", "LTA", "LTA N", "LTA S"]
 }

@@ -90,8 +90,6 @@
     "ema_csdiffat20_before",
     "ema_csdiffat25_before",
 
-    "ema_teamkills_before",
-    "ema_teamdeaths_before",
     "ema_killsat10_before",
     "ema_deathsat10_before",
     "ema_killsat15_before",
@@ -103,9 +101,6 @@
     "ema_killsat25_before",
     "ema_assistsat25_before",
     "ema_deathsat25_before",
-
-    "ema_total_kills_before",
-    "ema_total_towers_before",
 
     "ema_season_win_rate_before",
     "ema_season_games_before"

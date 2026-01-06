@@ -140,7 +140,7 @@ def map_team_to_league(
 # ----------------------------------------------------------------------
 # Core Elo helpers (re-use Elo module, numba-accelerated when available)
 # ----------------------------------------------------------------------
-from feature_engineering.ratings_features.elo import (
+from data_generation.feature_engineering.ratings_features.elo import (
     expected_outcome,
     update_elo_rating,
 )

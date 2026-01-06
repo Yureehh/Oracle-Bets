@@ -91,8 +91,9 @@ target/
 # Pyre type checker
 *.pyc
 
-# Poetry lock file
-poetry.lock
+# Poetry and uv lock files
+poetry
+uv.lock
 
 # All csv files
 *.csv

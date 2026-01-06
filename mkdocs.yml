@@ -30,6 +30,7 @@ nav:
   - Models: models.md
   - Predictions: predictions.md
   - Configuration: configuration.md
+  - Next Steps: next_steps.md
   - Contributing: contributing.md
 
 markdown_extensions:
