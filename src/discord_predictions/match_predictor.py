@@ -39,22 +39,26 @@ from data_generation.feature_engineering.ratings_features.trueskill import (
 from data_generation.feature_engineering.ratings_features.trueskill import (
     expected_win_probability as trueskill_win_probability,
 )
-from prediction_models.gbdt_model import GradientBoostingModel
+from prediction_models.gbdt_model import FeaturePipeline, GradientBoostingModel
 from utils.io_utils import load_model
 from utils.league_taxonomy import get_league_strength_prior, get_league_taxonomy
 from utils.paths import (
     GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES,
+    GAMELENGTH_PREDICTION_FEATURE_PIPELINE,
     GAMELENGTH_PREDICTION_FINAL_FEATURES,
     GAMELENGTH_PREDICTION_MODEL_PATH,
     LEAGUE_ELO,
     OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
+    OUTCOME_PREDICTION_FEATURE_PIPELINE,
     OUTCOME_PREDICTION_FINAL_FEATURES,
     OUTCOME_PREDICTION_MODEL_PATH,
     TEAM_LEAGUES_MAPPING,
     TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES,
+    TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_KILLS_PREDICTION_FINAL_FEATURES,
     TOTAL_KILLS_PREDICTION_MODEL_PATH,
     TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES,
+    TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_TOWERS_PREDICTION_FINAL_FEATURES,
     TOTAL_TOWERS_PREDICTION_MODEL_PATH,
     WHOLE_HISTORY_RATING_PATH,
@@ -214,6 +218,19 @@ class MatchPredictor:
     whr_model: Any = field(default=None, init=False, repr=False)
     team_to_league: pd.DataFrame = field(default=None, init=False, repr=False)
     league_to_elo: pd.DataFrame = field(default=None, init=False, repr=False)
+    # Feature pipelines for inference parity with training
+    outcome_pipeline: FeaturePipeline | None = field(
+        default=None, init=False, repr=False
+    )
+    gamelength_pipeline: FeaturePipeline | None = field(
+        default=None, init=False, repr=False
+    )
+    total_kills_pipeline: FeaturePipeline | None = field(
+        default=None, init=False, repr=False
+    )
+    total_towers_pipeline: FeaturePipeline | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         # artifacts: load lazily but fail fast if missing
@@ -251,6 +268,22 @@ class MatchPredictor:
         except Exception as e:
             msg = f"Failed to load mapping/elo parquet: {e}"
             raise RuntimeError(msg) from e
+
+        # Load feature pipelines for training-inference parity
+        try:
+            self.outcome_pipeline = load_model(OUTCOME_PREDICTION_FEATURE_PIPELINE)
+        except Exception:
+            self.outcome_pipeline = None
+
+        for pipeline_name, path in (
+            ("gamelength_pipeline", GAMELENGTH_PREDICTION_FEATURE_PIPELINE),
+            ("total_kills_pipeline", TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE),
+            ("total_towers_pipeline", TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE),
+        ):
+            try:
+                setattr(self, pipeline_name, load_model(path))
+            except Exception:
+                setattr(self, pipeline_name, None)
 
     # ── rating-based predictions (scalar) ───────────────────────────────── #
 
@@ -363,47 +396,36 @@ class MatchPredictor:
         team1_stats: pd.Series,
         team2_stats: pd.Series,
         account_for_side: bool,
-    ) -> tuple[pd.Series, pd.Series]:
+    ) -> pd.Series:
         """
         Build derived likelihood features for team rows.
-        Returns copies (originals untouched).
+        Returns copy of team1_stats with derived features added.
+
+        Only computes features that are in the training config:
+        - league_elo_win_likelihood (inter-league calibration)
+        - side_win_likelihood (side-specific)
+        - season_win_likelihood (season-specific)
+
+        Note: elo_win_likelihood, glicko2_win_likelihood, pl_win_likelihood,
+        trueskill_win_likelihood were removed as they are redundant
+        (deterministic transforms of base ratings).
         """
         t1 = team1_stats.copy()
         t2 = team2_stats.copy()
 
+        # Add league metadata
         t1_league = t1.get("league") or self._resolve_team_league(t1.get("teamid"))
-        t2_league = t2.get("league") or self._resolve_team_league(t2.get("teamid"))
+        t2.get("league") or self._resolve_team_league(t2.get("teamid"))
         t1_tax = get_league_taxonomy(t1_league)
-        t2_tax = get_league_taxonomy(t2_league)
         t1["league_region"] = t1_tax["region"]
         t1["league_tier"] = t1_tax["tier"]
-        t1["league_strength_prior"] = t1_tax["strength_prior"]
-        t1["league_strength_prior_calibrated"] = get_league_strength_prior(t1_league)
-        t2["league_strength_prior"] = t2_tax["strength_prior"]
-        t2["league_strength_prior_calibrated"] = get_league_strength_prior(t2_league)
 
-        # Rating-based likelihoods (Team1 vs Team2)
-        t1["elo_win_likelihood"] = self.elo_prediction(t1["elo"], t2["elo"])
-        t1["glicko2_win_likelihood"] = self.glicko2_prediction(
-            t1["glicko2_mu"], t1["glicko2_phi"], t2["glicko2_mu"], t2["glicko2_phi"]
-        )
-        t1["pl_win_likelihood"] = self.pl_prediction(
-            t1["pl_mu"], t1["pl_sigma"], t2["pl_mu"], t2["pl_sigma"]
-        )
-        t1["trueskill_win_likelihood"] = self.trueskill_prediction(
-            t1["trueskill_mu"],
-            t1["trueskill_sigma"],
-            t2["trueskill_mu"],
-            t2["trueskill_sigma"],
-        )
+        # League Elo win likelihood (inter-league calibration)
         t1["league_elo_win_likelihood"] = self.league_elo_prediction(
             t1["teamid"], t2["teamid"]
         )
-        t1["league_elo_prior_win_likelihood"] = self.league_elo_prior_prediction(
-            t1["teamid"], t2["teamid"]
-        )
 
-        # Side / patch / season likelihoods
+        # Side win likelihood
         if account_for_side:
             s1_key = f"ema_{str(t1.get('side', '')).casefold()}_side"
             s2_key = f"ema_{str(t2.get('side', '')).casefold()}_side"
@@ -413,10 +435,7 @@ class MatchPredictor:
         else:
             t1["side_win_likelihood"] = 0.5
 
-        t1["patch_win_likelihood"] = self.patch_season_wr_prediction(
-            float(t1.get("ema_patch_win_rate", 0.0)),
-            float(t2.get("ema_patch_win_rate", 0.0)),
-        )
+        # Season win likelihood
         t1["season_win_likelihood"] = self.patch_season_wr_prediction(
             float(t1.get("ema_season_win_rate", 0.0)),
             float(t2.get("ema_season_win_rate", 0.0)),
@@ -469,9 +488,6 @@ class MatchPredictor:
         # 4) Right row (opponent features) — keep all *_win_likelihood + any ema_* used in training
         opp_keep = [c for c in t2_mirr.index if c.endswith("_win_likelihood")]
         opp_keep += [c for c in t2_mirr.index if c.startswith("ema_")]
-        for col in ("league_strength_prior", "league_strength_prior_calibrated"):
-            if col in t2_mirr.index:
-                opp_keep.append(col)
 
         opp_payload = {f"opp_{c}": t2_mirr.get(c, np.nan) for c in opp_keep}
         right = pd.DataFrame([{**opp_payload, "gameid": gid, "side": sde}])
@@ -487,39 +503,14 @@ class MatchPredictor:
         self, p1: pd.DataFrame, p2: pd.DataFrame
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Row-wise (per role) likelihoods for players; returns copies.
+        Row-wise modifications for players; returns copies.
+
+        Note: Player-level rating likelihoods (elo_win_likelihood, etc.) were
+        removed as they are redundant (deterministic transforms of base ratings).
+        The model now uses team-level features without player-level likelihoods.
         """
         a = p1.copy()
         b = p2.copy()
-
-        # Pairwise likelihoods (role vs role)
-        a["elo_win_likelihood"] = self.elo_prediction(a["elo"], b["elo"])
-        a["glicko2_win_likelihood"] = [
-            self.glicko2_prediction(mu1, phi1, mu2, phi2)
-            for mu1, phi1, mu2, phi2 in zip(
-                a["glicko2_mu"],
-                a["glicko2_phi"],
-                b["glicko2_mu"],
-                b["glicko2_phi"],
-                strict=False,
-            )
-        ]
-        a["pl_win_likelihood"] = [
-            self.pl_prediction(mu1, s1, mu2, s2)
-            for mu1, s1, mu2, s2 in zip(
-                a["pl_mu"], a["pl_sigma"], b["pl_mu"], b["pl_sigma"], strict=False
-            )
-        ]
-        a["trueskill_win_likelihood"] = [
-            self.trueskill_prediction(mu1, s1, mu2, s2)
-            for mu1, s1, mu2, s2 in zip(
-                a["trueskill_mu"],
-                a["trueskill_sigma"],
-                b["trueskill_mu"],
-                b["trueskill_sigma"],
-                strict=False,
-            )
-        ]
 
         # Drop raw rating columns (keep id/meta like gameid/side/teamname/position on 'a')
         drop_cols = [
@@ -648,9 +639,38 @@ class MatchPredictor:
             raise ValueError(f"Unknown model name: {model_name}")
         return mapping[model_name]
 
+    def _pipeline_for(self, model_name: str) -> FeaturePipeline | None:
+        """Get the FeaturePipeline for a given model (if loaded)."""
+        mapping = {
+            "outcome": self.outcome_pipeline,
+            "gamelength": self.gamelength_pipeline,
+            "total_kills": self.total_kills_pipeline,
+            "total_towers": self.total_towers_pipeline,
+        }
+        return mapping.get(model_name)
+
     def keep_necessary_columns(
         self, X: pd.DataFrame, *, model_name: str
     ) -> pd.DataFrame:
+        """
+        Prepare features for prediction, ensuring training-inference parity.
+
+        Uses FeaturePipeline.transform() when available (preferred) to apply:
+        - Feature drops (high missing, low variance, high correlation)
+        - Categorical encoding with proper levels
+        - Numeric imputation with training medians
+        - Column alignment to match training order
+
+        Falls back to legacy behavior (reindex + dtype conversion) when
+        FeaturePipeline is not available.
+        """
+        pipeline = self._pipeline_for(model_name)
+
+        if pipeline is not None:
+            # Preferred path: use the full FeaturePipeline for parity
+            return pipeline.transform(X)
+
+        # Legacy fallback when pipeline not available
         features_path, cats_path = self._feature_paths_for(model_name)
         try:
             final_features: list[str] = load_model(features_path)

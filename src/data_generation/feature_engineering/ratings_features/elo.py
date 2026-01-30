@@ -163,18 +163,60 @@ else:  # fallback when numba unavailable
     update_elo_rating = _update_elo_py
 
 
+# Position weights for team Elo aggregation
+# Mid and ADC have higher game impact than support/jungle/top
+POSITION_WEIGHTS: dict[str, float] = {
+    "top": 0.18,
+    "jng": 0.20,
+    "mid": 0.22,
+    "bot": 0.22,
+    "sup": 0.18,
+}
+DEFAULT_POSITION_WEIGHT: float = 0.20  # Fallback for unknown positions
+
+
 def aggregate_team_elo(
-    rows: pd.DataFrame, elo_ratings: dict[int | str, dict[str, Any]], entity_key: str
+    rows: pd.DataFrame,
+    elo_ratings: dict[int | str, dict[str, Any]],
+    entity_key: str,
+    use_position_weights: bool = True,
 ) -> float:
     """
     Aggregate Elo ratings for a group of entities in 'rows' (e.g., all players on a team).
-    Optimized to avoid building a full ratings DataFrame each call.
+
+    Args:
+        rows: DataFrame containing player/entity rows for a team
+        elo_ratings: Dict mapping entity IDs to their rating data
+        entity_key: Column name for entity ID ('playerid' or 'teamid')
+        use_position_weights: If True and 'position' column exists, apply
+            position-based weights (mid/ADC weighted higher than support)
+
+    Returns:
+        Aggregated team Elo rating (weighted average if positions available)
+
     """
     if rows.empty:
         return 0.0
-    return (
-        rows[entity_key].map(lambda eid: elo_ratings.get(eid, {}).get("elo", 0.0)).sum()
-    )
+
+    # Get individual Elo ratings
+    elos = rows[entity_key].map(lambda eid: elo_ratings.get(eid, {}).get("elo", 0.0))
+
+    # Simple sum if no position weighting requested or position column missing
+    if not use_position_weights or "position" not in rows.columns:
+        return float(elos.sum())
+
+    # Position-weighted average
+    positions = rows["position"].str.lower()
+    weights = positions.map(lambda p: POSITION_WEIGHTS.get(p, DEFAULT_POSITION_WEIGHT))
+
+    # Normalize weights to sum to 1 (in case some positions are missing)
+    total_weight = weights.sum()
+    if total_weight == 0:
+        return float(elos.sum())
+
+    # Weighted average, scaled to approximate the old sum (multiply by 5 for 5 players)
+    weighted_avg = (elos * weights).sum() / total_weight
+    return float(weighted_avg * len(rows))
 
 
 def handle_position_switch(

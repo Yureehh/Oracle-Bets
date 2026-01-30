@@ -1,5 +1,5 @@
 {
-  "half_life": 10,
+  "half_life": 9,
   "elo": {
     "k_factor": 32,
     "initial": 1500,

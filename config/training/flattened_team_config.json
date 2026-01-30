@@ -8,11 +8,16 @@
     "season",
     "league_region",
     "league_tier",
-    "league_strength_prior_calibrated",
 
     "gameid",
     "teamid",
     "teamname",
+
+    "game_in_series",
+    "is_bo1",
+    "is_bo3",
+    "is_bo5",
+    "is_deciding_game",
 
     "elo_after",
     "glicko2_mu_after",
@@ -28,15 +33,12 @@
 
     "ema_gamelength_after",
 
-    "ema_assistsat10_after",
-
     "ema_barons_after",
     "ema_dragons_after",
     "ema_heralds_after",
     "ema_elders_after",
     "ema_inhibitors_after",
     "ema_towers_after",
-    "ema_turretplates_after",
     "ema_void_grubs_after",
     "ema_atakhans_after",
 
@@ -86,15 +88,16 @@
 
     "ema_killsat10_after",
     "ema_deathsat10_after",
+    "ema_assistsat10_after",
     "ema_killsat15_after",
-    "ema_assistsat15_after",
     "ema_deathsat15_after",
+    "ema_assistsat15_after",
     "ema_killsat20_after",
-    "ema_assistsat20_after",
     "ema_deathsat20_after",
+    "ema_assistsat20_after",
     "ema_killsat25_after",
-    "ema_assistsat25_after",
     "ema_deathsat25_after",
+    "ema_assistsat25_after",
 
     "ema_blue_side_after",
     "ema_red_side_after",

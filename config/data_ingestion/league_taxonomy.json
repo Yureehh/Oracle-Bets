@@ -8,22 +8,22 @@
     "LCK": {
       "region": "KR",
       "tier": "major",
-      "strength_prior": 150
+      "strength_prior": 110
     },
     "LCKC": {
       "region": "KR",
       "tier": "academy",
-      "strength_prior": -60
+      "strength_prior": -20
     },
     "LPL": {
       "region": "CN",
       "tier": "major",
-      "strength_prior": 150
+      "strength_prior": 110
     },
     "LDL": {
       "region": "CN",
       "tier": "academy",
-      "strength_prior": -60
+      "strength_prior": -20
     },
     "LEC": {
       "region": "EMEA",
@@ -33,47 +33,47 @@
     "LFL": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -30
     },
     "LVP SL": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -30
     },
     "NLC": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "PRM": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "LJL": {
       "region": "JP",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -30
     },
     "VCS": {
       "region": "VN",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -30
     },
     "CBLOL": {
       "region": "BR",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -30
     },
     "TCL": {
       "region": "TR",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -30
     },
     "LIT": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "LTA": {
       "region": "NA/SA",
@@ -98,7 +98,7 @@
     "LAS": {
       "region": "NA/SA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "LCP": {
       "region": "APAC",
@@ -108,42 +108,42 @@
     "NACL": {
       "region": "NA",
       "tier": "academy",
-      "strength_prior": -60
+      "strength_prior": -20
     },
     "UL": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "ESLOL": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "AL": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "HLL": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "GLL": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "HM": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "EBL": {
       "region": "EMEA",
       "tier": "minor",
-      "strength_prior": -60
+      "strength_prior": -45
     },
     "ASI": {
       "region": "INTL",

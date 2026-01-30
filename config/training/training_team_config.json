@@ -8,21 +8,31 @@
     "season",
     "league_region",
     "league_tier",
-    "league_strength_prior_calibrated",
 
     "gameid",
     "side",
 
-    "elo_win_likelihood",
-    "glicko2_win_likelihood",
-    "pl_win_likelihood",
-    "trueskill_win_likelihood",
-    "league_elo_win_likelihood",
-    "league_elo_prior_win_likelihood",
-    "opp_league_strength_prior_calibrated",
+    "game_in_series",
+    "is_bo1",
+    "is_bo3",
+    "is_bo5",
+    "is_deciding_game",
 
+    "is_after_break",
+    "is_first_season_game",
+
+    "h2h_games_before",
+    "h2h_wins_before",
+    "h2h_win_rate_before",
+
+    "league_elo_win_likelihood",
     "side_win_likelihood",
     "season_win_likelihood",
+
+    "glicko2_phi_before",
+    "trueskill_sigma_before",
+    "opp_glicko2_phi_before",
+    "opp_trueskill_sigma_before",
 
     "season_avg_gamelength",
     "team_season_avg_gamelength",
@@ -34,15 +44,12 @@
 
     "ema_gamelength_before",
 
-    "ema_assistsat10_before",
-
     "ema_barons_before",
     "ema_dragons_before",
     "ema_heralds_before",
     "ema_elders_before",
     "ema_inhibitors_before",
     "ema_towers_before",
-    "ema_turretplates_before",
     "ema_void_grubs_before",
     "ema_atakhans_before",
 
@@ -92,15 +99,16 @@
 
     "ema_killsat10_before",
     "ema_deathsat10_before",
+    "ema_assistsat10_before",
     "ema_killsat15_before",
-    "ema_assistsat15_before",
     "ema_deathsat15_before",
+    "ema_assistsat15_before",
     "ema_killsat20_before",
-    "ema_assistsat20_before",
     "ema_deathsat20_before",
+    "ema_assistsat20_before",
     "ema_killsat25_before",
-    "ema_assistsat25_before",
     "ema_deathsat25_before",
+    "ema_assistsat25_before",
 
     "ema_season_win_rate_before",
     "ema_season_games_before"

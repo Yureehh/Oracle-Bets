@@ -1,1 +1,8 @@
-{"mu": 15.0, "sigma": 3.0, "decay_factor": 0.6, "transfer_factor": 0.4, "initial_elo_adjustment_factor": 1.0, "position_reset_factor": 0.2}
+{
+  "mu": 25.0,
+  "sigma": 8.333,
+  "decay_factor": 0.9,
+  "transfer_factor": 0.5,
+  "initial_elo_adjustment_factor": 0.5,
+  "position_reset_factor": 0.2
+}

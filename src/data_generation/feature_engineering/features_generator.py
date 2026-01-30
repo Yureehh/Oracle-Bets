@@ -12,12 +12,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from data_generation.ingestion.oracles_elixir import get_opponent
 from utils.io_utils import get_sorting_keys
-from utils.league_taxonomy import (
-    add_league_taxonomy_columns,
-    get_league_strength_prior,
-)
+from utils.league_taxonomy import add_league_taxonomy_columns
 from utils.logger import LOG_TOPIC, instantiate_logger, logger
 from utils.pd import pd
 
@@ -30,6 +26,11 @@ data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 # Helpers/constants shared by multiple methods
 # ────────────────────────────────────────────────────────────────────────────
 _OPPOSITE_SIDE = {"Blue": "Red", "Red": "Blue"}  # quick side-flip
+GAME_ID_PARTS = 2
+GAMES_IN_BO3 = 3
+GAMES_IN_BO5 = 5
+BREAK_THRESHOLD_DAYS = 45  # ~1.5 months, indicates split break
+H2H_MIN_GAMES = 2  # minimum games to compute head-to-head
 
 
 # Replace zeros with NaN without using pandas' deprecated downcasting in replace
@@ -284,15 +285,6 @@ class FeatureGenerator:
         df = df.sort_values(get_sorting_keys("team")).reset_index(drop=True)
         df = add_league_taxonomy_columns(df, league_col="league")
         df["season"] = df["patch"].astype(str).str.split(".").str[0]
-        df["league_strength_prior_calibrated"] = df["league"].map(
-            get_league_strength_prior
-        )
-        df["opp_league_strength_prior"] = get_opponent(
-            df["league_strength_prior"].tolist(), entity="team"
-        )
-        df["opp_league_strength_prior_calibrated"] = get_opponent(
-            df["league_strength_prior_calibrated"].tolist(), entity="team"
-        )
 
         # ── Game-level context ───────────────────────────────────────────────
         df = df.merge(
@@ -341,11 +333,211 @@ class FeatureGenerator:
                 sort_also_by=["date"],
             )
 
-        return df.merge(
+        df = df.merge(
             game_level[["gameid", "patch_avg_gamelength", "season_avg_gamelength"]],
             on="gameid",
             how="left",
         )
+
+        # Add series context (BO format, game number, deciding game)
+        df = FeatureGenerator.add_series_context(df)
+
+        # Add break indicator (first game after split break)
+        df = FeatureGenerator.add_break_indicator(df)
+
+        # Add head-to-head history against opponent
+        return FeatureGenerator.add_head_to_head_history(df)
+
+    @staticmethod
+    def add_series_context(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add series format and game context features.
+
+        Uses gameid pattern and game column to infer BO format.
+
+        Added columns
+        -------------
+        game_in_series : int
+            Game number (1, 2, 3, etc.) - derived from 'game' column
+        is_bo1 : uint8
+            1 if match is Best-of-1 format
+        is_bo3 : uint8
+            1 if match is Best-of-3 format (games 2 or 3 played)
+        is_bo5 : uint8
+            1 if match is Best-of-5 format (games 4 or 5 played)
+        is_deciding_game : uint8
+            1 if this is game 3 in BO3 or game 5 in BO5
+        """
+        _check_required(df, required={"gameid", "game"})
+
+        out = df.copy()
+
+        # game column already has game number (1, 2, 3, etc.)
+        out["game_in_series"] = out["game"].astype(int)
+
+        # Infer BO format from max game number per match
+        # Extract match identifier by removing game number suffix
+        # gameid format varies: sometimes ends with "_game1", sometimes different patterns
+        # Group by removing trailing digits or "_gameN" pattern
+        # Approach: group by (date, league, team pair) to identify unique matches
+
+        # Use all but last underscore segment if gameid has underscore
+        def _extract_match_id(gid: str) -> str:
+            if "_" in gid:
+                # Try to remove game suffix (e.g., "_1", "_2", "_game1")
+                parts = gid.rsplit("_", 1)
+                if len(parts) == GAME_ID_PARTS and (
+                    parts[1].isdigit() or parts[1].startswith("game")
+                ):
+                    return parts[0]
+            return gid
+
+        out["_match_id"] = out["gameid"].apply(_extract_match_id)
+
+        # Get max game number per match
+        match_max_game = out.groupby("_match_id", observed=True)["game"].transform(
+            "max"
+        )
+
+        # Determine BO format
+        out["is_bo1"] = (match_max_game == 1).astype("uint8")
+        out["is_bo3"] = (match_max_game.isin([2, 3])).astype("uint8")
+        out["is_bo5"] = (match_max_game.isin([4, 5])).astype("uint8")
+
+        # Deciding game: game 3 in BO3, game 5 in BO5
+        out["is_deciding_game"] = (
+            ((out["is_bo3"] == 1) & (out["game"] == GAMES_IN_BO3))
+            | ((out["is_bo5"] == 1) & (out["game"] == GAMES_IN_BO5))
+        ).astype("uint8")
+
+        # Clean up temporary column
+        out = out.drop(columns=["_match_id"])
+
+        data_pipeline_logger.info("Series context features added.")
+        return out
+
+    @staticmethod
+    def add_break_indicator(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add indicator for first game after a long break (split break).
+
+        Added columns
+        -------------
+        days_since_last_game : float
+            Days since team's previous game (NaN for first game ever)
+        is_after_break : uint8
+            1 if this is first game after >45 days (split break)
+        is_first_season_game : uint8
+            1 if this is team's first game of the season
+        """
+        _check_required(df, required={"teamid", "date", "season"})
+
+        out = df.sort_values(["teamid", "date"], kind="mergesort").copy()
+
+        # Days since last game
+        out["days_since_last_game"] = (
+            out.groupby("teamid", observed=True)["date"].diff().dt.days
+        )
+
+        # First game after break (>45 days gap)
+        out["is_after_break"] = (
+            out["days_since_last_game"] > BREAK_THRESHOLD_DAYS
+        ).astype("uint8")
+
+        # First game of season
+        out["is_first_season_game"] = (
+            out.groupby(["teamid", "season"], observed=True).cumcount() == 0
+        ).astype("uint8")
+
+        data_pipeline_logger.info("Break indicator features added.")
+        return out
+
+    @staticmethod
+    def add_head_to_head_history(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add head-to-head win rate against current opponent using only prior games.
+
+        Added columns
+        -------------
+        h2h_games_before : int
+            Number of prior games against this opponent
+        h2h_wins_before : int
+            Number of wins against this opponent in prior games
+        h2h_win_rate_before : float
+            Win rate against this opponent (NaN if <2 prior games)
+        """
+        _check_required(df, required={"teamid", "gameid", "date", "result", "side"})
+
+        out = df.sort_values(["date", "gameid"], kind="mergesort").copy()
+
+        # Normalize result to numeric
+        if not pd.api.types.is_numeric_dtype(out["result"]):
+            result_map = {
+                "W": 1,
+                "Win": 1,
+                "win": 1,
+                True: 1,
+                "L": 0,
+                "Loss": 0,
+                "loss": 0,
+                False: 0,
+            }
+            out["_result_num"] = out["result"].map(result_map).astype("float64")
+        else:
+            out["_result_num"] = out["result"].astype("float64")
+
+        # Create opponent mapping per game
+        # For each row, get the opponent teamid from the same gameid but opposite side
+        game_teams = (
+            out.groupby("gameid", observed=True)
+            .apply(
+                lambda g: dict(zip(g["side"], g["teamid"], strict=False)),
+                include_groups=False,
+            )
+            .to_dict()
+        )
+
+        def _get_opponent(row):
+            teams = game_teams.get(row["gameid"], {})
+            opp_side = _OPPOSITE_SIDE.get(row["side"])
+            return teams.get(opp_side)
+
+        out["_opponent_id"] = out.apply(_get_opponent, axis=1)
+
+        # Create matchup key (sorted team pair for consistency)
+        out["_matchup"] = out.apply(
+            lambda r: tuple(sorted([r["teamid"], r["_opponent_id"]]))
+            if pd.notna(r["_opponent_id"])
+            else None,
+            axis=1,
+        )
+
+        # For each team, compute expanding h2h stats against each opponent
+        # Group by (teamid, opponent) and compute cumulative stats shifted
+        out = out.sort_values(["teamid", "_opponent_id", "date"], kind="mergesort")
+
+        # Cumulative games and wins vs this opponent (shifted for leak-free)
+        grp = out.groupby(["teamid", "_opponent_id"], observed=True, sort=False)
+        out["h2h_games_before"] = grp.cumcount()  # 0-indexed, so this is count before
+        out["h2h_wins_before"] = (
+            grp["_result_num"].cumsum().shift().fillna(0).astype(int)
+        )
+
+        # Win rate (only if >= H2H_MIN_GAMES prior games)
+        out["h2h_win_rate_before"] = np.where(
+            out["h2h_games_before"] >= H2H_MIN_GAMES,
+            out["h2h_wins_before"] / out["h2h_games_before"],
+            np.nan,
+        )
+
+        # Clean up temporary columns
+        out = out.drop(columns=["_result_num", "_opponent_id", "_matchup"])
+
+        # Re-sort to original order
+        out = out.sort_values(["date", "gameid", "side"], kind="mergesort")
+
+        data_pipeline_logger.info("Head-to-head history features added.")
+        return out
 
 
 # ────────────────────────────────────────────────────────────────────────────
