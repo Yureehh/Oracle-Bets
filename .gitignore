@@ -104,8 +104,14 @@ uv.lock
 # Catboost info
 catboost_info/
 
-# All models folder
-models/artifacts/
+# Model outputs (generated files)
+models/*.parquet
+models/*.pkl
+models/*.json
+models/OutcomePrediction/
+models/GamelengthPrediction/
+models/TotalKillsPrediction/
+models/TotalTowersPrediction/
 
 # Site packages
 site-packages/

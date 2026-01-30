@@ -8,7 +8,7 @@ This assumes you have a `.env` file with the required keys and have installed de
 python src/1_data_generator.py
 ```
 
-This writes processed data to `data/processed/` and rating artifacts to `models/artifacts/`.
+This writes processed data to `data/processed/` and rating artifacts to `models/`.
 
 ## 2) Train models
 
@@ -16,7 +16,7 @@ This writes processed data to `data/processed/` and rating artifacts to `models/
 python src/2_models_training.py
 ```
 
-Models are stored in `models/artifacts/<ModelName>/`.
+Models are stored in `models/<ModelName>/`.
 
 ## 3) Update schedule (optional)
 

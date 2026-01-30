@@ -22,4 +22,4 @@ Ratings are used directly as features and as win-likelihood signals.
 - Total kills prediction (regression)
 - Total towers prediction (regression)
 
-Trained models and metadata are stored under `models/artifacts/<ModelName>/`.
+Trained models and metadata are stored under `models/<ModelName>/`.

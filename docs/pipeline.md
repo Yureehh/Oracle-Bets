@@ -16,11 +16,11 @@ The data pipeline turns raw match logs into model-ready features.
 ## Ratings
 
 - Team and player ratings live in `src/feature_engineering/ratings_features/`.
-- League Elo is computed for cross-league comparisons and stored in `models/artifacts/league_elo.parquet`.
-- League strength priors are derived from league Elo and stored in `models/artifacts/league_strength_priors.json`.
+- League Elo is computed for cross-league comparisons and stored in `models/league_elo.parquet`.
+- League strength priors are derived from league Elo and stored in `models/league_strength_priors.json`.
 
 ## Outputs
 
 - Raw and interim data in `data/raw/` and `data/interim/`.
 - Processed, training, and flattened datasets in `data/processed/`.
-- Model artifacts in `models/artifacts/`.
+- Model artifacts in `models/`.

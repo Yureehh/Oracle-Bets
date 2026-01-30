@@ -260,7 +260,7 @@ class LightGBMModel(GradientBoostingModel):
     # ─────────────────────────── utilities ─────────────────────────── #
 
     def _maybe_load_cached_hparams(self) -> dict[str, Any] | None:
-        """Load best_hyperparameters from models/artifacts/<ModelName>/"""
+        """Load best_hyperparameters from models/<ModelName>/"""
         path = (
             MODEL_ARTIFACTS
             / self.model_name

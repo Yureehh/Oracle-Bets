@@ -15,6 +15,6 @@ It mirrors training-time transforms to avoid feature drift.
 `src/3_oracle_bot.py` uses the predictor to serve predictions via Discord. It expects:
 
 - `DISCORD_TOKEN` in the environment
-- Trained model artifacts under `models/artifacts/`
+- Trained model artifacts under `models/`
 
 The bot also exposes utility commands like Kelly criterion suggestions.

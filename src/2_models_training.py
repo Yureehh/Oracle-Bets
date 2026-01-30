@@ -62,7 +62,7 @@ MODELS_TO_TRAIN: tuple[ModelConfig, ...] = (
 
 
 def _model_path(name: str, ext: str = MODEL_FILE_EXTENSION) -> Path:
-    # Always store under models/artifacts/<Name>/<Name>.<ext>
+    # Always store under models/<Name>/<Name>.<ext>
     return MODEL_ARTIFACTS / name / f"{name}.{ext}"
 
 

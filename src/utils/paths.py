@@ -110,96 +110,91 @@ FLATTENED_PLAYER_CONFIG: Final = (
 )
 
 # --------------------------------------------------------------------------- #
-# Model artefacts & hyper-parameters
+# Model outputs (directly in models/)
 # --------------------------------------------------------------------------- #
-MODEL_ARTIFACTS: Final = MODELS_DIR / "artifacts"
-LEAGUE_ELO: Final = MODEL_ARTIFACTS / "league_elo.parquet"
-TEAM_LEAGUES_MAPPING: Final = MODEL_ARTIFACTS / "team_league_mapping.parquet"
-LEAGUE_STRENGTH_PRIORS: Final = MODEL_ARTIFACTS / "league_strength_priors.json"
-WHOLE_HISTORY_RATING_PATH: Final = MODEL_ARTIFACTS / "whr.pkl"
+MODEL_ARTIFACTS: Final = MODELS_DIR  # Alias for backwards compatibility
+
+LEAGUE_ELO: Final = MODELS_DIR / "league_elo.parquet"
+TEAM_LEAGUES_MAPPING: Final = MODELS_DIR / "team_league_mapping.parquet"
+LEAGUE_STRENGTH_PRIORS: Final = MODELS_DIR / "league_strength_priors.json"
+WHOLE_HISTORY_RATING_PATH: Final = MODELS_DIR / "whr.pkl"
 OUTCOME_PREDICTION_MODEL_PATH: Final = (
-    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction.pkl"
+    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction.pkl"
 )
 OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_categorical_features.pkl"
+    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction_categorical_features.pkl"
 )
 OUTCOME_PREDICTION_FINAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_final_features.pkl"
+    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction_final_features.pkl"
 )
 OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_best_hyperparameters.pkl"
+    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction_best_hyperparameters.pkl"
 )
 OUTCOME_PREDICTION_FEATURE_PIPELINE: Final = (
-    MODEL_ARTIFACTS / "OutcomePrediction" / "OutcomePrediction_feature_pipeline.pkl"
+    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction_feature_pipeline.pkl"
 )
 GAMELENGTH_PREDICTION_MODEL_PATH: Final = (
-    MODEL_ARTIFACTS / "GamelengthPrediction" / "GamelengthPrediction.pkl"
+    MODELS_DIR / "GamelengthPrediction" / "GamelengthPrediction.pkl"
 )
 GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODEL_ARTIFACTS
+    MODELS_DIR
     / "GamelengthPrediction"
     / "GamelengthPrediction_categorical_features.pkl"
 )
 GAMELENGTH_PREDICTION_FINAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "GamelengthPrediction" / "GamelengthPrediction_final_features.pkl"
+    MODELS_DIR / "GamelengthPrediction" / "GamelengthPrediction_final_features.pkl"
 )
 GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODEL_ARTIFACTS
+    MODELS_DIR
     / "GamelengthPrediction"
     / "GamelengthPrediction_best_hyperparameters.pkl"
 )
 GAMELENGTH_PREDICTION_FEATURE_PIPELINE: Final = (
-    MODEL_ARTIFACTS
-    / "GamelengthPrediction"
-    / "GamelengthPrediction_feature_pipeline.pkl"
+    MODELS_DIR / "GamelengthPrediction" / "GamelengthPrediction_feature_pipeline.pkl"
 )
 TOTAL_KILLS_PREDICTION_MODEL_PATH: Final = (
-    MODEL_ARTIFACTS / "TotalKillsPrediction" / "TotalKillsPrediction.pkl"
+    MODELS_DIR / "TotalKillsPrediction" / "TotalKillsPrediction.pkl"
 )
 TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODEL_ARTIFACTS
+    MODELS_DIR
     / "TotalKillsPrediction"
     / "TotalKillsPrediction_categorical_features.pkl"
 )
 TOTAL_KILLS_PREDICTION_FINAL_FEATURES: Final = (
-    MODEL_ARTIFACTS / "TotalKillsPrediction" / "TotalKillsPrediction_final_features.pkl"
+    MODELS_DIR / "TotalKillsPrediction" / "TotalKillsPrediction_final_features.pkl"
 )
 TOTAL_KILLS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODEL_ARTIFACTS
+    MODELS_DIR
     / "TotalKillsPrediction"
     / "TotalKillsPrediction_best_hyperparameters.pkl"
 )
 TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE: Final = (
-    MODEL_ARTIFACTS
-    / "TotalKillsPrediction"
-    / "TotalKillsPrediction_feature_pipeline.pkl"
+    MODELS_DIR / "TotalKillsPrediction" / "TotalKillsPrediction_feature_pipeline.pkl"
 )
 TOTAL_TOWERS_PREDICTION_MODEL_PATH: Final = (
-    MODEL_ARTIFACTS / "TotalTowersPrediction" / "TotalTowersPrediction.pkl"
+    MODELS_DIR / "TotalTowersPrediction" / "TotalTowersPrediction.pkl"
 )
 TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODEL_ARTIFACTS
+    MODELS_DIR
     / "TotalTowersPrediction"
     / "TotalTowersPrediction_categorical_features.pkl"
 )
 TOTAL_TOWERS_PREDICTION_FINAL_FEATURES: Final = (
-    MODEL_ARTIFACTS
-    / "TotalTowersPrediction"
-    / "TotalTowersPrediction_final_features.pkl"
+    MODELS_DIR / "TotalTowersPrediction" / "TotalTowersPrediction_final_features.pkl"
 )
 TOTAL_TOWERS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODEL_ARTIFACTS
+    MODELS_DIR
     / "TotalTowersPrediction"
     / "TotalTowersPrediction_best_hyperparameters.pkl"
 )
 TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE: Final = (
-    MODEL_ARTIFACTS
-    / "TotalTowersPrediction"
-    / "TotalTowersPrediction_feature_pipeline.pkl"
+    MODELS_DIR / "TotalTowersPrediction" / "TotalTowersPrediction_feature_pipeline.pkl"
 )
 
-# Hyper-parameter grids
-HYPERPARAMETERS: Final = MODELS_DIR / "hyperparameters"
+# --------------------------------------------------------------------------- #
+# Hyper-parameter configs (now in config/)
+# --------------------------------------------------------------------------- #
+HYPERPARAMETERS: Final = CONFIG_DIR / "hyperparameters"
 DEFAULT_MODELS_PARAMETERS: Final = HYPERPARAMETERS / "default_models_parameters.json"
 BEST_HYPERPARAMETERS: Final = HYPERPARAMETERS / "best_hyperparams"
 LEAGUES_ELO_HYPERPARAMETERS: Final = (
@@ -235,7 +230,6 @@ _directories: list[Path] = [
     PROCESSED_TEAMS_DIR,
     PROCESSED_PLAYERS_DIR,
     MODELS_DIR,
-    MODEL_ARTIFACTS,
     REPORTS_DIR,
     FIGURES_DIR,
     INSIGHTS_DIR,
@@ -243,10 +237,10 @@ _directories: list[Path] = [
     DATA_INGESTION_DIR,
     EXTRAS_DIR,
     TRAINING_AND_INPUT_COLS_DIR,
-    NOTEBOOKS_DIR,
-    LOGS_DIR,
     HYPERPARAMETERS,
     BEST_HYPERPARAMETERS,
+    NOTEBOOKS_DIR,
+    LOGS_DIR,
 ]
 
 for _d in _directories:

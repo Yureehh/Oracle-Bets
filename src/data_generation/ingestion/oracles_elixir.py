@@ -27,7 +27,9 @@ from utils.io_utils import FileLoadError, get_sorting_keys, json_loader
 from utils.logger import LOG_TOPIC, instantiate_logger, logger
 from utils.paths import (
     CONSIDERED_LEAGUES,
+    EXTRAS_DIR,
     IMPORT_COLUMNS,
+    RAW_DATA,
     TEAM_REPLACEMENTS_AND_INVALID_GAMES,
 )
 from utils.pd import pd
@@ -564,17 +566,15 @@ def filter_teams_by_league(path1, path2, output_path):
 
 
 if __name__ == "__main__":
-    raw_data_path = r"data/raw/raw_data.parquet"
-    cons_leagues_path = r"config/data_ingestion/considered_leagues.json"
-    team_by_league_path = r"config/data_ingestion/extras/teams_by_league.json"
-    filtered_teams_by_league_path = (
-        r"config/data_ingestion/extras/filtered_teams_by_league.json"
-    )
+    team_by_league_path = EXTRAS_DIR / "teams_by_league.json"
+    filtered_teams_by_league_path = EXTRAS_DIR / "filtered_teams_by_league.json"
 
-    league_teams = get_league_teams(raw_data_path)
-    with Path(team_by_league_path).open("w") as f:
+    league_teams = get_league_teams(str(RAW_DATA))
+    with team_by_league_path.open("w") as f:
         json.dump(league_teams, f, indent=4)
 
     filter_teams_by_league(
-        cons_leagues_path, team_by_league_path, filtered_teams_by_league_path
+        str(CONSIDERED_LEAGUES),
+        str(team_by_league_path),
+        str(filtered_teams_by_league_path),
     )
