@@ -93,8 +93,8 @@ TRAINING_TEAM_DATA: Final = PROCESSED_TEAMS_DIR / "training_teams.parquet"
 TRAINING_PLAYER_DATA: Final = PROCESSED_PLAYERS_DIR / "training_players.parquet"
 
 TRAINING_TEAM_CONFIG: Final = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
-TRAINING_TEAM_CONFIG_COMPACT: Final = (
-    TRAINING_AND_INPUT_COLS_DIR / "training_team_config_compact.json"
+TRAINING_COMPACT_TEAM_CONFIG: Final = (
+    TRAINING_AND_INPUT_COLS_DIR / "training_compact_team_config.json"
 )
 FLATTENED_TEAM_CONFIG: Final = (
     TRAINING_AND_INPUT_COLS_DIR / "flattened_team_config.json"
@@ -102,8 +102,8 @@ FLATTENED_TEAM_CONFIG: Final = (
 TRAINING_PLAYER_CONFIG: Final = (
     TRAINING_AND_INPUT_COLS_DIR / "training_player_config.json"
 )
-TRAINING_PLAYER_CONFIG_COMPACT: Final = (
-    TRAINING_AND_INPUT_COLS_DIR / "training_player_config_compact.json"
+TRAINING_COMPACT_PLAYER_CONFIG: Final = (
+    TRAINING_AND_INPUT_COLS_DIR / "training_compact_player_config.json"
 )
 FLATTENED_PLAYER_CONFIG: Final = (
     TRAINING_AND_INPUT_COLS_DIR / "flattened_player_config.json"

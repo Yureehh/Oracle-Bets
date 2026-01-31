@@ -21,7 +21,7 @@ import pickle
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from pandas.api.types import is_numeric_dtype
@@ -38,6 +38,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedGroupKFold
 
 from prediction_models.data_preprocessor import DataPreprocessor
+from prediction_models.feature_selector import FeatureSelector
 from prediction_models.observability import MLObservabilityMixin
 from utils.logger import logger
 from utils.paths import FIGURES_DIR, MODEL_ARTIFACTS, PROCESSED_TEAMS
@@ -45,6 +46,9 @@ from utils.pd import pd
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+# Feature selection method type
+FeatureSelectionMethod = Literal["none", "importance", "cumulative", "rfecv", "boruta"]
 
 # Defaults
 DEFAULT_TRIALS = 100
@@ -714,7 +718,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             return X
         before = X.shape[1]
         X2 = X.drop(columns=meta, errors="ignore")
-        removed = [c for c in meta if c not in X2.columns or c not in X.columns]
+        removed = [c for c in meta if c not in X2.columns]
         logger.debug(
             "Dropped %d meta columns from %s features: %s",
             before - X2.shape[1],
@@ -739,9 +743,22 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         compute_shap: bool = True,
         store_cohorts: bool = True,
         temporal_split: bool = True,
+        feature_selection: FeatureSelectionMethod = "none",
+        feature_selection_threshold: float = 0.001,
     ):  # sourcery skip: low-code-quality
         """
         Main entrypoint used by the training script.
+
+        Parameters
+        ----------
+        target_col : str
+            Name of target column
+        validate : bool
+            Whether to run validation and store metrics
+        feature_selection : str
+            Feature selection method: "none", "importance", "cumulative", "rfecv", "boruta"
+        feature_selection_threshold : float
+            Threshold for importance-based selection (default 0.1% of total importance)
 
         Returns
         -------
@@ -815,16 +832,18 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         X_test = self._strip_meta_from_features(X_test, "test")
 
         # Record eval identifiers for artifacts (sourced from meta_df, not features)
-        eval_gameids = (
-            meta_df.loc[X_test.index, "gameid"]
-            if "gameid" in meta_df
-            else pd.Series(index=X_test.index, dtype=object)
-        )
-        eval_sides = (
-            meta_df.loc[X_test.index, "side"]
-            if "side" in meta_df
-            else pd.Series(index=X_test.index, dtype=object)
-        )
+        def _safe_meta_col(col: str) -> pd.Series:
+            """Safely extract meta column with index alignment handling."""
+            if col not in meta_df.columns:
+                return pd.Series(index=X_test.index, dtype=object)
+            try:
+                return meta_df.loc[X_test.index, col]
+            except KeyError:
+                logger.warning("Index mismatch extracting %s from meta_df", col)
+                return pd.Series(index=X_test.index, dtype=object)
+
+        eval_gameids = _safe_meta_col("gameid")
+        eval_sides = _safe_meta_col("side")
 
         # Fit feature pipeline on TRAIN (drop/missing/variance/corr/cats/impute)
         # and reapply it to val/test to guarantee feature parity.
@@ -888,6 +907,34 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         except (ValueError, KeyError) as e:
             logger.warning("Pure-bucket categorical check failed: %s", e)
 
+        # ─────────────────── Pre-training Feature Selection ─────────────────── #
+        # RFECV and Boruta run before main training (they use quick internal models)
+        if feature_selection in ("rfecv", "boruta"):
+            logger.info(
+                "Running %s feature selection before training...", feature_selection
+            )
+            selected_features = FeatureSelector.select_features(
+                method=feature_selection,
+                X_train=X_train,
+                y_train=y_train,
+                model=None,  # Uses internal model
+            )
+            # Keep only selected features (+ categoricals that might not be numeric)
+            keep_cols = list(set(selected_features) | set(categorical_features))
+            keep_cols = [c for c in train_cols if c in keep_cols]
+
+            X_train = X_train[keep_cols]
+            X_val = X_val[keep_cols]
+            X_test = X_test[keep_cols]
+            train_cols = keep_cols
+            categorical_features = [c for c in categorical_features if c in keep_cols]
+
+            logger.info(
+                "Feature selection reduced features: %d -> %d",
+                len(feature_pipeline.train_columns),
+                len(train_cols),
+            )
+
         # Persist features metadata
         self.store_model_features(pd.Index(train_cols))
         self.store_categorical_features(categorical_features)
@@ -902,6 +949,31 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             y_val=y_val,
             categorical_features=categorical_features,
         )
+
+        # ─────────────────── Post-training Feature Selection Report ─────────────────── #
+        # For importance-based methods, report which features would be selected
+        if feature_selection in ("importance", "cumulative"):
+            try:
+                if feature_selection == "importance":
+                    selected = FeatureSelector.select_by_importance(
+                        model, X_train, threshold=feature_selection_threshold
+                    )
+                else:
+                    selected = FeatureSelector.select_by_cumulative_importance(
+                        model, X_train, cumulative_threshold=0.95
+                    )
+                logger.info(
+                    "Feature selection would keep %d/%d features",
+                    len(selected),
+                    len(train_cols),
+                )
+                # Store selected features for future use
+                self._store_pickle(
+                    f"{self.model_name}_selected_features.pkl",
+                    selected,
+                )
+            except Exception as e:
+                logger.warning("Feature selection report failed: %s", e)
 
         # ─────────────────────────── Validate ──────────────────────────── #
         if validate:

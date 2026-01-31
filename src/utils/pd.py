@@ -19,14 +19,14 @@ def _load_pd() -> Any:
     transform with custom lambdas).
     """
     if os.getenv("USE_FIREDUCKS", "1").lower() in {"0", "false", "no"}:
-        import pandas as _pd  # type: ignore[import-untyped]  # noqa: ICN001, PLC0415
+        import pandas as _pd  # type: ignore[import-untyped]  # noqa: ICN001
 
         return _pd
 
     try:
-        import fireducks.pandas as _fd_pd  # type: ignore[import-not-found]  # noqa: PLC0415
+        import fireducks.pandas as _fd_pd  # type: ignore[import-not-found]
     except Exception:
-        import pandas as _pd  # type: ignore[import-untyped]  # noqa: ICN001, PLC0415
+        import pandas as _pd  # type: ignore[import-untyped]  # noqa: ICN001
 
         return _pd
 
@@ -36,7 +36,7 @@ def _load_pd() -> Any:
     try:
         _extracted_from__load(_fd_pd)
     except Exception:
-        import pandas as _pd  # type: ignore[import-untyped]  # noqa: ICN001, PLC0415
+        import pandas as _pd  # type: ignore[import-untyped]  # noqa: ICN001
 
         return _pd
 

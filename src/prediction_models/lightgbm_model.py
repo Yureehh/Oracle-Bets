@@ -52,8 +52,11 @@ class _LGBWithThreshold:
         return self.raw_model.predict_proba(X)
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        p = self.predict_proba(X)[:, 1]
-        return (p >= self.decision_threshold_).astype(int)
+        proba = self.predict_proba(X)
+        if proba.ndim == 1 or proba.shape[1] < 2:  # noqa: PLR2004
+            msg = f"Expected binary classification proba, got shape {proba.shape}"
+            raise ValueError(msg)
+        return (proba[:, 1] >= self.decision_threshold_).astype(int)
 
 
 @dataclass
@@ -132,7 +135,7 @@ class LightGBMModel(GradientBoostingModel):
                 lgb.log_evaluation(0),
             ]
             fit_kwargs["callbacks"] = callbacks
-        except Exception:
+        except (AttributeError, TypeError):
             fit_kwargs["early_stopping_rounds"] = _EARLY_STOP_ROUNDS
 
         model.fit(**fit_kwargs)
@@ -177,17 +180,18 @@ class LightGBMModel(GradientBoostingModel):
                 if self.problem_type == "classification"
                 else "mae",
                 "learning_rate": trial.suggest_float(
-                    "learning_rate", 1e-3, 0.1, log=True
+                    "learning_rate", 0.01, 0.15, log=True
                 ),
-                "num_leaves": trial.suggest_int("num_leaves", 31, 256),
-                "max_depth": trial.suggest_int("max_depth", -1, 12),
-                "min_child_samples": trial.suggest_int("min_child_samples", 10, 120),
-                "subsample": trial.suggest_float("subsample", 0.7, 1.0),
+                "num_leaves": trial.suggest_int("num_leaves", 20, 150),
+                "max_depth": trial.suggest_int("max_depth", 4, 12),
+                "min_child_samples": trial.suggest_int("min_child_samples", 20, 150),
+                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
                 "bagging_freq": trial.suggest_int("bagging_freq", 0, 7),
-                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.7, 1.0),
-                "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 2.0),
-                "reg_lambda": trial.suggest_float("reg_lambda", 0.0, 5.0),
-                "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.5),
+                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+                "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),
+                "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 2.0, log=True),
+                "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 5.0, log=True),
+                "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.3),
                 "n_estimators": _DEFAULT_N_ESTIMATORS,
                 "verbosity": -1,
                 "random_state": _RANDOM_STATE,
@@ -225,7 +229,7 @@ class LightGBMModel(GradientBoostingModel):
                     lgb.log_evaluation(0),
                 ]
                 fit_kwargs["callbacks"] = callbacks
-            except Exception:
+            except (AttributeError, TypeError):
                 fit_kwargs["early_stopping_rounds"] = _EARLY_STOP_ROUNDS
 
             clf.fit(**fit_kwargs)
@@ -289,6 +293,8 @@ class LightGBMModel(GradientBoostingModel):
 class ModelFactory:
     """Factory class to create models based on the problem type."""
 
+    SUPPORTED_MODELS = ("lightgbm", "tabnet")
+
     @staticmethod
     def create_model(
         model_name: str,
@@ -300,13 +306,24 @@ class ModelFactory:
         if problem_type not in ["classification", "regression"]:
             msg = f"Unsupported problem type: {problem_type}"
             raise ValueError(msg)
-        if model_type != "lightgbm":
-            msg = f"Unsupported model type: {model_type}"
-            raise ValueError(msg)
 
-        return LightGBMModel(
-            model_name=model_name,
-            problem_type=problem_type,
-            team_data=training_team_data,
-            player_data=training_player_data,
-        )
+        if model_type == "lightgbm":
+            return LightGBMModel(
+                model_name=model_name,
+                problem_type=problem_type,
+                team_data=training_team_data,
+                player_data=training_player_data,
+            )
+
+        if model_type == "tabnet":
+            from prediction_models.tabnet_model import TabNetModel
+
+            return TabNetModel(
+                model_name=model_name,
+                problem_type=problem_type,
+                team_data=training_team_data,
+                player_data=training_player_data,
+            )
+
+        msg = f"Unsupported model type: {model_type}. Supported: {ModelFactory.SUPPORTED_MODELS}"
+        raise ValueError(msg)

@@ -50,10 +50,10 @@ from utils.paths import (
     PROCESSED_PLAYERS,
     PROCESSED_TEAMS,
     RAW_DATA,
+    TRAINING_COMPACT_PLAYER_CONFIG,
+    TRAINING_COMPACT_TEAM_CONFIG,
     TRAINING_PLAYER_CONFIG,
-    TRAINING_PLAYER_CONFIG_COMPACT,
     TRAINING_TEAM_CONFIG,
-    TRAINING_TEAM_CONFIG_COMPACT,
 )
 from utils.pd import pd
 
@@ -94,13 +94,23 @@ def _parallelise(
     player_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Run a function on team & player frames concurrently.
-    Exceptions in either branch will propagate on .result().
+    Run a function on team & player frames concurrently with proper error handling.
+    Exceptions in either branch propagate with entity context.
     """
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_team = pool.submit(fn, team_df, entity="team")
-        f_player = pool.submit(fn, player_df, entity="player")
-        return f_team.result(), f_player.result()
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="entity_") as pool:
+        futures = {
+            pool.submit(fn, team_df, entity="team"): "team",
+            pool.submit(fn, player_df, entity="player"): "player",
+        }
+        results: dict[str, pd.DataFrame] = {}
+        for fut, entity in futures.items():
+            try:
+                results[entity] = fut.result(timeout=3600)  # 1hr timeout
+            except Exception as exc:
+                msg = f"Failed to process {entity} data: {exc}"
+                logger.exception(msg)
+                raise DataGeneratorError(msg) from exc
+        return results["team"], results["player"]
 
 
 def _require_env(key: str) -> str:
@@ -148,6 +158,10 @@ class DataGenerator:
         _dbl(f"Ingesting seasons: {years}")
         try:
             raw = self.oracle.ingest_data(years=years)
+            if raw.empty:
+                msg = f"No data ingested for years: {years}"
+                raise DataGeneratorError(msg)
+            _dbl(f"Ingested {len(raw):,} rows")
             safe_store_df_as_parquet(raw, RAW_DATA, [logger, data_pipeline_logger])
             return raw
         except (BotoCoreError, ClientError) as exc:  # AWS-side errors
@@ -156,17 +170,9 @@ class DataGenerator:
 
     # ───────────────────────  split & persist  ───────────────────────────
     def clean_and_store_data(self, raw: pd.DataFrame) -> None:
-        """Split raw into team/player, sort deterministically, persist interim."""
-        self.team_data = (
-            self.oracle.clean_data(raw, "team")
-            .sort_values(get_sorting_keys("team"))
-            .reset_index(drop=True)
-        )
-        self.player_data = (
-            self.oracle.clean_data(raw, "player")
-            .sort_values(get_sorting_keys("player"))
-            .reset_index(drop=True)
-        )
+        """Split raw into team/player, persist interim. Sorting done in clean_data()."""
+        self.team_data = self.oracle.clean_data(raw, "team")
+        self.player_data = self.oracle.clean_data(raw, "player")
 
         self._store_team_and_player(
             INTERIM_TEAM_DATA,
@@ -276,9 +282,9 @@ class DataGenerator:
             variant = os.getenv("TRAINING_CONFIG_VARIANT", "").casefold()
             if variant == "compact":
                 config_path = (
-                    TRAINING_TEAM_CONFIG_COMPACT
+                    TRAINING_COMPACT_TEAM_CONFIG
                     if entity == "team"
-                    else TRAINING_PLAYER_CONFIG_COMPACT
+                    else TRAINING_COMPACT_PLAYER_CONFIG
                 )
 
         cfg = json_loader(config_path)
@@ -336,11 +342,24 @@ class DataGenerator:
         start = dt.datetime.now()
         _dbl("=== Data generation started ===")
 
+        def _timed(_: str) -> float:
+            return (dt.datetime.now() - start).total_seconds()
+
         raw = self.ingest_data_from_s3()
+        _dbl(f"  [1/5] Ingestion: {_timed('ingest'):.1f}s")
+
         self.clean_and_store_data(raw)
+        _dbl(f"  [2/5] Cleaning: {_timed('clean'):.1f}s")
+        del raw  # Free memory early
+
         self.enrich_datasets()
+        _dbl(f"  [3/5] Enrichment: {_timed('enrich'):.1f}s")
+
         self.extract_training_data()
+        _dbl(f"  [4/5] Training extraction: {_timed('train'):.1f}s")
+
         self.flatten_both_inference_data()
+        _dbl(f"  [5/5] Flattening: {_timed('flatten'):.1f}s")
 
         elapsed = (dt.datetime.now() - start).total_seconds()
         _dbl(f"=== Data generation finished in {elapsed:.1f}s ===")

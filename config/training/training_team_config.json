@@ -31,8 +31,6 @@
 
     "glicko2_phi_before",
     "trueskill_sigma_before",
-    "opp_glicko2_phi_before",
-    "opp_trueskill_sigma_before",
 
     "season_avg_gamelength",
     "team_season_avg_gamelength",

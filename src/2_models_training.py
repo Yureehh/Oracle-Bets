@@ -9,6 +9,10 @@ Models covered:
 # - Gamelength prediction (regression)
 # - Total kills prediction (regression)
 # - Total towers prediction (regression)
+
+Usage:
+    python src/2_models_training.py
+    # Configure MODEL_TYPE and FEATURE_SELECTION variables below before running
 """
 
 from __future__ import annotations
@@ -34,7 +38,17 @@ if TYPE_CHECKING:
 # ───────────────────────────────  types / config  ─────────────────────────────
 
 ProblemType = Literal["classification", "regression"]
+ModelType = Literal["lightgbm", "tabnet"]
+FeatureSelectionMethod = Literal["none", "importance", "cumulative", "rfecv", "boruta"]
 MODEL_FILE_EXTENSION = "pkl"
+
+# ─────────────────────────  TRAINING CONFIGURATION  ───────────────────────────
+# Modify these variables before running the script
+
+MODEL_TYPE: ModelType = "tabnet"  # "lightgbm" or "tabnet"
+FEATURE_SELECTION: FeatureSelectionMethod = (
+    "none"  # "none", "importance", "cumulative", "rfecv", "boruta"
+)
 
 
 @dataclass(frozen=True)
@@ -82,10 +96,21 @@ def _check_target_presence(team_df: pd.DataFrame, target: str) -> None:
 # ───────────────────────────────  core training  ─────────────────────────────
 
 
+def _get_model_name_with_suffix(base_name: str, model_type: ModelType) -> str:
+    """Generate model name with type suffix (e.g., OutcomePrediction_TabNet)."""
+    suffix_map: dict[ModelType, str] = {
+        "lightgbm": "LightGBM",
+        "tabnet": "TabNet",
+    }
+    return f"{base_name}_{suffix_map[model_type]}"
+
+
 def initialize_and_train_model(
     cfg: ModelConfig,
     training_team_data: pd.DataFrame,
     training_player_data: pd.DataFrame,
+    model_type: ModelType = "lightgbm",
+    feature_selection: FeatureSelectionMethod = "none",
 ) -> Path | None:
     """
     Initialize, train (and optionally validate) a model defined by `cfg`.
@@ -93,38 +118,50 @@ def initialize_and_train_model(
     """
     _check_target_presence(training_team_data, cfg.target_column)
 
+    # Add model type suffix to prevent overwriting different model types
+    full_model_name = _get_model_name_with_suffix(cfg.model_name, model_type)
+
     logger.info(
-        f"Initializing '{cfg.model_name}' "
-        f"({cfg.problem_type}) with target='{cfg.target_column}'…"
+        f"Initializing '{full_model_name}' "
+        f"({cfg.problem_type}, model={model_type}) with target='{cfg.target_column}'…"
     )
 
     model = ModelFactory.create_model(
-        model_name=cfg.model_name,
+        model_name=full_model_name,
         problem_type=cfg.problem_type,
         training_team_data=training_team_data,
         training_player_data=training_player_data,
+        model_type=model_type,
     )
 
     start = dt.datetime.now()
     # Allow model to do its own splits/joins/feature selection internally
     model.preprocess_data(target_col=cfg.target_column)
 
-    logger.info(f"Training '{cfg.model_name}' (validate={cfg.validate})…")
+    logger.info(
+        f"Training '{full_model_name}' (validate={cfg.validate}, "
+        f"feature_selection={feature_selection})…"
+    )
     trained_model = model.train_and_validate_model(
-        target_col=cfg.target_column, validate=cfg.validate
+        target_col=cfg.target_column,
+        validate=cfg.validate,
+        feature_selection=feature_selection,
     )
     elapsed = (dt.datetime.now() - start).total_seconds()
 
-    logger.info(f"'{cfg.model_name}' training complete in {elapsed:.2f}s.")
+    logger.info(f"'{full_model_name}' training complete in {elapsed:.2f}s.")
 
-    path = _model_path(cfg.model_name)
-    store_model(path, trained_model, cfg.model_name, logger)
+    path = _model_path(full_model_name)
+    store_model(path, trained_model, full_model_name, logger)
     logger.info(f"Stored trained model: {path}\n")
 
     return path
 
 
-def train_models() -> None:
+def train_models(
+    model_type: ModelType = "lightgbm",
+    feature_selection: FeatureSelectionMethod = "none",
+) -> None:
     """Train all configured models using shared training tables."""
     try:
         logger.info("Loading training data…")
@@ -144,9 +181,14 @@ def train_models() -> None:
                 cfg=cfg,
                 training_team_data=team_df,
                 training_player_data=player_df,
+                model_type=model_type,
+                feature_selection=feature_selection,
             )
             trained.append(cfg.model_name)
-        except (Exception, KeyboardInterrupt) as e:
+        except KeyboardInterrupt:
+            logger.info(f"Training interrupted by user during '{cfg.model_name}'")
+            raise
+        except Exception as e:
             failed.append(cfg.model_name)
             logger.exception(f"Training failed for '{cfg.model_name}': {e}")
 
@@ -158,10 +200,17 @@ def train_models() -> None:
     logger.info("All model training tasks finished.\n")
 
 
-# ───────────────────────────────  cli entrypoint  ─────────────────────────────
+# ───────────────────────────────  entrypoint  ─────────────────────────────────
 
 if __name__ == "__main__":
     try:
-        train_models()
+        logger.info(
+            f"Starting training with model_type={MODEL_TYPE}, "
+            f"feature_selection={FEATURE_SELECTION}"
+        )
+        train_models(
+            model_type=MODEL_TYPE,
+            feature_selection=FEATURE_SELECTION,
+        )
     except (KeyboardInterrupt, Exception) as e:
         logger.exception(f"Unexpected error during model training: {e}")

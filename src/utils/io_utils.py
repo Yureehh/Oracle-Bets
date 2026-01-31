@@ -207,7 +207,7 @@ def safe_store_df_as_parquet(
         try:
             print("ERROR WRITING PARQUET WITH PANDAS, TRYING POLARS")  # noqa: T201
             # TODO: does this make sense? I can find a smarter way to do this.
-            import polars as pl  # noqa: PLC0415
+            import polars as pl
 
             pl.DataFrame(df_to_write).write_parquet(out, compression="gzip")
             _log_to_all("info", "Saved DataFrame → %s (polars)", out)

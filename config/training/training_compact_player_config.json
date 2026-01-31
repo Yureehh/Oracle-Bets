@@ -2,16 +2,10 @@
   "player_features": [
     "date",
     "league",
-    "patch",
-    "season",
-
     "gameid",
     "side",
     "position",
 
-    "elo_win_likelihood",
-    "glicko2_win_likelihood",
-    "pl_win_likelihood",
     "trueskill_win_likelihood",
 
     "ema_gamelength_before",
@@ -32,6 +26,8 @@
     "ema_goldat15_before",
     "ema_xpat15_before",
     "ema_csat15_before",
+    "ema_firstbloodkill_before",
+    "ema_firstbloodvictim_before",
 
     "ema_golddiffat15_before",
     "ema_xpdiffat15_before",
