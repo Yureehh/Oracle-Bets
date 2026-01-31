@@ -88,7 +88,7 @@ class TabNetModel(GradientBoostingModel):
     Uses the base class orchestration for splits, pruning, and observability.
     """
 
-    def train_model(
+    def train_model(  # noqa: PLR0915
         self,
         *,
         X_train: pd.DataFrame,
@@ -136,6 +136,7 @@ class TabNetModel(GradientBoostingModel):
         # and treat encoded categories as numeric features instead
         X_train = X_train.copy()
         X_val = X_val.copy()
+        categorical_encodings: dict[str, dict] = {}
         if categorical_features:
             for col in categorical_features:
                 is_string_col = (
@@ -148,10 +149,21 @@ class TabNetModel(GradientBoostingModel):
                         | set(X_val[col].dropna().unique())
                     )
                     cat_mapping = {cat: i for i, cat in enumerate(all_categories)}
+                    categorical_encodings[col] = cat_mapping
                     X_train[col] = (
                         X_train[col].map(cat_mapping).fillna(-1).astype(float)
                     )
                     X_val[col] = X_val[col].map(cat_mapping).fillna(-1).astype(float)
+
+        # Store categorical encodings for inference
+        if categorical_encodings:
+            self._store_pickle(
+                f"{self.model_name}_categorical_encodings.pkl", categorical_encodings
+            )
+            logger.info(
+                "Stored categorical encodings for %d columns.",
+                len(categorical_encodings),
+            )
 
         # Build model parameters (no categorical embeddings - treated as numeric)
         # Force CPU to avoid MPS/GPU segfaults on macOS

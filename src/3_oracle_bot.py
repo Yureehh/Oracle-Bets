@@ -12,11 +12,11 @@ import os
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from ingestion.data_generation.schedule import (
+
+from data_generation.ingestion.schedule import (
     fetch_and_store_schedule,
     get_or_update_schedule,
 )
-
 from discord_predictions.discord_utils import (
     calculate_kelly_criterion,
     calculate_odds,

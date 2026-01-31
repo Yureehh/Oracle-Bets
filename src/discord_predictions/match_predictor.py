@@ -43,20 +43,25 @@ from prediction_models.gbdt_model import FeaturePipeline, GradientBoostingModel
 from utils.io_utils import load_model
 from utils.league_taxonomy import get_league_strength_prior, get_league_taxonomy
 from utils.paths import (
+    ACTIVE_MODEL_TYPE,
+    GAMELENGTH_PREDICTION_CATEGORICAL_ENCODINGS,
     GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES,
     GAMELENGTH_PREDICTION_FEATURE_PIPELINE,
     GAMELENGTH_PREDICTION_FINAL_FEATURES,
     GAMELENGTH_PREDICTION_MODEL_PATH,
     LEAGUE_ELO,
+    OUTCOME_PREDICTION_CATEGORICAL_ENCODINGS,
     OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
     OUTCOME_PREDICTION_FEATURE_PIPELINE,
     OUTCOME_PREDICTION_FINAL_FEATURES,
     OUTCOME_PREDICTION_MODEL_PATH,
     TEAM_LEAGUES_MAPPING,
+    TOTAL_KILLS_PREDICTION_CATEGORICAL_ENCODINGS,
     TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES,
     TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_KILLS_PREDICTION_FINAL_FEATURES,
     TOTAL_KILLS_PREDICTION_MODEL_PATH,
+    TOTAL_TOWERS_PREDICTION_CATEGORICAL_ENCODINGS,
     TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES,
     TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_TOWERS_PREDICTION_FINAL_FEATURES,
@@ -649,6 +654,46 @@ class MatchPredictor:
         }
         return mapping.get(model_name)
 
+    def _is_tabnet(self) -> bool:
+        """Check if using TabNet model type."""
+        return ACTIVE_MODEL_TYPE == "TabNet"
+
+    def _encodings_path_for(self, model_name: str):
+        """Get the categorical encodings path for a given model."""
+        mapping = {
+            "outcome": OUTCOME_PREDICTION_CATEGORICAL_ENCODINGS,
+            "gamelength": GAMELENGTH_PREDICTION_CATEGORICAL_ENCODINGS,
+            "total_kills": TOTAL_KILLS_PREDICTION_CATEGORICAL_ENCODINGS,
+            "total_towers": TOTAL_TOWERS_PREDICTION_CATEGORICAL_ENCODINGS,
+        }
+        return mapping.get(model_name)
+
+    def _load_categorical_encodings(self, model_name: str) -> dict:
+        """Load categorical encodings for TabNet inference."""
+        path = self._encodings_path_for(model_name)
+        if path is None:
+            return {}
+        try:
+            return load_model(path)
+        except Exception:
+            return {}
+
+    def _prepare_for_tabnet(self, X: pd.DataFrame, model_name: str) -> np.ndarray:
+        """Convert DataFrame to float32 numpy array for TabNet inference."""
+        encodings = self._load_categorical_encodings(model_name)
+        X = X.copy()
+
+        for col in X.columns:
+            if col in encodings:
+                # Use stored encoding from training
+                X[col] = X[col].map(encodings[col]).fillna(-1)
+            elif X[col].dtype == "category" or X[col].dtype == "object":
+                # Fallback: encode to integers using pandas category codes
+                X[col] = X[col].astype("category").cat.codes
+
+        arr = X.values.astype(np.float32)
+        return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
     def keep_necessary_columns(
         self, X: pd.DataFrame, *, model_name: str
     ) -> pd.DataFrame:
@@ -708,6 +753,11 @@ class MatchPredictor:
         # players_* aggregation
         X = GradientBoostingModel.process_players_likelihood_columns(X)
         X = self.keep_necessary_columns(X, model_name="outcome")
+
+        # TabNet needs numpy float32 with encoded categoricals
+        if self._is_tabnet():
+            X = self._prepare_for_tabnet(X, model_name="outcome")
+
         proba = self.outcome_model.predict_proba(X)
         return np.round(proba, PREDICTION_PRECISION)
 
@@ -723,6 +773,11 @@ class MatchPredictor:
             X = GradientBoostingModel.fuse_opposing_team_features(X)
         X = GradientBoostingModel.process_players_likelihood_columns(X)
         X = self.keep_necessary_columns(X, model_name=model_name)
+
+        # TabNet needs numpy float32 with encoded categoricals
+        if self._is_tabnet():
+            X = self._prepare_for_tabnet(X, model_name=model_name)
+
         pred = model.predict(X)
         return float(pred[0]) if len(pred) else float("nan")
 

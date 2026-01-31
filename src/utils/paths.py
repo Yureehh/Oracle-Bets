@@ -10,9 +10,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from dotenv import load_dotenv
+
+# --------------------------------------------------------------------------- #
+# Model Type Configuration
+# --------------------------------------------------------------------------- #
+ModelType = Literal["LightGBM", "TabNet"]
+
+# Change this to switch between model types for inference
+ACTIVE_MODEL_TYPE: ModelType = "LightGBM"
 
 # --------------------------------------------------------------------------- #
 # Environment
@@ -118,77 +126,106 @@ LEAGUE_ELO: Final = MODELS_DIR / "league_elo.parquet"
 TEAM_LEAGUES_MAPPING: Final = MODELS_DIR / "team_league_mapping.parquet"
 LEAGUE_STRENGTH_PRIORS: Final = MODELS_DIR / "league_strength_priors.json"
 WHOLE_HISTORY_RATING_PATH: Final = MODELS_DIR / "whr.pkl"
-OUTCOME_PREDICTION_MODEL_PATH: Final = (
-    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction.pkl"
+
+
+# --------------------------------------------------------------------------- #
+# Dynamic model path helpers (uses ACTIVE_MODEL_TYPE)
+# --------------------------------------------------------------------------- #
+def _model_dir(base_name: str) -> Path:
+    """Get model directory with type suffix (e.g., OutcomePrediction_TabNet/)."""
+    return MODELS_DIR / f"{base_name}_{ACTIVE_MODEL_TYPE}"
+
+
+def _model_path(base_name: str) -> Path:
+    """Get path to the main model file."""
+    full_name = f"{base_name}_{ACTIVE_MODEL_TYPE}"
+    return _model_dir(base_name) / f"{full_name}.pkl"
+
+
+def _model_artifact(base_name: str, artifact: str) -> Path:
+    """Get path to a model artifact (e.g., categorical_features, feature_pipeline)."""
+    full_name = f"{base_name}_{ACTIVE_MODEL_TYPE}"
+    return _model_dir(base_name) / f"{full_name}_{artifact}.pkl"
+
+
+# --------------------------------------------------------------------------- #
+# Outcome Prediction Model Paths
+# --------------------------------------------------------------------------- #
+OUTCOME_PREDICTION_MODEL_PATH: Path = _model_path("OutcomePrediction")
+OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Path = _model_artifact(
+    "OutcomePrediction", "categorical_features"
 )
-OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction_categorical_features.pkl"
+OUTCOME_PREDICTION_FINAL_FEATURES: Path = _model_artifact(
+    "OutcomePrediction", "final_features"
 )
-OUTCOME_PREDICTION_FINAL_FEATURES: Final = (
-    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction_final_features.pkl"
+OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Path = _model_artifact(
+    "OutcomePrediction", "best_hyperparameters"
 )
-OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction_best_hyperparameters.pkl"
+OUTCOME_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
+    "OutcomePrediction", "feature_pipeline"
 )
-OUTCOME_PREDICTION_FEATURE_PIPELINE: Final = (
-    MODELS_DIR / "OutcomePrediction" / "OutcomePrediction_feature_pipeline.pkl"
+OUTCOME_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
+    "OutcomePrediction", "categorical_encodings"
 )
-GAMELENGTH_PREDICTION_MODEL_PATH: Final = (
-    MODELS_DIR / "GamelengthPrediction" / "GamelengthPrediction.pkl"
+
+# --------------------------------------------------------------------------- #
+# Gamelength Prediction Model Paths
+# --------------------------------------------------------------------------- #
+GAMELENGTH_PREDICTION_MODEL_PATH: Path = _model_path("GamelengthPrediction")
+GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Path = _model_artifact(
+    "GamelengthPrediction", "categorical_features"
 )
-GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODELS_DIR
-    / "GamelengthPrediction"
-    / "GamelengthPrediction_categorical_features.pkl"
+GAMELENGTH_PREDICTION_FINAL_FEATURES: Path = _model_artifact(
+    "GamelengthPrediction", "final_features"
 )
-GAMELENGTH_PREDICTION_FINAL_FEATURES: Final = (
-    MODELS_DIR / "GamelengthPrediction" / "GamelengthPrediction_final_features.pkl"
+GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Path = _model_artifact(
+    "GamelengthPrediction", "best_hyperparameters"
 )
-GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODELS_DIR
-    / "GamelengthPrediction"
-    / "GamelengthPrediction_best_hyperparameters.pkl"
+GAMELENGTH_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
+    "GamelengthPrediction", "feature_pipeline"
 )
-GAMELENGTH_PREDICTION_FEATURE_PIPELINE: Final = (
-    MODELS_DIR / "GamelengthPrediction" / "GamelengthPrediction_feature_pipeline.pkl"
+GAMELENGTH_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
+    "GamelengthPrediction", "categorical_encodings"
 )
-TOTAL_KILLS_PREDICTION_MODEL_PATH: Final = (
-    MODELS_DIR / "TotalKillsPrediction" / "TotalKillsPrediction.pkl"
+
+# --------------------------------------------------------------------------- #
+# Total Kills Prediction Model Paths
+# --------------------------------------------------------------------------- #
+TOTAL_KILLS_PREDICTION_MODEL_PATH: Path = _model_path("TotalKillsPrediction")
+TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES: Path = _model_artifact(
+    "TotalKillsPrediction", "categorical_features"
 )
-TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODELS_DIR
-    / "TotalKillsPrediction"
-    / "TotalKillsPrediction_categorical_features.pkl"
+TOTAL_KILLS_PREDICTION_FINAL_FEATURES: Path = _model_artifact(
+    "TotalKillsPrediction", "final_features"
 )
-TOTAL_KILLS_PREDICTION_FINAL_FEATURES: Final = (
-    MODELS_DIR / "TotalKillsPrediction" / "TotalKillsPrediction_final_features.pkl"
+TOTAL_KILLS_PREDICTION_BEST_HYPERPARAMETERS: Path = _model_artifact(
+    "TotalKillsPrediction", "best_hyperparameters"
 )
-TOTAL_KILLS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODELS_DIR
-    / "TotalKillsPrediction"
-    / "TotalKillsPrediction_best_hyperparameters.pkl"
+TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
+    "TotalKillsPrediction", "feature_pipeline"
 )
-TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE: Final = (
-    MODELS_DIR / "TotalKillsPrediction" / "TotalKillsPrediction_feature_pipeline.pkl"
+TOTAL_KILLS_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
+    "TotalKillsPrediction", "categorical_encodings"
 )
-TOTAL_TOWERS_PREDICTION_MODEL_PATH: Final = (
-    MODELS_DIR / "TotalTowersPrediction" / "TotalTowersPrediction.pkl"
+
+# --------------------------------------------------------------------------- #
+# Total Towers Prediction Model Paths
+# --------------------------------------------------------------------------- #
+TOTAL_TOWERS_PREDICTION_MODEL_PATH: Path = _model_path("TotalTowersPrediction")
+TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES: Path = _model_artifact(
+    "TotalTowersPrediction", "categorical_features"
 )
-TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES: Final = (
-    MODELS_DIR
-    / "TotalTowersPrediction"
-    / "TotalTowersPrediction_categorical_features.pkl"
+TOTAL_TOWERS_PREDICTION_FINAL_FEATURES: Path = _model_artifact(
+    "TotalTowersPrediction", "final_features"
 )
-TOTAL_TOWERS_PREDICTION_FINAL_FEATURES: Final = (
-    MODELS_DIR / "TotalTowersPrediction" / "TotalTowersPrediction_final_features.pkl"
+TOTAL_TOWERS_PREDICTION_BEST_HYPERPARAMETERS: Path = _model_artifact(
+    "TotalTowersPrediction", "best_hyperparameters"
 )
-TOTAL_TOWERS_PREDICTION_BEST_HYPERPARAMETERS: Final = (
-    MODELS_DIR
-    / "TotalTowersPrediction"
-    / "TotalTowersPrediction_best_hyperparameters.pkl"
+TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
+    "TotalTowersPrediction", "feature_pipeline"
 )
-TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE: Final = (
-    MODELS_DIR / "TotalTowersPrediction" / "TotalTowersPrediction_feature_pipeline.pkl"
+TOTAL_TOWERS_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
+    "TotalTowersPrediction", "categorical_encodings"
 )
 
 # --------------------------------------------------------------------------- #

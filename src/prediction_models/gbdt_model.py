@@ -428,13 +428,13 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         X: pd.DataFrame,
     ) -> tuple[pd.DataFrame, dict[str, float]]:
         medians = X.median(numeric_only=True).to_dict()
-        return X.fillna(value=medians), medians
+        return X.fillna(value=medians).infer_objects(copy=False), medians
 
     @staticmethod
     def _impute_apply_numeric(
         X: pd.DataFrame, medians: dict[str, float]
     ) -> pd.DataFrame:
-        return X.fillna(value=medians)
+        return X.fillna(value=medians).infer_objects(copy=False)
 
     @staticmethod
     def _impute_categorical(X: pd.DataFrame, cat_cols: list[str]) -> pd.DataFrame:
