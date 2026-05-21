@@ -15,9 +15,12 @@ from typing import Any
 import optuna
 from glicko2 import Glicko2, Rating
 from oracle_bets_core.io_utils import get_sorting_keys, json_loader
+from oracle_bets_core.league_selection import (
+    cross_league_competitions,
+    major_leagues,
+)
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
-    CONSIDERED_LEAGUES,
     DEFAULT_MODELS_PARAMETERS,
     ENTITY_GLICKO_HYPERPARAMETERS,
     LEAGUE_ELO,
@@ -30,11 +33,10 @@ from tqdm import tqdm
 # Global Config / Constants
 # ----------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
-considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
-MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
-CROSS_LEAGUE_COMPETITIONS = considered_leagues_config["cross_league_competitions"]
+MAJOR_LEAGUES = major_leagues()
+CROSS_LEAGUE_COMPETITIONS = cross_league_competitions()
 TRIALS_NUM = 25
 
 # Default Glicko-2 parameters (parallel to how Elo had baseline ratings)

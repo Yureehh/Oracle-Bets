@@ -6,10 +6,15 @@ League of Legends configuration files live under `config/lol/`.
 
 - `config/lol/data_ingestion/import_columns.json` - columns to load from Oracle's Elixir.
 - `config/lol/data_ingestion/team_name_replacements_and_invalid_games.json` - data cleanup rules.
-- `config/lol/data_ingestion/considered_leagues.json` - leagues, taxonomy, and tiers.
+- `config/lol/data_ingestion/considered_leagues.json` - named league-selection profiles.
 - `config/lol/data_ingestion/league_taxonomy.json` - league taxonomy + prior calibration settings.
-- `config/lol/data_ingestion/extras/teams_by_league.json` - generated team lists by league.
-- `config/lol/data_ingestion/extras/filtered_teams_by_league.json` - generated team lists filtered to considered leagues.
+- `reports/lol/ingestion/teams_by_league.json` - generated team lists by league.
+- `reports/lol/ingestion/filtered_teams_by_league.json` - generated team lists filtered to the active league profile.
+
+The default active profile is `tier1_plus_erls`, which keeps current Tier 1,
+2025 Americas bridge leagues, international events, major ERLs, and APAC feeder
+leagues. Switch to `tier1_current` for a stricter market-facing dataset or
+`research_all_supported` for broad experiments.
 
 ## Training
 

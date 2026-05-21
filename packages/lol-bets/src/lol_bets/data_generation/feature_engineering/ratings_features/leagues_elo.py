@@ -12,11 +12,8 @@ from collections import defaultdict
 from pathlib import Path
 
 import optuna
-from oracle_bets_core.io_utils import (
-    get_sorting_keys,
-    json_loader,
-    safe_store_df_as_parquet,
-)
+from oracle_bets_core.io_utils import get_sorting_keys, safe_store_df_as_parquet
+from oracle_bets_core.league_selection import cross_league_competitions
 from oracle_bets_core.league_taxonomy import (
     get_league_strength_prior,
     get_league_taxonomy,
@@ -24,7 +21,6 @@ from oracle_bets_core.league_taxonomy import (
 )
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
-    CONSIDERED_LEAGUES,
     LEAGUE_ELO,
     LEAGUE_STRENGTH_PRIORS,
     LEAGUES_ELO_HYPERPARAMETERS,
@@ -37,8 +33,7 @@ from tqdm import tqdm
 # ----------------------------------------------------------------------
 # Global Config / Constants
 # ----------------------------------------------------------------------
-considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
-CROSS_LEAGUE_COMPETITIONS = set(considered_leagues_config["cross_league_competitions"])
+CROSS_LEAGUE_COMPETITIONS = cross_league_competitions()
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 ROWS_PER_TEAM = 2  # one per side

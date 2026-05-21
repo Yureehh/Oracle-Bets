@@ -16,9 +16,12 @@ from typing import Any
 import optuna
 from openskill.models import PlackettLuce
 from oracle_bets_core.io_utils import get_sorting_keys, json_loader
+from oracle_bets_core.league_selection import (
+    cross_league_competitions,
+    major_leagues,
+)
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
-    CONSIDERED_LEAGUES,
     DEFAULT_MODELS_PARAMETERS,
     ENTITY_PL_HYPERPARAMETERS,
     LEAGUE_ELO,
@@ -37,9 +40,8 @@ DEFAULT_SIGMA = float(pl_config.get("sigma", 8.333))
 TRIALS_NUM = 25
 MIN_FLOAT = 1e-9  # For float comparisons
 
-considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
-MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
-CROSS_LEAGUE_COMPETITIONS = considered_leagues_config["cross_league_competitions"]
+MAJOR_LEAGUES = major_leagues()
+CROSS_LEAGUE_COMPETITIONS = cross_league_competitions()
 
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 

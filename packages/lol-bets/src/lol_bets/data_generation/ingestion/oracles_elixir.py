@@ -23,9 +23,9 @@ from typing import TYPE_CHECKING, Any
 import awswrangler as wr
 from dotenv import load_dotenv
 from oracle_bets_core.io_utils import FileLoadError, get_sorting_keys, json_loader
+from oracle_bets_core.league_selection import selected_leagues
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
-    CONSIDERED_LEAGUES,
     EXTRAS_DIR,
     IMPORT_COLUMNS,
     RAW_DATA,
@@ -575,9 +575,7 @@ class OraclesElixir:
         logger.info("Filtering data for relevant leagues...")
         data_pipeline_logger.info("Filtering data for relevant leagues...")
         try:
-            considered: list[str] = json_loader(CONSIDERED_LEAGUES)[
-                "considered_leagues"
-            ]
+            considered = selected_leagues()
         except (FileNotFoundError, KeyError):
             logger.error("League configuration invalid or missing.")
             data_pipeline_logger.exception("League configuration invalid or missing.")
@@ -654,10 +652,9 @@ def get_league_teams(parquet_path: str) -> dict:
     return df.groupby("league")["teamname"].unique().apply(list).to_dict()
 
 
-def filter_teams_by_league(path1, path2, output_path):
-    # Read the considered leagues from the first JSON file
-    with Path(path1).open() as f:
-        considered_leagues = json.load(f)["considered_leagues"]
+def filter_teams_by_league(path2, output_path):
+    # Read the selected leagues from the league selection config.
+    considered_leagues = selected_leagues()
     # Read the teams by league from the second JSON file
     with Path(path2).open() as f:
         teams_by_league = json.load(f)
@@ -681,7 +678,6 @@ if __name__ == "__main__":
         json.dump(league_teams, f, indent=4)
 
     filter_teams_by_league(
-        str(CONSIDERED_LEAGUES),
         str(team_by_league_path),
         str(filtered_teams_by_league_path),
     )

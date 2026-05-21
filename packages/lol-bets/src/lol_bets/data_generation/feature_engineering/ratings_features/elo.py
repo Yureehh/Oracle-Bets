@@ -14,9 +14,12 @@ from typing import Any
 
 import optuna
 from oracle_bets_core.io_utils import get_sorting_keys, json_loader
+from oracle_bets_core.league_selection import (
+    cross_league_competitions,
+    major_leagues,
+)
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
-    CONSIDERED_LEAGUES,
     DEFAULT_MODELS_PARAMETERS,
     ENTITY_ELO_HYPERPARAMETERS,
     LEAGUE_ELO,
@@ -34,10 +37,9 @@ except Exception:
 # Global Config / Constants
 # ------------------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
-considered_leagues_config = json_loader(CONSIDERED_LEAGUES)
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
-CROSS_COMPETITION_LEAGUES = considered_leagues_config["cross_league_competitions"]
-MAJOR_LEAGUES = considered_leagues_config["major_leagues"]
+CROSS_COMPETITION_LEAGUES = cross_league_competitions()
+MAJOR_LEAGUES = major_leagues()
 TRIALS_NUM = 25
 MAX_EXPONENT = 8.0  # To prevent overflow in expected outcome calc
 

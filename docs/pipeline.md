@@ -6,7 +6,7 @@ The data pipeline turns raw match logs into model-ready features.
 
 - Source: Oracle's Elixir CSV dumps in S3.
 - Entrypoint: `packages/lol-bets/src/lol_bets/data_generation/ingestion/oracles_elixir.py`.
-- Filtering: `config/lol/data_ingestion/considered_leagues.json`.
+- Filtering: active profile in `config/lol/data_ingestion/considered_leagues.json`.
 
 ## Feature engineering
 

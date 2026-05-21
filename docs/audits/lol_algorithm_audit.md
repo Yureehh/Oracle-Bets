@@ -40,7 +40,7 @@ whether player feature generation itself fails or simply needs to be rerun.
 
 - Full game composition checks are mostly present: the ingestion layer removes
   games that do not have 12 total rows, 10 unique players, and 2 teams.
-- League filtering is explicit through `considered_leagues.json`.
+- League filtering is explicit through the active profile in `considered_leagues.json`.
 - Date coercion and game length normalization are handled early.
 - Patch values are forward-filled, which is practical for Oracle's Elixir dumps
   but should be validated after every upstream schema change.

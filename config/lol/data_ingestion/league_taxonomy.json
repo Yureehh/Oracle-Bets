@@ -40,6 +40,26 @@
       "tier": "minor",
       "strength_prior": -30
     },
+    "LES": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -40
+    },
+    "RL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "ROL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "LPLOL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -50
+    },
     "NLC": {
       "region": "EMEA",
       "tier": "minor",
@@ -52,6 +72,11 @@
     },
     "LJL": {
       "region": "JP",
+      "tier": "minor",
+      "strength_prior": -30
+    },
+    "PCS": {
+      "region": "APAC",
       "tier": "minor",
       "strength_prior": -30
     },
