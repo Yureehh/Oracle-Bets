@@ -1,0 +1,51 @@
+{
+  "team_features": [
+    "date",
+    "league",
+    "gameid",
+    "side",
+
+    "result",
+    "gamelength",
+    "total_kills",
+    "total_towers",
+
+    "league_region",
+    "league_tier",
+
+    "game_in_series",
+    "is_bo1",
+    "is_bo3",
+    "is_bo5",
+    "is_deciding_game",
+    "is_after_break",
+
+    "elo_win_likelihood",
+    "trueskill_win_likelihood",
+    "league_elo_win_likelihood",
+
+    "side_win_likelihood",
+    "season_win_likelihood",
+
+    "h2h_games_before",
+    "h2h_win_rate_before",
+
+    "ema_season_win_rate_before",
+    "ema_season_games_before",
+
+    "ema_gamelength_before",
+    "ema_team_kpm_before",
+    "ema_egpm_before",
+
+    "ema_firsttower_before",
+    "ema_firstdragon_before",
+
+    "ema_golddiffat15_before",
+    "ema_golddiffat25_before",
+    "ema_xpdiffat15_before",
+    "ema_xpdiffat25_before",
+
+    "ema_towers_before",
+    "ema_dragons_before"
+  ]
+}

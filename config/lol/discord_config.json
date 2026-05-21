@@ -1,0 +1,11 @@
+{
+  "EMPTY_ROSTER": {
+    "top": null,
+    "jng": null,
+    "mid": null,
+    "bot": null,
+    "sup": null
+  },
+
+  "MESSAGE_LIMIT": 2000
+}

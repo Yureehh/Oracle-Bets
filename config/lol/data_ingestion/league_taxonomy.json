@@ -1,0 +1,214 @@
+{
+  "defaults": {
+    "region": "Unknown",
+    "tier": "minor",
+    "strength_prior": 0
+  },
+  "leagues": {
+    "LCK": {
+      "region": "KR",
+      "tier": "major",
+      "strength_prior": 110
+    },
+    "LCKC": {
+      "region": "KR",
+      "tier": "academy",
+      "strength_prior": -20
+    },
+    "LPL": {
+      "region": "CN",
+      "tier": "major",
+      "strength_prior": 110
+    },
+    "LDL": {
+      "region": "CN",
+      "tier": "academy",
+      "strength_prior": -20
+    },
+    "LEC": {
+      "region": "EMEA",
+      "tier": "major",
+      "strength_prior": 100
+    },
+    "LFL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -30
+    },
+    "LVP SL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -30
+    },
+    "NLC": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "PRM": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "LJL": {
+      "region": "JP",
+      "tier": "minor",
+      "strength_prior": -30
+    },
+    "VCS": {
+      "region": "VN",
+      "tier": "minor",
+      "strength_prior": -30
+    },
+    "CBLOL": {
+      "region": "BR",
+      "tier": "minor",
+      "strength_prior": -30
+    },
+    "TCL": {
+      "region": "TR",
+      "tier": "minor",
+      "strength_prior": -30
+    },
+    "LIT": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "LTA": {
+      "region": "NA/SA",
+      "tier": "major",
+      "strength_prior": 100
+    },
+    "LTA N": {
+      "region": "NA/SA",
+      "tier": "major",
+      "strength_prior": 100
+    },
+    "LTA S": {
+      "region": "NA/SA",
+      "tier": "major",
+      "strength_prior": 100
+    },
+    "LCS": {
+      "region": "NA",
+      "tier": "major",
+      "strength_prior": 100
+    },
+    "LAS": {
+      "region": "NA/SA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "LCP": {
+      "region": "APAC",
+      "tier": "major",
+      "strength_prior": 100
+    },
+    "NACL": {
+      "region": "NA",
+      "tier": "academy",
+      "strength_prior": -20
+    },
+    "UL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "ESLOL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "AL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "HLL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "GLL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "HM": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "EBL": {
+      "region": "EMEA",
+      "tier": "minor",
+      "strength_prior": -45
+    },
+    "ASI": {
+      "region": "INTL",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "Asia Master": {
+      "region": "INTL",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "CDF": {
+      "region": "EMEA",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "DCup": {
+      "region": "INTL",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "EM": {
+      "region": "EMEA",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "EPL": {
+      "region": "EMEA",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "EWC": {
+      "region": "INTL",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "FST": {
+      "region": "INTL",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "IC": {
+      "region": "INTL",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "KeSPA": {
+      "region": "KR",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "MSI": {
+      "region": "INTL",
+      "tier": "cross",
+      "strength_prior": 0
+    },
+    "WLDs": {
+      "region": "INTL",
+      "tier": "cross",
+      "strength_prior": 0
+    }
+  },
+  "prior_settings": {
+    "prior_scale": 0.25,
+    "max_abs_prior": 200,
+    "calibration_mode": "tiered"
+  }
+}

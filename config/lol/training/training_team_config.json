@@ -1,0 +1,95 @@
+{
+  "team_features": [
+    "date",
+    "league",
+    "patch",
+    "playoffs",
+    "game",
+    "season",
+    "league_region",
+    "league_tier",
+
+    "gameid",
+    "side",
+
+    "game_in_series",
+    "is_bo1",
+    "is_bo3",
+    "is_bo5",
+    "is_deciding_game",
+
+    "is_after_break",
+    "is_first_season_game",
+
+    "h2h_games_before",
+    "h2h_wins_before",
+    "h2h_win_rate_before",
+
+    "league_elo_win_likelihood",
+    "side_win_likelihood",
+    "season_win_likelihood",
+
+    "glicko2_phi_before",
+    "trueskill_sigma_before",
+
+    "season_avg_gamelength",
+    "team_season_avg_gamelength",
+
+    "result",
+    "gamelength",
+    "total_kills",
+    "total_towers",
+
+    "ema_gamelength_before",
+
+    "ema_barons_before",
+    "ema_dragons_before",
+    "ema_heralds_before",
+    "ema_elders_before",
+    "ema_inhibitors_before",
+    "ema_towers_before",
+    "ema_void_grubs_before",
+
+    "ema_ckpm_before",
+    "ema_team_kpm_before",
+    "ema_egpm_before",
+    "ema_gspd_before",
+    "ema_gpr_before",
+
+    "ema_firstblood_before",
+    "ema_firstdragon_before",
+    "ema_firstherald_before",
+    "ema_firstbaron_before",
+    "ema_firsttower_before",
+    "ema_firstmidtower_before",
+    "ema_firsttothreetowers_before",
+
+    "ema_goldat15_before",
+    "ema_goldat25_before",
+
+    "ema_xpat15_before",
+    "ema_xpat25_before",
+
+    "ema_csat15_before",
+    "ema_csat25_before",
+
+    "ema_golddiffat15_before",
+    "ema_golddiffat25_before",
+
+    "ema_xpdiffat15_before",
+    "ema_xpdiffat25_before",
+
+    "ema_csdiffat15_before",
+    "ema_csdiffat25_before",
+
+    "ema_killsat15_before",
+    "ema_deathsat15_before",
+    "ema_assistsat15_before",
+    "ema_killsat25_before",
+    "ema_deathsat25_before",
+    "ema_assistsat25_before",
+
+    "ema_season_win_rate_before",
+    "ema_season_games_before"
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "flattened_cols": [
+    "date",
+    "league",
+    "patch",
+    "season",
+
+    "gameid",
+    "playerid",
+    "playername",
+    "teamid",
+    "teamname",
+    "side",
+    "position",
+
+    "elo_after",
+    "glicko2_mu_after",
+    "glicko2_phi_after",
+    "pl_mu_after",
+    "pl_sigma_after",
+    "trueskill_mu_after",
+    "trueskill_sigma_after",
+
+    "gamelength",
+    "ema_gamelength_after",
+
+    "ema_kills_after",
+    "ema_deaths_after",
+    "ema_assists_after",
+    "ema_doublekills_after",
+    "ema_pentakills_after",
+    "ema_total_cs_after",
+
+    "ema_kda_after",
+    "ema_kill_participation_after",
+    "ema_ka_ratio_after",
+    "ema_d_ratio_after",
+
+    "ema_xp_efficiency_after",
+
+    "ema_dpm_after",
+    "ema_damageshare_after",
+    "ema_earnedgoldshare_after",
+    "ema_damagetakenperminute_after",
+    "ema_damagemitigatedperminute_after",
+    "ema_damagetotowers_after",
+
+    "ema_cspm_after",
+    "ema_egpm_after",
+    "ema_gspd_after",
+    "ema_gpr_after",
+
+    "ema_wpm_after",
+    "ema_wcpm_after",
+    "ema_vspm_after",
+    "ema_controlwardsbought_after",
+    "ema_wards_placed_ratio_after",
+    "ema_wards_killed_ratio_after",
+
+    "ema_firstbloodkill_after",
+    "ema_firstbloodassist_after",
+    "ema_firstbloodvictim_after",
+
+    "ema_goldat15_after",
+    "ema_goldat25_after",
+
+    "ema_xpat15_after",
+    "ema_xpat25_after",
+
+    "ema_csat15_after",
+    "ema_csat25_after",
+
+    "ema_killsat15_after",
+    "ema_killsat25_after",
+
+    "ema_assistsat15_after",
+    "ema_assistsat25_after",
+
+    "ema_deathsat15_after",
+    "ema_deathsat25_after",
+
+    "ema_golddiffat15_after",
+    "ema_golddiffat25_after",
+
+    "ema_xpdiffat15_after",
+    "ema_xpdiffat25_after",
+
+    "ema_csdiffat15_after",
+    "ema_csdiffat25_after"
+  ]
+}
