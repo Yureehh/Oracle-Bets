@@ -570,7 +570,7 @@ class OraclesElixir:
         """
         Filter the DataFrame to only include rows from considered leagues.
         Raises FileNotFoundError if the considered leagues file is missing.
-        Raises KeyError if the 'considered_leagues' key is missing.
+        Raises KeyError if the active league profile is missing.
         """
         logger.info("Filtering data for relevant leagues...")
         data_pipeline_logger.info("Filtering data for relevant leagues...")

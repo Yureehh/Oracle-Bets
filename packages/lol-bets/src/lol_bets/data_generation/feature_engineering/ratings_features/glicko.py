@@ -15,10 +15,7 @@ from typing import Any
 import optuna
 from glicko2 import Glicko2, Rating
 from oracle_bets_core.io_utils import get_sorting_keys, json_loader
-from oracle_bets_core.league_selection import (
-    cross_league_competitions,
-    major_leagues,
-)
+from oracle_bets_core.league_taxonomy import get_league_taxonomy
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
@@ -35,8 +32,6 @@ from tqdm import tqdm
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
-MAJOR_LEAGUES = major_leagues()
-CROSS_LEAGUE_COMPETITIONS = cross_league_competitions()
 TRIALS_NUM = 25
 
 # Default Glicko-2 parameters (parallel to how Elo had baseline ratings)
@@ -57,7 +52,12 @@ def clamp(value: float, min_val: float, max_val: float) -> float:
 
 def is_major_league(league: str) -> bool:
     """Check if a league is considered major."""
-    return league in MAJOR_LEAGUES
+    return get_league_taxonomy(league)["tier"] == "major"
+
+
+def is_cross_league_competition(league: str) -> bool:
+    """Check if a league is a cross-league competition."""
+    return get_league_taxonomy(league)["tier"] == "cross"
 
 
 # ------------------------------------------------------------------------------
@@ -329,7 +329,7 @@ def process_game(
                 baseline_mu=baseline_mu,
                 init_adjust_factor=initial_elo_adjustment_factor,
             )
-        elif new_league not in CROSS_LEAGUE_COMPETITIONS:
+        elif not is_cross_league_competition(new_league):
             handle_league_swap(
                 ent_id=ent_id,
                 new_league=new_league,

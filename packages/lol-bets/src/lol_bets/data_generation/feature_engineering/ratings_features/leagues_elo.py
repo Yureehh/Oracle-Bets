@@ -13,7 +13,6 @@ from pathlib import Path
 
 import optuna
 from oracle_bets_core.io_utils import get_sorting_keys, safe_store_df_as_parquet
-from oracle_bets_core.league_selection import cross_league_competitions
 from oracle_bets_core.league_taxonomy import (
     get_league_strength_prior,
     get_league_taxonomy,
@@ -33,12 +32,16 @@ from tqdm import tqdm
 # ----------------------------------------------------------------------
 # Global Config / Constants
 # ----------------------------------------------------------------------
-CROSS_LEAGUE_COMPETITIONS = cross_league_competitions()
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 ROWS_PER_TEAM = 2  # one per side
 TRIALS_NUM = 25
 MAX_EXPONENT = 8.0  # clamp for expected outcome stability
+
+
+def is_cross_league_competition(league: str) -> bool:
+    """Check if a league is a cross-league competition."""
+    return get_league_taxonomy(league)["tier"] == "cross"
 
 
 # ----------------------------------------------------------------------
@@ -122,7 +125,7 @@ def map_team_to_league(
     Returns a dict: teamid -> [(date, league), ...] in chronological order.
     """
     # Filter out cross-league competitions
-    df_filtered = df[~df["league"].isin(CROSS_LEAGUE_COMPETITIONS)].copy()
+    df_filtered = df[~df["league"].map(is_cross_league_competition)].copy()
 
     # Sort by date to get the chronological order
     df_filtered = df_filtered.sort_values(by=["date"], kind="mergesort")
@@ -282,7 +285,7 @@ def tune_hyperparameters(  # noqa: PLR0915
     Trains on cross-league competitions, validates on the last year (Blue rows only).
     """
     # Keep only cross-league competitions for tuning
-    df_cross = df[df["league"].isin(CROSS_LEAGUE_COMPETITIONS)].copy()
+    df_cross = df[df["league"].map(is_cross_league_competition)].copy()
     if df_cross.empty:
         logger.warning("No cross-league competitions found for tuning. Aborting.")
         data_pipeline_logger.warning(

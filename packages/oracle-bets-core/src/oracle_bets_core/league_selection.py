@@ -1,4 +1,4 @@
-"""League selection helpers for LoL ingestion and ratings."""
+"""League selection helpers for LoL ingestion."""
 
 from __future__ import annotations
 
@@ -14,26 +14,11 @@ def load_league_selection_config() -> dict[str, Any]:
 
 
 def selected_leagues() -> list[str]:
-    """Return leagues from the active profile, falling back to legacy config."""
+    """Return leagues from the active profile."""
     config = load_league_selection_config()
-    profiles = config.get("profiles", {})
-    active_profile = config.get("active_profile")
-
-    if active_profile:
-        try:
-            return list(profiles[active_profile])
-        except KeyError as exc:
-            msg = f"Active league profile not found: {active_profile}"
-            raise KeyError(msg) from exc
-
-    return list(config["considered_leagues"])
-
-
-def cross_league_competitions() -> set[str]:
-    """Return cross-league competitions used by rating models."""
-    return set(load_league_selection_config()["cross_league_competitions"])
-
-
-def major_leagues() -> list[str]:
-    """Return leagues treated as major for rating transfer rules."""
-    return list(load_league_selection_config()["major_leagues"])
+    try:
+        active_profile = config["active_profile"]
+        return list(config["profiles"][active_profile])
+    except KeyError as exc:
+        msg = "League selection config must define active_profile and profiles."
+        raise KeyError(msg) from exc

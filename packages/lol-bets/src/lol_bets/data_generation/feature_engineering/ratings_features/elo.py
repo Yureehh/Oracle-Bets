@@ -14,10 +14,7 @@ from typing import Any
 
 import optuna
 from oracle_bets_core.io_utils import get_sorting_keys, json_loader
-from oracle_bets_core.league_selection import (
-    cross_league_competitions,
-    major_leagues,
-)
+from oracle_bets_core.league_taxonomy import get_league_taxonomy
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
@@ -38,8 +35,6 @@ except Exception:
 # ------------------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
-CROSS_COMPETITION_LEAGUES = cross_league_competitions()
-MAJOR_LEAGUES = major_leagues()
 TRIALS_NUM = 25
 MAX_EXPONENT = 8.0  # To prevent overflow in expected outcome calc
 
@@ -54,7 +49,12 @@ def clamp(value: float, min_val: float, max_val: float) -> float:
 
 def is_major_league(league: str) -> bool:
     """Check if league is considered major."""
-    return league in MAJOR_LEAGUES
+    return get_league_taxonomy(league)["tier"] == "major"
+
+
+def is_cross_league_competition(league: str) -> bool:
+    """Check if league is a cross-league competition."""
+    return get_league_taxonomy(league)["tier"] == "cross"
 
 
 # ------------------------------------------------------------------------------
@@ -383,7 +383,7 @@ def process_game(
                 baseline_elo=baseline_elo,
                 init_adjust_factor=initial_elo_adjustment_factor,
             )
-        elif new_league not in CROSS_COMPETITION_LEAGUES:
+        elif not is_cross_league_competition(new_league):
             handle_league_swap(
                 ent_id=ent_id,
                 new_league=new_league,
