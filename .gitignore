@@ -39,6 +39,8 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.uv-cache/
+.pre-commit-cache/
 nosetests.xml
 coverage.xml
 *.cover
@@ -75,8 +77,15 @@ target/
 # Jupyter NB Checkpoints
 .ipynb_checkpoints/
 
-# exclude data from source control by default
-/data/
+# Generated data/artifact trees. Keep folder READMEs visible.
+/data/*
+!/data/README.md
+!/data/lol/
+/data/lol/*
+!/data/lol/README.md
+!/data/lol/**/
+!/data/lol/**/README.md
+/artifacts/
 
 # Mac OS-specific storage files
 .DS_Store
@@ -91,9 +100,8 @@ target/
 # Pyre type checker
 *.pyc
 
-# Poetry and uv lock files
+# Poetry files
 poetry
-uv.lock
 
 # All csv files
 *.csv
@@ -105,16 +113,33 @@ uv.lock
 catboost_info/
 
 # Model outputs (generated files)
-models/*.parquet
-models/*.pkl
-models/*.json
-models/OutcomePrediction/
-models/GamelengthPrediction/
-models/TotalKillsPrediction/
-models/TotalTowersPrediction/
+/models/*
+!/models/README.md
+!/models/lol/
+/models/lol/*
+!/models/lol/README.md
+!/models/lol/**/
+!/models/lol/**/README.md
 
 # Site packages
 site-packages/
+
+# Reports and docs build output
+/reports/*
+!/reports/README.md
+!/reports/lol/
+/reports/lol/*
+!/reports/lol/README.md
+!/reports/lol/**/
+!/reports/lol/**/README.md
+
+# Logs
+/logs/*
+!/logs/.gitkeep
+!/logs/README.md
+!/logs/lol/
+/logs/lol/*
+!/logs/lol/README.md
 
 # Site folder
 site/
@@ -124,5 +149,3 @@ test.py
 
 # TXT files
 *.txt
-
-models/

@@ -1,11 +1,11 @@
 [project]
-name = "lol-oracle"
+name = "oracle-bets"
 version = "1.0.0"
 description = "Esports analytics betting suite"
 authors = [{ name = "yureeh", email = "yureefabbri@gmail.com" }]
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 dependencies = [
   "awswrangler >=3.7.1,<4.0.0",
@@ -34,6 +34,9 @@ dependencies = [
   "trueskill >=0.4.5,<1.0.0",
 ]
 
+[project.scripts]
+oracle-bets = "oracle_bets_core.cli:main"
+
 [project.optional-dependencies]
 # Deep learning and advanced feature selection
 ml = [
@@ -59,6 +62,13 @@ dev = [
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = [
+  "packages/oracle-bets-core/src",
+  "packages/lol-bets/src",
+  "packages/oracle-bets-discord/src",
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
@@ -99,7 +109,7 @@ exclude = [
   "site-packages",
   "venv",
 ]
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["ALL"]
