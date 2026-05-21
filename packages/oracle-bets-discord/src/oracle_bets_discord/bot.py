@@ -1,8 +1,7 @@
-# run_bot.py
 """
-League of Legends Esports Prediction Bot.
+Oracle Bets Discord bot.
 
-Commands for predictions, team/player info, schedules, and betting utilities.
+Commands for registered prediction modules, market search, and betting utilities.
 """
 
 from __future__ import annotations
@@ -22,18 +21,22 @@ from oracle_bets_core.logger import logger
 from oracle_bets_core.markets import PolymarketGammaAdapter
 from oracle_bets_core.paths import SCHEDULE
 
-from oracle_bets_discord.predictions.discord_utils import (
-    MESSAGE_LIMIT,
+from oracle_bets_discord.betting import (
     calculate_kelly_criterion,
     calculate_odds,
     calculate_prob,
     convert_odds,
-    convert_to_discord_markdown,
+)
+from oracle_bets_discord.formatting import (
+    MESSAGE_LIMIT,
+    dataframe_to_markdown,
+    handle_command_error,
+)
+from oracle_bets_discord.predictions.lol import (
     format_leagues_message,
     format_schedule_message,
     get_formatted_player_profile,
     get_formatted_team_profile,
-    handle_command_error,
     validate_and_predict,
     validate_and_predict_props,
 )
@@ -159,7 +162,7 @@ async def roster(ctx: commands.Context, team: str | None = None):
     msg = await ctx.send(content="```Extracting...```")
     try:
         team_df = Team(name=team).get_team_info()
-        await msg.edit(content=convert_to_discord_markdown(team_df))
+        await msg.edit(content=dataframe_to_markdown(team_df))
     except Exception as e:
         await msg.edit(
             content=handle_command_error(e, "Could not extract roster information.")
@@ -179,7 +182,7 @@ async def rosters(ctx: commands.Context, teams: str | None = None):
     for team_name in (t.strip() for t in teams.split(",")):
         try:
             team_df = Team(name=team_name).get_team_info()
-            output += convert_to_discord_markdown(team_df)
+            output += dataframe_to_markdown(team_df)
         except Exception as e:
             output += handle_command_error(
                 e, f"Could not extract roster for {team_name}.\n"

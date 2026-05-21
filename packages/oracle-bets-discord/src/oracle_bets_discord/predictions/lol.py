@@ -1,34 +1,27 @@
-# oracle_bets_discord/predictions/discord_utils.py
-"""
-Discord Utilities Module
-
-Utilities for interacting with the Discord bot:
-- handling commands
-- formatting messages
-- running predictions (incl. best-of series)
-- betting helpers (fair odds, edge, Kelly Criterion)
-"""
+"""LoL-specific Discord prediction and profile helpers."""
 
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 import lol_bets.inference.match_predictor as match_predictor_module
 import numpy as np
 from lol_bets.inference.team import Team
-from oracle_bets_core.io_utils import json_loader, parquet_loader
-from oracle_bets_core.paths import DISCORD_CONFIG, FLATTENED_PLAYERS, FLATTENED_TEAMS
+from oracle_bets_core.io_utils import parquet_loader
+from oracle_bets_core.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
 from oracle_bets_core.pd import pd
 
+from oracle_bets_discord.formatting import (
+    CONFIG,
+    MESSAGE_LIMIT,
+    dataframe_to_markdown,
+    handle_command_error,
+)
 from oracle_bets_discord.predictions.best_ofs import BestOfs
 
 # ── config & constants ──────────────────────────────────────────────────── #
 
-CONFIG: dict[str, Any] = json_loader(DISCORD_CONFIG)
-
-MESSAGE_LIMIT: int = int(CONFIG.get("MESSAGE_LIMIT", 2000))
 _EMPTY_ROSTER: dict[str, str | None] = CONFIG.get("EMPTY_ROSTER", {}).copy() or {
     "top": None,
     "jng": None,
@@ -57,15 +50,6 @@ def get_match_predictor() -> match_predictor_module.MatchPredictor:
 def get_empty_roster() -> dict[str, str | None]:
     """Copy of the empty-roster template."""
     return dict(_EMPTY_ROSTER.items())
-
-
-def handle_command_error(error: Exception, additional_info: str = "") -> str:
-    """Consistent error blob for Discord."""
-    extra = f"{additional_info.strip()} " if additional_info else ""
-    return (
-        f"Something went wrong. {extra}If this issue persists, please contact either Yureeh.\n"
-        f"Error:\n```{error}```"
-    )
 
 
 # ── schedule / leagues formatting ───────────────────────────────────────── #
@@ -144,18 +128,6 @@ def get_team_data(entity_name: str, teams_path: Path) -> pd.DataFrame | None:
 # ── profile formatting ──────────────────────────────────────────────────── #
 
 
-def convert_to_discord_markdown(df: pd.DataFrame) -> str:
-    try:
-        md = df.to_markdown(index=False)
-        md = "\n".join(line.lstrip() for line in md.split("\n"))
-        text = f"```{md}```\n\n"
-        # lightweight protection against Discord’s 2000 char limit
-        return text[: MESSAGE_LIMIT - 1]
-    except Exception as e:
-        msg = f"Error converting DataFrame to Markdown: {e}"
-        raise ValueError(msg) from e
-
-
 def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
     row = data.iloc[0]
     stats_names = [
@@ -225,7 +197,7 @@ def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
         stats_values = stats_values[:8]
 
     df_out = pd.DataFrame({"Stat": stats_names, "Value": stats_values})
-    return convert_to_discord_markdown(df_out)
+    return dataframe_to_markdown(df_out)
 
 
 def format_team_profile(data: pd.DataFrame) -> str:
@@ -257,7 +229,7 @@ def format_team_profile(data: pd.DataFrame) -> str:
         f"{float(row.get('ema_gamelength', row.get('gamelength', 0))):.2f}",
     ]
     df_out = pd.DataFrame({"Stat": stats_names, "Value": stats_values})
-    return convert_to_discord_markdown(df_out)
+    return dataframe_to_markdown(df_out)
 
 
 # ── async profile getters ───────────────────────────────────────────────── #
@@ -330,73 +302,8 @@ def process_roster(
     return dict(zip(positions, players, strict=False))
 
 
-def calculate_odds(win_probability: float, to_decimal: bool) -> float | str:
-    """Convert a win probability in (0,1) to decimal or fractional odds."""
-    if not (0 < win_probability < 1):
-        return "Odds are undefined for win probabilities of 0% or 100%."
-    if to_decimal:
-        return round(1 / win_probability, 2)
-    # fractional (implied odds ratio)
-    return round(win_probability / (1 - win_probability), 2)
-
-
-def calculate_prob(odds: float) -> float:
-    """Convert decimal odds to win probability [0,1]."""
-    if odds <= 0:
-        msg = "Odds must be greater than 0."
-        raise ValueError(msg)
-    return round(1 / odds, 4)
-
-
-def convert_odds(odds: float | str) -> float:
-    """Accept decimal or 'xx%' strings and return probability in [0,1]."""
-    if isinstance(odds, str) and odds.endswith("%"):
-        return float(odds.strip("%")) / 100.0
-    return float(odds)
-
-
-# ── betting helpers ─────────────────────────────────────────────────────── #
-
-
-def fair_odds_from_prob(p: float) -> float:
-    """
-    Fair decimal odds implied by a win probability p in (0,1): 1/p.
-    """
-    if not (0 < p < 1):
-        msg = "Probability must be in (0,1) to compute fair odds."
-        raise ValueError(msg)
-    return round(1.0 / p, 3)
-
-
-def edge_from_odds(bookmaker_odds: float, win_probability: float) -> float:
-    """
-    Expected multiplicative edge at decimal odds O: E = p*O - 1.
-    Positive => +EV, negative => -EV.
-    """
-    return round(win_probability * bookmaker_odds - 1.0, 4)
-
-
-def calculate_kelly_criterion(
-    bookmaker_odds: float, win_probability: float, *, half: bool = True
-) -> float:  # sourcery skip: remove-unnecessary-cast
-    """
-    Kelly fraction for decimal odds O and win prob p.
-    Uses b = O - 1 (net odds). If half=True, returns half-Kelly (risk control).
-    Returns clipped to [0, +inf) — negative Kelly => 0.0 (no bet).
-    """
-    b = float(bookmaker_odds) - 1.0
-    if b <= 0:
-        return 0.0
-    p = float(win_probability)
-    q = 1.0 - p
-    f = (b * p - q) / b  # full Kelly
-    if half:
-        f *= 0.5
-    return round(max(0.0, f), 4)
-
-
-def strip_team_names(team1: str, team2: str) -> tuple[str, str]:
-    return team1.strip(), team2.strip()
+def strip_team_names(team1: str | None, team2: str | None) -> tuple[str, str]:
+    return (team1 or "").strip(), (team2 or "").strip()
 
 
 # ── main async prediction entrypoints ───────────────────────────────────── #
