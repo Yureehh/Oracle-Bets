@@ -15,11 +15,11 @@ Ratings are used directly as features and as win-likelihood signals.
 
 ## Supervised models
 
-`src/2_models_training.py` trains Gradient Boosting models (LightGBM) for:
+`oracle-bets lol train` trains Gradient Boosting models (LightGBM) for:
 
 - Outcome prediction (classification)
 - Gamelength prediction (regression)
 - Total kills prediction (regression)
 - Total towers prediction (regression)
 
-Trained models and metadata are stored under `models/<ModelName>/`.
+Trained models and metadata are stored under `models/lol/<ModelName>/`.

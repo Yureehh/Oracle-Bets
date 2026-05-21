@@ -1,6 +1,8 @@
 # Oracle Bets
 
-Oracle Bets is a League of Legends match modeling pipeline. It ingests match data, computes ratings and team features, trains prediction models, and supports inference workflows (including a Discord bot).
+Oracle Bets is a modular sports and esports prediction suite. Its first module,
+`lol-bets`, ingests League of Legends match data, computes ratings and features,
+trains prediction models, and serves inference through shared Discord commands.
 
 ## What it does
 

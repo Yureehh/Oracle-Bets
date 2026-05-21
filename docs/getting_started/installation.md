@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - One of: uv (recommended) or pip
 
 ## Install with uv

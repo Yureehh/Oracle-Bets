@@ -1,5 +1,5 @@
 site_name: "Oracle Bets"
-site_description: "Esports analytics and match outcome modeling for League of Legends."
+site_description: "Modular sports and esports prediction suite with Discord delivery."
 site_author: "Yureeh"
 repo_url: "https://github.com/Yureehh/Oracle-Bets"
 repo_name: "Yureehh/Oracle-Bets"
@@ -28,6 +28,9 @@ nav:
       - Quickstart: getting_started/quickstart.md
   - Pipeline: pipeline.md
   - Models: models.md
+  - Audits:
+      - LoL Algorithm Audit: audits/lol_algorithm_audit.md
+      - LoL Feature Engineering 2026 Audit: audits/lol_feature_engineering_2026_audit.md
   - Predictions: predictions.md
   - Configuration: configuration.md
   - Next Steps: next_steps.md

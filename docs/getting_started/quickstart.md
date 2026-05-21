@@ -5,31 +5,31 @@ This assumes you have a `.env` file with the required keys and have installed de
 ## 1) Build data artifacts
 
 ```bash
-python src/1_data_generator.py
+uv run oracle-bets lol ingest
 ```
 
-This writes processed data to `data/processed/` and rating artifacts to `models/`.
+This writes processed data to `data/lol/processed/` and rating artifacts to `models/lol/`.
 
 ## 2) Train models
 
 ```bash
-python src/2_models_training.py
+uv run oracle-bets lol train --model-type lightgbm
 ```
 
-Models are stored in `models/<ModelName>/`.
+Models are stored in `models/lol/<ModelName>/`.
 
-## 3) Update schedule (optional)
+## 3) Check artifact health
 
 ```bash
-python src/0_schedule_update.py
+uv run oracle-bets lol health
 ```
 
-Requires `PANDASCORE_API_KEY`.
+Health returns non-zero while required artifacts are missing.
 
 ## 4) Run the Discord bot (optional)
 
 ```bash
-python src/3_oracle_bot.py
+uv run oracle-bets discord run
 ```
 
 Requires `DISCORD_TOKEN` and trained model artifacts.

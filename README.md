@@ -1,6 +1,6 @@
 # Oracle Bets
 
-Oracle Bets is a League of Legends match modeling pipeline. It ingests match data, computes ratings and features, trains prediction models, and powers inference workflows (including a Discord bot).
+Oracle Bets is a modular sports and e-sports prediction suite. The first module, `lol-bets`, ingests League of Legends data, computes ratings and features, trains prediction models, and serves inference through a shared Discord bot.
 
 ## Features
 
@@ -9,6 +9,7 @@ Oracle Bets is a League of Legends match modeling pipeline. It ingests match dat
 - Leak-free feature engineering and EMA metrics
 - Gradient Boosting models for outcomes and regression targets
 - Match predictor and Discord bot
+- Read-only prediction-market discovery plus edge and half-Kelly sizing signals
 
 ## Quickstart
 
@@ -41,16 +42,27 @@ DISCORD_TOKEN=your-discord-bot-token
 ### Run the pipeline
 
 ```bash
-python src/1_data_generator.py
-python src/2_models_training.py
+oracle-bets lol ingest
+oracle-bets lol train
 ```
 
 Optional:
 
 ```bash
-python src/0_schedule_update.py
-python src/3_oracle_bot.py
+oracle-bets lol health
+oracle-bets discord run
 ```
+
+Legacy `src/` entrypoints and import shims have been removed. Use the package
+imports and `oracle-bets` CLI above.
+
+### Scoped Files
+
+LoL-owned files live under module subdirectories: `config/lol/`, `data/lol/`,
+`models/lol/`, `notebooks/lol/`, `reports/lol/`, `logs/lol/`, and `tests/lol/`.
+Override the suite root with `ORACLE_BETS_HOME`, the LoL root with
+`ORACLE_BETS_LOL_HOME`, or a specific directory with `ORACLE_BETS_DATA_DIR`,
+`ORACLE_BETS_MODELS_DIR`, `ORACLE_BETS_REPORTS_DIR`, or `ORACLE_BETS_LOGS_DIR`.
 
 ## Documentation
 
@@ -64,10 +76,13 @@ Open `http://127.0.0.1:8000/` in a browser.
 
 ## Project layout
 
-- `src/0_schedule_update.py` - PandaScore schedule fetcher
-- `src/1_data_generator.py` - data ingestion and feature pipeline
-- `src/2_models_training.py` - model training
-- `src/3_oracle_bot.py` - Discord bot
+- `packages/oracle-bets-core/` - shared paths, logging, pandas/FireDucks shim, module contracts, betting math, market adapters, and CLI
+- `packages/lol-bets/` - League of Legends ingestion, feature engineering, ratings, training, and inference
+- `packages/oracle-bets-discord/` - Discord bot, formatting, command routing, and module registry
+- `docs/audits/` - model and data-quality audits that guide algorithm changes
+- `config/lol/` - League of Legends configuration
+- `data/lol/`, `models/lol/`, `reports/lol/`, `logs/lol/` - generated LoL artifacts
+- `tests/lol/` - current unit and smoke tests
 
 ## License
 
