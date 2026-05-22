@@ -28,6 +28,7 @@ from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import FIGURES_DIR, MODELS_DIR, PROCESSED_TEAMS
 from oracle_bets_core.pd import pd
 from pandas.api.types import is_numeric_dtype
+from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
@@ -62,6 +63,21 @@ MAX_MISSING_FRAC = 0.40  # drop features missing >40% on TRAIN
 RANDOM_STATE = 42
 MIN_SHAPE_FOR_CORR = 2  # min numeric cols to run high-corr pruning
 BINARY_CLASS_UNIQUE_VALUES = 2
+MIN_CALIBRATION_SAMPLES = 40
+PROBABILITY_EPSILON = 1e-6
+
+
+@dataclass
+class ProbabilityCalibrator:
+    """Validation-fitted probability calibration wrapper."""
+
+    method: str
+    model: Any
+
+    def predict(self, probabilities: np.ndarray) -> np.ndarray:
+        values = np.asarray(probabilities, dtype=float)
+        calibrated = self.model.predict(values)
+        return np.clip(calibrated, PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON)
 
 
 @dataclass
@@ -128,6 +144,9 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         default_factory=lambda: dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     )
     training_data: pd.DataFrame = field(init=False)
+    probability_calibrator: ProbabilityCalibrator | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         self.training_data = pd.DataFrame()
@@ -618,6 +637,13 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def store_best_hyperparameters(self, hyperparams: dict[str, Any]) -> None:
         self._store_pickle(f"{self.model_name}_best_hyperparameters.pkl", hyperparams)
 
+    def store_probability_calibrator(self, calibrator: ProbabilityCalibrator) -> None:
+        self._store_pickle(f"{self.model_name}_probability_calibrator.pkl", calibrator)
+
+    def store_residual_summary(self, summary: dict[str, Any]) -> None:
+        self._store_pickle(f"{self.model_name}_residual_summary.pkl", summary)
+        self.insight_path("residual_summary.json").write_text(json.dumps(summary))
+
     # ─────────────────────────────── Metrics ──────────────────────────────── #
 
     def compute_classification_metrics(
@@ -649,6 +675,65 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         rmse = float(np.sqrt(mse))
         r2 = float(r2_score(y_true, y_pred))
         return {"mae": mae, "mse": mse, "rmse": rmse, "r2": r2}
+
+    @staticmethod
+    def build_residual_summary(
+        y_true: pd.Series, y_pred: np.ndarray, *, model_name: str
+    ) -> dict[str, Any]:
+        actual = pd.to_numeric(y_true, errors="coerce").to_numpy(dtype=float)
+        pred = np.asarray(y_pred, dtype=float)
+        residuals = actual - pred
+        residuals = residuals[np.isfinite(residuals)]
+        if residuals.size == 0:
+            msg = "No finite residuals available."
+            raise ValueError(msg)
+        return {
+            "model_name": model_name,
+            "n": int(residuals.size),
+            "residual_mean": float(np.mean(residuals)),
+            "residual_sigma": float(np.std(residuals, ddof=1))
+            if residuals.size > 1
+            else float(np.std(residuals)),
+            "mae": float(np.mean(np.abs(residuals))),
+            "rmse": float(np.sqrt(np.mean(np.square(residuals)))),
+            "percentiles": {
+                str(q): float(np.percentile(residuals, q))
+                for q in (5, 10, 25, 50, 75, 90, 95)
+            },
+        }
+
+    def fit_probability_calibrator(
+        self, model, X_val: pd.DataFrame, y_val: pd.Series
+    ) -> ProbabilityCalibrator | None:
+        """Fit calibration on validation data only."""
+        if self.problem_type != "classification" or not hasattr(model, "predict_proba"):
+            return None
+        y = pd.to_numeric(y_val, errors="coerce").dropna()
+        if (
+            len(y) < MIN_CALIBRATION_SAMPLES
+            or y.nunique() != BINARY_CLASS_UNIQUE_VALUES
+        ):
+            logger.warning(
+                "Skipping probability calibration for %s: insufficient validation diversity.",
+                self.model_name,
+            )
+            return None
+        probabilities = model.predict_proba(X_val.loc[y.index])[:, 1]
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(probabilities, y.to_numpy(dtype=int))
+        wrapped = ProbabilityCalibrator(method="isotonic_validation", model=calibrator)
+        self.store_probability_calibrator(wrapped)
+        return wrapped
+
+    def _predict_positive_probability(
+        self, model, X: pd.DataFrame
+    ) -> np.ndarray | None:
+        if self.problem_type != "classification" or not hasattr(model, "predict_proba"):
+            return None
+        y_proba = model.predict_proba(X)[:, 1]
+        if self.probability_calibrator is not None:
+            y_proba = self.probability_calibrator.predict(y_proba)
+        return y_proba
 
     def store_evaluation_metrics(self, metrics: dict[str, Any]) -> None:
         """Persist metrics to JSON (drop non-serializable arrays like CM)."""
@@ -722,11 +807,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         try:
             logger.info("Validating %s ...", self.model_name)
             y_pred = model.predict(X_test)
-            y_proba = None
-            if self.problem_type == "classification" and hasattr(
-                model, "predict_proba"
-            ):
-                y_proba = model.predict_proba(X_test)[:, 1]
+            y_proba = self._predict_positive_probability(model, X_test)
 
             if self.problem_type == "classification":
                 metrics = self.compute_classification_metrics(y_test, y_pred, y_proba)
@@ -738,6 +819,11 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 self.plot_historical_accuracy(X_test, y_test, y_pred, eval_gameids)
             else:
                 metrics = self.compute_regression_metrics(y_test, y_pred)
+                self.store_residual_summary(
+                    self.build_residual_summary(
+                        y_test, y_pred, model_name=self.model_name
+                    )
+                )
                 self.plot_regression_results(y_test, y_pred)
                 self.plot_regression_error_over_samples(y_test, y_pred, metric="mae")
                 self.plot_regression_error_over_time(
@@ -998,6 +1084,10 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             y_val=y_val,
             categorical_features=categorical_features,
         )
+        if self.problem_type == "classification":
+            self.probability_calibrator = self.fit_probability_calibrator(
+                model, X_val, y_val
+            )
 
         # ─────────────────── Post-training Feature Selection Report ─────────────────── #
         # For importance-based methods, report which features would be selected
@@ -1074,10 +1164,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     ]
                     # classification: also persist cohort metrics with probabilities if available
                     y_proba = None
-                    if self.problem_type == "classification" and hasattr(
-                        model, "predict_proba"
-                    ):
-                        y_proba = model.predict_proba(X_test)[:, 1]
+                    if self.problem_type == "classification":
+                        y_proba = self._predict_positive_probability(model, X_test)
                     self.store_cohort_metrics(
                         eval_meta, y_test, model.predict(X_test), y_proba
                     )

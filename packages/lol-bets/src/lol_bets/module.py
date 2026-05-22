@@ -8,10 +8,20 @@ from oracle_bets_core.interfaces import ArtifactCheck, ArtifactHealth
 from oracle_bets_core.paths import (
     FLATTENED_PLAYERS,
     FLATTENED_TEAMS,
+    GAMELENGTH_PREDICTION_FEATURE_PIPELINE,
+    GAMELENGTH_PREDICTION_MODEL_PATH,
+    GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY,
     LEAGUE_ELO,
     OUTCOME_PREDICTION_FEATURE_PIPELINE,
     OUTCOME_PREDICTION_MODEL_PATH,
+    OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR,
     TEAM_LEAGUES_MAPPING,
+    TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE,
+    TOTAL_KILLS_PREDICTION_MODEL_PATH,
+    TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY,
+    TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE,
+    TOTAL_TOWERS_PREDICTION_MODEL_PATH,
+    TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY,
     TRAINING_PLAYER_DATA,
     TRAINING_TEAM_DATA,
 )
@@ -76,6 +86,33 @@ class LoLBetsModule:
             _check_file("outcome model", OUTCOME_PREDICTION_MODEL_PATH),
             _check_file(
                 "outcome feature pipeline", OUTCOME_PREDICTION_FEATURE_PIPELINE
+            ),
+            _check_file(
+                "outcome probability calibrator",
+                OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR,
+            ),
+            _check_file("gamelength model", GAMELENGTH_PREDICTION_MODEL_PATH),
+            _check_file(
+                "gamelength feature pipeline", GAMELENGTH_PREDICTION_FEATURE_PIPELINE
+            ),
+            _check_file(
+                "gamelength residual summary", GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY
+            ),
+            _check_file("total kills model", TOTAL_KILLS_PREDICTION_MODEL_PATH),
+            _check_file(
+                "total kills feature pipeline", TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE
+            ),
+            _check_file(
+                "total kills residual summary", TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY
+            ),
+            _check_file("total towers model", TOTAL_TOWERS_PREDICTION_MODEL_PATH),
+            _check_file(
+                "total towers feature pipeline",
+                TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE,
+            ),
+            _check_file(
+                "total towers residual summary",
+                TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY,
             ),
             _check_parquet_schema(
                 "team league mapping", TEAM_LEAGUES_MAPPING, TEAM_LEAGUE_COLUMNS

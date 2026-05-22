@@ -43,7 +43,7 @@ DISCORD_TOKEN=your-discord-bot-token
 
 ```bash
 oracle-bets lol ingest
-oracle-bets lol train
+oracle-bets lol train --model-type lightgbm --targets all
 ```
 
 Optional:
@@ -51,6 +51,13 @@ Optional:
 ```bash
 oracle-bets lol health
 oracle-bets discord run
+```
+
+Supported LoL training targets are `all`, `outcome`, `props`, `gamelength`,
+`total_kills`, and `total_towers`. For example:
+
+```bash
+oracle-bets lol train --model-type lightgbm --targets total_kills,total_towers
 ```
 
 Legacy `src/` entrypoints and import shims have been removed. Use the package
@@ -73,6 +80,15 @@ mkdocs serve
 ```
 
 Open `http://127.0.0.1:8000/` in a browser.
+
+Discord market commands are documented in `docs/lol_market_predictions.md`.
+Examples:
+
+```text
+!lol predict "Team WE" "LNG Esports" --bo5
+!lol props "Team WE" "LNG Esports" --kills-line 26.5 --kills-over-odds 1.85
+!lol edge "Team WE" "LNG Esports"
+```
 
 ## Project layout
 

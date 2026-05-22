@@ -7,6 +7,8 @@ Commands for registered prediction modules, market search, and betting utilities
 from __future__ import annotations
 
 import os
+import shlex
+from typing import Any
 
 import discord
 from discord.ext import commands
@@ -76,6 +78,99 @@ def _split_two_rosters(rosters: str | None) -> tuple[str | None, str | None]:
         left, right = rosters.split("|", 1)
         return left.strip(), right.strip()
     return rosters.strip(), None
+
+
+def _parse_lol_options(options: str | None) -> dict[str, Any]:
+    """Parse Discord-friendly GNU-style flags from a trailing option string."""
+    parsed: dict[str, Any] = {"rosters": None}
+    if not options:
+        return parsed
+    tokens = shlex.split(options)
+    numeric_flags = {
+        "--kills-line": "kills_line",
+        "--kills-over-odds": "kills_over_odds",
+        "--kills-under-odds": "kills_under_odds",
+        "--towers-line": "towers_line",
+        "--towers-over-odds": "towers_over_odds",
+        "--towers-under-odds": "towers_under_odds",
+        "--length-line": "length_line",
+        "--length-over-odds": "length_over_odds",
+        "--length-under-odds": "length_under_odds",
+    }
+    text_flags = {
+        "--first-pick": "first_pick_team_name",
+        "--market": "market",
+        "--query": "query",
+        "--rosters": "rosters",
+    }
+    bool_flags = {"--bo1": "bo1", "--bo2": "bo2", "--bo3": "bo3", "--bo5": "bo5"}
+    positional: list[str] = []
+    i = 0
+    while i < len(tokens):
+        option = tokens[i]
+        if option in numeric_flags:
+            i += 1
+            if i >= len(tokens):
+                raise ValueError(f"Missing value for {option}.")
+            parsed[numeric_flags[option]] = float(tokens[i])
+        elif option == "--side":
+            i += 1
+            if i >= len(tokens):
+                raise ValueError("Missing value for --side.")
+            side = tokens[i].strip().casefold()
+            if side not in {"blue", "red"}:
+                raise ValueError("--side must be Blue or Red.")
+            parsed["side"] = side.title()
+        elif option in text_flags:
+            i += 1
+            if i >= len(tokens):
+                raise ValueError(f"Missing value for {option}.")
+            parsed[text_flags[option]] = tokens[i]
+        elif option in bool_flags:
+            parsed[bool_flags[option]] = True
+        else:
+            positional.append(option)
+        i += 1
+    if positional and parsed["rosters"] is None:
+        parsed["rosters"] = " ".join(positional)
+    return parsed
+
+
+def _orient_for_side(
+    team_a_name: str | None, team_b_name: str | None, side: str | None
+) -> tuple[str | None, str | None, bool]:
+    if side is None:
+        return team_a_name, team_b_name, False
+    if side == "Red":
+        return team_b_name, team_a_name, True
+    return team_a_name, team_b_name, True
+
+
+def _match_type_from_options(options: dict[str, Any]) -> str:
+    for match_type in ("bo5", "bo3", "bo2", "bo1"):
+        if options.get(match_type):
+            return match_type
+    return "bo1"
+
+
+async def _send_market_search(ctx: commands.Context, query: str) -> None:
+    msg = await ctx.send(content="```Searching markets...```")
+    try:
+        quotes = PolymarketGammaAdapter().search(query, limit=10)
+        if not quotes:
+            await msg.edit(content="No active markets found.")
+            return
+        lines = ["**Active Market Quotes**"]
+        for quote in quotes[:10]:
+            price = (
+                f"{quote.implied_probability * 100:.1f}%"
+                if quote.implied_probability is not None
+                else "n/a"
+            )
+            lines.append(f"- {quote.question} | {quote.outcome}: **{price}**")
+        await msg.edit(content="\n".join(lines)[: MESSAGE_LIMIT - 1])
+    except Exception as e:
+        await msg.edit(content=handle_command_error(e, "Market search failed."))
 
 
 # ── lifecycle ───────────────────────────────────────────────────────────── #
@@ -290,18 +385,148 @@ async def first_selection_bo1(
     )
 
 
+@bot.group(name="lol", invoke_without_command=True)
+async def lol_group(ctx: commands.Context):
+    """LoL command group with copy-paste market prediction examples."""
+    await ctx.send(
+        "**LoL Bot Commands**\n"
+        '- `!lol predict "Team WE" "LNG Esports"`\n'
+        '- `!lol predict "Team WE" "LNG Esports" --side Blue --first-pick "Team WE"`\n'
+        '- `!lol predict "Team WE" "LNG Esports" --bo5`\n'
+        '- `!lol props "Team WE" "LNG Esports" --kills-line 26.5 --kills-over-odds 1.85`\n'
+        '- `!lol props "Team WE" "LNG Esports" --towers-line 12.5 --length-line 31.5`\n'
+        "- Predictions are decision support only: model probability, fair odds, "
+        "edge, and half-Kelly are shown when available."
+    )
+
+
+@lol_group.command(name="predict")
+async def lol_predict(
+    ctx: commands.Context,
+    team_a_name: str | None = None,
+    team_b_name: str | None = None,
+    *,
+    options: str = "",
+):
+    """Winner prediction with optional --side, --first-pick, --bo3, or --bo5."""
+    try:
+        parsed = _parse_lol_options(options)
+        blue_name, red_name, account_for_side = _orient_for_side(
+            team_a_name, team_b_name, parsed.get("side")
+        )
+        blue_roster_str, red_roster_str = _split_two_rosters(parsed.get("rosters"))
+        await validate_and_predict(
+            ctx,
+            blue_name,
+            red_name,
+            blue_roster_str,
+            red_roster_str,
+            _match_type_from_options(parsed),
+            account_for_side,
+            parsed.get("first_pick_team_name"),
+        )
+    except ValueError as e:
+        await ctx.send(str(e))
+
+
+@lol_group.command(name="props")
+async def lol_props(
+    ctx: commands.Context,
+    team_a_name: str | None = None,
+    team_b_name: str | None = None,
+    *,
+    options: str = "",
+):
+    """Prop projections and line pricing for kills, towers, and game length."""
+    try:
+        parsed = _parse_lol_options(options)
+        blue_name, red_name, account_for_side = _orient_for_side(
+            team_a_name, team_b_name, parsed.get("side")
+        )
+        blue_roster_str, red_roster_str = _split_two_rosters(parsed.get("rosters"))
+        await validate_and_predict_props(
+            ctx,
+            blue_name,
+            red_name,
+            blue_roster_str,
+            red_roster_str,
+            account_for_side,
+            parsed.get("first_pick_team_name"),
+            parsed.get("kills_line"),
+            parsed.get("kills_over_odds"),
+            parsed.get("kills_under_odds"),
+            parsed.get("towers_line"),
+            parsed.get("towers_over_odds"),
+            parsed.get("towers_under_odds"),
+            parsed.get("length_line"),
+            parsed.get("length_over_odds"),
+            parsed.get("length_under_odds"),
+        )
+    except ValueError as e:
+        await ctx.send(str(e))
+
+
+@lol_group.command(name="edge")
+async def lol_edge(
+    ctx: commands.Context,
+    team_a_name: str | None = None,
+    team_b_name: str | None = None,
+    *,
+    options: str = "",
+):
+    """Read-only market discovery helper for LoL Polymarket searches."""
+    try:
+        parsed = _parse_lol_options(options)
+    except ValueError as e:
+        await ctx.send(str(e))
+        return
+    market = str(parsed.get("market") or "polymarket").casefold()
+    if market != "polymarket":
+        await ctx.send(
+            "Only read-only Polymarket search is supported for LoL edge scans right now."
+        )
+        return
+    query = parsed.get("query") or " ".join(
+        part for part in (team_a_name, team_b_name, "LoL") if part
+    )
+    if not query:
+        await ctx.send('Provide teams or a query, e.g. `!lol edge "T1" "G2"`.')
+        return
+    await _send_market_search(ctx, query)
+
+
 @bot.command(name="props", aliases=["props_bo1", "bo1_props"])
 async def props(
     ctx: commands.Context,
     team_a_name: str | None = None,
     team_b_name: str | None = None,
-    rosters: str | None = None,
+    *,
+    options: str = "",
 ):
     """Predict neutral single-game props: gamelength, total kills, total towers."""
-    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
-    await validate_and_predict_props(
-        ctx, team_a_name, team_b_name, blue_roster_str, red_roster_str, False
-    )
+    try:
+        parsed = _parse_lol_options(options)
+        blue_roster_str, red_roster_str = _split_two_rosters(parsed.get("rosters"))
+        await validate_and_predict_props(
+            ctx,
+            team_a_name,
+            team_b_name,
+            blue_roster_str,
+            red_roster_str,
+            False,
+            parsed.get("first_pick_team_name"),
+            parsed.get("kills_line"),
+            parsed.get("kills_over_odds"),
+            parsed.get("kills_under_odds"),
+            parsed.get("towers_line"),
+            parsed.get("towers_over_odds"),
+            parsed.get("towers_under_odds"),
+            parsed.get("length_line"),
+            parsed.get("length_over_odds"),
+            parsed.get("length_under_odds"),
+        )
+    except ValueError as e:
+        await ctx.send(str(e))
 
 
 @bot.command(name="sided_props", aliases=["props_sided", "sided_props_bo1"])
@@ -309,13 +534,33 @@ async def sided_props(
     ctx: commands.Context,
     blue_team_name: str | None = None,
     red_team_name: str | None = None,
-    rosters: str | None = None,
+    *,
+    options: str = "",
 ):
     """Predict single-game props with explicit map side."""
-    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
-    await validate_and_predict_props(
-        ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, True
-    )
+    try:
+        parsed = _parse_lol_options(options)
+        blue_roster_str, red_roster_str = _split_two_rosters(parsed.get("rosters"))
+        await validate_and_predict_props(
+            ctx,
+            blue_team_name,
+            red_team_name,
+            blue_roster_str,
+            red_roster_str,
+            True,
+            parsed.get("first_pick_team_name"),
+            parsed.get("kills_line"),
+            parsed.get("kills_over_odds"),
+            parsed.get("kills_under_odds"),
+            parsed.get("towers_line"),
+            parsed.get("towers_over_odds"),
+            parsed.get("towers_under_odds"),
+            parsed.get("length_line"),
+            parsed.get("length_over_odds"),
+            parsed.get("length_under_odds"),
+        )
+    except ValueError as e:
+        await ctx.send(str(e))
 
 
 @bot.command(
@@ -519,23 +764,7 @@ async def markets(ctx: commands.Context, *, query: str | None = None):
     if not query:
         await ctx.send("Provide a search query, e.g. `!markets LoL T1`.")
         return
-    msg = await ctx.send(content="```Searching markets...```")
-    try:
-        quotes = PolymarketGammaAdapter().search(query, limit=10)
-        if not quotes:
-            await msg.edit(content="No active markets found.")
-            return
-        lines = ["**Active Market Quotes**"]
-        for quote in quotes[:10]:
-            price = (
-                f"{quote.implied_probability * 100:.1f}%"
-                if quote.implied_probability is not None
-                else "n/a"
-            )
-            lines.append(f"- {quote.question} | {quote.outcome}: **{price}**")
-        await msg.edit(content="\n".join(lines)[: MESSAGE_LIMIT - 1])
-    except Exception as e:
-        await msg.edit(content=handle_command_error(e, "Market search failed."))
+    await _send_market_search(ctx, query)
 
 
 # ── admin ───────────────────────────────────────────────────────────────── #

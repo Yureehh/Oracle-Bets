@@ -6,12 +6,12 @@ Outputs serialized models to MODELS_DIR.
 
 Models covered:
 - Outcome prediction (classification)
-# - Gamelength prediction (regression)
-# - Total kills prediction (regression)
-# - Total towers prediction (regression)
+- Gamelength prediction (regression)
+- Total kills prediction (regression)
+- Total towers prediction (regression)
 
 Usage:
-    oracle-bets lol train --model-type lightgbm --feature-selection report
+    oracle-bets lol train --model-type lightgbm --targets all --feature-selection report
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ MODEL_FILE_EXTENSION = "pkl"
 # ─────────────────────────  TRAINING CONFIGURATION  ───────────────────────────
 # Modify these variables before running the script
 
-MODEL_TYPE: ModelType = "tabnet"  # "lightgbm" or "tabnet"
+MODEL_TYPE: ModelType = "lightgbm"  # "lightgbm" or "tabnet"
 FEATURE_SELECTION: FeatureSelectionMethod = (
     "none"  # "none", "importance", "cumulative", "rfecv", "boruta", "report"
 )
@@ -62,17 +62,32 @@ class ModelConfig:
     validate: bool = True
 
 
-# Enable/disable models here
-MODELS_TO_TRAIN: tuple[ModelConfig, ...] = (
+ALL_MODEL_CONFIGS: tuple[ModelConfig, ...] = (
     ModelConfig(
         model_name="OutcomePrediction",
         target_column="result",
         problem_type="classification",
     ),
-    # ModelConfig("GamelengthPrediction", "gamelength", "regression"),  # noqa: ERA001
-    # ModelConfig("TotalKillsPrediction", "total_kills", "regression"),  # noqa: ERA001
-    # ModelConfig("TotalTowersPrediction", "total_towers", "regression"),  # noqa: ERA001
+    ModelConfig("GamelengthPrediction", "gamelength", "regression"),
+    ModelConfig("TotalKillsPrediction", "total_kills", "regression"),
+    ModelConfig("TotalTowersPrediction", "total_towers", "regression"),
 )
+
+MODELS_TO_TRAIN: tuple[ModelConfig, ...] = ALL_MODEL_CONFIGS
+PROP_TARGETS = ("gamelength", "total_kills", "total_towers")
+TARGET_ALIASES = {
+    "outcome": "result",
+    "winner": "result",
+    "match_winner": "result",
+    "result": "result",
+    "gamelength": "gamelength",
+    "game_length": "gamelength",
+    "length": "gamelength",
+    "total_kills": "total_kills",
+    "kills": "total_kills",
+    "total_towers": "total_towers",
+    "towers": "total_towers",
+}
 
 
 # ───────────────────────────────  helpers  ───────────────────────────────────
@@ -94,6 +109,40 @@ def _check_target_presence(team_df: pd.DataFrame, target: str) -> None:
             f"(available: {len(team_df.columns)} columns)."
         )
         raise ValueError(msg)
+
+
+def parse_training_targets(targets: str) -> tuple[ModelConfig, ...]:
+    """Resolve CLI target selectors to concrete model configs."""
+    raw = targets.strip().casefold()
+    by_target = {cfg.target_column: cfg for cfg in ALL_MODEL_CONFIGS}
+    if not raw or raw == "all":
+        return ALL_MODEL_CONFIGS
+    if raw == "props":
+        return tuple(by_target[target] for target in PROP_TARGETS)
+
+    selected: list[ModelConfig] = []
+    unknown: list[str] = []
+    for token in (part.strip().casefold() for part in raw.split(",")):
+        if not token:
+            continue
+        resolved = TARGET_ALIASES.get(token)
+        if resolved is None:
+            unknown.append(token)
+            continue
+        cfg = by_target[resolved]
+        if cfg not in selected:
+            selected.append(cfg)
+
+    if unknown:
+        valid = ", ".join(sorted([*TARGET_ALIASES, "all", "props"]))
+        msg = (
+            f"Unknown training target(s): {', '.join(unknown)}. Valid values: {valid}."
+        )
+        raise ValueError(msg)
+    if not selected:
+        msg = "No training targets selected."
+        raise ValueError(msg)
+    return tuple(selected)
 
 
 # ───────────────────────────────  core training  ─────────────────────────────
@@ -164,6 +213,7 @@ def initialize_and_train_model(
 def train_models(
     model_type: ModelType = "lightgbm",
     feature_selection: FeatureSelectionMethod = "none",
+    targets: str = "all",
 ) -> None:
     """Train all configured models using shared training tables."""
     LoLBetsModule().training_artifact_health().raise_if_unhealthy()
@@ -180,7 +230,13 @@ def train_models(
     trained: list[str] = []
     failed: list[str] = []
 
-    for cfg in MODELS_TO_TRAIN:
+    selected_models = parse_training_targets(targets)
+    logger.info(
+        "Selected training targets: %s",
+        ", ".join(cfg.target_column for cfg in selected_models),
+    )
+
+    for cfg in selected_models:
         try:
             initialize_and_train_model(
                 cfg=cfg,
@@ -216,6 +272,7 @@ if __name__ == "__main__":
         train_models(
             model_type=MODEL_TYPE,
             feature_selection=FEATURE_SELECTION,
+            targets="all",
         )
     except (KeyboardInterrupt, Exception) as e:
         logger.exception(f"Unexpected error during model training: {e}")

@@ -191,6 +191,9 @@ OUTCOME_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
 OUTCOME_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
     "OutcomePrediction", "categorical_encodings"
 )
+OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR: Path = _model_artifact(
+    "OutcomePrediction", "probability_calibrator"
+)
 
 # --------------------------------------------------------------------------- #
 # Gamelength Prediction Model Paths
@@ -210,6 +213,9 @@ GAMELENGTH_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
 )
 GAMELENGTH_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
     "GamelengthPrediction", "categorical_encodings"
+)
+GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY: Path = _model_artifact(
+    "GamelengthPrediction", "residual_summary"
 )
 
 # --------------------------------------------------------------------------- #
@@ -231,6 +237,9 @@ TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
 TOTAL_KILLS_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
     "TotalKillsPrediction", "categorical_encodings"
 )
+TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY: Path = _model_artifact(
+    "TotalKillsPrediction", "residual_summary"
+)
 
 # --------------------------------------------------------------------------- #
 # Total Towers Prediction Model Paths
@@ -250,6 +259,9 @@ TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
 )
 TOTAL_TOWERS_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
     "TotalTowersPrediction", "categorical_encodings"
+)
+TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY: Path = _model_artifact(
+    "TotalTowersPrediction", "residual_summary"
 )
 
 # --------------------------------------------------------------------------- #

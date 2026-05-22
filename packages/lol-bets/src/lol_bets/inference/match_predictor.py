@@ -16,6 +16,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from oracle_bets_core.betting import OverUnderSignal, price_over_under
 from oracle_bets_core.io_utils import load_model
 from oracle_bets_core.league_taxonomy import get_league_taxonomy
 from oracle_bets_core.paths import (
@@ -25,23 +26,27 @@ from oracle_bets_core.paths import (
     GAMELENGTH_PREDICTION_FEATURE_PIPELINE,
     GAMELENGTH_PREDICTION_FINAL_FEATURES,
     GAMELENGTH_PREDICTION_MODEL_PATH,
+    GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY,
     LEAGUE_ELO,
     OUTCOME_PREDICTION_CATEGORICAL_ENCODINGS,
     OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
     OUTCOME_PREDICTION_FEATURE_PIPELINE,
     OUTCOME_PREDICTION_FINAL_FEATURES,
     OUTCOME_PREDICTION_MODEL_PATH,
+    OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR,
     TEAM_LEAGUES_MAPPING,
     TOTAL_KILLS_PREDICTION_CATEGORICAL_ENCODINGS,
     TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES,
     TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_KILLS_PREDICTION_FINAL_FEATURES,
     TOTAL_KILLS_PREDICTION_MODEL_PATH,
+    TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY,
     TOTAL_TOWERS_PREDICTION_CATEGORICAL_ENCODINGS,
     TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES,
     TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_TOWERS_PREDICTION_FINAL_FEATURES,
     TOTAL_TOWERS_PREDICTION_MODEL_PATH,
+    TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY,
     WHOLE_HISTORY_RATING_PATH,
 )
 from oracle_bets_core.pd import pd
@@ -234,9 +239,19 @@ class MatchPredictor:
     """
 
     outcome_model: Any = field(default=None, init=False, repr=False)
+    outcome_calibrator: Any = field(default=None, init=False, repr=False)
     gamelength_model: Any = field(default=None, init=False, repr=False)
     total_kills_model: Any = field(default=None, init=False, repr=False)
     total_towers_model: Any = field(default=None, init=False, repr=False)
+    gamelength_residual_summary: dict[str, Any] | None = field(
+        default=None, init=False, repr=False
+    )
+    total_kills_residual_summary: dict[str, Any] | None = field(
+        default=None, init=False, repr=False
+    )
+    total_towers_residual_summary: dict[str, Any] | None = field(
+        default=None, init=False, repr=False
+    )
     whr_model: Any = field(default=None, init=False, repr=False)
     team_to_league: pd.DataFrame = field(default=None, init=False, repr=False)
     league_to_elo: pd.DataFrame = field(default=None, init=False, repr=False)
@@ -269,6 +284,13 @@ class MatchPredictor:
             raise RuntimeError(msg) from e
 
         try:
+            self.outcome_calibrator = load_model(
+                OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR
+            )
+        except Exception:
+            self.outcome_calibrator = None
+
+        try:
             self.whr_model = load_model(WHOLE_HISTORY_RATING_PATH)
         except (Exception, ImportError):
             # WHR is optional; only used if whr_prediction() is called explicitly
@@ -283,6 +305,16 @@ class MatchPredictor:
                 setattr(self, f"{model_name}_model", load_model(path))
             except Exception:
                 setattr(self, f"{model_name}_model", None)
+
+        for name, path in (
+            ("gamelength_residual_summary", GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY),
+            ("total_kills_residual_summary", TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY),
+            ("total_towers_residual_summary", TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY),
+        ):
+            try:
+                setattr(self, name, load_model(path))
+            except Exception:
+                setattr(self, name, None)
 
         try:
             self.team_to_league = _read_parquet_cached(str(TEAM_LEAGUES_MAPPING))
@@ -818,6 +850,9 @@ class MatchPredictor:
             X = self._prepare_for_tabnet(X, model_name="outcome")
 
         proba = self.outcome_model.predict_proba(X)
+        if self.outcome_calibrator is not None:
+            team1 = self.outcome_calibrator.predict(proba[:, 1])
+            proba = np.column_stack([1.0 - team1, team1])
         return np.round(proba, PREDICTION_PRECISION)
 
     def _predict_regression(self, X: pd.DataFrame, *, model_name: str) -> float:
@@ -841,6 +876,35 @@ class MatchPredictor:
 
         pred = model.predict(X)
         return float(pred[0]) if len(pred) else float("nan")
+
+    def prop_residual_summary(self, model_name: str) -> dict[str, Any]:
+        summary = getattr(self, f"{model_name}_residual_summary", None)
+        if not summary:
+            msg = (
+                f"{model_name} residual summary not loaded. Train that prop model "
+                "with validation before pricing over/under lines."
+            )
+            raise RuntimeError(msg)
+        return summary
+
+    def price_prop_line(
+        self,
+        *,
+        prop_name: str,
+        mean: float,
+        line: float,
+        over_odds: float | None = None,
+        under_odds: float | None = None,
+    ) -> OverUnderSignal:
+        summary = self.prop_residual_summary(prop_name)
+        sigma = float(summary.get("residual_sigma") or summary.get("rmse") or 0.0)
+        return price_over_under(
+            mean=mean,
+            line=line,
+            sigma=sigma,
+            over_odds=over_odds,
+            under_odds=under_odds,
+        )
 
     # ── end-to-end API ──────────────────────────────────────────────────── #
 

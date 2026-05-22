@@ -11,5 +11,6 @@ Examples:
 
 ```bash
 uv run oracle-bets lol ingest
-uv run oracle-bets lol train --model-type lightgbm
+uv run oracle-bets lol train --model-type lightgbm --targets all
+uv run oracle-bets lol train --model-type lightgbm --targets props
 ```

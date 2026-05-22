@@ -23,6 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["none", "importance", "cumulative", "rfecv", "boruta", "report"],
         default="none",
     )
+    train.add_argument(
+        "--targets",
+        default="all",
+        help="LoL targets to train: all, outcome, props, or comma-separated names such as total_kills,total_towers.",
+    )
 
     discord = sub.add_parser("discord", help="Discord bot workflows")
     discord_sub = discord.add_subparsers(dest="action", required=True)
@@ -66,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         train_models(
             model_type=args.model_type,
             feature_selection=args.feature_selection,
+            targets=args.targets,
         )
         return 0
 

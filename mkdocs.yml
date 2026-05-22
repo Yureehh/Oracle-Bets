@@ -32,6 +32,7 @@ nav:
       - LoL Algorithm Audit: audits/lol_algorithm_audit.md
       - LoL Feature Engineering 2026 Audit: audits/lol_feature_engineering_2026_audit.md
   - Predictions: predictions.md
+  - LoL Market Predictions: lol_market_predictions.md
   - Configuration: configuration.md
   - Next Steps: next_steps.md
   - Contributing: contributing.md

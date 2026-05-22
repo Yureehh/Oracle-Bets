@@ -12,3 +12,11 @@ Example:
 ```bash
 uv run oracle-bets discord run
 ```
+
+Copy-paste examples:
+
+```text
+!lol predict "Team WE" "LNG Esports" --bo5
+!lol props "Team WE" "LNG Esports" --kills-line 26.5 --kills-over-odds 1.85
+!lol edge "Team WE" "LNG Esports"
+```

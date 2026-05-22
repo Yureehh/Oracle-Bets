@@ -8,6 +8,7 @@ from pathlib import Path
 import lol_bets.inference.match_predictor as match_predictor_module
 import numpy as np
 from lol_bets.inference.team import Team
+from oracle_bets_core.betting import OverUnderSignal, decimal_odds_from_probability
 from oracle_bets_core.io_utils import parquet_loader
 from oracle_bets_core.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
 from oracle_bets_core.pd import pd
@@ -31,6 +32,7 @@ _EMPTY_ROSTER: dict[str, str | None] = {
 VALID_MATCH_TYPES: list[str] = ["bo1", "bo2", "bo3", "bo5"]
 POSITIONS: tuple[str, ...] = ("top", "jng", "mid", "bot", "sup")
 WEEKS_FOR_DELAY: int = 3
+LOW_CONFIDENCE_WARNING_COUNT: int = 2
 
 PLEASE_PROVIDE_TEAMS = "Please provide both a blue and red team name."
 TEAMS_MUST_BE_DIFFERENT = "The two teams must be different."
@@ -352,6 +354,102 @@ def add_selection_context_to_output(
     return output
 
 
+def _pct(value: float) -> str:
+    return f"{value * 100:.1f}%"
+
+
+def _odds(value: float) -> str:
+    return f"{decimal_odds_from_probability(value):.2f}"
+
+
+def _roster_count(team: Team) -> int:
+    return sum(1 for role in POSITIONS if team.roster.get(role))
+
+
+def _confidence_label(warnings: list[str]) -> str:
+    if len(warnings) >= LOW_CONFIDENCE_WARNING_COUNT:
+        return "Low"
+    if warnings:
+        return "Medium"
+    return "High"
+
+
+def _format_warnings(warnings: list[str]) -> str:
+    if not warnings:
+        return "\nWarnings\n- None."
+    return "\nWarnings\n" + "\n".join(f"- {warning}" for warning in warnings)
+
+
+def _format_prop_line(label: str, signal: OverUnderSignal) -> str:
+    lines = [
+        f"\n{label} Line {signal.line:g}",
+        f"- Over probability: {_pct(signal.over_probability)}",
+        f"- Under probability: {_pct(signal.under_probability)}",
+        f"- Fair odds: Over {signal.over_fair_odds:.2f} | Under {signal.under_fair_odds:.2f}",
+    ]
+    if signal.over_edge is not None or signal.under_edge is not None:
+        over_edge = (
+            f"{signal.over_edge * 100:+.1f}%" if signal.over_edge is not None else "n/a"
+        )
+        under_edge = (
+            f"{signal.under_edge * 100:+.1f}%"
+            if signal.under_edge is not None
+            else "n/a"
+        )
+        lines.append(f"- Edge: Over {over_edge} | Under {under_edge}")
+    if (
+        signal.over_half_kelly_fraction is not None
+        or signal.under_half_kelly_fraction is not None
+    ):
+        over_stake = (
+            f"{signal.over_half_kelly_fraction * 100:.1f}%"
+            if signal.over_half_kelly_fraction is not None
+            else "n/a"
+        )
+        under_stake = (
+            f"{signal.under_half_kelly_fraction * 100:.1f}%"
+            if signal.under_half_kelly_fraction is not None
+            else "n/a"
+        )
+        lines.append(
+            f"- Suggested stake: half-Kelly Over {over_stake} | Under {under_stake}"
+        )
+    return "\n".join(lines)
+
+
+def format_prop_market_output(
+    *,
+    blue_team_name: str,
+    red_team_name: str,
+    gamelength: float,
+    total_kills: float,
+    total_towers: float,
+    line_signals: dict[str, OverUnderSignal],
+    warnings: list[str],
+) -> str:
+    output = (
+        f"**Prop Predictions: {blue_team_name} vs {red_team_name}**\n\n"
+        "Projected Totals\n"
+        f"- Expected game length: **{gamelength:.1f} minutes**\n"
+        f"- Expected total kills: **{total_kills:.1f}**\n"
+        f"- Expected total towers: **{total_towers:.1f}**\n"
+    )
+    for label, signal in line_signals.items():
+        output += _format_prop_line(label, signal)
+    output += (
+        "\n\nMeaning\n"
+        "- Expected total is the model's central estimate for one map.\n"
+        "- Over/Under probability uses historical model error, not just the mean.\n"
+        "- Fair odds are no-vig decimal odds implied by the model probability.\n"
+        "- Edge compares model probability to market odds when odds are supplied.\n"
+        "- Half-Kelly is a bankroll fraction suggestion, never an auto-bet.\n"
+        "- Map 3/4/5 props are interpreted only after that map is confirmed."
+    )
+    output += f"\n\nConfidence: **{_confidence_label(warnings)}**"
+    output += _format_warnings(warnings)
+    return output
+
+
 # ── main async prediction entrypoints ───────────────────────────────────── #
 
 
@@ -422,6 +520,19 @@ async def predict_and_format_result(
         # p1: team1=blue; p2: team2=blue (flipped)  # noqa: ERA001
         blue_win = (p1["team1_win_probability"] + p2["team2_win_probability"]) / 2.0
         red_win = 1.0 - blue_win
+        warnings: list[str] = []
+        if predictor.outcome_calibrator is None:
+            warnings.append(
+                "Outcome calibration artifact is missing; raw model probability is being used."
+            )
+        if _roster_count(blue_team) < len(POSITIONS) or _roster_count(red_team) < len(
+            POSITIONS
+        ):
+            warnings.append(
+                "One or both rosters are incomplete, so roster features use fallback state."
+            )
+        if not account_for_side:
+            warnings.append("Side selection is ignored for this command.")
         # series breakdown
         if match_type == "bo1":
             output = BestOfs.best_of_one(
@@ -439,6 +550,14 @@ async def predict_and_format_result(
             output = BestOfs.best_of_five(
                 blue_team_name, blue_win, red_team_name, red_win
             )
+        output += (
+            "\n\n## Winner Market Read"
+            f"\n- {blue_team_name} fair odds: {_odds(blue_win)}"
+            f"\n- {red_team_name} fair odds: {_odds(red_win)}"
+            f"\n- Probability source: {'calibrated model' if predictor.outcome_calibrator is not None else 'raw model'}"
+            f"\n- Confidence: {_confidence_label(warnings)}"
+            "\n- Meaning: compare fair odds to the market price; a bet only has edge when the market pays above fair odds."
+        )
         output = add_selection_context_to_output(
             output, blue_team, red_team, account_for_side, first_pick_team_name
         )
@@ -446,6 +565,7 @@ async def predict_and_format_result(
         output = add_break_flags_to_output(
             output, break_blue_flag, blue_team_name, break_red_flag, red_team_name
         )
+        output += _format_warnings(warnings)
         # stay under Discord limit
         await msg.edit(content=output[: MESSAGE_LIMIT - 1])
 
@@ -463,6 +583,15 @@ async def predict_and_format_props(
     red_roster_str: str | None,
     account_for_side: bool,
     first_pick_team_name: str | None = None,
+    kills_line: float | None = None,
+    kills_over_odds: float | None = None,
+    kills_under_odds: float | None = None,
+    towers_line: float | None = None,
+    towers_over_odds: float | None = None,
+    towers_under_odds: float | None = None,
+    length_line: float | None = None,
+    length_over_odds: float | None = None,
+    length_under_odds: float | None = None,
 ) -> None:
     """Predict game props (gamelength, total kills, total towers) for a single game."""
     msg = await ctx.send(content="```Calculating prop predictions...```")
@@ -500,11 +629,64 @@ async def predict_and_format_props(
             blue_team, red_team, account_for_side=account_for_side
         )
 
-        output = (
-            f"**Prop Predictions (single game)**\n"
-            f"- Expected game length: **{gamelength:.2f}** minutes\n"
-            f"- Expected total kills: **{total_kills:.2f}**\n"
-            f"- Expected total towers: **{total_towers:.2f}**\n"
+        warnings: list[str] = []
+        if _roster_count(blue_team) < len(POSITIONS) or _roster_count(red_team) < len(
+            POSITIONS
+        ):
+            warnings.append(
+                "One or both rosters are incomplete, so roster features use fallback state."
+            )
+        if not account_for_side:
+            warnings.append("Side selection is ignored for this command.")
+
+        line_signals: dict[str, OverUnderSignal] = {}
+        for label, prop_name, mean, line, over_odds, under_odds in (
+            (
+                "Length",
+                "gamelength",
+                gamelength,
+                length_line,
+                length_over_odds,
+                length_under_odds,
+            ),
+            (
+                "Kills",
+                "total_kills",
+                total_kills,
+                kills_line,
+                kills_over_odds,
+                kills_under_odds,
+            ),
+            (
+                "Towers",
+                "total_towers",
+                total_towers,
+                towers_line,
+                towers_over_odds,
+                towers_under_odds,
+            ),
+        ):
+            if line is None:
+                continue
+            try:
+                line_signals[label] = predictor.price_prop_line(
+                    prop_name=prop_name,
+                    mean=mean,
+                    line=line,
+                    over_odds=over_odds,
+                    under_odds=under_odds,
+                )
+            except RuntimeError as e:
+                warnings.append(str(e))
+
+        output = format_prop_market_output(
+            blue_team_name=blue_team_name,
+            red_team_name=red_team_name,
+            gamelength=gamelength,
+            total_kills=total_kills,
+            total_towers=total_towers,
+            line_signals=line_signals,
+            warnings=warnings,
         )
         output = add_selection_context_to_output(
             output, blue_team, red_team, account_for_side, first_pick_team_name
@@ -554,6 +736,15 @@ async def validate_and_predict_props(
     red_roster_str: str | None,
     side_consideration: bool,
     first_pick_team_name: str | None = None,
+    kills_line: float | None = None,
+    kills_over_odds: float | None = None,
+    kills_under_odds: float | None = None,
+    towers_line: float | None = None,
+    towers_over_odds: float | None = None,
+    towers_under_odds: float | None = None,
+    length_line: float | None = None,
+    length_over_odds: float | None = None,
+    length_under_odds: float | None = None,
 ):
     blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
     if not blue_team_name or not red_team_name:
@@ -570,4 +761,13 @@ async def validate_and_predict_props(
         red_roster_str,
         side_consideration,
         first_pick_team_name,
+        kills_line,
+        kills_over_odds,
+        kills_under_odds,
+        towers_line,
+        towers_over_odds,
+        towers_under_odds,
+        length_line,
+        length_over_odds,
+        length_under_odds,
     )

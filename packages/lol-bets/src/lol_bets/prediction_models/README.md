@@ -11,8 +11,18 @@ Model preprocessing, training, selection, and observability.
 Known model targets are owned in `data_preprocessor.py` so target cleanup stays
 beside the training-table assembly that uses it.
 
+Enabled targets are:
+
+- `outcome`: map winner classification.
+- `gamelength`: expected map duration in minutes.
+- `total_kills`: expected combined champion kills.
+- `total_towers`: expected combined towers destroyed.
+
+Classification stores a probability calibrator when validation data supports it.
+Regression stores residual summaries for Discord over/under line pricing.
+
 Example:
 
 ```bash
-uv run oracle-bets lol train --model-type lightgbm --feature-selection report
+uv run oracle-bets lol train --model-type lightgbm --targets all --feature-selection report
 ```
