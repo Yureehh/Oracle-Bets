@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -70,8 +71,31 @@ def default_sleep(seconds: float) -> None:  # pragma: no cover
 PANDASCORE_BASE_URL = "https://api.pandascore.co/lol/matches/upcoming"
 ACCEPT_JSON_HEADER: dict[str, str] = {"Accept": "application/json"}
 DEFAULT_PER_PAGE = 100
-START_DATETIME_COLUMN = "Start (UTC)"
 DEFAULT_REFRESH_HOURS = 48.0
+SCHEDULE_COLUMNS: tuple[str, ...] = (
+    "provider",
+    "provider_match_id",
+    "match_key",
+    "league",
+    "serie",
+    "tournament",
+    "team_a",
+    "team_b",
+    "team_a_id",
+    "team_b_id",
+    "start_utc",
+    "best_of",
+    "status",
+    "market_query",
+    "discord_label",
+)
+LEGACY_COLUMN_RENAMES = {
+    "match_id": "provider_match_id",
+    "Blue": "team_a",
+    "Red": "team_b",
+    "Start (UTC)": "start_utc",
+    "Best Of": "best_of",
+}
 
 load_dotenv()
 
@@ -83,6 +107,82 @@ def _schedule_is_stale(path: str | os.PathLike, max_age_hours: float) -> bool:
         return True
     age_hours = (time.time() - mtime) / 3600.0
     return age_hours >= max_age_hours
+
+
+def _clean_text(value: Any) -> str:
+    """Normalize API text into a compact parseable string."""
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _match_key(match_id: Any, team_a: str, team_b: str, start_utc: Any) -> str:
+    if match_id not in (None, ""):
+        return f"pandascore:{match_id}"
+    raw = "|".join([team_a.casefold(), team_b.casefold(), str(start_utc)])
+    slug = re.sub(r"[^a-z0-9]+", "-", raw.casefold()).strip("-")
+    return f"pandascore:{slug}"
+
+
+def _market_query(league: str, team_a: str, team_b: str) -> str:
+    return " ".join(part for part in (league, team_a, team_b) if part)
+
+
+def _discord_label(league: str, team_a: str, team_b: str, best_of: Any) -> str:
+    series = "BO?" if pd.isna(best_of) else f"BO{best_of}"
+    matchup = " vs ".join(part or "TBD" for part in (team_a, team_b))
+    return f"{league or 'Unknown league'} | {matchup} | {series}"
+
+
+def normalize_schedule_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a stable snake_case schedule frame, including legacy file support."""
+    if df.empty:
+        return pd.DataFrame(columns=SCHEDULE_COLUMNS)
+
+    out = df.rename(columns=LEGACY_COLUMN_RENAMES).copy()
+    if "provider" not in out.columns:
+        out["provider"] = "pandascore"
+    for col in SCHEDULE_COLUMNS:
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    text_cols = ["league", "serie", "tournament", "team_a", "team_b", "status"]
+    for col in text_cols:
+        out[col] = out[col].map(_clean_text)
+
+    out["provider_match_id"] = out["provider_match_id"].map(_clean_text)
+    out["start_utc"] = pd.to_datetime(out["start_utc"], errors="coerce", utc=True)
+    out["best_of"] = pd.to_numeric(out["best_of"], errors="coerce").astype("Int64")
+    out["match_key"] = [
+        _match_key(match_id, team_a, team_b, start_utc)
+        for match_id, team_a, team_b, start_utc in zip(
+            out["provider_match_id"],
+            out["team_a"],
+            out["team_b"],
+            out["start_utc"],
+            strict=False,
+        )
+    ]
+    out["market_query"] = [
+        _market_query(league, team_a, team_b)
+        for league, team_a, team_b in zip(
+            out["league"], out["team_a"], out["team_b"], strict=False
+        )
+    ]
+    out["discord_label"] = [
+        _discord_label(league, team_a, team_b, best_of)
+        for league, team_a, team_b, best_of in zip(
+            out["league"],
+            out["team_a"],
+            out["team_b"],
+            out["best_of"],
+            strict=False,
+        )
+    ]
+
+    out = out[list(SCHEDULE_COLUMNS)]
+    out = out.sort_values(["start_utc", "league", "team_a"], kind="mergesort")
+    return out.reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +267,8 @@ class PandaScoreSchedule:
             if self._should_stop_fetching(parsed, end_dt):
                 break
 
+        schedule_df = normalize_schedule_frame(schedule_df)
+
         if leagues:
             schedule_df = self.filter_by_league(schedule_df, leagues)
 
@@ -231,32 +333,49 @@ class PandaScoreSchedule:
             if not scheduled_at:
                 continue
             opponents = m.get("opponents", [])
-            blue = opponents[0].get("opponent", {}).get("name") if opponents else None
-            red = (
-                opponents[1].get("opponent", {}).get("name")
-                if len(opponents) > 1
-                else None
+            team_a = opponents[0].get("opponent", {}) if opponents else {}
+            team_b_payload = (
+                opponents[1].get("opponent", {}) if len(opponents) > 1 else {}
             )
+            league = _clean_text(m.get("league", {}).get("name"))
+            team_a_name = _clean_text(team_a.get("name"))
+            team_b_name = _clean_text(team_b_payload.get("name"))
+            match_id = m.get("id")
+            best_of = m.get("number_of_games")
             data.append(
                 {
-                    "match_id": m.get("id"),
-                    "league": m.get("league", {}).get("name"),
-                    "Blue": blue,
-                    "Red": red,
-                    START_DATETIME_COLUMN: scheduled_at,
-                    "Best Of": m.get("number_of_games"),
+                    "provider": "pandascore",
+                    "provider_match_id": match_id,
+                    "league": league,
+                    "serie": m.get("serie", {}).get("full_name")
+                    or m.get("serie", {}).get("name"),
+                    "tournament": m.get("tournament", {}).get("name"),
+                    "team_a": team_a_name,
+                    "team_b": team_b_name,
+                    "team_a_id": team_a.get("id"),
+                    "team_b_id": team_b_payload.get("id"),
+                    "start_utc": scheduled_at,
+                    "best_of": best_of,
+                    "status": m.get("status"),
+                    "match_key": _match_key(
+                        match_id, team_a_name, team_b_name, scheduled_at
+                    ),
+                    "market_query": _market_query(league, team_a_name, team_b_name),
+                    "discord_label": _discord_label(
+                        league, team_a_name, team_b_name, best_of
+                    ),
                 }
             )
         if not data:
             msg = "API payload contained no parsable matches."
             raise DataValidationError(msg)
-        return pd.DataFrame(data)
+        return normalize_schedule_frame(pd.DataFrame(data))
 
     @staticmethod
     def filter_by_league(df: pd.DataFrame, leagues: str) -> pd.DataFrame:
         """Case-insensitive filter on the “league” column."""
         leagues_set = {lg.strip().lower() for lg in leagues.split(",")}
-        out = df[df["league"].str.lower().isin(leagues_set)]
+        out = df[df["league"].fillna("").str.lower().isin(leagues_set)]
         schedule_logger.debug("Leagues filter → %s rows", len(out))
         return out
 
@@ -266,6 +385,8 @@ class PandaScoreSchedule:
     @staticmethod
     def _parse_datetime(value: str | dt.datetime) -> dt.datetime:
         dt_obj = parser.isoparse(value) if isinstance(value, str) else value
+        if dt_obj.tzinfo is None:
+            dt_obj = dt_obj.replace(tzinfo=dt.UTC)
         return dt_obj.astimezone(dt.UTC)
 
     def _validate_and_parse_dates(
@@ -291,7 +412,7 @@ class PandaScoreSchedule:
         time_format: str | None,
     ) -> pd.DataFrame:
         games_df = self._parse_matches_response(matches)
-        raw_times = games_df[START_DATETIME_COLUMN]
+        raw_times = games_df["start_utc"]
         if time_format:
             parsed = pd.to_datetime(
                 raw_times,
@@ -303,21 +424,20 @@ class PandaScoreSchedule:
                 parsed = pd.to_datetime(raw_times, errors="coerce", utc=True)
         else:
             parsed = pd.to_datetime(raw_times, errors="coerce", utc=True)
-        games_df[START_DATETIME_COLUMN] = parsed
-        games_df = games_df.dropna(subset=[START_DATETIME_COLUMN])
-        mask = (games_df[START_DATETIME_COLUMN] >= start_dt) & (
-            games_df[START_DATETIME_COLUMN] <= end_dt
-        )
+        games_df["start_utc"] = parsed
+        games_df = games_df.dropna(subset=["start_utc"])
+        mask = (games_df["start_utc"] >= start_dt) & (games_df["start_utc"] <= end_dt)
         return games_df.loc[mask]
 
     @staticmethod
     def _append_to_schedule(curr: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
         combined = pd.concat([curr, new], ignore_index=True)
-        return combined.drop_duplicates(subset=["match_id"], keep="last")
+        combined = normalize_schedule_frame(combined)
+        return combined.drop_duplicates(subset=["match_key"], keep="last")
 
     @staticmethod
     def _should_stop_fetching(df: pd.DataFrame, end_dt: dt.datetime) -> bool:
-        return df[START_DATETIME_COLUMN].min() > end_dt
+        return df["start_utc"].min() > end_dt
 
     @staticmethod
     def load_schedule(
@@ -355,8 +475,10 @@ class PandaScoreSchedule:
             msg = f"Failed to load schedule file '{p}': {e}"
             raise ScheduleError(msg) from e
 
-        if "league" not in df.columns:
-            msg = "Schedule file missing required 'league' column."
+        df = normalize_schedule_frame(df)
+
+        if not {"league", "team_a", "team_b", "start_utc"} <= set(df.columns):
+            msg = "Schedule file missing required schedule columns."
             raise DataValidationError(msg)
 
         if leagues:

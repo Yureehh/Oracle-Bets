@@ -82,9 +82,20 @@ def format_schedule_message(schedule_df: pd.DataFrame) -> str:
 
 def format_league(df: pd.DataFrame, league: str) -> str:
     league_df = df[df["league"] == league].head(5).copy()
-    league_df["league"] = (
-        league_df["league"].astype(str).str.split().str[:3].str.join(" ")
+    display_cols = {
+        "start_utc": "Start (UTC)",
+        "team_a": "Team A",
+        "team_b": "Team B",
+        "best_of": "Best Of",
+        "market_query": "Market Query",
+    }
+    league_df = league_df[[c for c in display_cols if c in league_df.columns]].rename(
+        columns=display_cols
     )
+    if "Start (UTC)" in league_df.columns:
+        league_df["Start (UTC)"] = pd.to_datetime(
+            league_df["Start (UTC)"], errors="coerce", utc=True
+        ).dt.strftime("%Y-%m-%d %H:%M")
     md = league_df.to_markdown(index=False)
     md = "\n".join(line.lstrip() for line in md.split("\n"))
     return f"Upcoming {league} Games (Next 5 Matches Within 7 Days):\n```{md}```\n\n"
