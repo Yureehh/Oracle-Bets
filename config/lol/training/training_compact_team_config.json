@@ -29,6 +29,8 @@
     "ema_season_win_rate_before",
     "ema_season_games_before",
     "ema_gamelength_before",
+    "ema_win_gamelength_before",
+    "ema_loss_gamelength_before",
     "diff_ema_team_kpm_before",
     "diff_ema_kill_share_before",
     "diff_ema_egpm_before",
@@ -36,6 +38,8 @@
     "diff_ema_tower_share_before",
     "diff_ema_dragons_before",
     "diff_ema_epic_monsters_before",
+    "diff_ema_team_vspm_before",
+    "diff_ema_team_wcpm_before",
     "diff_ema_firsttower_before",
     "diff_ema_firstdragon_before",
     "diff_ema_golddiffat15_before",
@@ -45,6 +49,9 @@
     "diff_ema_golddiffat25_before",
     "diff_ema_golddiff_shareat25_before",
     "diff_ema_xpdiffat25_before",
-    "diff_ema_csdiffat25_before"
+    "diff_ema_csdiffat25_before",
+    "diff_ema_golddiff_growth_10_15_before",
+    "diff_ema_golddiff_growth_15_20_before",
+    "diff_ema_golddiff_growth_20_25_before"
   ]
 }

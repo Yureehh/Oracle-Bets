@@ -38,7 +38,7 @@
     "position_reset_factor": 0.2
   },
   "optuna": {
-    "trials": 50,
+    "trials": 100,
     "seed": 42
   }
 }

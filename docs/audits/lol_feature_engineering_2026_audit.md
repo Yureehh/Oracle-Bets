@@ -25,6 +25,8 @@ future experiments easy to compare.
 - Removed all Atakhan EMA features from training and flattened configs.
 - Restored 10-minute and 20-minute checkpoint features for broad experiments.
 - Kept compact configs focused on selected 15 and 25 minute comparison signals.
+- Added focused style metrics for lead growth, lead conversion, closing speed,
+  team vision, and objective conversion.
 - Added regression tests that block Atakhan and `_std` feature families from
   config files.
 
@@ -37,6 +39,8 @@ future experiments easy to compare.
   barons, heralds, grubs, inhibitors, elders.
 - Lane/economy checkpoints: gold, XP, CS, kills/deaths/assists, and their
   differentials at 10/15/20/25 minutes.
+- Style signals: snowball growth between checkpoints, win/loss game length,
+  team-level vision aggregates, and objective-to-structure conversion.
 - Explicit comparison features: train on `diff_ema_*` for comparable stats
   while keeping own EMA state in flattened inference artifacts.
 - Series context: game number, BO1/BO3/BO5, deciding game.
@@ -125,8 +129,10 @@ Run all experiments with identical walk-forward splits and report log loss,
 Brier, AUC, calibration error, league cohorts, patch cohorts, and ROI-style edge
 simulation.
 
-1. `full_2026_clean`: current full config after Atakhan and 10/20 removal.
-2. `compact_2026_clean`: compact config with 15/25 deltas.
+1. `full_2026_clean`: current full config after Atakhan removal, with
+   10/15/20/25 checkpoints and focused style metrics.
+2. `compact_2026_clean`: compact config with selected 15/25 deltas and curated
+   style metrics.
 3. `rating_only`: all ratings and league/side/season likelihoods only.
 4. `team_only`: team features plus ratings, no player pivot.
 5. `player_only`: player form plus ratings, no team macro except metadata.

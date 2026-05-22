@@ -1,9 +1,0 @@
-{
-  "k_factor": 32,
-  "initial_elo": 1500,
-  "elo_divisor": 400,
-  "decay_factor": 0.9,
-  "transfer_factor": 0.5,
-  "initial_elo_adjustment_factor": 0.5,
-  "position_reset_factor": 0.2
-}

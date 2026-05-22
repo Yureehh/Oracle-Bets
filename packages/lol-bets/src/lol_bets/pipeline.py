@@ -215,7 +215,7 @@ class DataGenerator:
     def generate_features(self) -> None:
         """Feature generator: team then player."""
         self.team_data = self.feature_generator.generate_new_team_features(
-            self.team_data
+            self.team_data, player_data=self.player_data
         )
         self.player_data = self.feature_generator.generate_new_player_features(
             self.player_data

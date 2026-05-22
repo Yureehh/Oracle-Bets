@@ -14,6 +14,11 @@ PLAYER_A_FIRST_KILLS = 10
 PLAYER_B_FIRST_KILLS = 100
 EXPECTED_EPIC_MONSTERS = 6
 EXPECTED_STRUCTURE_CONTROL = 8
+EXPECTED_GOLD_GROWTH = 1000
+EXPECTED_WIN_GAMELENGTH = 1800
+EXPECTED_TEAM_WPM = 3.2
+EXPECTED_TEAM_VSPM = 6.2
+EXPECTED_TEAM_CONTROL_WARDS = 9
 BLUE_GOLD_EMA = 110.0
 RED_GOLD_EMA = 90.0
 GOLD_EMA_DIFF = 20.0
@@ -109,6 +114,8 @@ def test_head_to_head_wins_shift_within_matchup():
 def test_team_control_features_are_bounded_and_objective_based():
     df = pd.DataFrame(
         {
+            "result": [1, 0],
+            "gamelength": [1800, 2100],
             "kills": [12, 8],
             "total_kills": [20, 20],
             "towers": [7, 3],
@@ -119,18 +126,32 @@ def test_team_control_features_are_bounded_and_objective_based():
             "elders": [0, 0],
             "void_grubs": [3, 0],
             "inhibitors": [1, 0],
+            "goldat10": [24000, 24000],
+            "golddiffat10": [1000, -1000],
+            "xpat10": [12000, 12100],
+            "xpdiffat10": [300, -300],
+            "csat10": [350, 345],
+            "csdiffat10": [10, -10],
             "goldat15": [25000, 23000],
             "golddiffat15": [2000, -2000],
             "xpat15": [18000, 17500],
             "xpdiffat15": [500, -500],
             "csat15": [520, 500],
             "csdiffat15": [20, -20],
+            "goldat20": [33000, 31500],
+            "golddiffat20": [2500, -2500],
+            "xpat20": [26000, 25200],
+            "xpdiffat20": [800, -800],
+            "csat20": [680, 650],
+            "csdiffat20": [30, -30],
             "goldat25": [43000, 40000],
             "golddiffat25": [3000, -3000],
             "xpat25": [33000, 32000],
             "xpdiffat25": [1000, -1000],
             "csat25": [830, 800],
             "csdiffat25": [30, -30],
+            "firsttower": [1, 0],
+            "firstdragon": [1, 0],
         }
     )
 
@@ -142,6 +163,37 @@ def test_team_control_features_are_bounded_and_objective_based():
     assert out.loc[0, "structure_control"] == EXPECTED_STRUCTURE_CONTROL
     assert out.loc[0, "golddiff_shareat15"] > 0
     assert out.loc[1, "golddiff_shareat15"] < 0
+    assert out.loc[0, "golddiff_growth_10_15"] == EXPECTED_GOLD_GROWTH
+    assert out.loc[0, "ahead_goldat15"] == 1
+    assert out.loc[0, "won_when_ahead_goldat15"] == 1
+    assert out.loc[1, "lost_when_behind_goldat15"] == 1
+    assert out.loc[0, "win_gamelength"] == EXPECTED_WIN_GAMELENGTH
+    assert np.isnan(out.loc[0, "loss_gamelength"])
+    assert out.loc[0, "towers_per_epic_monster"] > 0
+    assert out.loc[0, "first_tower_to_win"] == 1
+
+
+def test_team_vision_features_aggregate_player_rows():
+    team_df = pd.DataFrame(
+        {"gameid": ["g1", "g1"], "teamid": ["blue", "red"], "side": ["Blue", "Red"]}
+    )
+    player_df = pd.DataFrame(
+        {
+            "gameid": ["g1", "g1", "g1", "g1"],
+            "teamid": ["blue", "blue", "red", "red"],
+            "wpm": [1.2, 2.0, 0.5, 0.7],
+            "wcpm": [0.4, 0.8, 0.3, 0.2],
+            "vspm": [3.0, 3.2, 1.0, 1.4],
+            "controlwardsbought": [4, 5, 2, 1],
+        }
+    )
+
+    out = FeatureGenerator.add_team_vision_features(team_df, player_df)
+    blue = out.loc[out["teamid"] == "blue"].iloc[0]
+
+    assert blue["team_wpm"] == EXPECTED_TEAM_WPM
+    assert blue["team_vspm"] == EXPECTED_TEAM_VSPM
+    assert blue["team_controlwardsbought"] == EXPECTED_TEAM_CONTROL_WARDS
 
 
 def test_opponent_ema_diff_does_not_overwrite_base_team_feature():

@@ -8,6 +8,7 @@ new features for player and team data.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -44,6 +45,27 @@ def _safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
         pd.to_numeric(numerator, errors="coerce"),
         _zero_to_nan(denominator).abs(),
     )
+
+
+def _result_to_numeric(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_numeric(series, errors="coerce")
+    return series.map(
+        {
+            "W": 1,
+            "Win": 1,
+            "win": 1,
+            "Won": 1,
+            "won": 1,
+            True: 1,
+            "L": 0,
+            "Loss": 0,
+            "loss": 0,
+            "Lose": 0,
+            "lose": 0,
+            False: 0,
+        }
+    ).astype("float64")
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +281,7 @@ class FeatureGenerator:
     def generate_new_team_features(
         data: pd.DataFrame,
         *,
+        player_data: pd.DataFrame | None = None,
         recent_window: int = 5,
         add_recent: bool = True,
     ) -> pd.DataFrame:
@@ -304,6 +327,7 @@ class FeatureGenerator:
             how="left",
         )
         df = FeatureGenerator.add_team_control_features(df)
+        df = FeatureGenerator.add_team_vision_features(df, player_data)
 
         # ── Team cumulative mean, reset each *season* and *patch* ────────────
         for grp, pfx in (
@@ -384,6 +408,52 @@ class FeatureGenerator:
                 out[structure_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1)
             )
 
+        out = FeatureGenerator.add_closing_speed_features(out)
+        out = FeatureGenerator.add_objective_conversion_features(out)
+        out = FeatureGenerator.add_checkpoint_growth_features(out)
+        return FeatureGenerator.add_lead_conversion_features(out)
+
+    @staticmethod
+    def add_closing_speed_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Split game length by prior win/loss context for own-team EMAs."""
+        out = df.copy()
+        result_num = _result_to_numeric(out["result"]) if "result" in out else None
+        if result_num is not None and "gamelength" in out:
+            gamelength = pd.to_numeric(out["gamelength"], errors="coerce")
+            out["win_gamelength"] = gamelength.where(result_num == 1)
+            out["loss_gamelength"] = gamelength.where(result_num == 0)
+        return out
+
+    @staticmethod
+    def add_objective_conversion_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Add objective-to-structure and first-objective conversion signals."""
+        out = df.copy()
+        result_num = _result_to_numeric(out["result"]) if "result" in out else None
+        if {"epic_monsters", "towers"} <= set(out.columns):
+            out["towers_per_epic_monster"] = _safe_divide(
+                out["towers"], out["epic_monsters"]
+            )
+        if {"epic_monsters", "structure_control"} <= set(out.columns):
+            out["structure_per_epic_monster"] = _safe_divide(
+                out["structure_control"], out["epic_monsters"]
+            )
+        if result_num is not None:
+            if "firsttower" in out:
+                first_tower = pd.to_numeric(out["firsttower"], errors="coerce").fillna(
+                    0
+                )
+                out["first_tower_to_win"] = first_tower.mul(result_num)
+            if "firstdragon" in out:
+                first_dragon = pd.to_numeric(
+                    out["firstdragon"], errors="coerce"
+                ).fillna(0)
+                out["first_dragon_to_win"] = first_dragon.mul(result_num)
+        return out
+
+    @staticmethod
+    def add_checkpoint_growth_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Add lead-growth deltas between adjacent game checkpoints."""
+        out = df.copy()
         for minute in EARLY_GAME_MARKERS:
             for metric, diff in (
                 ("gold", "golddiff"),
@@ -397,7 +467,76 @@ class FeatureGenerator:
                         out[diff_col], out[value_col]
                     )
 
+        for start, end in pairwise(EARLY_GAME_MARKERS):
+            for diff in ("golddiff", "xpdiff", "csdiff"):
+                start_col = f"{diff}at{start}"
+                end_col = f"{diff}at{end}"
+                if {start_col, end_col} <= set(out.columns):
+                    out[f"{diff}_growth_{start}_{end}"] = pd.to_numeric(
+                        out[end_col], errors="coerce"
+                    ) - pd.to_numeric(out[start_col], errors="coerce")
         return out
+
+    @staticmethod
+    def add_lead_conversion_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Add win/loss conversion rates for teams ahead or behind by gold."""
+        out = df.copy()
+        result_num = _result_to_numeric(out["result"]) if "result" in out else None
+        if result_num is not None:
+            for minute in (15, 25):
+                gold_col = f"golddiffat{minute}"
+                if gold_col not in out:
+                    continue
+                ahead = pd.to_numeric(out[gold_col], errors="coerce") > 0
+                behind = pd.to_numeric(out[gold_col], errors="coerce") < 0
+                out[f"ahead_goldat{minute}"] = ahead.astype("uint8")
+                out[f"won_when_ahead_goldat{minute}"] = (
+                    ahead & result_num.eq(1)
+                ).astype("uint8")
+                out[f"lost_when_ahead_goldat{minute}"] = (
+                    ahead & result_num.eq(0)
+                ).astype("uint8")
+                out[f"won_when_behind_goldat{minute}"] = (
+                    behind & result_num.eq(1)
+                ).astype("uint8")
+                out[f"lost_when_behind_goldat{minute}"] = (
+                    behind & result_num.eq(0)
+                ).astype("uint8")
+
+        return out
+
+    @staticmethod
+    def add_team_vision_features(
+        team_df: pd.DataFrame, player_df: pd.DataFrame | None
+    ) -> pd.DataFrame:
+        """Aggregate player vision stats to team-game rows when player data is available."""
+        if player_df is None:
+            return team_df
+
+        required = {"gameid", "teamid", "wpm", "wcpm", "vspm", "controlwardsbought"}
+        if not required <= set(player_df.columns):
+            return team_df
+
+        vision = (
+            player_df[list(required)]
+            .copy()
+            .assign(
+                wpm=lambda x: pd.to_numeric(x["wpm"], errors="coerce"),
+                wcpm=lambda x: pd.to_numeric(x["wcpm"], errors="coerce"),
+                vspm=lambda x: pd.to_numeric(x["vspm"], errors="coerce"),
+                controlwardsbought=lambda x: pd.to_numeric(
+                    x["controlwardsbought"], errors="coerce"
+                ),
+            )
+            .groupby(["gameid", "teamid"], observed=True, as_index=False)
+            .agg(
+                team_wpm=("wpm", "sum"),
+                team_wcpm=("wcpm", "sum"),
+                team_vspm=("vspm", "sum"),
+                team_controlwardsbought=("controlwardsbought", "sum"),
+            )
+        )
+        return team_df.merge(vision, on=["gameid", "teamid"], how="left")
 
     @staticmethod
     def add_series_context(df: pd.DataFrame) -> pd.DataFrame:

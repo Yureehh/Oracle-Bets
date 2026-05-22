@@ -32,8 +32,11 @@ NEW_TEAM_FEATURES = {
     "ema_golddiff_shareat25",
     "ema_xpdiff_shareat25",
     "ema_csdiff_shareat25",
+    "ema_win_gamelength",
+    "ema_loss_gamelength",
 }
 NEW_TEAM_FEATURE_PREFIXES = ("diff_ema_",)
+MODERATE_OPTUNA_TRIALS = 100
 
 
 def _load_cols(path: str, key: str) -> list[str]:
@@ -75,7 +78,10 @@ def test_team_training_config_matches_existing_artifact_columns():
         pytest.skip("team training artifact predates first-pick feature import")
     if missing and (
         missing <= NEW_TEAM_FEATURES
-        or all(item.startswith(NEW_TEAM_FEATURE_PREFIXES) for item in missing)
+        or all(
+            item in NEW_TEAM_FEATURES or item.startswith(NEW_TEAM_FEATURE_PREFIXES)
+            for item in missing
+        )
     ):
         pytest.skip("team training artifact predates strength-pool feature revamp")
 
@@ -143,6 +149,39 @@ def test_compact_configs_prefer_explicit_diff_ema_features():
     assert "diff_ema_kda_before" in compact_player
     assert "ema_golddiffat15_before" not in compact_team
     assert "ema_kda_before" not in compact_player
+
+
+def test_final_team_style_features_are_configured_for_ema_and_training():
+    team_flat = json.loads(
+        (ROOT / "config/lol/training/flattened_team_config.json").read_text()
+    )["flattened_cols"]
+    team_train = json.loads(
+        (ROOT / "config/lol/training/training_team_config.json").read_text()
+    )["team_features"]
+    compact_team = json.loads(
+        (ROOT / "config/lol/training/training_compact_team_config.json").read_text()
+    )["team_features"]
+
+    assert "ema_golddiff_growth_10_15_after" in team_flat
+    assert "ema_team_vspm_after" in team_flat
+    assert "ema_win_gamelength_after" in team_flat
+    assert "diff_ema_golddiff_growth_10_15_before" in team_train
+    assert "diff_ema_team_vspm_before" in team_train
+    assert "ema_win_gamelength_before" in team_train
+    assert "diff_ema_golddiff_growth_10_15_before" in compact_team
+    assert "diff_ema_team_vspm_before" in compact_team
+    assert "diff_ema_win_gamelength_before" not in compact_team
+
+
+def test_stale_best_hyperparameter_files_are_not_committed():
+    best_dir = ROOT / "config/lol/hyperparameters/best_hyperparams"
+    tuned_files = sorted(path.name for path in best_dir.glob("*.json"))
+    defaults = json.loads(
+        (ROOT / "config/lol/hyperparameters/default_models_parameters.json").read_text()
+    )
+
+    assert tuned_files == []
+    assert defaults["optuna"]["trials"] == MODERATE_OPTUNA_TRIALS
 
 
 def test_league_strength_artifacts_have_current_schema_when_present():
