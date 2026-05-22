@@ -85,6 +85,9 @@ target/
 !/data/lol/README.md
 !/data/lol/**/
 !/data/lol/**/README.md
+
+# Generated rating hyperparameters. Commit only after explicit validation.
+/config/lol/hyperparameters/best_hyperparams/*.json
 /artifacts/
 
 # Mac OS-specific storage files

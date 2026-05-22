@@ -174,13 +174,12 @@ def test_final_team_style_features_are_configured_for_ema_and_training():
 
 
 def test_stale_best_hyperparameter_files_are_not_committed():
-    best_dir = ROOT / "config/lol/hyperparameters/best_hyperparams"
-    tuned_files = sorted(path.name for path in best_dir.glob("*.json"))
+    gitignore = (ROOT / ".gitignore").read_text()
     defaults = json.loads(
         (ROOT / "config/lol/hyperparameters/default_models_parameters.json").read_text()
     )
 
-    assert tuned_files == []
+    assert "/config/lol/hyperparameters/best_hyperparams/*.json" in gitignore
     assert defaults["optuna"]["trials"] == MODERATE_OPTUNA_TRIALS
 
 

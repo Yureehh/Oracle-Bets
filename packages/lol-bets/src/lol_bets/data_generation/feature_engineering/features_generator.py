@@ -256,8 +256,13 @@ class FeatureGenerator:
         df["team_kills"] = df.groupby(["gameid", "teamid"], observed=True)[
             "kills"
         ].transform("sum")
-        deaths = _zero_to_nan(df["deaths"])
-        df["kda"] = np.divide(df["kills"] + df["assists"], deaths)
+        deaths = pd.to_numeric(df["deaths"], errors="coerce")
+        kill_assist_total = pd.to_numeric(df["kills"], errors="coerce") + pd.to_numeric(
+            df["assists"], errors="coerce"
+        )
+        df["kda"] = np.where(
+            deaths.eq(0), kill_assist_total, np.divide(kill_assist_total, deaths)
+        )
         gamelength = _zero_to_nan(df["gamelength"])
         df["xp_efficiency"] = np.divide(df["total_cs"], gamelength)
         df["kill_participation"] = np.divide(

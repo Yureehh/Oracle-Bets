@@ -31,6 +31,7 @@ MODEL_OPP_GOLD_EMA = 100.0
 MODEL_TOP_KDA = 5.0
 MODEL_OPP_TOP_KDA = 3.0
 MODEL_TOP_KDA_DIFF = 2.0
+DEATHLESS_KDA = 11
 
 
 def test_player_win_loss_metrics_shift_within_player_season_patch():
@@ -54,6 +55,36 @@ def test_player_win_loss_metrics_shift_within_player_season_patch():
     assert out.loc[1, "kills_prev_avg_season_win"] == PLAYER_A_FIRST_KILLS
     assert np.isnan(out.loc[2, "kills_prev_avg_season_win"])
     assert out.loc[3, "kills_prev_avg_season_win"] == PLAYER_B_FIRST_KILLS
+
+
+def test_player_kda_uses_kills_plus_assists_for_deathless_games():
+    df = pd.DataFrame(
+        {
+            "teamid": ["blue", "blue", "red", "red"],
+            "gameid": ["g1", "g1", "g1", "g1"],
+            "side": ["Blue", "Blue", "Red", "Red"],
+            "position": ["mid", "sup", "mid", "sup"],
+            "league": ["LEC", "LEC", "LEC", "LEC"],
+            "kills": [4, 1, 2, 0],
+            "assists": [7, 9, 3, 4],
+            "deaths": [0, 2, 1, 4],
+            "gamelength": [1800, 1800, 1800, 1800],
+            "total_cs": [260, 30, 240, 35],
+            "patch": ["16.1", "16.1", "16.1", "16.1"],
+            "result": [1, 1, 0, 0],
+            "playerid": ["caps", "support", "opp_mid", "opp_sup"],
+            "date": pd.to_datetime(["2026-01-01"] * 4),
+            "damagetakenperminute": [400, 600, 390, 620],
+            "damagemitigatedperminute": [300, 500, 280, 520],
+            "wpm": [0.5, 1.2, 0.4, 1.1],
+            "wcpm": [0.2, 0.4, 0.2, 0.3],
+        }
+    )
+
+    out = FeatureGenerator.generate_new_player_features(df)
+    caps = out.loc[out["playerid"] == "caps"].iloc[0]
+
+    assert caps["kda"] == DEATHLESS_KDA
 
 
 def test_expanding_mean_shift_resets_at_group_boundary():
