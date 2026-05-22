@@ -80,6 +80,8 @@ ELO_FACTOR = 400.0
 RATING_DECIMALS = 3  # for human-facing rounded rating-based probs
 _PROB_EPS = 1e-12  # small epsilon for clipping
 _ROLES = ("top", "jng", "mid", "bot", "sup")
+TEAM_LEAGUE_COLUMNS = {"teamid", "league", "strength_pool"}
+LEAGUE_ELO_COLUMNS = {"league", "elo", "strength_pool", "strength_pool_elo"}
 
 
 # ── cached parquet reads ─────────────────────────────────────────────────── #
@@ -92,6 +94,14 @@ def _read_parquet_cached(path: str) -> pd.DataFrame:
     except (ImportError, ValueError):
         # fallback to pyarrow if available
         return pd.read_parquet(path)
+
+
+def _require_columns(df: pd.DataFrame, required: set[str], artifact_name: str) -> None:
+    missing = required - set(df.columns)
+    if missing:
+        missing_cols = ", ".join(sorted(missing))
+        msg = f"{artifact_name} has outdated schema; missing columns: {missing_cols}"
+        raise RuntimeError(msg)
 
 
 # ── probability helpers ──────────────────────────────────────────────────── #
@@ -270,6 +280,14 @@ class MatchPredictor:
         try:
             self.team_to_league = _read_parquet_cached(str(TEAM_LEAGUES_MAPPING))
             self.league_to_elo = _read_parquet_cached(str(LEAGUE_ELO))
+            _require_columns(
+                self.team_to_league,
+                TEAM_LEAGUE_COLUMNS,
+                "team_league_mapping.parquet",
+            )
+            _require_columns(
+                self.league_to_elo, LEAGUE_ELO_COLUMNS, "league_elo.parquet"
+            )
         except Exception as e:
             msg = f"Failed to load mapping/elo parquet: {e}"
             raise RuntimeError(msg) from e
@@ -353,6 +371,15 @@ class MatchPredictor:
             raise ValueError(msg)
         return float(e.iloc[0])
 
+    def _resolve_strength_pool_elo(self, league: str) -> float:
+        l2e = self.league_to_elo
+        pool = get_league_taxonomy(league)["strength_pool"]
+        e = l2e.loc[l2e["strength_pool"] == pool, "strength_pool_elo"]
+        if e.empty:
+            msg = "Strength pool not found in league ELO ratings."
+            raise ValueError(msg)
+        return float(e.iloc[0])
+
     def league_elo_prediction(self, team1_id: int, team2_id: int) -> float:
         """
         League-level Elo logistic probability (Team 1 vs Team 2), using team->league mapping.
@@ -361,6 +388,15 @@ class MatchPredictor:
         t2_league = self._resolve_team_league(team2_id)
         e1 = self._resolve_league_elo(t1_league)
         e2 = self._resolve_league_elo(t2_league)
+        prob = _elo_prob(e1, e2)
+        return round(float(prob), RATING_DECIMALS)
+
+    def strength_pool_prediction(self, team1_id: int, team2_id: int) -> float:
+        """Macro league-pool Elo probability for Team 1 vs Team 2."""
+        t1_league = self._resolve_team_league(team1_id)
+        t2_league = self._resolve_team_league(team2_id)
+        e1 = self._resolve_strength_pool_elo(t1_league)
+        e2 = self._resolve_strength_pool_elo(t2_league)
         prob = _elo_prob(e1, e2)
         return round(float(prob), RATING_DECIMALS)
 
@@ -413,9 +449,13 @@ class MatchPredictor:
         t1_tax = get_league_taxonomy(t1_league)
         t1["league_region"] = t1_tax["region"]
         t1["league_tier"] = t1_tax["tier"]
+        t1["strength_pool"] = t1_tax["strength_pool"]
 
         # League Elo win likelihood (inter-league calibration)
         t1["league_elo_win_likelihood"] = self.league_elo_prediction(
+            t1["teamid"], t2["teamid"]
+        )
+        t1["strength_pool_win_likelihood"] = self.strength_pool_prediction(
             t1["teamid"], t2["teamid"]
         )
 
@@ -446,6 +486,7 @@ class MatchPredictor:
         # Drop raw ratings/ids from features (keep meta like gameid/teamname/side for merges)
         base_drop = [
             "league_elo",
+            "strength_pool_elo",
             "elo",
             "glicko2_mu",
             "glicko2_phi",

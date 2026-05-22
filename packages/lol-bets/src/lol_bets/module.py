@@ -15,8 +15,11 @@ from oracle_bets_core.paths import (
     TRAINING_PLAYER_DATA,
     TRAINING_TEAM_DATA,
 )
+from oracle_bets_core.pd import pd
 
 MODULE_ID = "lol-bets"
+TEAM_LEAGUE_COLUMNS = {"teamid", "league", "strength_pool"}
+LEAGUE_ELO_COLUMNS = {"league", "elo", "strength_pool", "strength_pool_elo"}
 
 
 def _check_file(name: str, path) -> ArtifactCheck:
@@ -27,6 +30,30 @@ def _check_file(name: str, path) -> ArtifactCheck:
     if path.stat().st_size <= 0:
         return ArtifactCheck(name=name, path=str(path), ok=False, reason="empty")
     return ArtifactCheck(name=name, path=str(path), ok=True)
+
+
+def _check_parquet_schema(name: str, path, required: set[str]) -> ArtifactCheck:
+    file_check = _check_file(name, path)
+    if not file_check.ok:
+        return file_check
+    try:
+        columns = set(pd.read_parquet(path).columns)
+    except Exception as exc:
+        return ArtifactCheck(
+            name=name,
+            path=str(path),
+            ok=False,
+            reason=f"unreadable parquet: {exc}",
+        )
+    missing = required - columns
+    if missing:
+        return ArtifactCheck(
+            name=name,
+            path=str(path),
+            ok=False,
+            reason=f"outdated schema; missing {', '.join(sorted(missing))}",
+        )
+    return file_check
 
 
 @dataclass(frozen=True)
@@ -44,8 +71,10 @@ class LoLBetsModule:
             _check_file(
                 "outcome feature pipeline", OUTCOME_PREDICTION_FEATURE_PIPELINE
             ),
-            _check_file("team league mapping", TEAM_LEAGUES_MAPPING),
-            _check_file("league elo", LEAGUE_ELO),
+            _check_parquet_schema(
+                "team league mapping", TEAM_LEAGUES_MAPPING, TEAM_LEAGUE_COLUMNS
+            ),
+            _check_parquet_schema("league elo", LEAGUE_ELO, LEAGUE_ELO_COLUMNS),
         )
         return ArtifactHealth(module_id=self.id, checks=checks)
 

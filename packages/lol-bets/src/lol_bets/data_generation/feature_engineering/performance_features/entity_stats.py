@@ -49,6 +49,7 @@ _DISALLOWED_BASES = {
     "pl_sigma",
     "trueskill_mu",
     "trueskill_sigma",
+    "strength_pool_elo",
 }
 
 # Neutral priors ONLY for a few rate-like stats; applied to *_before to avoid NaN on first obs.

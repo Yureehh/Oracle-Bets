@@ -30,12 +30,20 @@ GAMES_IN_BO3 = 3
 GAMES_IN_BO5 = 5
 BREAK_THRESHOLD_DAYS = 45  # ~1.5 months, indicates split break
 H2H_MIN_GAMES = 2  # minimum games to compute head-to-head
+EARLY_GAME_MARKERS = (15, 25)
 
 
 # Replace zeros with NaN without using pandas' deprecated downcasting in replace
 def _zero_to_nan(series: pd.Series) -> pd.Series:
     s = pd.to_numeric(series, errors="coerce")
     return s.mask(s == 0)
+
+
+def _safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    return np.divide(
+        pd.to_numeric(numerator, errors="coerce"),
+        _zero_to_nan(denominator).abs(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +303,7 @@ class FeatureGenerator:
             on="gameid",
             how="left",
         )
+        df = FeatureGenerator.add_team_control_features(df)
 
         # ── Team cumulative mean, reset each *season* and *patch* ────────────
         for grp, pfx in (
@@ -348,6 +357,47 @@ class FeatureGenerator:
 
         # Add head-to-head history against opponent
         return FeatureGenerator.add_head_to_head_history(df)
+
+    @staticmethod
+    def add_team_control_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Add bounded objective and early-game control features."""
+        out = df.copy()
+
+        if {"kills", "total_kills"} <= set(out.columns):
+            out["kill_share"] = _safe_divide(out["kills"], out["total_kills"])
+        if {"towers", "total_towers"} <= set(out.columns):
+            out["tower_share"] = _safe_divide(out["towers"], out["total_towers"])
+
+        objective_cols = [
+            col
+            for col in ("dragons", "barons", "heralds", "elders", "void_grubs")
+            if col in out.columns
+        ]
+        if objective_cols:
+            out["epic_monsters"] = (
+                out[objective_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1)
+            )
+
+        structure_cols = [col for col in ("towers", "inhibitors") if col in out.columns]
+        if structure_cols:
+            out["structure_control"] = (
+                out[structure_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1)
+            )
+
+        for minute in EARLY_GAME_MARKERS:
+            for metric, diff in (
+                ("gold", "golddiff"),
+                ("xp", "xpdiff"),
+                ("cs", "csdiff"),
+            ):
+                value_col = f"{metric}at{minute}"
+                diff_col = f"{diff}at{minute}"
+                if {value_col, diff_col} <= set(out.columns):
+                    out[f"{diff}_shareat{minute}"] = _safe_divide(
+                        out[diff_col], out[value_col]
+                    )
+
+        return out
 
     @staticmethod
     def add_series_context(df: pd.DataFrame) -> pd.DataFrame:

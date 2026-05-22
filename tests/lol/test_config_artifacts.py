@@ -18,6 +18,21 @@ CONFIG_FILES = [
 TEAM_CLEANUP_CONFIG = (
     ROOT / "config/lol/data_ingestion/team_name_replacements_and_invalid_games.json"
 )
+NEW_TEAM_FEATURES = {
+    "first_pick",
+    "strength_pool",
+    "strength_pool_win_likelihood",
+    "ema_kill_share",
+    "ema_tower_share",
+    "ema_epic_monsters",
+    "ema_structure_control",
+    "ema_golddiff_shareat15",
+    "ema_xpdiff_shareat15",
+    "ema_csdiff_shareat15",
+    "ema_golddiff_shareat25",
+    "ema_xpdiff_shareat25",
+    "ema_csdiff_shareat25",
+}
 
 
 def _load_cols(path: str, key: str) -> list[str]:
@@ -57,6 +72,8 @@ def test_team_training_config_matches_existing_artifact_columns():
     missing = renamed - set(df.columns)
     if missing == {"first_pick"}:
         pytest.skip("team training artifact predates first-pick feature import")
+    if missing <= NEW_TEAM_FEATURES:
+        pytest.skip("team training artifact predates strength-pool feature revamp")
 
     assert missing == set()
 
@@ -72,6 +89,46 @@ def test_first_pick_is_team_level_ingestion_feature():
     assert "first_pick" in import_config["team"]
     assert "first_pick" not in import_config["player"]
     assert "first_pick" in team_config["team_features"]
+
+
+def test_team_configs_use_strength_pool_and_drop_noisy_economy_columns():
+    import_config = json.loads(
+        (ROOT / "config/lol/data_ingestion/import_columns.json").read_text()
+    )
+    team_config = json.loads(
+        (ROOT / "config/lol/training/training_team_config.json").read_text()
+    )
+    flattened_config = json.loads(
+        (ROOT / "config/lol/training/flattened_team_config.json").read_text()
+    )
+    values = json.dumps([import_config, team_config, flattened_config])
+
+    assert "strength_pool" in team_config["team_features"]
+    assert "strength_pool_win_likelihood" in team_config["team_features"]
+    assert "gspd" not in values
+    assert "gpr" not in values
+
+
+def test_league_strength_artifacts_have_current_schema_when_present():
+    league_elo = ROOT / "models/lol/league_elo.parquet"
+    team_mapping = ROOT / "models/lol/team_league_mapping.parquet"
+    if not league_elo.exists() or not team_mapping.exists():
+        pytest.skip("league strength artifacts are not available")
+
+    league_cols = set(pd.read_parquet(league_elo).columns)
+    mapping_cols = set(pd.read_parquet(team_mapping).columns)
+    expected_league_cols = {"league", "elo", "strength_pool", "strength_pool_elo"}
+    expected_mapping_cols = {"teamid", "league", "strength_pool"}
+
+    if expected_league_cols <= league_cols and expected_mapping_cols <= mapping_cols:
+        return
+
+    failed = {
+        check.name: check.reason for check in LoLBetsModule().artifact_health().checks
+    }
+    assert "outdated schema" in failed.get("league elo", "") or "outdated schema" in (
+        failed.get("team league mapping", "")
+    )
 
 
 def test_player_artifact_gap_is_explicit():

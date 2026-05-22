@@ -34,7 +34,7 @@ future experiments easy to compare.
 ### Keep
 
 - Ratings: Elo, Glicko2, TrueSkill, PL, league Elo, and side/season likelihoods.
-- Team macro form: game length, team KPM, EGPM, GSPD, GPR, towers, dragons,
+- Team macro form: game length, team KPM, EGPM, towers, dragons,
   barons, heralds, grubs, inhibitors, elders.
 - Mid-game lane/economy checkpoints: gold, XP, CS, and their differentials at
   15 minutes.
@@ -53,8 +53,8 @@ future experiments easy to compare.
   15-minute deltas.
 - 20-minute checkpoints: redundant with 15 and 25 while adding another
   missingness boundary.
-- Raw `gspd` and similar summary stats should be watched carefully because they
-  can behave like outcome-adjacent aggregates. Keep for now, but ablate.
+- Outcome-adjacent summary economy aggregates are removed from configs until
+  ablations prove they add calibrated signal.
 - Player pentakills/doublekills are very sparse. Keep only if feature importance
   and ablations justify them.
 - Player damage-to-towers is role/meta sensitive and can be lineup noisy.

@@ -8,6 +8,8 @@ from pandas.testing import assert_series_equal
 
 PLAYER_A_FIRST_KILLS = 10
 PLAYER_B_FIRST_KILLS = 100
+EXPECTED_EPIC_MONSTERS = 6
+EXPECTED_STRUCTURE_CONTROL = 8
 
 
 def test_player_win_loss_metrics_shift_within_player_season_patch():
@@ -86,3 +88,41 @@ def test_head_to_head_wins_shift_within_matchup():
     assert rows.loc[("g1", "a"), "h2h_wins_before"] == 0
     assert rows.loc[("g2", "a"), "h2h_wins_before"] == 1
     assert rows.loc[("g3", "c"), "h2h_wins_before"] == 0
+
+
+def test_team_control_features_are_bounded_and_objective_based():
+    df = pd.DataFrame(
+        {
+            "kills": [12, 8],
+            "total_kills": [20, 20],
+            "towers": [7, 3],
+            "total_towers": [10, 10],
+            "dragons": [2, 1],
+            "barons": [1, 0],
+            "heralds": [0, 1],
+            "elders": [0, 0],
+            "void_grubs": [3, 0],
+            "inhibitors": [1, 0],
+            "goldat15": [25000, 23000],
+            "golddiffat15": [2000, -2000],
+            "xpat15": [18000, 17500],
+            "xpdiffat15": [500, -500],
+            "csat15": [520, 500],
+            "csdiffat15": [20, -20],
+            "goldat25": [43000, 40000],
+            "golddiffat25": [3000, -3000],
+            "xpat25": [33000, 32000],
+            "xpdiffat25": [1000, -1000],
+            "csat25": [830, 800],
+            "csdiffat25": [30, -30],
+        }
+    )
+
+    out = FeatureGenerator.add_team_control_features(df)
+
+    assert out["kill_share"].between(0, 1).all()
+    assert out["tower_share"].between(0, 1).all()
+    assert out.loc[0, "epic_monsters"] == EXPECTED_EPIC_MONSTERS
+    assert out.loc[0, "structure_control"] == EXPECTED_STRUCTURE_CONTROL
+    assert out.loc[0, "golddiff_shareat15"] > 0
+    assert out.loc[1, "golddiff_shareat15"] < 0

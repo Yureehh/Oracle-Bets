@@ -11,8 +11,6 @@
     "teamname",
     "teamid",
     "egpm",
-    "gspd",
-    "gpr",
     "gamelength",
     "team_kpm",
     "ckpm",
@@ -54,7 +52,6 @@
     "xpdiffat25",
     "csdiffat25"
   ],
-
   "player": [
     "date",
     "gameid",

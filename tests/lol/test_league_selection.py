@@ -42,12 +42,25 @@ def test_league_taxonomy_is_metadata_only():
     )
     values = json.dumps(taxonomy)
 
-    assert set(taxonomy["defaults"]) == {"region", "tier"}
+    assert set(taxonomy["defaults"]) == {"region", "tier", "strength_pool"}
     assert all(
-        set(entry) == {"region", "tier"} for entry in taxonomy["leagues"].values()
+        set(entry) == {"region", "tier", "strength_pool"}
+        for entry in taxonomy["leagues"].values()
     )
     assert "prior_settings" not in taxonomy
     assert "strength" + "_prior" not in values
+
+
+def test_league_taxonomy_uses_single_macro_strength_key():
+    taxonomy = json.loads(
+        (ROOT / "config/lol/data_ingestion/league_taxonomy.json").read_text()
+    )
+    values = json.dumps(taxonomy)
+
+    assert "strength_pool" in taxonomy["defaults"]
+    assert "league_group" not in values
+    assert "strength_group" not in values
+    assert "macro_group" not in values
 
 
 def test_removed_league_prior_columns_are_not_configured():

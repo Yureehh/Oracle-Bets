@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{health.module_id}: {'ok' if health.ok else 'unhealthy'}\n"
             )
             for check in health.checks:
-                status = "ok" if check.ok else f"missing ({check.reason})"
+                status = "ok" if check.ok else check.reason or "missing/unreadable"
                 sys.stdout.write(f"  {check.name}: {status} - {check.path}\n")
         return (
             0

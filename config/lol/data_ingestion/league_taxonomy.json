@@ -1,188 +1,234 @@
 {
   "defaults": {
     "region": "Unknown",
-    "tier": "minor"
+    "tier": "minor",
+    "strength_pool": "minor"
   },
   "leagues": {
     "AL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "ASI": {
       "region": "INTL",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "Asia Master": {
       "region": "INTL",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "CBLOL": {
       "region": "BR",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "CDF": {
       "region": "EMEA",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "DCup": {
       "region": "INTL",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "EBL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "EM": {
       "region": "EMEA",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "EPL": {
       "region": "EMEA",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "ESLOL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "EWC": {
       "region": "INTL",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "FST": {
       "region": "INTL",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "GLL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "HLL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "HM": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "IC": {
       "region": "INTL",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "KeSPA": {
       "region": "KR",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "LAS": {
       "region": "KR",
-      "tier": "academy"
+      "tier": "academy",
+      "strength_pool": "academy"
     },
     "LCK": {
       "region": "KR",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "LCKC": {
       "region": "KR",
-      "tier": "academy"
+      "tier": "academy",
+      "strength_pool": "academy"
     },
     "LCP": {
       "region": "APAC",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "LCS": {
       "region": "NA",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "LDL": {
       "region": "CN",
-      "tier": "academy"
+      "tier": "academy",
+      "strength_pool": "academy"
     },
     "LEC": {
       "region": "EMEA",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "LES": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "LFL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "LIT": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "LJL": {
       "region": "JP",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "tier2_asia"
     },
     "LPLOL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "LPL": {
       "region": "CN",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "LTA": {
       "region": "NA/SA",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "LTA N": {
       "region": "NA/SA",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "LTA S": {
       "region": "NA/SA",
-      "tier": "major"
+      "tier": "major",
+      "strength_pool": "major"
     },
     "LVP SL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "MSI": {
       "region": "INTL",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     },
     "NACL": {
       "region": "NA",
-      "tier": "academy"
+      "tier": "academy",
+      "strength_pool": "academy"
     },
     "NLC": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "PCS": {
       "region": "APAC",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "tier2_asia"
     },
     "PRM": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "RL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "ROL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "TCL": {
       "region": "TR",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "UL": {
       "region": "EMEA",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "erl"
     },
     "VCS": {
       "region": "VN",
-      "tier": "minor"
+      "tier": "minor",
+      "strength_pool": "tier2_asia"
     },
     "WLDs": {
       "region": "INTL",
-      "tier": "cross"
+      "tier": "cross",
+      "strength_pool": "cross"
     }
   }
 }

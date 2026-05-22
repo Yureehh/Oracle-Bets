@@ -40,6 +40,11 @@ def is_cross_league_competition(league: str) -> bool:
     return get_league_taxonomy(league)["tier"] == "cross"
 
 
+def get_strength_pool(league: str | None) -> str:
+    """Return the single macro strength pool used by League Elo."""
+    return str(get_league_taxonomy(league)["strength_pool"])
+
+
 # ----------------------------------------------------------------------
 # Preprocessing
 # ----------------------------------------------------------------------
@@ -243,6 +248,10 @@ def merge_wide_results_back(
         "opp_league_elo_before",
         "league_elo_win_likelihood",
         "league_elo_after",
+        "strength_pool_elo_before",
+        "opp_strength_pool_elo_before",
+        "strength_pool_win_likelihood",
+        "strength_pool_elo_after",
     ]
     df_tall = pd.concat([df_blue[keep_cols], df_red[keep_cols]], ignore_index=True)
 
@@ -260,6 +269,10 @@ def merge_wide_results_back(
             "opp_league_elo_before",
             "league_elo_win_likelihood",
             "league_elo_after",
+            "strength_pool_elo_before",
+            "opp_strength_pool_elo_before",
+            "strength_pool_win_likelihood",
+            "strength_pool_elo_after",
         }
     )
     return merged[[c for c in merged.columns if c in required_columns]]
@@ -500,6 +513,9 @@ def leagues_elo_computation(
     league_elo_ratings: dict[str, dict[str, float | int]] = defaultdict(
         lambda: {"elo": initial_elo, "season": int(df_wide["season"].min())}
     )
+    strength_pool_ratings: dict[str, dict[str, float | int]] = defaultdict(
+        lambda: {"elo": initial_elo, "season": int(df_wide["season"].min())}
+    )
 
     wide_columns: dict[str, list] = {
         "league_elo_before_blue": [],
@@ -510,6 +526,14 @@ def leagues_elo_computation(
         "league_elo_win_likelihood_red": [],
         "league_elo_after_blue": [],
         "league_elo_after_red": [],
+        "strength_pool_elo_before_blue": [],
+        "strength_pool_elo_before_red": [],
+        "opp_strength_pool_elo_before_blue": [],
+        "opp_strength_pool_elo_before_red": [],
+        "strength_pool_win_likelihood_blue": [],
+        "strength_pool_win_likelihood_red": [],
+        "strength_pool_elo_after_blue": [],
+        "strength_pool_elo_after_red": [],
     }
 
     if not performing_tuning:
@@ -521,9 +545,10 @@ def leagues_elo_computation(
         row_iter = tqdm(row_iter, total=len(df_wide), desc="League Elo")
 
     for row in row_iter:
-        wide_columns, league_elo_ratings = process_elo_for_row(
+        wide_columns, league_elo_ratings, strength_pool_ratings = process_elo_for_row(
             row=row,
             league_elo_ratings=league_elo_ratings,
+            strength_pool_ratings=strength_pool_ratings,
             belonging_league=belonging_league,
             wide_columns=wide_columns,
             initial_elo=initial_elo,
@@ -536,25 +561,88 @@ def leagues_elo_computation(
     df_final = finalize_dataframe(df, df_wide, entity)
 
     if not performing_tuning:
-        store_results(belonging_league, league_elo_ratings)
+        store_results(belonging_league, league_elo_ratings, strength_pool_ratings)
 
     return df_final
+
+
+def _ensure_rating(
+    ratings: dict[str, dict[str, float | int]],
+    key: str,
+    initial_elo: float,
+    current_season: int,
+) -> float:
+    if key not in ratings:
+        ratings[key] = {"elo": initial_elo, "season": current_season}
+    return float(ratings[key]["elo"])
+
+
+def _apply_two_entity_elo(
+    *,
+    left_before: float,
+    right_before: float,
+    left_result: float,
+    right_result: float,
+    should_update: bool,
+    elo_divisor: float,
+    k_factor: float,
+) -> tuple[float, float, float]:
+    if not should_update:
+        return 0.5, left_before, right_before
+
+    expected_left = expected_outcome(left_before, right_before, elo_divisor)
+    expected_right = 1.0 - expected_left
+    left_after = update_elo_rating(left_before, expected_left, left_result, k_factor)
+    right_after = update_elo_rating(
+        right_before, expected_right, right_result, k_factor
+    )
+    return expected_left, left_after, right_after
+
+
+def _append_rating_columns(
+    wide_columns: dict[str, list],
+    *,
+    prefix: str,
+    likelihood_prefix: str | None = None,
+    blue_before: float,
+    red_before: float,
+    exp_blue: float,
+    new_blue: float,
+    new_red: float,
+) -> None:
+    likelihood_prefix = likelihood_prefix or prefix
+    wide_columns[f"{prefix}_before_blue"].append(blue_before)
+    wide_columns[f"{prefix}_before_red"].append(red_before)
+    wide_columns[f"opp_{prefix}_before_blue"].append(red_before)
+    wide_columns[f"opp_{prefix}_before_red"].append(blue_before)
+    wide_columns[f"{likelihood_prefix}_win_likelihood_blue"].append(exp_blue)
+    wide_columns[f"{likelihood_prefix}_win_likelihood_red"].append(1.0 - exp_blue)
+    wide_columns[f"{prefix}_after_blue"].append(new_blue)
+    wide_columns[f"{prefix}_after_red"].append(new_red)
 
 
 def process_elo_for_row(
     row,
     league_elo_ratings: dict[str, dict[str, float | int]],
+    strength_pool_ratings: dict[str, dict[str, float | int]],
     belonging_league: dict[str, list[tuple[pd.Timestamp, str]]],
     wide_columns: dict[str, list],
     initial_elo: float,
     k_factor: float,
     elo_divisor: float,
     decay_factor: float,
-) -> tuple[dict[str, list], dict[str, dict[str, float | int]]]:
+) -> tuple[
+    dict[str, list],
+    dict[str, dict[str, float | int]],
+    dict[str, dict[str, float | int]],
+]:
     """Process a single wide row to calculate and update Elo ratings for leagues."""
     current_season = int(row.season)
     league_elo_ratings = linear_decay_reset_leagues_elo(
         league_elo_ratings, initial_elo, current_season, decay_factor
+    )
+    strength_pool_ratings = linear_decay_reset_leagues_elo(
+        strength_pool_ratings, initial_elo, current_season, decay_factor
     )
 
     def resolve_league(team_id: str, match_date: pd.Timestamp) -> str | None:
@@ -579,45 +667,69 @@ def process_elo_for_row(
         # Fill Nones for all columns for this game
         for c in wide_columns:  # noqa: PLC0206
             wide_columns[c].append(None)
-        return wide_columns, league_elo_ratings
+        return wide_columns, league_elo_ratings, strength_pool_ratings
 
-    # Initialize leagues if needed
-    if blue_league not in league_elo_ratings:
-        league_elo_ratings[blue_league] = {
-            "elo": initial_elo,
-            "season": current_season,
-        }
-    if red_league not in league_elo_ratings:
-        league_elo_ratings[red_league] = {"elo": initial_elo, "season": current_season}
+    blue_before = _ensure_rating(
+        league_elo_ratings, blue_league, initial_elo, current_season
+    )
+    red_before = _ensure_rating(
+        league_elo_ratings, red_league, initial_elo, current_season
+    )
+    blue_pool = get_strength_pool(blue_league)
+    red_pool = get_strength_pool(red_league)
 
-    blue_before = float(league_elo_ratings[blue_league]["elo"])
-    red_before = float(league_elo_ratings[red_league]["elo"])
+    blue_pool_before = _ensure_rating(
+        strength_pool_ratings, blue_pool, initial_elo, current_season
+    )
+    red_pool_before = _ensure_rating(
+        strength_pool_ratings, red_pool, initial_elo, current_season
+    )
 
-    if blue_league != red_league:
-        exp_blue = expected_outcome(blue_before, red_before, elo_divisor)
-        exp_red = 1.0 - exp_blue
-        new_blue = update_elo_rating(
-            blue_before, exp_blue, float(blue_result), k_factor
-        )
-        new_red = update_elo_rating(red_before, exp_red, float(red_result), k_factor)
-    else:
-        exp_blue = 0.5
-        new_blue = blue_before
-        new_red = red_before
+    exp_blue, new_blue, new_red = _apply_two_entity_elo(
+        left_before=blue_before,
+        right_before=red_before,
+        left_result=float(blue_result),
+        right_result=float(red_result),
+        should_update=blue_league != red_league,
+        elo_divisor=elo_divisor,
+        k_factor=k_factor,
+    )
+    pool_exp_blue, new_blue_pool, new_red_pool = _apply_two_entity_elo(
+        left_before=blue_pool_before,
+        right_before=red_pool_before,
+        left_result=float(blue_result),
+        right_result=float(red_result),
+        should_update=blue_pool != red_pool,
+        elo_divisor=elo_divisor,
+        k_factor=k_factor,
+    )
 
     league_elo_ratings[blue_league]["elo"] = new_blue
     league_elo_ratings[red_league]["elo"] = new_red
+    strength_pool_ratings[blue_pool]["elo"] = new_blue_pool
+    strength_pool_ratings[red_pool]["elo"] = new_red_pool
 
-    wide_columns["league_elo_before_blue"].append(blue_before)
-    wide_columns["league_elo_before_red"].append(red_before)
-    wide_columns["opp_league_elo_before_blue"].append(red_before)
-    wide_columns["opp_league_elo_before_red"].append(blue_before)
-    wide_columns["league_elo_win_likelihood_blue"].append(exp_blue)
-    wide_columns["league_elo_win_likelihood_red"].append(1.0 - exp_blue)
-    wide_columns["league_elo_after_blue"].append(new_blue)
-    wide_columns["league_elo_after_red"].append(new_red)
+    _append_rating_columns(
+        wide_columns,
+        prefix="league_elo",
+        blue_before=blue_before,
+        red_before=red_before,
+        exp_blue=exp_blue,
+        new_blue=new_blue,
+        new_red=new_red,
+    )
+    _append_rating_columns(
+        wide_columns,
+        prefix="strength_pool_elo",
+        likelihood_prefix="strength_pool",
+        blue_before=blue_pool_before,
+        red_before=red_pool_before,
+        exp_blue=pool_exp_blue,
+        new_blue=new_blue_pool,
+        new_red=new_red_pool,
+    )
 
-    return wide_columns, league_elo_ratings
+    return wide_columns, league_elo_ratings, strength_pool_ratings
 
 
 def update_wide_dataframe(df_wide: pd.DataFrame, wide_columns: dict[str, list]) -> None:
@@ -639,6 +751,14 @@ def finalize_dataframe(
         "league_elo_win_likelihood_red": "league_elo_win_likelihood",
         "league_elo_after_blue": "league_elo_after",
         "league_elo_after_red": "league_elo_after",
+        "strength_pool_elo_before_blue": "strength_pool_elo_before",
+        "strength_pool_elo_before_red": "strength_pool_elo_before",
+        "opp_strength_pool_elo_before_blue": "opp_strength_pool_elo_before",
+        "opp_strength_pool_elo_before_red": "opp_strength_pool_elo_before",
+        "strength_pool_win_likelihood_blue": "strength_pool_win_likelihood",
+        "strength_pool_win_likelihood_red": "strength_pool_win_likelihood",
+        "strength_pool_elo_after_blue": "strength_pool_elo_after",
+        "strength_pool_elo_after_red": "strength_pool_elo_after",
     }
     df_final = merge_wide_results_back(df, df_wide, columns_map)
     return df_final.sort_values(
@@ -652,10 +772,11 @@ def finalize_dataframe(
 def store_results(
     belonging_league: dict[str, list[tuple[pd.Timestamp, str]]],
     league_elo_ratings: dict[str, dict[str, float | int]],
+    strength_pool_ratings: dict[str, dict[str, float | int]],
 ) -> None:
     """Store belonging leagues and league Elo ratings."""
     store_belonging_leagues(belonging_league)
-    store_leagues_elo(league_elo_ratings)
+    store_leagues_elo(league_elo_ratings, strength_pool_ratings)
 
 
 def store_belonging_leagues(
@@ -664,11 +785,34 @@ def store_belonging_leagues(
     """
     Store the mapping of teams to their most recent league (latest entry per team) as a parquet.
     """
-    latest_belonging_league = {
-        team: history[-1][1] for team, history in belonging_league.items() if history
-    }
+    latest_belonging_league = {}
+    for team, history in belonging_league.items():
+        if not history:
+            continue
+        last_date, league = history[-1]
+        latest_stint_dates = []
+        for date, lg in reversed(history):
+            if lg != league:
+                break
+            latest_stint_dates.append(date)
+        latest_belonging_league[team] = {
+            "teamid": team,
+            "league": league,
+            "strength_pool": get_strength_pool(league),
+            "league_since": min(latest_stint_dates),
+            "last_seen": last_date,
+            "league_games": len(latest_stint_dates),
+        }
     belonging_league_df = pd.DataFrame(
-        latest_belonging_league.items(), columns=["teamid", "league"]
+        latest_belonging_league.values(),
+        columns=[
+            "teamid",
+            "league",
+            "strength_pool",
+            "league_since",
+            "last_seen",
+            "league_games",
+        ],
     )
     safe_store_df_as_parquet(
         belonging_league_df, TEAM_LEAGUES_MAPPING, [logger, data_pipeline_logger]
@@ -677,12 +821,21 @@ def store_belonging_leagues(
 
 def store_leagues_elo(
     league_elo_ratings: dict[str, dict[str, float | int]],
+    strength_pool_ratings: dict[str, dict[str, float | int]],
 ) -> pd.DataFrame:
     """Store the Elo ratings for leagues."""
     league_elo_df = (
         pd.DataFrame(
-            [(lg, dat["elo"]) for lg, dat in league_elo_ratings.items()],
-            columns=["league", "elo"],
+            [
+                (
+                    lg,
+                    dat["elo"],
+                    get_strength_pool(lg),
+                    strength_pool_ratings[get_strength_pool(lg)]["elo"],
+                )
+                for lg, dat in league_elo_ratings.items()
+            ],
+            columns=["league", "elo", "strength_pool", "strength_pool_elo"],
         )
         .dropna(subset=["league"])
         .sort_values(by="elo", ascending=False, kind="mergesort")

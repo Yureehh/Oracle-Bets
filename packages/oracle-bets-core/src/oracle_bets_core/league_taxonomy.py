@@ -1,8 +1,8 @@
 """
 League taxonomy helpers.
 
-Provides a centralized mapping from league -> region/tier and utilities to
-attach those columns to dataframes.
+Provides a centralized mapping from league -> region/tier/strength_pool and
+utilities to attach those columns to dataframes.
 """
 
 from __future__ import annotations
@@ -33,11 +33,15 @@ def get_league_taxonomy(league: str | None) -> dict[str, Any]:
         return {
             "region": defaults.get("region", "Unknown"),
             "tier": defaults.get("tier", "minor"),
+            "strength_pool": defaults.get("strength_pool", "minor"),
         }
     entry = leagues.get(str(league), {})
     return {
         "region": entry.get("region", defaults.get("region", "Unknown")),
         "tier": entry.get("tier", defaults.get("tier", "minor")),
+        "strength_pool": entry.get(
+            "strength_pool", defaults.get("strength_pool", "minor")
+        ),
     }
 
 
@@ -51,4 +55,5 @@ def add_league_taxonomy_columns(
     mapped = out[league_col].map(get_league_taxonomy)
     out["league_region"] = mapped.map(lambda x: x["region"])
     out["league_tier"] = mapped.map(lambda x: x["tier"])
+    out["strength_pool"] = mapped.map(lambda x: x["strength_pool"])
     return out
