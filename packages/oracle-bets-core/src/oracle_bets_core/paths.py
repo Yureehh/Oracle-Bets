@@ -97,10 +97,8 @@ PROCESSED_PLAYERS_DIR: Final = PROCESSED_DIR / "players"
 # --------------------------------------------------------------------------- #
 # Configuration files
 # --------------------------------------------------------------------------- #
-DISCORD_CONFIG: Final = CONFIG_DIR / "discord_config.json"
 DATA_INGESTION_DIR: Final = CONFIG_DIR / "data_ingestion"
 EXTRAS_DIR: Final = REPORTS_DIR / "ingestion"
-TARGET_FEATURES: Final = CONFIG_DIR / "target_features.json"
 TRAINING_AND_INPUT_COLS_DIR: Final = CONFIG_DIR / "training"
 
 YEARS_RANGE_PATH: Final = DATA_INGESTION_DIR / "years_range.json"

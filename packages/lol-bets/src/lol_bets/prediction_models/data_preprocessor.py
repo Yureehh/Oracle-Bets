@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from oracle_bets_core.io_utils import json_loader
 from oracle_bets_core.logger import logger
-from oracle_bets_core.paths import TARGET_FEATURES
 from oracle_bets_core.pd import pd
+
+TARGET_COLUMNS: tuple[str, ...] = (
+    "result",
+    "gamelength",
+    "total_kills",
+    "total_towers",
+)
 
 
 class DataPreprocessor:
@@ -62,14 +65,8 @@ class DataPreprocessor:
     # Steps
     # ──────────────────────────────────────────────────────────────────────
     def _drop_inactive_targets(self, target_col: str) -> None:
-        """Remove all configured targets except the one we’re modeling."""
-        try:
-            cfg: dict[str, Any] = json_loader(TARGET_FEATURES)
-        except FileNotFoundError:
-            logger.error("Target features configuration file not found.")
-            raise
-
-        all_targets = set(map(str, cfg.get("targets", [])))
+        """Remove all known targets except the one we’re modeling."""
+        all_targets = set(TARGET_COLUMNS)
         to_drop = list(all_targets - {target_col})
         # Drop quietly if any are already absent
         self.team_data = self.team_data.drop(columns=to_drop, errors="ignore")

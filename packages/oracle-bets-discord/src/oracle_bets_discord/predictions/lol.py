@@ -13,7 +13,6 @@ from oracle_bets_core.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
 from oracle_bets_core.pd import pd
 
 from oracle_bets_discord.formatting import (
-    CONFIG,
     MESSAGE_LIMIT,
     dataframe_to_markdown,
     handle_command_error,
@@ -22,7 +21,7 @@ from oracle_bets_discord.predictions.best_ofs import BestOfs
 
 # ── config & constants ──────────────────────────────────────────────────── #
 
-_EMPTY_ROSTER: dict[str, str | None] = CONFIG.get("EMPTY_ROSTER", {}).copy() or {
+_EMPTY_ROSTER: dict[str, str | None] = {
     "top": None,
     "jng": None,
     "mid": None,
@@ -31,7 +30,7 @@ _EMPTY_ROSTER: dict[str, str | None] = CONFIG.get("EMPTY_ROSTER", {}).copy() or 
 }
 VALID_MATCH_TYPES: list[str] = ["bo1", "bo2", "bo3", "bo5"]
 POSITIONS: tuple[str, ...] = ("top", "jng", "mid", "bot", "sup")
-WEEKS_FOR_DELAY: int = int(CONFIG.get("WEEKS_FOR_DELAY", 3))
+WEEKS_FOR_DELAY: int = 3
 
 PLEASE_PROVIDE_TEAMS = "Please provide both a blue and red team name."
 TEAMS_MUST_BE_DIFFERENT = "The two teams must be different."

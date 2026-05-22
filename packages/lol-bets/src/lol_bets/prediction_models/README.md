@@ -7,6 +7,9 @@ Model preprocessing, training, selection, and observability.
 - `lightgbm_model.py`: primary baseline model.
 - `tabnet_model.py`: optional neural baseline.
 
+Known model targets are owned in `data_preprocessor.py` so target cleanup stays
+beside the training-table assembly that uses it.
+
 Example:
 
 ```bash

@@ -20,11 +20,6 @@ leagues. Switch to `tier1_current` for a stricter market-facing dataset or
 
 - `config/lol/training/training_team_config.json` and `config/lol/training/training_compact_team_config.json`
 - `config/lol/training/training_player_config.json` and `config/lol/training/training_compact_player_config.json`
-- `config/lol/target_features.json`
-
-## Discord
-
-- `config/lol/discord_config.json` contains safe defaults for bot behavior (no secrets).
 
 ## Environment variables
 

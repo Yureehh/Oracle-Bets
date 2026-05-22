@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from oracle_bets_core.io_utils import json_loader
-from oracle_bets_core.paths import DISCORD_CONFIG
-
-CONFIG: dict[str, Any] = json_loader(DISCORD_CONFIG)
-MESSAGE_LIMIT: int = int(CONFIG.get("MESSAGE_LIMIT", 2000))
+MESSAGE_LIMIT: int = 2000
 
 
 def handle_command_error(error: Exception, additional_info: str = "") -> str:
