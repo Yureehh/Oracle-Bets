@@ -151,7 +151,6 @@ FLATTENED_PLAYER_CONFIG: Final = (
 # --------------------------------------------------------------------------- #
 LEAGUE_ELO: Final = MODELS_DIR / "league_elo.parquet"
 TEAM_LEAGUES_MAPPING: Final = MODELS_DIR / "team_league_mapping.parquet"
-LEAGUE_STRENGTH_PRIORS: Final = MODELS_DIR / "league_strength_priors.json"
 WHOLE_HISTORY_RATING_PATH: Final = MODELS_DIR / "whr.pkl"
 
 

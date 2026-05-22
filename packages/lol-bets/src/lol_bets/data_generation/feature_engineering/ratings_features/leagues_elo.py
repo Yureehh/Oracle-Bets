@@ -6,7 +6,6 @@ This script calculates league Elo ratings and uses Optuna to optimize hyperparam
 
 from __future__ import annotations
 
-import contextlib
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -14,14 +13,11 @@ from pathlib import Path
 import optuna
 from oracle_bets_core.io_utils import get_sorting_keys, safe_store_df_as_parquet
 from oracle_bets_core.league_taxonomy import (
-    get_league_strength_prior,
     get_league_taxonomy,
-    get_prior_settings,
 )
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
     LEAGUE_ELO,
-    LEAGUE_STRENGTH_PRIORS,
     LEAGUES_ELO_HYPERPARAMETERS,
     TEAM_LEAGUES_MAPPING,
 )
@@ -246,7 +242,6 @@ def merge_wide_results_back(
         "league_elo_before",
         "opp_league_elo_before",
         "league_elo_win_likelihood",
-        "league_elo_prior_win_likelihood",
         "league_elo_after",
     ]
     df_tall = pd.concat([df_blue[keep_cols], df_red[keep_cols]], ignore_index=True)
@@ -264,7 +259,6 @@ def merge_wide_results_back(
             "league_elo_before",
             "opp_league_elo_before",
             "league_elo_win_likelihood",
-            "league_elo_prior_win_likelihood",
             "league_elo_after",
         }
     )
@@ -514,8 +508,6 @@ def leagues_elo_computation(
         "opp_league_elo_before_red": [],
         "league_elo_win_likelihood_blue": [],
         "league_elo_win_likelihood_red": [],
-        "league_elo_prior_win_likelihood_blue": [],
-        "league_elo_prior_win_likelihood_red": [],
         "league_elo_after_blue": [],
         "league_elo_after_red": [],
     }
@@ -600,16 +592,9 @@ def process_elo_for_row(
 
     blue_before = float(league_elo_ratings[blue_league]["elo"])
     red_before = float(league_elo_ratings[red_league]["elo"])
-    blue_prior = get_league_strength_prior(blue_league)
-    red_prior = get_league_strength_prior(red_league)
 
     if blue_league != red_league:
         exp_blue = expected_outcome(blue_before, red_before, elo_divisor)
-        exp_blue_prior = expected_outcome(
-            blue_before + blue_prior,
-            red_before + red_prior,
-            elo_divisor,
-        )
         exp_red = 1.0 - exp_blue
         new_blue = update_elo_rating(
             blue_before, exp_blue, float(blue_result), k_factor
@@ -617,7 +602,6 @@ def process_elo_for_row(
         new_red = update_elo_rating(red_before, exp_red, float(red_result), k_factor)
     else:
         exp_blue = 0.5
-        exp_blue_prior = 0.5
         new_blue = blue_before
         new_red = red_before
 
@@ -630,8 +614,6 @@ def process_elo_for_row(
     wide_columns["opp_league_elo_before_red"].append(blue_before)
     wide_columns["league_elo_win_likelihood_blue"].append(exp_blue)
     wide_columns["league_elo_win_likelihood_red"].append(1.0 - exp_blue)
-    wide_columns["league_elo_prior_win_likelihood_blue"].append(exp_blue_prior)
-    wide_columns["league_elo_prior_win_likelihood_red"].append(1.0 - exp_blue_prior)
     wide_columns["league_elo_after_blue"].append(new_blue)
     wide_columns["league_elo_after_red"].append(new_red)
 
@@ -655,8 +637,6 @@ def finalize_dataframe(
         "opp_league_elo_before_red": "opp_league_elo_before",
         "league_elo_win_likelihood_blue": "league_elo_win_likelihood",
         "league_elo_win_likelihood_red": "league_elo_win_likelihood",
-        "league_elo_prior_win_likelihood_blue": "league_elo_prior_win_likelihood",
-        "league_elo_prior_win_likelihood_red": "league_elo_prior_win_likelihood",
         "league_elo_after_blue": "league_elo_after",
         "league_elo_after_red": "league_elo_after",
     }
@@ -675,8 +655,7 @@ def store_results(
 ) -> None:
     """Store belonging leagues and league Elo ratings."""
     store_belonging_leagues(belonging_league)
-    league_elo_df = store_leagues_elo(league_elo_ratings)
-    store_league_strength_priors(league_elo_df)
+    store_leagues_elo(league_elo_ratings)
 
 
 def store_belonging_leagues(
@@ -711,73 +690,6 @@ def store_leagues_elo(
     )
     safe_store_df_as_parquet(league_elo_df, LEAGUE_ELO, [logger, data_pipeline_logger])
     return league_elo_df
-
-
-def store_league_strength_priors(league_elo_df: pd.DataFrame) -> None:
-    """
-    Derive league strength priors from the league Elo table and persist to JSON.
-    Defaults can be tuned in config/lol/data_ingestion/league_taxonomy.json
-    (field: prior_settings; including `calibration_mode`: "global" or "tiered").
-    """
-    settings = {
-        "prior_scale": 0.25,
-        "max_abs_prior": 200.0,
-        "calibration_mode": "global",
-    }
-    with contextlib.suppress(FileNotFoundError):
-        cfg = get_prior_settings()
-        settings["prior_scale"] = float(cfg.get("prior_scale", settings["prior_scale"]))
-        settings["max_abs_prior"] = float(
-            cfg.get("max_abs_prior", settings["max_abs_prior"])
-        )
-        settings["calibration_mode"] = str(
-            cfg.get("calibration_mode", settings["calibration_mode"])
-        )
-    if league_elo_df.empty:
-        return
-
-    scale = float(settings["prior_scale"])
-    max_abs = float(settings["max_abs_prior"])
-    mode = str(settings["calibration_mode"]).casefold()
-    if mode not in {"global", "tiered"}:
-        mode = "global"
-
-    league_elo = league_elo_df.set_index("league")["elo"]
-
-    def _clip(value: float) -> float:
-        return max(-max_abs, min(max_abs, value))
-
-    if mode == "tiered":
-        league_tiers = {
-            league: get_league_taxonomy(league)["tier"] for league in league_elo.index
-        }
-        tiers = league_elo.index.to_series().map(league_tiers.get)
-        tier_medians = league_elo.groupby(tiers).median().to_dict()
-        global_median = float(league_elo.median())
-
-        def _median_for(league: str) -> float:
-            tier = league_tiers.get(league)
-            return float(tier_medians.get(tier, global_median))
-
-        priors = {
-            league: _clip((elo - _median_for(league)) * scale)
-            for league, elo in league_elo.items()
-        }
-    else:
-        median = float(league_elo.median())
-        priors = {
-            league: _clip((elo - median) * scale) for league, elo in league_elo.items()
-        }
-    try:
-        with LEAGUE_STRENGTH_PRIORS.open("w") as f:
-            json.dump(priors, f, indent=2)
-        logger.info("Stored league strength priors to %s.", LEAGUE_STRENGTH_PRIORS)
-        data_pipeline_logger.info(
-            "Stored league strength priors to %s.", LEAGUE_STRENGTH_PRIORS
-        )
-    except Exception as e:
-        logger.error("Failed to save league strength priors: %s", e)
-        data_pipeline_logger.exception("Failed to save league strength priors.")
 
 
 # ----------------------------------------------------------------------

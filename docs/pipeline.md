@@ -17,7 +17,6 @@ The data pipeline turns raw match logs into model-ready features.
 
 - Team and player ratings live in `packages/lol-bets/src/lol_bets/data_generation/feature_engineering/ratings_features/`.
 - League Elo is computed for cross-league comparisons and stored in `models/lol/league_elo.parquet`.
-- League strength priors are derived from league Elo and stored in `models/lol/league_strength_priors.json`.
 
 ## Outputs
 

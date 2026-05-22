@@ -7,7 +7,7 @@ League of Legends configuration files live under `config/lol/`.
 - `config/lol/data_ingestion/import_columns.json` - columns to load from Oracle's Elixir.
 - `config/lol/data_ingestion/team_name_replacements_and_invalid_games.json` - data cleanup rules.
 - `config/lol/data_ingestion/considered_leagues.json` - named league-selection profiles.
-- `config/lol/data_ingestion/league_taxonomy.json` - league taxonomy + prior calibration settings.
+- `config/lol/data_ingestion/league_taxonomy.json` - league region/tier metadata.
 - `reports/lol/ingestion/teams_by_league.json` - generated team lists by league.
 - `reports/lol/ingestion/filtered_teams_by_league.json` - generated team lists filtered to the active league profile.
 

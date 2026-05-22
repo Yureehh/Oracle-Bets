@@ -17,10 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from oracle_bets_core.io_utils import load_model
-from oracle_bets_core.league_taxonomy import (
-    get_league_strength_prior,
-    get_league_taxonomy,
-)
+from oracle_bets_core.league_taxonomy import get_league_taxonomy
 from oracle_bets_core.paths import (
     ACTIVE_MODEL_TYPE,
     GAMELENGTH_PREDICTION_CATEGORICAL_ENCODINGS,
@@ -364,17 +361,6 @@ class MatchPredictor:
         t2_league = self._resolve_team_league(team2_id)
         e1 = self._resolve_league_elo(t1_league)
         e2 = self._resolve_league_elo(t2_league)
-        prob = _elo_prob(e1, e2)
-        return round(float(prob), RATING_DECIMALS)
-
-    def league_elo_prior_prediction(self, team1_id: int, team2_id: int) -> float:
-        """
-        League-level Elo probability adjusted by league strength priors.
-        """
-        t1_league = self._resolve_team_league(team1_id)
-        t2_league = self._resolve_team_league(team2_id)
-        e1 = self._resolve_league_elo(t1_league) + get_league_strength_prior(t1_league)
-        e2 = self._resolve_league_elo(t2_league) + get_league_strength_prior(t2_league)
         prob = _elo_prob(e1, e2)
         return round(float(prob), RATING_DECIMALS)
 
