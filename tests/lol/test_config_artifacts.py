@@ -15,6 +15,9 @@ CONFIG_FILES = [
     ROOT / "config/lol/training/flattened_team_config.json",
     ROOT / "config/lol/training/flattened_player_config.json",
 ]
+TEAM_CLEANUP_CONFIG = (
+    ROOT / "config/lol/data_ingestion/team_name_replacements_and_invalid_games.json"
+)
 
 
 def _load_cols(path: str, key: str) -> list[str]:
@@ -74,3 +77,51 @@ def test_player_artifact_gap_is_explicit():
     }
 
     assert {"flattened players", "training players"} <= failed
+
+
+def test_manual_invalid_games_are_current_if_configured():
+    artifact = ROOT / "data/lol/raw/raw_data.parquet"
+    if not artifact.exists():
+        pytest.skip("raw data artifact is not available")
+
+    cleanup_config = json.loads(TEAM_CLEANUP_CONFIG.read_text())
+    invalid_games = set(cleanup_config.get("invalid_games", []))
+    if not invalid_games:
+        return
+
+    df = pd.read_parquet(artifact, columns=["gameid"])
+    raw_games = set(df["gameid"].dropna().astype(str))
+
+    assert invalid_games <= raw_games
+
+
+def test_team_name_replacements_have_current_raw_evidence():
+    artifact = ROOT / "data/lol/raw/raw_data.parquet"
+    if not artifact.exists():
+        pytest.skip("raw data artifact is not available")
+
+    cleanup_config = json.loads(TEAM_CLEANUP_CONFIG.read_text())
+    replacements = cleanup_config.get("team_name_replacements", [])
+    if not replacements:
+        return
+
+    teams = pd.read_parquet(
+        artifact,
+        columns=["position", "teamid", "teamname"],
+    )
+    teams = teams.loc[
+        teams["position"] == "team",
+        ["teamid", "teamname"],
+    ].drop_duplicates()
+    observed = set(
+        zip(teams["teamid"].astype(str), teams["teamname"].astype(str), strict=False)
+    )
+
+    missing = [
+        team
+        for replacement in replacements
+        for team in replacement
+        if (team["teamid"], team["name"]) not in observed
+    ]
+
+    assert missing == []
