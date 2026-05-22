@@ -1,3 +1,5 @@
 import pandas as pd
 
-__all__ = ["pd"]
+def backend_name() -> str: ...
+
+__all__ = ["backend_name", "pd"]

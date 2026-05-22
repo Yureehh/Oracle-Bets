@@ -67,4 +67,10 @@ def _extracted_from__load(_fd_pd):
 
 pd = _load_pd()
 
-__all__ = ["pd"]
+
+def backend_name() -> str:
+    """Return the active dataframe backend name."""
+    return "fireducks" if pd.__name__.startswith("fireducks") else "pandas"
+
+
+__all__ = ["backend_name", "pd"]

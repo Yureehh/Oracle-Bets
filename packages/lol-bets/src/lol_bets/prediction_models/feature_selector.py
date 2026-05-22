@@ -13,13 +13,17 @@ Usage:
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from oracle_bets_core.logger import logger
+from oracle_bets_core.paths import FEATURE_REPORTS_DIR
 
 if TYPE_CHECKING:
     from oracle_bets_core.pd import pd
+
+CORRELATION_REDUNDANCY_THRESHOLD = 0.95
 
 
 class FeatureSelector:
@@ -257,7 +261,9 @@ class FeatureSelector:
     @classmethod
     def select_features(
         cls,
-        method: Literal["none", "importance", "cumulative", "rfecv", "boruta"],
+        method: Literal[
+            "none", "importance", "cumulative", "rfecv", "boruta", "report"
+        ],
         X_train: pd.DataFrame,
         y_train: pd.Series,
         model: Any = None,
@@ -299,6 +305,119 @@ class FeatureSelector:
             return cls.select_by_boruta(X_train, y_train, **kwargs)
 
         raise ValueError(f"Unknown selection method: {method}")
+
+    @staticmethod
+    def write_temporal_recommendation_report(
+        *,
+        model: Any,
+        X_train: pd.DataFrame,
+        X_validation: pd.DataFrame,
+        y_validation: pd.Series,
+        model_name: str,
+        max_features: int = 60,
+    ) -> dict[str, Any]:
+        """Write a compact-feature recommendation report from temporal validation."""
+        importances = getattr(model, "feature_importances_", None)
+        if importances is None or len(importances) != len(X_train.columns):
+            logger.warning(
+                "Cannot write feature recommendation report: no importances."
+            )
+            return {}
+
+        total_importance = float(np.sum(importances))
+        rel_importance = (
+            np.asarray(importances, dtype=float) / total_importance
+            if total_importance > 0
+            else np.zeros(len(importances), dtype=float)
+        )
+        missingness = X_train.isna().mean(numeric_only=False).fillna(0.0)
+        numeric = X_train.select_dtypes("number")
+        corr_hits = dict.fromkeys(X_train.columns, 0)
+        if numeric.shape[1] > 1:
+            corr = numeric.corr().abs()
+            for col in corr.columns:
+                corr_hits[col] = int(
+                    (
+                        corr[col].drop(labels=[col]) > CORRELATION_REDUNDANCY_THRESHOLD
+                    ).sum()
+                )
+
+        permutation_scores = _permutation_scores(
+            model=model,
+            X_validation=X_validation,
+            y_validation=y_validation,
+        )
+
+        rows = []
+        for idx, feature in enumerate(X_train.columns):
+            perm = permutation_scores.get(feature, 0.0)
+            miss_penalty = float(missingness.get(feature, 0.0))
+            corr_penalty = min(corr_hits.get(feature, 0) * 0.02, 0.2)
+            score = float(rel_importance[idx]) + max(perm, 0.0) - miss_penalty * 0.1
+            score -= corr_penalty
+            rows.append(
+                {
+                    "feature": feature,
+                    "importance": float(importances[idx]),
+                    "relative_importance": float(rel_importance[idx]),
+                    "permutation_importance": float(perm),
+                    "missing_rate": miss_penalty,
+                    "correlated_feature_count": int(corr_hits.get(feature, 0)),
+                    "recommendation_score": score,
+                }
+            )
+
+        ranked = sorted(rows, key=lambda row: row["recommendation_score"], reverse=True)
+        recommended = [row["feature"] for row in ranked[:max_features]]
+        payload = {
+            "model_name": model_name,
+            "selection_basis": "temporal validation feature report",
+            "max_features": max_features,
+            "recommended_features": recommended,
+            "features": ranked,
+        }
+
+        FEATURE_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = FEATURE_REPORTS_DIR / "recommended_compact_features.json"
+        output_path.write_text(json.dumps(payload, indent=2) + "\n")
+        logger.info("Stored feature recommendation report: %s", output_path)
+        return payload
+
+
+def _permutation_scores(
+    *, model: Any, X_validation: pd.DataFrame, y_validation: pd.Series
+) -> dict[str, float]:
+    try:
+        from sklearn.inspection import permutation_importance
+    except ImportError:
+        return {}
+
+    if X_validation.empty:
+        return {}
+    sample = X_validation
+    max_rows = 2000
+    if len(sample) > max_rows:
+        sample = sample.sample(n=max_rows, random_state=42)
+        y_validation = y_validation.loc[sample.index]
+
+    try:
+        result = permutation_importance(
+            model,
+            sample,
+            y_validation,
+            scoring="roc_auc",
+            n_repeats=3,
+            random_state=42,
+            n_jobs=-1,
+        )
+    except Exception as exc:
+        logger.warning("Permutation scoring for feature report failed: %s", exc)
+        return {}
+
+    return {
+        feature: float(score)
+        for feature, score in zip(sample.columns, result.importances_mean, strict=False)
+    }
 
 
 def get_top_features_report(

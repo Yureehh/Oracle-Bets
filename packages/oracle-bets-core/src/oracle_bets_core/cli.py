@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train.add_argument(
         "--feature-selection",
-        choices=["none", "importance", "cumulative", "rfecv", "boruta"],
+        choices=["none", "importance", "cumulative", "rfecv", "boruta", "report"],
         default="none",
     )
 
@@ -43,7 +43,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.domain == "lol" and args.action == "health":
         from lol_bets.module import LoLBetsModule
 
+        from oracle_bets_core.pd import backend_name
+
         module = LoLBetsModule()
+        sys.stdout.write(f"dataframe backend: {backend_name()}\n")
         for health in (module.artifact_health(), module.training_artifact_health()):
             sys.stdout.write(
                 f"{health.module_id}: {'ok' if health.ok else 'unhealthy'}\n"

@@ -3,7 +3,7 @@
 Generated League of Legends model artifacts for `lol-bets`.
 
 - `OutcomePrediction_<ModelType>/`: trained outcome model and preprocessing artifacts.
-- `league_elo.parquet`: learned per-league Elo plus learned `strength_pool` Elo.
+- `league_elo.parquet`: learned per-league Elo plus conservative `strength_pool` Elo and support metadata.
 - `team_league_mapping.parquet`: latest team-to-home-league mapping with pool metadata.
 
 Example:

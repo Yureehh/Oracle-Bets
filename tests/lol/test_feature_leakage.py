@@ -3,6 +3,10 @@ from lol_bets.data_generation.feature_engineering.features_generator import (
     FeatureGenerator,
     _add_expanding_mean,
 )
+from lol_bets.data_generation.feature_engineering.performance_features.entity_stats import (
+    apply_opponent_stats,
+)
+from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
 from oracle_bets_core.pd import pd
 from pandas.testing import assert_series_equal
 
@@ -10,6 +14,18 @@ PLAYER_A_FIRST_KILLS = 10
 PLAYER_B_FIRST_KILLS = 100
 EXPECTED_EPIC_MONSTERS = 6
 EXPECTED_STRUCTURE_CONTROL = 8
+BLUE_GOLD_EMA = 110.0
+RED_GOLD_EMA = 90.0
+GOLD_EMA_DIFF = 20.0
+TOP_OPP_KDA = 1.5
+TOP_KDA_DIFF = 2.5
+MID_OPP_KDA = 9.0
+MID_KDA_DIFF = -1.0
+MODEL_GOLD_EMA = 120.0
+MODEL_OPP_GOLD_EMA = 100.0
+MODEL_TOP_KDA = 5.0
+MODEL_OPP_TOP_KDA = 3.0
+MODEL_TOP_KDA_DIFF = 2.0
 
 
 def test_player_win_loss_metrics_shift_within_player_season_patch():
@@ -126,3 +142,65 @@ def test_team_control_features_are_bounded_and_objective_based():
     assert out.loc[0, "structure_control"] == EXPECTED_STRUCTURE_CONTROL
     assert out.loc[0, "golddiff_shareat15"] > 0
     assert out.loc[1, "golddiff_shareat15"] < 0
+
+
+def test_opponent_ema_diff_does_not_overwrite_base_team_feature():
+    df = pd.DataFrame(
+        {
+            "gameid": ["g1", "g1"],
+            "side": ["Red", "Blue"],
+            "ema_goldat15_before": [RED_GOLD_EMA, BLUE_GOLD_EMA],
+        }
+    )
+
+    out = apply_opponent_stats(df, "team", ["goldat15"])
+    blue = out.loc[out["side"] == "Blue"].iloc[0]
+
+    assert blue["ema_goldat15_before"] == BLUE_GOLD_EMA
+    assert blue["opp_ema_goldat15_before"] == RED_GOLD_EMA
+    assert blue["diff_ema_goldat15_before"] == GOLD_EMA_DIFF
+
+
+def test_player_opponent_ema_diff_is_position_aware():
+    df = pd.DataFrame(
+        {
+            "gameid": ["g1", "g1", "g1", "g1"],
+            "side": ["Blue", "Blue", "Red", "Red"],
+            "position": ["top", "mid", "top", "mid"],
+            "ema_kda_before": [
+                TOP_OPP_KDA + TOP_KDA_DIFF,
+                MID_OPP_KDA + MID_KDA_DIFF,
+                TOP_OPP_KDA,
+                MID_OPP_KDA,
+            ],
+        }
+    )
+
+    out = apply_opponent_stats(df, "player", ["kda"])
+    top = out.loc[(out["side"] == "Blue") & (out["position"] == "top")].iloc[0]
+    mid = out.loc[(out["side"] == "Blue") & (out["position"] == "mid")].iloc[0]
+
+    assert top["opp_ema_kda_before"] == TOP_OPP_KDA
+    assert top["diff_ema_kda_before"] == TOP_KDA_DIFF
+    assert mid["opp_ema_kda_before"] == MID_OPP_KDA
+    assert mid["diff_ema_kda_before"] == MID_KDA_DIFF
+
+
+def test_model_preprocessing_keeps_base_ema_when_creating_diff():
+    df = pd.DataFrame(
+        {
+            "ema_goldat15": [MODEL_GOLD_EMA],
+            "opp_ema_goldat15": [MODEL_OPP_GOLD_EMA],
+            "top_ema_kda": [MODEL_TOP_KDA],
+            "top_opp_ema_kda": [MODEL_OPP_TOP_KDA],
+        }
+    )
+
+    out = GradientBoostingModel.add_explicit_ema_diffs(df, drop_opponents=True)
+
+    assert out.loc[0, "ema_goldat15"] == MODEL_GOLD_EMA
+    assert out.loc[0, "diff_ema_goldat15"] == GOLD_EMA_DIFF
+    assert out.loc[0, "top_ema_kda"] == MODEL_TOP_KDA
+    assert out.loc[0, "top_diff_ema_kda"] == MODEL_TOP_KDA_DIFF
+    assert "opp_ema_goldat15" not in out
+    assert "top_opp_ema_kda" not in out

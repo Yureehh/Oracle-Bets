@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from lol_bets.data_generation.ingestion.oracles_elixir import get_opponent
 from oracle_bets_core.io_utils import get_identity, get_sorting_keys, json_loader
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
@@ -141,21 +140,47 @@ def apply_opponent_stats(
     df: pd.DataFrame, entity: str, columns: Iterable[str]
 ) -> pd.DataFrame:
     """
-    For each 'ema_{col}_before', add 'opp_ema_{col}_before' using the
-    game-join logic in `get_opponent`. Keeps order and index.
+    For each 'ema_{col}_before', add opponent and explicit diff columns.
+
+    Team rows pair by game and opposite side. Player rows also require the same
+    position, so lane comparisons stay role-aware.
     """
     out = df.copy()
-    opp_cols = {}
+    before_cols = [f"ema_{col}_before" for col in columns]
+    before_cols = [col for col in before_cols if col in out.columns]
+    if not before_cols:
+        return out
 
-    for col in columns:
-        before_name = f"ema_{col}_before"
-        if before_name not in out.columns:
-            continue
-        vals = pd.Series(out[before_name].to_numpy().flatten())
-        opp_cols[f"opp_{before_name}"] = get_opponent(vals, entity=entity)
+    keys = ["gameid", "side"]
+    if entity == "player":
+        keys.append("position")
+    missing = set(keys) - set(out.columns)
+    if missing:
+        msg = f"Missing columns for opponent EMA pairing: {sorted(missing)}"
+        raise ValueError(msg)
 
-    if opp_cols:
-        out = pd.concat([out, pd.DataFrame(opp_cols, index=out.index)], axis=1)
+    left = out.copy()
+    left["_row_id"] = range(len(left))
+    right = out[[*keys, *before_cols]].copy()
+    right["side"] = right["side"].map({"Blue": "Red", "Red": "Blue"})
+    right = right.rename(columns={col: f"opp_{col}" for col in before_cols})
+
+    merged = left.merge(right, on=keys, how="left", validate="many_to_one")
+    merged = merged.sort_values("_row_id", kind="mergesort").set_index("_row_id")
+    merged.index = out.index
+
+    diff_cols = {}
+    for col in before_cols:
+        opp_col = f"opp_{col}"
+        if opp_col in merged.columns:
+            diff_cols[f"diff_{col}"] = merged[col] - merged[opp_col]
+
+    if diff_cols:
+        merged = pd.concat(
+            [merged, pd.DataFrame(diff_cols, index=merged.index)], axis=1
+        )
+
+    out = merged
     return out
 
 

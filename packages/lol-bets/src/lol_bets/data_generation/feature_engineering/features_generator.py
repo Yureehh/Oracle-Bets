@@ -30,7 +30,7 @@ GAMES_IN_BO3 = 3
 GAMES_IN_BO5 = 5
 BREAK_THRESHOLD_DAYS = 45  # ~1.5 months, indicates split break
 H2H_MIN_GAMES = 2  # minimum games to compute head-to-head
-EARLY_GAME_MARKERS = (15, 25)
+EARLY_GAME_MARKERS = (10, 15, 20, 25)
 
 
 # Replace zeros with NaN without using pandas' deprecated downcasting in replace

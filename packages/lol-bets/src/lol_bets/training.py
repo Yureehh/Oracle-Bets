@@ -11,7 +11,7 @@ Models covered:
 # - Total towers prediction (regression)
 
 Usage:
-    oracle-bets lol train --model-type lightgbm --feature-selection none
+    oracle-bets lol train --model-type lightgbm --feature-selection report
 """
 
 from __future__ import annotations
@@ -40,7 +40,9 @@ if TYPE_CHECKING:
 
 ProblemType = Literal["classification", "regression"]
 ModelType = Literal["lightgbm", "tabnet"]
-FeatureSelectionMethod = Literal["none", "importance", "cumulative", "rfecv", "boruta"]
+FeatureSelectionMethod = Literal[
+    "none", "importance", "cumulative", "rfecv", "boruta", "report"
+]
 MODEL_FILE_EXTENSION = "pkl"
 
 # ─────────────────────────  TRAINING CONFIGURATION  ───────────────────────────
@@ -48,7 +50,7 @@ MODEL_FILE_EXTENSION = "pkl"
 
 MODEL_TYPE: ModelType = "tabnet"  # "lightgbm" or "tabnet"
 FEATURE_SELECTION: FeatureSelectionMethod = (
-    "none"  # "none", "importance", "cumulative", "rfecv", "boruta"
+    "none"  # "none", "importance", "cumulative", "rfecv", "boruta", "report"
 )
 
 

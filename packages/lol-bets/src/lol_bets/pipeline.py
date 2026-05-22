@@ -287,23 +287,11 @@ class DataGenerator:
             )
             dest = PROCESSED_DIR / f"{entity}s" / f"flattened_{entity}s.parquet"
         else:
-            # training uses *_before; auto-append opponent EMA columns
+            # training uses *_before and explicit diff_ema_* comparison columns
             before_map = {
                 c: c.replace("_before", "") for c in cols if c.endswith("_before")
             }
-
-            # Candidate opponent columns only for EMA-before features you listed
-            ema_before_cols = [
-                c for c in cols if c.startswith("ema_") and c.endswith("_before")
-            ]
-            opp_candidates = [f"opp_{c}" for c in ema_before_cols]
-            opp_existing = [c for c in opp_candidates if c in df.columns]
-
-            # Final column set (dedup while preserving order)
-            cols_final = list(dict.fromkeys([*cols, *opp_existing]))
-
-            # Rename only your own *_before columns; opponent cols stay as-is
-            out = df.loc[:, cols_final].rename(columns=before_map)
+            out = df.loc[:, cols].rename(columns=before_map)
             dest = PROCESSED_DIR / f"{entity}s" / f"training_{entity}s.parquet"
 
         safe_store_df_as_parquet(out, dest, [logger, data_pipeline_logger])

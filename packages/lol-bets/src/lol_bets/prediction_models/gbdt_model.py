@@ -48,7 +48,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 # Feature selection method type
-FeatureSelectionMethod = Literal["none", "importance", "cumulative", "rfecv", "boruta"]
+FeatureSelectionMethod = Literal[
+    "none", "importance", "cumulative", "rfecv", "boruta", "report"
+]
 
 # Defaults
 DEFAULT_TRIALS = 100
@@ -166,13 +168,17 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
     @staticmethod
     def fuse_opposing_team_features(df: pd.DataFrame) -> pd.DataFrame:
-        """Turn opp_* columns into in-situ diffs (base - opp_base), then drop the opp_* columns."""
+        """Fuse non-EMA opponent columns; explicit EMA diffs are handled separately."""
         X = df.copy()
+        X = GradientBoostingModel.add_explicit_ema_diffs(X, drop_opponents=False)
 
         # Team-level opp_* → base - opp_base  (numeric only)
         opp_cols = [c for c in X.columns if c.startswith("opp_")]
         for col in opp_cols:
             base = col[4:]
+            if base.startswith("ema_"):
+                X = X.drop(columns=[col], errors="ignore")
+                continue
             if (
                 base in X.columns
                 and is_numeric_dtype(X[base])
@@ -188,6 +194,9 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             prefix = f"{role}_opp_"
             for col in [c for c in X.columns if c.startswith(prefix)]:
                 base = f"{role}_{col.split(prefix, 1)[1]}"
+                if col.split(prefix, 1)[1].startswith("ema_"):
+                    X = X.drop(columns=[col], errors="ignore")
+                    continue
                 if (
                     base in X.columns
                     and is_numeric_dtype(X[base])
@@ -195,6 +204,45 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 ):
                     X[base] = X[base] - X[col]
                 X = X.drop(columns=[col], errors="ignore")
+
+        return X
+
+    @staticmethod
+    def add_explicit_ema_diffs(
+        df: pd.DataFrame, *, drop_opponents: bool = False
+    ) -> pd.DataFrame:
+        """Add diff_ema columns without overwriting own EMA state."""
+        X = df.copy()
+
+        for col in [c for c in X.columns if c.startswith("opp_ema_")]:
+            base = col[4:]
+            diff = f"diff_{base}"
+            if (
+                base in X.columns
+                and is_numeric_dtype(X[base])
+                and is_numeric_dtype(X[col])
+                and diff not in X.columns
+            ):
+                X[diff] = X[base] - X[col]
+            if drop_opponents:
+                X = X.drop(columns=[col], errors="ignore")
+
+        roles = ("top", "jng", "mid", "bot", "sup")
+        for role in roles:
+            prefix = f"{role}_opp_ema_"
+            for col in [c for c in X.columns if c.startswith(prefix)]:
+                metric = col.split(f"{role}_opp_", 1)[1]
+                base = f"{role}_{metric}"
+                diff = f"{role}_diff_{metric}"
+                if (
+                    base in X.columns
+                    and is_numeric_dtype(X[base])
+                    and is_numeric_dtype(X[col])
+                    and diff not in X.columns
+                ):
+                    X[diff] = X[base] - X[col]
+                if drop_opponents:
+                    X = X.drop(columns=[col], errors="ignore")
 
         return X
 
@@ -756,7 +804,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         validate : bool
             Whether to run validation and store metrics
         feature_selection : str
-            Feature selection method: "none", "importance", "cumulative", "rfecv", "boruta"
+            Feature selection method: "none", "importance", "cumulative", "rfecv", "boruta", "report"
         feature_selection_threshold : float
             Threshold for importance-based selection (default 0.1% of total importance)
 
@@ -779,6 +827,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         X = X_full.drop(columns=meta_cols, errors="ignore")
 
         # Optional feature transformations (pre-split; these do not use labels)
+        X = self.add_explicit_ema_diffs(X, drop_opponents=True)
         if fuse_opponents:
             X = self.fuse_opposing_team_features(X)
         if process_player_likelihoods:
@@ -952,9 +1001,17 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
         # ─────────────────── Post-training Feature Selection Report ─────────────────── #
         # For importance-based methods, report which features would be selected
-        if feature_selection in ("importance", "cumulative"):
+        if feature_selection in ("importance", "cumulative", "report"):
             try:
-                if feature_selection == "importance":
+                if feature_selection == "report":
+                    selected = FeatureSelector.write_temporal_recommendation_report(
+                        model=model,
+                        X_train=X_train,
+                        X_validation=X_val,
+                        y_validation=y_val,
+                        model_name=self.model_name,
+                    ).get("recommended_features", [])
+                elif feature_selection == "importance":
                     selected = FeatureSelector.select_by_importance(
                         model, X_train, threshold=feature_selection_threshold
                     )

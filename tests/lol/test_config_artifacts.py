@@ -33,6 +33,7 @@ NEW_TEAM_FEATURES = {
     "ema_xpdiff_shareat25",
     "ema_csdiff_shareat25",
 }
+NEW_TEAM_FEATURE_PREFIXES = ("diff_ema_",)
 
 
 def _load_cols(path: str, key: str) -> list[str]:
@@ -51,7 +52,7 @@ def _flatten_config_values(value):
 
 
 def test_training_configs_do_not_use_deprecated_feature_families():
-    forbidden = ("atakhan", "_std", "at10", "at20")
+    forbidden = ("atakhan", "_std")
 
     for path in CONFIG_FILES:
         values = [
@@ -72,7 +73,10 @@ def test_team_training_config_matches_existing_artifact_columns():
     missing = renamed - set(df.columns)
     if missing == {"first_pick"}:
         pytest.skip("team training artifact predates first-pick feature import")
-    if missing <= NEW_TEAM_FEATURES:
+    if missing and (
+        missing <= NEW_TEAM_FEATURES
+        or all(item.startswith(NEW_TEAM_FEATURE_PREFIXES) for item in missing)
+    ):
         pytest.skip("team training artifact predates strength-pool feature revamp")
 
     assert missing == set()
@@ -109,6 +113,38 @@ def test_team_configs_use_strength_pool_and_drop_noisy_economy_columns():
     assert "gpr" not in values
 
 
+def test_checkpoint_configs_cover_10_15_20_25_minutes():
+    import_config = json.loads(
+        (ROOT / "config/lol/data_ingestion/import_columns.json").read_text()
+    )
+    team_flat = json.loads(
+        (ROOT / "config/lol/training/flattened_team_config.json").read_text()
+    )["flattened_cols"]
+    player_flat = json.loads(
+        (ROOT / "config/lol/training/flattened_player_config.json").read_text()
+    )["flattened_cols"]
+
+    for minute in (10, 15, 20, 25):
+        assert f"goldat{minute}" in import_config["team"]
+        assert f"goldat{minute}" in import_config["player"]
+        assert f"ema_goldat{minute}_after" in team_flat
+        assert f"ema_goldat{minute}_after" in player_flat
+
+
+def test_compact_configs_prefer_explicit_diff_ema_features():
+    compact_team = json.loads(
+        (ROOT / "config/lol/training/training_compact_team_config.json").read_text()
+    )["team_features"]
+    compact_player = json.loads(
+        (ROOT / "config/lol/training/training_compact_player_config.json").read_text()
+    )["player_features"]
+
+    assert "diff_ema_golddiffat15_before" in compact_team
+    assert "diff_ema_kda_before" in compact_player
+    assert "ema_golddiffat15_before" not in compact_team
+    assert "ema_kda_before" not in compact_player
+
+
 def test_league_strength_artifacts_have_current_schema_when_present():
     league_elo = ROOT / "models/lol/league_elo.parquet"
     team_mapping = ROOT / "models/lol/team_league_mapping.parquet"
@@ -117,7 +153,13 @@ def test_league_strength_artifacts_have_current_schema_when_present():
 
     league_cols = set(pd.read_parquet(league_elo).columns)
     mapping_cols = set(pd.read_parquet(team_mapping).columns)
-    expected_league_cols = {"league", "elo", "strength_pool", "strength_pool_elo"}
+    expected_league_cols = {
+        "league",
+        "elo",
+        "strength_pool",
+        "strength_pool_elo",
+        "strength_pool_cross_games",
+    }
     expected_mapping_cols = {"teamid", "league", "strength_pool"}
 
     if expected_league_cols <= league_cols and expected_mapping_cols <= mapping_cols:

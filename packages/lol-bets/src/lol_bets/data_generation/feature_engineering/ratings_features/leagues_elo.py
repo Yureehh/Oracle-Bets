@@ -33,6 +33,8 @@ data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 ROWS_PER_TEAM = 2  # one per side
 TRIALS_NUM = 25
 MAX_EXPONENT = 8.0  # clamp for expected outcome stability
+POOL_K_FACTOR_MULTIPLIER = 0.25
+POOL_SHRINKAGE_GAMES = 30
 
 
 def is_cross_league_competition(league: str) -> bool:
@@ -573,8 +575,18 @@ def _ensure_rating(
     current_season: int,
 ) -> float:
     if key not in ratings:
-        ratings[key] = {"elo": initial_elo, "season": current_season}
+        ratings[key] = {
+            "elo": initial_elo,
+            "season": current_season,
+            "games": 0,
+            "cross_pool_games": 0,
+        }
     return float(ratings[key]["elo"])
+
+
+def _shrink_probability(probability: float, support_games: int) -> float:
+    weight = support_games / (support_games + POOL_SHRINKAGE_GAMES)
+    return 0.5 + ((probability - 0.5) * weight)
 
 
 def _apply_two_entity_elo(
@@ -694,20 +706,48 @@ def process_elo_for_row(
         elo_divisor=elo_divisor,
         k_factor=k_factor,
     )
-    pool_exp_blue, new_blue_pool, new_red_pool = _apply_two_entity_elo(
+    pool_exp_blue_raw, new_blue_pool, new_red_pool = _apply_two_entity_elo(
         left_before=blue_pool_before,
         right_before=red_pool_before,
         left_result=float(blue_result),
         right_result=float(red_result),
         should_update=blue_pool != red_pool,
         elo_divisor=elo_divisor,
-        k_factor=k_factor,
+        k_factor=k_factor * POOL_K_FACTOR_MULTIPLIER,
     )
+    pool_support = min(
+        int(strength_pool_ratings[blue_pool].get("cross_pool_games", 0)),
+        int(strength_pool_ratings[red_pool].get("cross_pool_games", 0)),
+    )
+    pool_exp_blue = _shrink_probability(pool_exp_blue_raw, pool_support)
 
     league_elo_ratings[blue_league]["elo"] = new_blue
     league_elo_ratings[red_league]["elo"] = new_red
+    league_elo_ratings[blue_league]["games"] = (
+        int(league_elo_ratings[blue_league].get("games", 0)) + 1
+    )
+    league_elo_ratings[red_league]["games"] = (
+        int(league_elo_ratings[red_league].get("games", 0)) + 1
+    )
+    league_elo_ratings[blue_league]["last_updated"] = match_date
+    league_elo_ratings[red_league]["last_updated"] = match_date
     strength_pool_ratings[blue_pool]["elo"] = new_blue_pool
     strength_pool_ratings[red_pool]["elo"] = new_red_pool
+    strength_pool_ratings[blue_pool]["games"] = (
+        int(strength_pool_ratings[blue_pool].get("games", 0)) + 1
+    )
+    strength_pool_ratings[red_pool]["games"] = (
+        int(strength_pool_ratings[red_pool].get("games", 0)) + 1
+    )
+    if blue_pool != red_pool:
+        strength_pool_ratings[blue_pool]["cross_pool_games"] = (
+            int(strength_pool_ratings[blue_pool].get("cross_pool_games", 0)) + 1
+        )
+        strength_pool_ratings[red_pool]["cross_pool_games"] = (
+            int(strength_pool_ratings[red_pool].get("cross_pool_games", 0)) + 1
+        )
+    strength_pool_ratings[blue_pool]["last_updated"] = match_date
+    strength_pool_ratings[red_pool]["last_updated"] = match_date
 
     _append_rating_columns(
         wide_columns,
@@ -830,12 +870,29 @@ def store_leagues_elo(
                 (
                     lg,
                     dat["elo"],
+                    dat.get("games", 0),
+                    dat.get("last_updated"),
                     get_strength_pool(lg),
                     strength_pool_ratings[get_strength_pool(lg)]["elo"],
+                    strength_pool_ratings[get_strength_pool(lg)].get("games", 0),
+                    strength_pool_ratings[get_strength_pool(lg)].get(
+                        "cross_pool_games", 0
+                    ),
+                    strength_pool_ratings[get_strength_pool(lg)].get("last_updated"),
                 )
                 for lg, dat in league_elo_ratings.items()
             ],
-            columns=["league", "elo", "strength_pool", "strength_pool_elo"],
+            columns=[
+                "league",
+                "elo",
+                "league_games",
+                "league_last_updated",
+                "strength_pool",
+                "strength_pool_elo",
+                "strength_pool_games",
+                "strength_pool_cross_games",
+                "strength_pool_last_updated",
+            ],
         )
         .dropna(subset=["league"])
         .sort_values(by="elo", ascending=False, kind="mergesort")

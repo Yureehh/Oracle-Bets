@@ -9,9 +9,9 @@ future experiments easy to compare.
 - Atakhan, Blood Roses, and Feats of Strength are removed from current gameplay,
   so Atakhan columns should not be ingested, engineered, trained, flattened, or
   surfaced in Discord.
-- Oracle's Elixir exposes 15-minute and 25-minute checkpoint columns in the
-  current local schema. It does not expose 14-minute checkpoint columns, so 15 is
-  the closest reliable post-plates mid-game marker.
+- Oracle's Elixir exposes 10/15/20/25-minute checkpoint columns in the current
+  local schema. Keep all four in the broad feature surface, then let temporal
+  validation decide which belong in compact/model inputs.
 - Void Grubs now have one spawn cycle. Keep `void_grubs` as an early-objective
   count, but treat it as a capped 0-3 objective family in analysis and avoid any
   two-spawn assumptions.
@@ -23,11 +23,10 @@ future experiments easy to compare.
 
 - Removed `atakhans` from ingestion columns.
 - Removed all Atakhan EMA features from training and flattened configs.
-- Removed 10-minute and 20-minute checkpoint features from ingestion, training,
-  and flattened configs.
-- Kept checkpoint features centered on 15 and 25 minutes.
-- Added a regression test that blocks Atakhan, `_std`, `at10`, and `at20`
-  feature families from config files.
+- Restored 10-minute and 20-minute checkpoint features for broad experiments.
+- Kept compact configs focused on selected 15 and 25 minute comparison signals.
+- Added regression tests that block Atakhan and `_std` feature families from
+  config files.
 
 ## Feature Families
 
@@ -36,10 +35,10 @@ future experiments easy to compare.
 - Ratings: Elo, Glicko2, TrueSkill, PL, league Elo, and side/season likelihoods.
 - Team macro form: game length, team KPM, EGPM, towers, dragons,
   barons, heralds, grubs, inhibitors, elders.
-- Mid-game lane/economy checkpoints: gold, XP, CS, and their differentials at
-  15 minutes.
-- Late-game checkpoint signal: the same families at 25 minutes, but only if
-  missingness and calibration remain acceptable.
+- Lane/economy checkpoints: gold, XP, CS, kills/deaths/assists, and their
+  differentials at 10/15/20/25 minutes.
+- Explicit comparison features: train on `diff_ema_*` for comparable stats
+  while keeping own EMA state in flattened inference artifacts.
 - Series context: game number, BO1/BO3/BO5, deciding game.
 - Rest context: first season game and post-break indicator.
 - Head-to-head: keep with prior-game count gating; never trust sparse H2H alone.
@@ -49,10 +48,8 @@ future experiments easy to compare.
 - `_std` features: do not add them as model inputs. They are high-dimensional
   noise unless a future experiment proves otherwise.
 - Atakhan features: drop completely for current/future models.
-- 10-minute checkpoints: likely too early and highly correlated with stronger
-  15-minute deltas.
-- 20-minute checkpoints: redundant with 15 and 25 while adding another
-  missingness boundary.
+- 10/20-minute checkpoints: compute broadly but only keep in compact/model
+  inputs if walk-forward feature reports prove they add calibrated signal.
 - Outcome-adjacent summary economy aggregates are removed from configs until
   ablations prove they add calibrated signal.
 - Player pentakills/doublekills are very sparse. Keep only if feature importance

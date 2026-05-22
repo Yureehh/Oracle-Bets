@@ -3,7 +3,8 @@
 Model preprocessing, training, selection, and observability.
 
 - `data_preprocessor.py`: joins team and player artifacts.
-- `gbdt_model.py`: shared GBM training/evaluation pipeline.
+- `gbdt_model.py`: shared GBM training/evaluation pipeline and explicit EMA-diff construction.
+- `feature_selector.py`: feature-selection helpers and compact recommendation reports.
 - `lightgbm_model.py`: primary baseline model.
 - `tabnet_model.py`: optional neural baseline.
 
@@ -13,5 +14,5 @@ beside the training-table assembly that uses it.
 Example:
 
 ```bash
-uv run oracle-bets lol train --model-type lightgbm --feature-selection none
+uv run oracle-bets lol train --model-type lightgbm --feature-selection report
 ```

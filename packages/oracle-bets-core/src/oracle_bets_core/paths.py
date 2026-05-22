@@ -279,6 +279,7 @@ ENTITY_TRUESKILL_HYPERPARAMETERS: Final = (
 # --------------------------------------------------------------------------- #
 FIGURES_DIR: Final = REPORTS_DIR / "figures"
 INSIGHTS_DIR: Final = REPORTS_DIR / "evaluation_insights"
+FEATURE_REPORTS_DIR: Final = REPORTS_DIR / "features"
 
 # --------------------------------------------------------------------------- #
 # Directory bootstrap
@@ -294,6 +295,7 @@ _directories: list[Path] = [
     REPORTS_DIR,
     FIGURES_DIR,
     INSIGHTS_DIR,
+    FEATURE_REPORTS_DIR,
     CONFIG_DIR,
     DATA_INGESTION_DIR,
     EXTRAS_DIR,

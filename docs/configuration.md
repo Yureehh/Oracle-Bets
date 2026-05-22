@@ -21,6 +21,11 @@ leagues. Switch to `tier1_current` for a stricter market-facing dataset or
 - `config/lol/training/training_team_config.json` and `config/lol/training/training_compact_team_config.json`
 - `config/lol/training/training_player_config.json` and `config/lol/training/training_compact_player_config.json`
 
+Full training configs keep the broad generated surface. Compact configs are
+curated baselines and can be reviewed against
+`reports/lol/features/recommended_compact_features.json` after running
+`oracle-bets lol train --feature-selection report`.
+
 ## Environment variables
 
 See `docs/getting_started/installation.md` for required environment keys.

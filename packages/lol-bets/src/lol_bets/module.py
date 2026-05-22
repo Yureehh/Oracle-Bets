@@ -19,7 +19,13 @@ from oracle_bets_core.pd import pd
 
 MODULE_ID = "lol-bets"
 TEAM_LEAGUE_COLUMNS = {"teamid", "league", "strength_pool"}
-LEAGUE_ELO_COLUMNS = {"league", "elo", "strength_pool", "strength_pool_elo"}
+LEAGUE_ELO_COLUMNS = {
+    "league",
+    "elo",
+    "strength_pool",
+    "strength_pool_elo",
+    "strength_pool_cross_games",
+}
 
 
 def _check_file(name: str, path) -> ArtifactCheck:

@@ -81,7 +81,14 @@ RATING_DECIMALS = 3  # for human-facing rounded rating-based probs
 _PROB_EPS = 1e-12  # small epsilon for clipping
 _ROLES = ("top", "jng", "mid", "bot", "sup")
 TEAM_LEAGUE_COLUMNS = {"teamid", "league", "strength_pool"}
-LEAGUE_ELO_COLUMNS = {"league", "elo", "strength_pool", "strength_pool_elo"}
+LEAGUE_ELO_COLUMNS = {
+    "league",
+    "elo",
+    "strength_pool",
+    "strength_pool_elo",
+    "strength_pool_cross_games",
+}
+POOL_SHRINKAGE_GAMES = 30
 
 
 # ── cached parquet reads ─────────────────────────────────────────────────── #
@@ -398,7 +405,16 @@ class MatchPredictor:
         e1 = self._resolve_strength_pool_elo(t1_league)
         e2 = self._resolve_strength_pool_elo(t2_league)
         prob = _elo_prob(e1, e2)
-        return round(float(prob), RATING_DECIMALS)
+        pool1 = get_league_taxonomy(t1_league)["strength_pool"]
+        pool2 = get_league_taxonomy(t2_league)["strength_pool"]
+        support = self.league_to_elo.loc[
+            self.league_to_elo["strength_pool"].isin([pool1, pool2]),
+            "strength_pool_cross_games",
+        ]
+        support_games = int(support.min()) if not support.empty else 0
+        weight = support_games / (support_games + POOL_SHRINKAGE_GAMES)
+        shrunk = 0.5 + ((float(prob) - 0.5) * weight)
+        return round(float(shrunk), RATING_DECIMALS)
 
     # ── simple WR-based heuristics ──────────────────────────────────────── #
 
@@ -654,9 +670,13 @@ class MatchPredictor:
     def preprocess_data(
         self, team_df: pd.DataFrame, player_df: pd.DataFrame
     ) -> pd.DataFrame:
+        team_df = GradientBoostingModel.add_explicit_ema_diffs(
+            team_df, drop_opponents=False
+        )
         pivot = self.pivot_player_data(player_df)
-        # Print team_df gameid and side for debugging
-        # DO the same for pivot
+        pivot = GradientBoostingModel.add_explicit_ema_diffs(
+            pivot, drop_opponents=False
+        )
         return self.merge_datasets(team_df, pivot)
 
     def _feature_paths_for(self, model_name: str) -> tuple[Any, Any]:
@@ -785,6 +805,7 @@ class MatchPredictor:
         Returns shape (n, 2) array.
         """
         # If we already built team-level opp_* columns, don't re-fuse them.
+        X = GradientBoostingModel.add_explicit_ema_diffs(X, drop_opponents=False)
         if not any(c.startswith("opp_") for c in X.columns):
             X = GradientBoostingModel.fuse_opposing_team_features(X)
 
@@ -809,6 +830,8 @@ class MatchPredictor:
 
         if not any(c.startswith("opp_") for c in X.columns):
             X = GradientBoostingModel.fuse_opposing_team_features(X)
+        else:
+            X = GradientBoostingModel.add_explicit_ema_diffs(X, drop_opponents=False)
         X = GradientBoostingModel.process_players_likelihood_columns(X)
         X = self.keep_necessary_columns(X, model_name=model_name)
 
