@@ -419,6 +419,14 @@ class MatchPredictor:
             t1["teamid"], t2["teamid"]
         )
 
+        # Draft priority. Since 2026, first pick is decoupled from map side.
+        # Use 0.5 as the neutral value when the market/schedule does not know it.
+        t1["first_pick"] = (
+            pd.to_numeric(pd.Series([t1.get("first_pick", 0.5)]), errors="coerce")
+            .fillna(0.5)
+            .iloc[0]
+        )
+
         # Side win likelihood
         if account_for_side:
             s1_key = f"ema_{str(t1.get('side', '')).casefold()}_side"

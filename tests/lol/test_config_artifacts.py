@@ -54,8 +54,24 @@ def test_team_training_config_matches_existing_artifact_columns():
     df = pd.read_parquet(artifact)
     cols = _load_cols("config/lol/training/training_team_config.json", "team_features")
     renamed = {c.replace("_before", "") for c in cols}
+    missing = renamed - set(df.columns)
+    if missing == {"first_pick"}:
+        pytest.skip("team training artifact predates first-pick feature import")
 
-    assert renamed <= set(df.columns)
+    assert missing == set()
+
+
+def test_first_pick_is_team_level_ingestion_feature():
+    import_config = json.loads(
+        (ROOT / "config/lol/data_ingestion/import_columns.json").read_text()
+    )
+    team_config = json.loads(
+        (ROOT / "config/lol/training/training_team_config.json").read_text()
+    )
+
+    assert "first_pick" in import_config["team"]
+    assert "first_pick" not in import_config["player"]
+    assert "first_pick" in team_config["team_features"]
 
 
 def test_player_artifact_gap_is_explicit():

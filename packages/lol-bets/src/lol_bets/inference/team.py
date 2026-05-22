@@ -44,12 +44,22 @@ def _require_columns(df: pd.DataFrame, required: Iterable[str], where: str) -> N
 # ── Team ─────────────────────────────────────────────────────────────────── #
 
 _EXPECTED_POS = ("top", "jng", "mid", "bot", "sup")
+_VALID_SIDES = {"blue": "Blue", "red": "Red"}
+
+
+def _normalize_side(side: str) -> str:
+    normalized = _VALID_SIDES.get(side.strip().casefold())
+    if normalized is None:
+        msg = "Side must be either 'Blue' or 'Red'."
+        raise ValueError(msg)
+    return normalized
 
 
 @dataclass
 class Team:
     name: str
     side: str | None = None
+    first_pick: bool | None = None
     roster: dict[str, str | None] = field(
         default_factory=lambda: dict.fromkeys(_EXPECTED_POS)
     )
@@ -75,7 +85,12 @@ class Team:
         )
 
         # set team_stats
-        self.team_stats = self._lookup_team_row(self.name)
+        self.team_stats = self._lookup_team_row(self.name).copy()
+        if self.side:
+            self.team_stats["side"] = _normalize_side(self.side)
+            self.side = self.team_stats["side"]
+        if self.first_pick is not None:
+            self.team_stats["first_pick"] = int(bool(self.first_pick))
 
         # complete roster: if some roles missing/None, backfill from last roster
         filled = {**dict.fromkeys(_EXPECTED_POS), **(self.roster or {})}

@@ -13,3 +13,7 @@ Example:
 ```python
 from oracle_bets_discord.predictions.lol import validate_and_predict
 ```
+
+Neutral commands do not assume map side or first pick. First Selection commands
+accept explicit Blue/Red map side plus the team with draft priority so LoL can
+model the 2026 side/draft decoupling after retraining.

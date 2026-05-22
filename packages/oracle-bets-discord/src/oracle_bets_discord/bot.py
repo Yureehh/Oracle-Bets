@@ -225,19 +225,19 @@ async def player_profile(
 @bot.command(name="bo1", aliases=["predict", "prediction", "match", "BO1"])
 async def bo1(
     ctx: commands.Context,
-    blue_team_name: str | None = None,
-    red_team_name: str | None = None,
+    team_a_name: str | None = None,
+    team_b_name: str | None = None,
     rosters: str | None = None,
 ):
     """
-    Predict a best-of-one. Optional rosters:
+    Predict a neutral best-of-one. Optional rosters:
     `!bo1 T1 G2 "t1top,t1jng,t1mid,t1adc,t1sup | g2top,g2jng,g2mid,g2adc,g2sup"`
     """
     blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict(
         ctx,
-        blue_team_name,
-        red_team_name,
+        team_a_name,
+        team_b_name,
         blue_roster_str,
         red_roster_str,
         "bo1",
@@ -255,24 +255,52 @@ async def sided_bo1(
     red_team_name: str | None = None,
     rosters: str | None = None,
 ):
-    """Best-of-one with side consideration (Blue/Red advantages)."""
+    """Best-of-one with explicit map side: first team Blue, second team Red."""
     blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict(
         ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, "bo1", True
     )
 
 
-@bot.command(name="props", aliases=["props_bo1", "bo1_props"])
-async def props(
+@bot.command(
+    name="first_selection_bo1",
+    aliases=["fs_bo1", "selection_bo1", "first_pick_bo1"],
+)
+async def first_selection_bo1(
     ctx: commands.Context,
     blue_team_name: str | None = None,
     red_team_name: str | None = None,
+    first_pick_team_name: str | None = None,
     rosters: str | None = None,
 ):
-    """Predict single-game props: gamelength, total kills, total towers."""
+    """Best-of-one with explicit map side and First Selection first-pick team."""
+    if not first_pick_team_name:
+        await ctx.send("Provide the first-pick team name.")
+        return
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
+    await validate_and_predict(
+        ctx,
+        blue_team_name,
+        red_team_name,
+        blue_roster_str,
+        red_roster_str,
+        "bo1",
+        True,
+        first_pick_team_name,
+    )
+
+
+@bot.command(name="props", aliases=["props_bo1", "bo1_props"])
+async def props(
+    ctx: commands.Context,
+    team_a_name: str | None = None,
+    team_b_name: str | None = None,
+    rosters: str | None = None,
+):
+    """Predict neutral single-game props: gamelength, total kills, total towers."""
     blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict_props(
-        ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, False
+        ctx, team_a_name, team_b_name, blue_roster_str, red_roster_str, False
     )
 
 
@@ -283,10 +311,37 @@ async def sided_props(
     red_team_name: str | None = None,
     rosters: str | None = None,
 ):
-    """Predict single-game props with side consideration."""
+    """Predict single-game props with explicit map side."""
     blue_roster_str, red_roster_str = _split_two_rosters(rosters)
     await validate_and_predict_props(
         ctx, blue_team_name, red_team_name, blue_roster_str, red_roster_str, True
+    )
+
+
+@bot.command(
+    name="first_selection_props",
+    aliases=["fs_props", "selection_props", "first_pick_props"],
+)
+async def first_selection_props(
+    ctx: commands.Context,
+    blue_team_name: str | None = None,
+    red_team_name: str | None = None,
+    first_pick_team_name: str | None = None,
+    rosters: str | None = None,
+):
+    """Predict props with explicit map side and First Selection first-pick team."""
+    if not first_pick_team_name:
+        await ctx.send("Provide the first-pick team name.")
+        return
+    blue_roster_str, red_roster_str = _split_two_rosters(rosters)
+    await validate_and_predict_props(
+        ctx,
+        blue_team_name,
+        red_team_name,
+        blue_roster_str,
+        red_roster_str,
+        True,
+        first_pick_team_name,
     )
 
 

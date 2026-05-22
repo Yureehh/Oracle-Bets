@@ -34,6 +34,7 @@ WEEKS_FOR_DELAY: int = 3
 
 PLEASE_PROVIDE_TEAMS = "Please provide both a blue and red team name."
 TEAMS_MUST_BE_DIFFERENT = "The two teams must be different."
+FIRST_PICK_TEAM_MUST_MATCH = "First-pick team must match one of the two teams."
 
 # ── lazy, single-shot predictor ─────────────────────────────────────────── #
 
@@ -270,7 +271,7 @@ async def get_formatted_player_profile(
 # ── prediction helpers ──────────────────────────────────────────────────── #
 
 
-def add_roster_to_output(output: str, blue_team: Team, red_team: Team) -> str:
+def add_roster_to_output(output: str, team_a: Team, team_b: Team) -> str:
     def fmt(team: Team) -> str:
         parts: list[str] = []
         for role in POSITIONS:
@@ -279,8 +280,8 @@ def add_roster_to_output(output: str, blue_team: Team, red_team: Team) -> str:
         return " \t-  \t".join(parts)
 
     output += "\n## Found Rosters\n"
-    output += f"**Blue Team:**\t {fmt(blue_team)}\n"
-    output += f"**Red Team:**\t {fmt(red_team)}"
+    output += f"**{team_a.name}:**\t {fmt(team_a)}\n"
+    output += f"**{team_b.name}:**\t {fmt(team_b)}"
     return output
 
 
@@ -316,6 +317,41 @@ def strip_team_names(team1: str | None, team2: str | None) -> tuple[str, str]:
     return (team1 or "").strip(), (team2 or "").strip()
 
 
+def resolve_first_pick(
+    team_a_name: str,
+    team_b_name: str,
+    first_pick_team_name: str | None,
+) -> tuple[bool | None, bool | None]:
+    if not first_pick_team_name:
+        return None, None
+    first_pick = first_pick_team_name.strip().casefold()
+    if first_pick == team_a_name.casefold():
+        return True, False
+    if first_pick == team_b_name.casefold():
+        return False, True
+    msg = FIRST_PICK_TEAM_MUST_MATCH
+    raise ValueError(msg)
+
+
+def add_selection_context_to_output(
+    output: str,
+    team_a: Team,
+    team_b: Team,
+    account_for_side: bool,
+    first_pick_team_name: str | None,
+) -> str:
+    if not account_for_side and not first_pick_team_name:
+        return output
+    output += "\n\n## Selection Context"
+    if account_for_side:
+        output += f"\n- Map side: {team_a.name}=Blue, {team_b.name}=Red"
+    if first_pick_team_name:
+        output += f"\n- First pick: {first_pick_team_name.strip()}"
+    else:
+        output += "\n- First pick: unknown/neutral"
+    return output
+
+
 # ── main async prediction entrypoints ───────────────────────────────────── #
 
 
@@ -327,6 +363,7 @@ async def predict_and_format_result(
     red_roster_str: str | None,
     match_type: str,
     account_for_side: bool,
+    first_pick_team_name: str | None = None,
 ) -> None:
     """Create teams, predict outcomes, and format result for bo1/bo3/bo5."""
     if match_type not in VALID_MATCH_TYPES:
@@ -343,8 +380,21 @@ async def predict_and_format_result(
         red_roster = (
             process_roster(red_roster_str) if red_roster_str else get_empty_roster()
         )
-        blue_team = Team(name=blue_team_name, side="Blue", roster=blue_roster)
-        red_team = Team(name=red_team_name, side="Red", roster=red_roster)
+        blue_first_pick, red_first_pick = resolve_first_pick(
+            blue_team_name, red_team_name, first_pick_team_name
+        )
+        blue_team = Team(
+            name=blue_team_name,
+            side="Blue",
+            first_pick=blue_first_pick,
+            roster=blue_roster,
+        )
+        red_team = Team(
+            name=red_team_name,
+            side="Red",
+            first_pick=red_first_pick,
+            roster=red_roster,
+        )
         # inactivity flags (robust to missing dates)
         today = pd.Timestamp.today().normalize()
         days_delay = int(WEEKS_FOR_DELAY) * 7
@@ -389,6 +439,9 @@ async def predict_and_format_result(
             output = BestOfs.best_of_five(
                 blue_team_name, blue_win, red_team_name, red_win
             )
+        output = add_selection_context_to_output(
+            output, blue_team, red_team, account_for_side, first_pick_team_name
+        )
         output = add_roster_to_output(output, blue_team, red_team)
         output = add_break_flags_to_output(
             output, break_blue_flag, blue_team_name, break_red_flag, red_team_name
@@ -409,6 +462,7 @@ async def predict_and_format_props(
     blue_roster_str: str | None,
     red_roster_str: str | None,
     account_for_side: bool,
+    first_pick_team_name: str | None = None,
 ) -> None:
     """Predict game props (gamelength, total kills, total towers) for a single game."""
     msg = await ctx.send(content="```Calculating prop predictions...```")
@@ -419,8 +473,21 @@ async def predict_and_format_props(
         red_roster = (
             process_roster(red_roster_str) if red_roster_str else get_empty_roster()
         )
-        blue_team = Team(name=blue_team_name, side="Blue", roster=blue_roster)
-        red_team = Team(name=red_team_name, side="Red", roster=red_roster)
+        blue_first_pick, red_first_pick = resolve_first_pick(
+            blue_team_name, red_team_name, first_pick_team_name
+        )
+        blue_team = Team(
+            name=blue_team_name,
+            side="Blue",
+            first_pick=blue_first_pick,
+            roster=blue_roster,
+        )
+        red_team = Team(
+            name=red_team_name,
+            side="Red",
+            first_pick=red_first_pick,
+            roster=red_roster,
+        )
 
         predictor = get_match_predictor()
         gamelength = predictor.predict_gamelength(
@@ -439,6 +506,9 @@ async def predict_and_format_props(
             f"- Expected total kills: **{total_kills:.2f}**\n"
             f"- Expected total towers: **{total_towers:.2f}**\n"
         )
+        output = add_selection_context_to_output(
+            output, blue_team, red_team, account_for_side, first_pick_team_name
+        )
         await msg.edit(content=output[: MESSAGE_LIMIT - 1])
     except Exception as e:
         await msg.edit(
@@ -454,6 +524,7 @@ async def validate_and_predict(
     red_roster_str: str | None,
     match_type: str,
     side_consideration: bool,
+    first_pick_team_name: str | None = None,
 ):
     """Validates inputs and triggers prediction."""
     blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
@@ -471,6 +542,7 @@ async def validate_and_predict(
         red_roster_str,
         match_type,
         side_consideration,
+        first_pick_team_name,
     )
 
 
@@ -481,6 +553,7 @@ async def validate_and_predict_props(
     blue_roster_str: str | None,
     red_roster_str: str | None,
     side_consideration: bool,
+    first_pick_team_name: str | None = None,
 ):
     blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
     if not blue_team_name or not red_team_name:
@@ -496,4 +569,5 @@ async def validate_and_predict_props(
         blue_roster_str,
         red_roster_str,
         side_consideration,
+        first_pick_team_name,
     )

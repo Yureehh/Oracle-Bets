@@ -23,6 +23,7 @@
     "elo_win_likelihood",
     "trueskill_win_likelihood",
     "league_elo_win_likelihood",
+    "first_pick",
 
     "side_win_likelihood",
     "season_win_likelihood",

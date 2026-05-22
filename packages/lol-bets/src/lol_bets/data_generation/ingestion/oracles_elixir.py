@@ -436,6 +436,7 @@ class OraclesElixir:
             "earned gpm": "egpm",
             "team kpm": "team_kpm",
             "total cs": "total_cs",
+            "firstPick": "first_pick",
         }
         df = oracles_elixir_data.rename(columns=rename_map)
 

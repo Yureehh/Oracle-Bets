@@ -114,6 +114,25 @@ def test_remove_buggy_games_drops_invalid_full_game_before_split():
     assert set(cleaned["gameid"]) == {"good"}
 
 
+def test_subset_data_renames_first_pick_for_team_rows():
+    raw = pd.DataFrame(
+        [
+            {
+                "position": "team",
+                "gameid": "g1",
+                "side": "Red",
+                "teamname": "T1",
+                "teamid": "t1",
+                "firstPick": 1,
+            }
+        ]
+    )
+
+    out = OraclesElixir.subset_data(raw, "team", columns={"team": ["first_pick"]})
+
+    assert out.iloc[0]["first_pick"] == 1
+
+
 def test_validate_game_composition_rejects_partial_post_filter_games():
     df = pd.DataFrame(
         {
