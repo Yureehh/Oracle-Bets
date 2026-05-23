@@ -63,6 +63,9 @@ MAX_MISSING_FRAC = 0.40  # drop features missing >40% on TRAIN
 RANDOM_STATE = 42
 MIN_SHAPE_FOR_CORR = 2  # min numeric cols to run high-corr pruning
 BINARY_CLASS_UNIQUE_VALUES = 2
+ROWS_PER_GAME = 2
+POSITIVE_RESULT_SUM_PER_GAME = 1
+DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
 MIN_CALIBRATION_SAMPLES = 40
 PROBABILITY_EPSILON = 1e-6
 
@@ -667,6 +670,71 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         metrics["cm"] = confusion_matrix(y_true, y_pred)
         return metrics
 
+    @staticmethod
+    def compute_pairwise_classification_metrics(
+        *,
+        y_true: pd.Series,
+        y_proba: np.ndarray,
+        eval_gameids: pd.Series,
+    ) -> dict[str, Any]:
+        """Evaluate two-row games as one market: pick the side with higher probability."""
+        frame = pd.DataFrame(
+            {
+                "gameid": eval_gameids.to_numpy(),
+                "actual": pd.to_numeric(y_true, errors="coerce").to_numpy(),
+                "proba": np.asarray(y_proba, dtype=float),
+            },
+            index=y_true.index,
+        ).dropna(subset=["gameid", "actual", "proba"])
+        if frame.empty:
+            return {}
+
+        row_prediction_05 = (frame["proba"] >= DEFAULT_CLASSIFICATION_THRESHOLD).astype(
+            int
+        )
+        row_accuracy_05 = float((row_prediction_05 == frame["actual"]).mean())
+
+        pair_rows: list[dict[str, Any]] = []
+        for gameid, group in frame.groupby("gameid", sort=False):
+            if (
+                len(group) != ROWS_PER_GAME
+                or group["actual"].sum() != POSITIVE_RESULT_SUM_PER_GAME
+            ):
+                continue
+            favorite_idx = group["proba"].idxmax()
+            pred05_wins = int(
+                (group["proba"] >= DEFAULT_CLASSIFICATION_THRESHOLD).sum()
+            )
+            pair_rows.append(
+                {
+                    "gameid": gameid,
+                    "correct": int(frame.loc[favorite_idx, "actual"] == 1),
+                    "favorite_probability": float(group["proba"].max()),
+                    "probability_sum": float(group["proba"].sum()),
+                    "both_predicted_win_05": int(pred05_wins == ROWS_PER_GAME),
+                    "both_predicted_loss_05": int(pred05_wins == 0),
+                }
+            )
+        if not pair_rows:
+            return {"row_accuracy_at_0_5": row_accuracy_05}
+
+        pair_df = pd.DataFrame(pair_rows)
+        return {
+            "row_accuracy_at_0_5": row_accuracy_05,
+            "pairwise_game_count": int(len(pair_df)),
+            "pairwise_argmax_accuracy": float(pair_df["correct"].mean()),
+            "pairwise_favorite_probability_mean": float(
+                pair_df["favorite_probability"].mean()
+            ),
+            "pairwise_probability_sum_mean": float(pair_df["probability_sum"].mean()),
+            "pairwise_both_predicted_win_at_0_5": int(
+                pair_df["both_predicted_win_05"].sum()
+            ),
+            "pairwise_both_predicted_loss_at_0_5": int(
+                pair_df["both_predicted_loss_05"].sum()
+            ),
+        }
+
     def compute_regression_metrics(
         self, y_true: pd.Series, y_pred: np.ndarray
     ) -> dict[str, Any]:
@@ -757,6 +825,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 base += f" | AUC {metrics['roc_auc']:.4f}"
             if "brier" in metrics:
                 base += f" | Brier {metrics['brier']:.4f}"
+            if "pairwise_argmax_accuracy" in metrics:
+                base += f" | PairAcc {metrics['pairwise_argmax_accuracy']:.4f}"
             logger.info("Eval: %s", base)
         else:
             logger.info(
@@ -811,6 +881,14 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
             if self.problem_type == "classification":
                 metrics = self.compute_classification_metrics(y_test, y_pred, y_proba)
+                if y_proba is not None:
+                    metrics.update(
+                        self.compute_pairwise_classification_metrics(
+                            y_true=y_test,
+                            y_proba=y_proba,
+                            eval_gameids=eval_gameids,
+                        )
+                    )
                 self.plot_confusion_matrix(y_test, y_pred)
                 self.plot_accuracy_over_samples(y_test, y_pred)
                 if y_proba is not None:

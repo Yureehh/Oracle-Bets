@@ -342,8 +342,9 @@ class FeatureSelector:
                     ).sum()
                 )
 
+        scorer_model = getattr(model, "raw_model", model)
         permutation_scores = _permutation_scores(
-            model=model,
+            model=scorer_model,
             X_validation=X_validation,
             y_validation=y_validation,
         )

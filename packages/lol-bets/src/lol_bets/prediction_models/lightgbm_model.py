@@ -5,7 +5,7 @@ LightGBM Model and Model Factory (lean, laptop-friendly).
 - Strong defaults + early stopping
 - Optuna HPO (trial cap)
 - Auto class-imbalance handling (scale_pos_weight)
-- Validation-optimized decision threshold for classification
+- Probability-first classification with a fixed 0.5 decision threshold
 - Drop-in compatible with GradientBoostingModel.train_and_validate_model(...)
 """
 
@@ -20,7 +20,7 @@ import optuna
 from oracle_bets_core.io_utils import load_model
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import MODELS_DIR
-from sklearn.metrics import f1_score, log_loss, mean_absolute_error
+from sklearn.metrics import log_loss, mean_absolute_error
 
 from lol_bets.prediction_models.gbdt_model import DEFAULT_TRIALS as _TRIALS_CAP
 from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
@@ -36,7 +36,7 @@ _RANDOM_STATE = 42
 
 
 class _LGBWithThreshold:
-    """Wraps an LGBMClassifier so .predict uses a tuned threshold; passes through .predict_proba and importances."""
+    """Wraps an LGBMClassifier so .predict uses a fixed threshold."""
 
     def __init__(self, raw_model: lgb.LGBMClassifier, threshold: float):
         # sourcery skip: remove-unnecessary-cast
@@ -79,7 +79,7 @@ class LightGBMModel(GradientBoostingModel):
         y_val: pd.Series,
         categorical_features: list[str] | None,
     ) -> Any:  # sourcery skip: move-assign
-        """Fit a single LightGBM model with early stopping and a tuned decision threshold (classification)."""
+        """Fit a single LightGBM model with early stopping."""
         # Load cached best hparams if present; otherwise run HPO (clamped for laptops)
         best_params = self._maybe_load_cached_hparams()
         if best_params is None:
@@ -140,12 +140,11 @@ class LightGBMModel(GradientBoostingModel):
 
         model.fit(**fit_kwargs)
 
-        # For classification, tune a simple F1-based threshold on validation
         if self.problem_type == "classification":
-            proba_val = model.predict_proba(X_val)[:, 1]
-            thr = self._choose_threshold(y_val, proba_val)
-            logger.info("Chosen decision threshold on validation: %.4f (F1)", thr)
-            return _LGBWithThreshold(model, thr)
+            logger.info(
+                "Using fixed 0.5000 decision threshold for probability-first classification."
+            )
+            return _LGBWithThreshold(model, 0.5)
 
         return model
 
@@ -276,16 +275,6 @@ class LightGBMModel(GradientBoostingModel):
         except Exception as e:
             logger.warning("Failed to load cached hyperparameters from %s: %s", path, e)
         return None
-
-    @staticmethod
-    def _choose_threshold(y_true: pd.Series, proba: np.ndarray) -> float:
-        """Pick F1-maximizing threshold on validation with a dense sweep."""
-        best_thr, best_score = 0.5, -1.0
-        for t in np.linspace(0.02, 0.98, 193):
-            score = f1_score(y_true, proba >= t, zero_division=0)
-            if score > best_score:
-                best_score, best_thr = score, float(t)
-        return best_thr
 
 
 class ModelFactory:

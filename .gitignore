@@ -122,6 +122,7 @@ catboost_info/
 /models/lol/*
 !/models/lol/README.md
 !/models/lol/**/
+/models/lol/**/*
 !/models/lol/**/README.md
 
 # Site packages
@@ -134,6 +135,7 @@ site-packages/
 /reports/lol/*
 !/reports/lol/README.md
 !/reports/lol/**/
+/reports/lol/**/*
 !/reports/lol/**/README.md
 
 # Logs
