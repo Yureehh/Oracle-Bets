@@ -28,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="LoL targets to train: all, outcome, props, or comma-separated names such as total_kills,total_towers.",
     )
+    train.add_argument(
+        "--force-retune",
+        action="store_true",
+        help="Ignore cached best hyperparameters and rerun tuning for selected targets.",
+    )
 
     discord = sub.add_parser("discord", help="Discord bot workflows")
     discord_sub = discord.add_subparsers(dest="action", required=True)
@@ -72,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
             model_type=args.model_type,
             feature_selection=args.feature_selection,
             targets=args.targets,
+            force_retune=args.force_retune,
         )
         return 0
 

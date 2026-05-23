@@ -143,6 +143,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     team_data: pd.DataFrame
     player_data: pd.DataFrame
     trials: int = DEFAULT_TRIALS
+    force_retune: bool = False
     directory: Path = FIGURES_DIR
     run_id: str = field(
         default_factory=lambda: dt.datetime.now().strftime("%Y%m%d_%H%M%S")

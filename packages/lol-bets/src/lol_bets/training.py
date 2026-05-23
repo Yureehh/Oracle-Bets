@@ -163,6 +163,7 @@ def initialize_and_train_model(
     training_player_data: pd.DataFrame,
     model_type: ModelType = "lightgbm",
     feature_selection: FeatureSelectionMethod = "none",
+    force_retune: bool = False,
 ) -> Path | None:
     """
     Initialize, train (and optionally validate) a model defined by `cfg`.
@@ -184,6 +185,7 @@ def initialize_and_train_model(
         training_team_data=training_team_data,
         training_player_data=training_player_data,
         model_type=model_type,
+        force_retune=force_retune,
     )
 
     start = dt.datetime.now()
@@ -214,6 +216,7 @@ def train_models(
     model_type: ModelType = "lightgbm",
     feature_selection: FeatureSelectionMethod = "none",
     targets: str = "all",
+    force_retune: bool = False,
 ) -> None:
     """Train all configured models using shared training tables."""
     LoLBetsModule().training_artifact_health().raise_if_unhealthy()
@@ -244,6 +247,7 @@ def train_models(
                 training_player_data=player_df,
                 model_type=model_type,
                 feature_selection=feature_selection,
+                force_retune=force_retune,
             )
             trained.append(cfg.model_name)
         except KeyboardInterrupt:
@@ -273,6 +277,7 @@ if __name__ == "__main__":
             model_type=MODEL_TYPE,
             feature_selection=FEATURE_SELECTION,
             targets="all",
+            force_retune=False,
         )
     except (KeyboardInterrupt, Exception) as e:
         logger.exception(f"Unexpected error during model training: {e}")

@@ -33,6 +33,13 @@ uv run oracle-bets lol train --targets props
 uv run oracle-bets lol train --targets total_kills,total_towers
 ```
 
+Use `--force-retune` to ignore cached best hyperparameters and run Optuna again
+for the selected targets:
+
+```bash
+uv run oracle-bets lol train --model-type lightgbm --targets all --force-retune
+```
+
 Classification artifacts include a validation-fitted probability calibrator when
 the validation split has enough samples. Regression artifacts include residual
 summaries with sigma, MAE, RMSE, and percentiles; these power Discord over/under

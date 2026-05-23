@@ -60,6 +60,12 @@ Supported LoL training targets are `all`, `outcome`, `props`, `gamelength`,
 oracle-bets lol train --model-type lightgbm --targets total_kills,total_towers
 ```
 
+Use `--force-retune` when you want to ignore cached best hyperparameters:
+
+```bash
+oracle-bets lol train --model-type lightgbm --targets all --force-retune
+```
+
 Legacy `src/` entrypoints and import shims have been removed. Use the package
 imports and `oracle-bets` CLI above.
 

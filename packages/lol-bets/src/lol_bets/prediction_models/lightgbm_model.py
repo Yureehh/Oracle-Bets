@@ -20,7 +20,7 @@ import optuna
 from oracle_bets_core.io_utils import load_model
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import MODELS_DIR
-from sklearn.metrics import log_loss, mean_absolute_error
+from sklearn.metrics import log_loss
 
 from lol_bets.prediction_models.gbdt_model import DEFAULT_TRIALS as _TRIALS_CAP
 from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 _DEFAULT_N_ESTIMATORS = 3000
 _EARLY_STOP_ROUNDS = 50
 _RANDOM_STATE = 42
+_ALLOWED_BOOSTING_TYPES = ("gbdt",)
 
 
 class _LGBWithThreshold:
@@ -102,7 +103,7 @@ class LightGBMModel(GradientBoostingModel):
         )
         params.setdefault(
             "metric",
-            "binary_logloss" if self.problem_type == "classification" else "mae",
+            "binary_logloss" if self.problem_type == "classification" else "rmse",
         )
 
         # Auto class-imbalance handling (always recomputed for current data)
@@ -170,14 +171,14 @@ class LightGBMModel(GradientBoostingModel):
         def _objective(trial: optuna.Trial) -> float:
             params: dict[str, Any] = {
                 "boosting_type": trial.suggest_categorical(
-                    "boosting_type", ["gbdt", "dart"]
+                    "boosting_type", list(_ALLOWED_BOOSTING_TYPES)
                 ),
                 "objective": "binary"
                 if self.problem_type == "classification"
                 else "regression",
                 "metric": "binary_logloss"
                 if self.problem_type == "classification"
-                else "mae",
+                else "rmse",
                 "learning_rate": trial.suggest_float(
                     "learning_rate", 0.01, 0.15, log=True
                 ),
@@ -239,7 +240,8 @@ class LightGBMModel(GradientBoostingModel):
                 preds = np.clip(preds, 1e-15, 1 - 1e-15)
                 return float(log_loss(y_val, preds))
             preds = clf.predict(X_val)
-            return float(mean_absolute_error(y_val, preds))
+            residuals = np.asarray(y_val, dtype=float) - np.asarray(preds, dtype=float)
+            return float(np.sqrt(np.mean(np.square(residuals))))
 
         study = optuna.create_study(
             direction="minimize",
@@ -264,6 +266,12 @@ class LightGBMModel(GradientBoostingModel):
 
     def _maybe_load_cached_hparams(self) -> dict[str, Any] | None:
         """Load best_hyperparameters from models/lol/<ModelName>/"""
+        if self.force_retune:
+            logger.info(
+                "Ignoring cached hyperparameters for %s (--force-retune).",
+                self.model_name,
+            )
+            return None
         path = (
             MODELS_DIR / self.model_name / f"{self.model_name}_best_hyperparameters.pkl"
         )
@@ -271,6 +279,13 @@ class LightGBMModel(GradientBoostingModel):
             if path.exists():
                 hp = load_model(path)
                 if isinstance(hp, dict) and hp:
+                    if hp.get("boosting_type", "gbdt") not in _ALLOWED_BOOSTING_TYPES:
+                        logger.info(
+                            "Ignoring cached hyperparameters for %s: unsupported boosting_type=%s.",
+                            self.model_name,
+                            hp.get("boosting_type"),
+                        )
+                        return None
                     return hp
         except Exception as e:
             logger.warning("Failed to load cached hyperparameters from %s: %s", path, e)
@@ -289,6 +304,7 @@ class ModelFactory:
         training_team_data: pd.DataFrame,
         training_player_data: pd.DataFrame,
         model_type: str = "lightgbm",
+        force_retune: bool = False,
     ) -> GradientBoostingModel:
         if problem_type not in ["classification", "regression"]:
             msg = f"Unsupported problem type: {problem_type}"
@@ -300,6 +316,7 @@ class ModelFactory:
                 problem_type=problem_type,
                 team_data=training_team_data,
                 player_data=training_player_data,
+                force_retune=force_retune,
             )
 
         if model_type == "tabnet":
@@ -310,6 +327,7 @@ class ModelFactory:
                 problem_type=problem_type,
                 team_data=training_team_data,
                 player_data=training_player_data,
+                force_retune=force_retune,
             )
 
         msg = f"Unsupported model type: {model_type}. Supported: {ModelFactory.SUPPORTED_MODELS}"

@@ -44,6 +44,12 @@ Generate a feature-selection recommendation report while training:
 uv run oracle-bets lol train --model-type lightgbm --targets all --feature-selection report
 ```
 
+Retune from scratch, ignoring cached best hyperparameters:
+
+```bash
+uv run oracle-bets lol train --model-type lightgbm --targets all --feature-selection report --force-retune
+```
+
 Artifacts are stored under `models/lol/<ModelName>_LightGBM/`. Each trained model
 stores the fitted model, final feature list, feature pipeline, categorical
 features, metrics, model card, and validation predictions. The winner model also
