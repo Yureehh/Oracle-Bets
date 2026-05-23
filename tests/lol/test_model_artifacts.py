@@ -4,6 +4,7 @@ from oracle_bets_core.pd import pd
 
 PAIRWISE_GAME_COUNT = 2
 EXPECTED_ROW_ACCURACY = 0.75
+EXPECTED_PAIRWISE_LOG_LOSS_UPPER_BOUND = 0.7
 
 
 def test_regression_residual_summary_contains_pricing_fields():
@@ -27,5 +28,7 @@ def test_pairwise_classification_metrics_force_one_market_pick_per_game():
 
     assert metrics["pairwise_game_count"] == PAIRWISE_GAME_COUNT
     assert metrics["pairwise_argmax_accuracy"] == 1.0
+    assert metrics["pairwise_log_loss"] < EXPECTED_PAIRWISE_LOG_LOSS_UPPER_BOUND
+    assert metrics["pairwise_brier"] < EXPECTED_PAIRWISE_LOG_LOSS_UPPER_BOUND
     assert metrics["pairwise_both_predicted_win_at_0_5"] == 1
     assert metrics["row_accuracy_at_0_5"] == EXPECTED_ROW_ACCURACY

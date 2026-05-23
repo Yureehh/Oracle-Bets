@@ -33,6 +33,7 @@ from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
     confusion_matrix,
+    log_loss,
     mean_absolute_error,
     mean_squared_error,
     precision_recall_fscore_support,
@@ -652,7 +653,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def compute_classification_metrics(
         self, y_true: pd.Series, y_pred: np.ndarray, y_proba: np.ndarray | None
     ) -> dict[str, Any]:
-        """Accuracy/Precision/Recall/F1 + ROC-AUC + Brier score if proba available."""
+        """Threshold metrics plus probability-quality metrics when probabilities exist."""
         accuracy = float(accuracy_score(y_true, y_pred))
         precision, recall, f1, _ = precision_recall_fscore_support(
             y_true, y_pred, average="binary", zero_division=0
@@ -665,6 +666,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         }
         if y_proba is not None:
             with contextlib.suppress(ValueError, IndexError):
+                clipped = np.clip(y_proba, PROBABILITY_EPSILON, 1 - PROBABILITY_EPSILON)
+                metrics["log_loss"] = float(log_loss(y_true, clipped))
                 metrics["roc_auc"] = float(roc_auc_score(y_true, y_proba))
                 metrics["brier"] = float(brier_score_loss(y_true, y_proba))
         metrics["cm"] = confusion_matrix(y_true, y_pred)
@@ -702,6 +705,13 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             ):
                 continue
             favorite_idx = group["proba"].idxmax()
+            prob_sum = float(group["proba"].sum())
+            normalized = (
+                group["proba"] / prob_sum
+                if prob_sum > 0
+                else pd.Series([0.5, 0.5], index=group.index)
+            )
+            winner_probability = float(normalized[group["actual"] == 1].iloc[0])
             pred05_wins = int(
                 (group["proba"] >= DEFAULT_CLASSIFICATION_THRESHOLD).sum()
             )
@@ -710,7 +720,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     "gameid": gameid,
                     "correct": int(frame.loc[favorite_idx, "actual"] == 1),
                     "favorite_probability": float(group["proba"].max()),
-                    "probability_sum": float(group["proba"].sum()),
+                    "winner_probability": winner_probability,
+                    "probability_sum": prob_sum,
                     "both_predicted_win_05": int(pred05_wins == ROWS_PER_GAME),
                     "both_predicted_loss_05": int(pred05_wins == 0),
                 }
@@ -719,10 +730,17 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             return {"row_accuracy_at_0_5": row_accuracy_05}
 
         pair_df = pd.DataFrame(pair_rows)
+        winner_probability = np.clip(
+            pair_df["winner_probability"].to_numpy(dtype=float),
+            PROBABILITY_EPSILON,
+            1.0 - PROBABILITY_EPSILON,
+        )
         return {
             "row_accuracy_at_0_5": row_accuracy_05,
             "pairwise_game_count": int(len(pair_df)),
             "pairwise_argmax_accuracy": float(pair_df["correct"].mean()),
+            "pairwise_log_loss": float(-np.log(winner_probability).mean()),
+            "pairwise_brier": float(np.mean(np.square(1.0 - winner_probability))),
             "pairwise_favorite_probability_mean": float(
                 pair_df["favorite_probability"].mean()
             ),
@@ -825,8 +843,12 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 base += f" | AUC {metrics['roc_auc']:.4f}"
             if "brier" in metrics:
                 base += f" | Brier {metrics['brier']:.4f}"
+            if "log_loss" in metrics:
+                base += f" | LogLoss {metrics['log_loss']:.4f}"
             if "pairwise_argmax_accuracy" in metrics:
                 base += f" | PairAcc {metrics['pairwise_argmax_accuracy']:.4f}"
+            if "pairwise_log_loss" in metrics:
+                base += f" | PairLogLoss {metrics['pairwise_log_loss']:.4f}"
             logger.info("Eval: %s", base)
         else:
             logger.info(
