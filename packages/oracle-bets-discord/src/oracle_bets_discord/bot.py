@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shlex
+from datetime import UTC, datetime
 from typing import Any
 
 import discord
@@ -22,6 +23,14 @@ from oracle_bets_core.betting import build_edge_signal
 from oracle_bets_core.logger import logger
 from oracle_bets_core.markets import PolymarketGammaAdapter
 from oracle_bets_core.paths import SCHEDULE
+from oracle_bets_dashboard.database import (
+    delete_bet,
+    get_all_bets,
+    init_db,
+    insert_bankroll_entry,
+    insert_bet,
+    settle_bet,
+)
 
 from oracle_bets_discord.betting import (
     calculate_kelly_criterion,
@@ -51,6 +60,7 @@ load_dotenv()
 DISCORD_TOKEN_ENV = "DISCORD_TOKEN"  # noqa: S105
 BOT_COMMAND_PREFIX = "!"
 BOT_DESCRIPTION = "LoL esports prediction & betting helper."
+OPTIONAL_STARTUP_ARTIFACT_PREFIXES = ("gamelength", "total kills", "total towers")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -153,6 +163,112 @@ def _match_type_from_options(options: dict[str, Any]) -> str:
     return "bo1"
 
 
+def _parse_bet_options(options: str | None) -> dict[str, Any]:
+    """Parse Discord ledger flags for `!bet` commands."""
+    parsed: dict[str, Any] = {}
+    if not options:
+        return parsed
+    tokens = shlex.split(options)
+    text_flags = {
+        "--event": "event_name",
+        "--event-date": "event_date",
+        "--sport": "sport",
+        "--league": "league",
+        "--market": "market_type",
+        "--selection": "selection",
+        "--side": "side",
+        "--book": "bookmaker",
+        "--bookmaker": "bookmaker",
+        "--ref": "bet_slip_ref",
+        "--source": "source_prediction",
+        "--note": "notes",
+        "--notes": "notes",
+        "--tags": "tags",
+        "--currency": "currency",
+        "--status": "status",
+        "--result": "result",
+    }
+    numeric_flags = {
+        "--odds": "odds_decimal",
+        "--stake": "stake",
+        "--prob": "model_probability",
+        "--edge": "edge",
+        "--kelly": "kelly_fraction",
+        "--line": "line",
+        "--map": "map_number",
+        "--bo": "best_of",
+        "--balance": "balance",
+        "--deposit": "deposit",
+        "--withdrawal": "withdrawal",
+        "--limit": "limit",
+    }
+    bool_flags = {"--smoke": "is_smoke", "--live": "is_live"}
+    i = 0
+    while i < len(tokens):
+        option = tokens[i]
+        if option in text_flags:
+            i += 1
+            if i >= len(tokens):
+                raise ValueError(f"Missing value for {option}.")
+            parsed[text_flags[option]] = tokens[i]
+        elif option in numeric_flags:
+            i += 1
+            if i >= len(tokens):
+                raise ValueError(f"Missing value for {option}.")
+            value = float(tokens[i])
+            parsed[numeric_flags[option]] = (
+                int(value)
+                if numeric_flags[option] in {"map_number", "best_of", "limit"}
+                else value
+            )
+        elif option in bool_flags:
+            parsed[bool_flags[option]] = True
+        else:
+            raise ValueError(f"Unknown option: {option}.")
+        i += 1
+    return parsed
+
+
+def _format_bet_row(bet: dict[str, Any]) -> str:
+    status = bet.get("result") or bet.get("status")
+    stake = bet.get("stake")
+    stake_text = f"{stake:.2f}" if stake is not None else "n/a"
+    line = bet.get("line")
+    line_text = f" line {line:g}" if line is not None else ""
+    return (
+        f"#{bet['id']} | {bet['event_name']} | {bet['market_type']}{line_text} | "
+        f"{bet['selection']} @ {bet['odds_decimal']:.2f} | stake {stake_text} | {status}"
+    )
+
+
+def _raise_for_blocking_artifact_failures(module) -> None:
+    health = module.artifact_health()
+    blocking = [
+        check
+        for check in health.checks
+        if not check.ok
+        and not check.name.startswith(OPTIONAL_STARTUP_ARTIFACT_PREFIXES)
+    ]
+    optional = [
+        check
+        for check in health.checks
+        if not check.ok and check.name.startswith(OPTIONAL_STARTUP_ARTIFACT_PREFIXES)
+    ]
+    if blocking:
+        failed = [
+            f"{check.name}: {check.path} ({check.reason or 'missing/unreadable'})"
+            for check in blocking
+        ]
+        msg = f"Artifact health check failed for {module.id}: " + "; ".join(failed)
+        raise RuntimeError(msg)
+    if optional:
+        logger.warning(
+            "Starting Discord bot with unavailable prop commands for %s: %s",
+            module.id,
+            "; ".join(f"{check.name} ({check.reason})" for check in optional),
+        )
+
+
 async def _send_market_search(ctx: commands.Context, query: str) -> None:
     msg = await ctx.send(content="```Searching markets...```")
     try:
@@ -168,6 +284,9 @@ async def _send_market_search(ctx: commands.Context, query: str) -> None:
                 else "n/a"
             )
             lines.append(f"- {quote.question} | {quote.outcome}: **{price}**")
+        lines.append(
+            '\nAfter manually placing a bet, record it with `!bet record --event "Team A vs Team B" --market winner --selection "Team A" --odds 1.85 --stake 25 --book polymarket`.'
+        )
         await msg.edit(content="\n".join(lines)[: MESSAGE_LIMIT - 1])
     except Exception as e:
         await msg.edit(content=handle_command_error(e, "Market search failed."))
@@ -758,6 +877,169 @@ async def edge(
         await ctx.send(str(ve))
 
 
+# ── ledger commands ────────────────────────────────────────────────────── #
+
+
+@bot.group(name="bet", invoke_without_command=True)
+async def bet_group(ctx: commands.Context):
+    """Manual bet ledger commands."""
+    await ctx.send(
+        "**Bet Ledger Commands**\n"
+        '- `!bet record --event "Team WE vs LNG" --market kills --selection over --line 26.5 --odds 1.85 --stake 25 --book polymarket --prob 0.557 --edge 0.031 --map 1 --league LPL`\n'
+        "- `!bet list --status open`\n"
+        "- `!bet settle 12 --result win`\n"
+        "- `!bet delete 12`\n"
+        '- `!bet bankroll --balance 1250 --note "after LPL slate"`\n'
+        "This records bets you manually placed. It never places orders."
+    )
+
+
+@bet_group.command(name="record")
+async def bet_record(ctx: commands.Context, *, options: str = ""):
+    """Record a manually placed bet in the local ledger."""
+    try:
+        parsed = _parse_bet_options(options)
+        selection = str(parsed.get("selection") or "").strip()
+        over_under = (
+            selection.title() if selection.casefold() in {"over", "under"} else None
+        )
+        data = {
+            "event_date": parsed.get("event_date")
+            or datetime.now(UTC).date().isoformat(),
+            "sport": parsed.get("sport") or "League of Legends",
+            "league": parsed.get("league"),
+            "event_name": parsed.get("event_name"),
+            "market_type": parsed.get("market_type"),
+            "selection": selection.title() if over_under else selection,
+            "side": parsed.get("side"),
+            "odds_decimal": parsed.get("odds_decimal"),
+            "stake": parsed.get("stake"),
+            "currency": parsed.get("currency") or "EUR",
+            "model_probability": parsed.get("model_probability"),
+            "edge": parsed.get("edge"),
+            "kelly_fraction": parsed.get("kelly_fraction"),
+            "is_smoke": bool(parsed.get("is_smoke")),
+            "is_live": bool(parsed.get("is_live")),
+            "bookmaker": parsed.get("bookmaker"),
+            "bet_slip_ref": parsed.get("bet_slip_ref"),
+            "source_prediction": parsed.get("source_prediction")
+            or "discord !bet record",
+            "notes": parsed.get("notes"),
+            "tags": parsed.get("tags"),
+            "line": parsed.get("line"),
+            "over_under": over_under,
+            "best_of": parsed.get("best_of"),
+            "map_number": parsed.get("map_number"),
+        }
+        missing = [
+            flag
+            for flag, key in (
+                ("--event", "event_name"),
+                ("--market", "market_type"),
+                ("--selection", "selection"),
+                ("--odds", "odds_decimal"),
+            )
+            if data.get(key) in {None, ""}
+        ]
+        if missing:
+            await ctx.send(f"Missing required option(s): {', '.join(missing)}.")
+            return
+        init_db()
+        bet_id = insert_bet(data)
+        await ctx.send(
+            "\n".join(
+                [
+                    f"Recorded bet #{bet_id}.",
+                    _format_bet_row({**data, "id": bet_id, "status": "pending"}),
+                    "Ledger only: no order was placed by the bot.",
+                ]
+            )
+        )
+    except ValueError as e:
+        await ctx.send(str(e))
+
+
+@bet_group.command(name="list")
+async def bet_list(ctx: commands.Context, *, options: str = ""):
+    """List recent ledger bets."""
+    try:
+        parsed = _parse_bet_options(options)
+        status = str(parsed.get("status") or "").casefold()
+        limit = int(parsed.get("limit") or 10)
+        if status == "open":
+            status = "pending"
+        init_db()
+        bets = get_all_bets()
+        if status:
+            bets = [
+                bet
+                for bet in bets
+                if str(bet.get("status") or "").casefold() == status
+                or str(bet.get("result") or "").casefold() == status
+            ]
+        if not bets:
+            await ctx.send("No matching bets found.")
+            return
+        lines = ["**Recent Bets**", *[_format_bet_row(bet) for bet in bets[:limit]]]
+        await ctx.send("\n".join(lines)[: MESSAGE_LIMIT - 1])
+    except ValueError as e:
+        await ctx.send(str(e))
+
+
+@bet_group.command(name="settle")
+async def bet_settle(
+    ctx: commands.Context, bet_id: int | None = None, *, options: str = ""
+):
+    """Settle a bet as win/loss/push/void."""
+    if bet_id is None:
+        await ctx.send("Provide a bet id, e.g. `!bet settle 12 --result win`.")
+        return
+    try:
+        parsed = _parse_bet_options(options)
+        result = parsed.get("result")
+        if not result:
+            await ctx.send("Provide `--result win|loss|push|void`.")
+            return
+        init_db()
+        settled = settle_bet(bet_id, str(result))
+        await ctx.send(
+            f"Settled bet #{bet_id}: {settled['result']} | P&L {settled['pnl']:+.2f}."
+        )
+    except ValueError as e:
+        await ctx.send(str(e))
+
+
+@bet_group.command(name="delete")
+async def bet_delete(ctx: commands.Context, bet_id: int | None = None):
+    """Delete a ledger bet by id."""
+    if bet_id is None:
+        await ctx.send("Provide a bet id, e.g. `!bet delete 12`.")
+        return
+    init_db()
+    delete_bet(bet_id)
+    await ctx.send(f"Deleted bet #{bet_id}.")
+
+
+@bet_group.command(name="bankroll")
+async def bet_bankroll(ctx: commands.Context, *, options: str = ""):
+    """Log a bankroll balance entry."""
+    try:
+        parsed = _parse_bet_options(options)
+        if "balance" not in parsed:
+            await ctx.send("Provide `--balance`, e.g. `!bet bankroll --balance 1250`.")
+            return
+        init_db()
+        entry_id = insert_bankroll_entry(
+            balance=float(parsed["balance"]),
+            deposit=float(parsed.get("deposit") or 0),
+            withdrawal=float(parsed.get("withdrawal") or 0),
+            notes=str(parsed.get("notes") or ""),
+        )
+        await ctx.send(f"Logged bankroll entry #{entry_id}.")
+    except ValueError as e:
+        await ctx.send(str(e))
+
+
 @bot.command(name="markets", aliases=["market_search", "polymarket"])
 async def markets(ctx: commands.Context, *, query: str | None = None):
     """Search read-only Polymarket markets."""
@@ -790,7 +1072,7 @@ def run_bot() -> None:
     """Start the Discord bot."""
     try:
         for module in default_registry().all():
-            module.artifact_health().raise_if_unhealthy()
+            _raise_for_blocking_artifact_failures(module)
         token = os.getenv(DISCORD_TOKEN_ENV)
         if not token:
             logger.error("Environment variable %s is missing.", DISCORD_TOKEN_ENV)
