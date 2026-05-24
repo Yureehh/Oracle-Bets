@@ -33,10 +33,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore cached best hyperparameters and rerun tuning for selected targets.",
     )
+    train.add_argument(
+        "--feature-set",
+        choices=["full", "compact", "selected"],
+        default="full",
+        help="Training feature surface: full, curated compact, or selected report recommendations.",
+    )
+    train.add_argument(
+        "--max-features",
+        type=int,
+        default=120,
+        help="Maximum features for --feature-set selected. Default: 120.",
+    )
 
     discord = sub.add_parser("discord", help="Discord bot workflows")
     discord_sub = discord.add_subparsers(dest="action", required=True)
     discord_sub.add_parser("run", help="Run the Discord bot")
+
+    dashboard = sub.add_parser("dashboard", help="Bet ledger dashboard")
+    dashboard_sub = dashboard.add_subparsers(dest="action", required=True)
+    dashboard_sub.add_parser("run", help="Launch the Streamlit dashboard")
+    dashboard_sub.add_parser("init", help="Initialize the ledger database")
 
     return parser
 
@@ -78,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
             feature_selection=args.feature_selection,
             targets=args.targets,
             force_retune=args.force_retune,
+            feature_set=args.feature_set,
+            max_features=args.max_features,
         )
         return 0
 
@@ -86,6 +105,36 @@ def main(argv: list[str] | None = None) -> int:
 
         run_bot()
         return 0
+
+    if args.domain == "dashboard" and args.action == "init":
+        from oracle_bets_dashboard.database import init_db
+
+        init_db()
+        sys.stdout.write("Ledger database initialized.\n")
+        return 0
+
+    if args.domain == "dashboard" and args.action == "run":
+        import importlib.util
+        import subprocess
+
+        from oracle_bets_core.paths import SUITE_ROOT
+
+        spec = importlib.util.find_spec("oracle_bets_dashboard.app")
+        app_path = spec.origin
+        dashboard_dir = SUITE_ROOT / "packages" / "oracle-bets-dashboard"
+        raise SystemExit(
+            subprocess.call(  # noqa: S603
+                [
+                    sys.executable,
+                    "-m",
+                    "streamlit",
+                    "run",
+                    app_path,
+                    "--server.headless=true",
+                ],
+                cwd=str(dashboard_dir),
+            )
+        )
 
     return 1
 
