@@ -314,7 +314,9 @@ class FeatureSelector:
         X_validation: pd.DataFrame,
         y_validation: pd.Series,
         model_name: str,
-        max_features: int = 60,
+        max_features: int = 120,
+        feature_counts: tuple[int, ...] = (60, 90, 120, 160),
+        problem_type: str = "classification",
     ) -> dict[str, Any]:
         """Write a compact-feature recommendation report from temporal validation."""
         importances = getattr(model, "feature_importances_", None)
@@ -347,6 +349,7 @@ class FeatureSelector:
             model=scorer_model,
             X_validation=X_validation,
             y_validation=y_validation,
+            problem_type=problem_type,
         )
 
         rows = []
@@ -370,23 +373,37 @@ class FeatureSelector:
 
         ranked = sorted(rows, key=lambda row: row["recommendation_score"], reverse=True)
         recommended = [row["feature"] for row in ranked[:max_features]]
+        recommendations_by_count = {
+            str(count): [row["feature"] for row in ranked[:count]]
+            for count in feature_counts
+        }
         payload = {
             "model_name": model_name,
             "selection_basis": "temporal validation feature report",
+            "problem_type": problem_type,
             "max_features": max_features,
             "recommended_features": recommended,
+            "recommendations_by_count": recommendations_by_count,
             "features": ranked,
         }
 
         FEATURE_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        output_path = FEATURE_REPORTS_DIR / "recommended_compact_features.json"
+        output_path = (
+            FEATURE_REPORTS_DIR / f"{model_name}_recommended_compact_features.json"
+        )
         output_path.write_text(json.dumps(payload, indent=2) + "\n")
+        legacy_path = FEATURE_REPORTS_DIR / "recommended_compact_features.json"
+        legacy_path.write_text(json.dumps(payload, indent=2) + "\n")
         logger.info("Stored feature recommendation report: %s", output_path)
         return payload
 
 
 def _permutation_scores(
-    *, model: Any, X_validation: pd.DataFrame, y_validation: pd.Series
+    *,
+    model: Any,
+    X_validation: pd.DataFrame,
+    y_validation: pd.Series,
+    problem_type: str,
 ) -> dict[str, float]:
     try:
         from sklearn.inspection import permutation_importance
@@ -402,11 +419,16 @@ def _permutation_scores(
         y_validation = y_validation.loc[sample.index]
 
     try:
+        scoring = (
+            "roc_auc"
+            if problem_type == "classification"
+            else "neg_root_mean_squared_error"
+        )
         result = permutation_importance(
             model,
             sample,
             y_validation,
-            scoring="roc_auc",
+            scoring=scoring,
             n_repeats=3,
             random_state=42,
             n_jobs=-1,

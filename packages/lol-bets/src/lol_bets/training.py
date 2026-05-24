@@ -29,6 +29,7 @@ from oracle_bets_core.paths import (
 )
 
 from lol_bets.module import LoLBetsModule
+from lol_bets.prediction_models.gbdt_model import DEFAULT_SELECTED_MAX_FEATURES
 from lol_bets.prediction_models.lightgbm_model import ModelFactory
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ ModelType = Literal["lightgbm", "tabnet"]
 FeatureSelectionMethod = Literal[
     "none", "importance", "cumulative", "rfecv", "boruta", "report"
 ]
+TrainingFeatureSet = Literal["full", "compact", "selected"]
 MODEL_FILE_EXTENSION = "pkl"
 
 # ─────────────────────────  TRAINING CONFIGURATION  ───────────────────────────
@@ -164,6 +166,8 @@ def initialize_and_train_model(
     model_type: ModelType = "lightgbm",
     feature_selection: FeatureSelectionMethod = "none",
     force_retune: bool = False,
+    feature_set: TrainingFeatureSet = "full",
+    max_features: int = DEFAULT_SELECTED_MAX_FEATURES,
 ) -> Path | None:
     """
     Initialize, train (and optionally validate) a model defined by `cfg`.
@@ -186,6 +190,8 @@ def initialize_and_train_model(
         training_player_data=training_player_data,
         model_type=model_type,
         force_retune=force_retune,
+        feature_set=feature_set,
+        max_features=max_features,
     )
 
     start = dt.datetime.now()
@@ -194,7 +200,8 @@ def initialize_and_train_model(
 
     logger.info(
         f"Training '{full_model_name}' (validate={cfg.validate}, "
-        f"feature_selection={feature_selection})…"
+        f"feature_selection={feature_selection}, feature_set={feature_set}, "
+        f"max_features={max_features})…"
     )
     trained_model = model.train_and_validate_model(
         target_col=cfg.target_column,
@@ -217,6 +224,8 @@ def train_models(
     feature_selection: FeatureSelectionMethod = "none",
     targets: str = "all",
     force_retune: bool = False,
+    feature_set: TrainingFeatureSet = "full",
+    max_features: int = DEFAULT_SELECTED_MAX_FEATURES,
 ) -> None:
     """Train all configured models using shared training tables."""
     LoLBetsModule().training_artifact_health().raise_if_unhealthy()
@@ -248,6 +257,8 @@ def train_models(
                 model_type=model_type,
                 feature_selection=feature_selection,
                 force_retune=force_retune,
+                feature_set=feature_set,
+                max_features=max_features,
             )
             trained.append(cfg.model_name)
         except KeyboardInterrupt:
@@ -278,6 +289,8 @@ if __name__ == "__main__":
             feature_selection=FEATURE_SELECTION,
             targets="all",
             force_retune=False,
+            feature_set="full",
+            max_features=DEFAULT_SELECTED_MAX_FEATURES,
         )
     except (KeyboardInterrupt, Exception) as e:
         logger.exception(f"Unexpected error during model training: {e}")

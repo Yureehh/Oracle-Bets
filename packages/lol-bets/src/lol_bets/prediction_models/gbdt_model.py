@@ -24,8 +24,16 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+from oracle_bets_core.io_utils import json_loader
 from oracle_bets_core.logger import logger
-from oracle_bets_core.paths import FIGURES_DIR, MODELS_DIR, PROCESSED_TEAMS
+from oracle_bets_core.paths import (
+    FEATURE_REPORTS_DIR,
+    FIGURES_DIR,
+    MODELS_DIR,
+    PROCESSED_TEAMS,
+    TRAINING_COMPACT_PLAYER_CONFIG,
+    TRAINING_COMPACT_TEAM_CONFIG,
+)
 from oracle_bets_core.pd import pd
 from pandas.api.types import is_numeric_dtype
 from sklearn.isotonic import IsotonicRegression
@@ -45,6 +53,10 @@ from sklearn.model_selection import StratifiedGroupKFold
 from lol_bets.prediction_models.data_preprocessor import DataPreprocessor
 from lol_bets.prediction_models.feature_selector import FeatureSelector
 from lol_bets.prediction_models.observability import MLObservabilityMixin
+from lol_bets.prediction_models.prop_features import (
+    build_game_level_prop_features,
+    is_prop_target,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -53,6 +65,7 @@ if TYPE_CHECKING:
 FeatureSelectionMethod = Literal[
     "none", "importance", "cumulative", "rfecv", "boruta", "report"
 ]
+TrainingFeatureSet = Literal["full", "compact", "selected"]
 
 # Defaults
 DEFAULT_TRIALS = 100
@@ -68,7 +81,29 @@ ROWS_PER_GAME = 2
 POSITIVE_RESULT_SUM_PER_GAME = 1
 DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
 MIN_CALIBRATION_SAMPLES = 40
+MIN_PROP_COHORT_SIZE = 30
 PROBABILITY_EPSILON = 1e-6
+COMPACT_ROLE_PREFIXES = ("top", "jng", "mid", "bot", "sup")
+DEFAULT_SELECTED_MAX_FEATURES = 120
+SELECTED_FEATURE_COUNTS = (60, 90, 120, 160)
+MANDATORY_ANCHOR_PATTERNS = (
+    "win_likelihood",
+    "strength_pool",
+    "league_elo",
+    "first_pick",
+    "side_win_likelihood",
+    "season_win_likelihood",
+    "h2h_",
+    "diff_ema_golddiff",
+    "diff_ema_xpdiff",
+    "diff_ema_csdiff",
+    "diff_ema_team_vspm",
+    "diff_ema_team_wcpm",
+    "diff_ema_kda",
+    "diff_ema_kill_participation",
+    "diff_ema_damageshare",
+    "diff_ema_earnedgoldshare",
+)
 
 
 @dataclass
@@ -143,6 +178,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     team_data: pd.DataFrame
     player_data: pd.DataFrame
     trials: int = DEFAULT_TRIALS
+    feature_set: TrainingFeatureSet = "full"
+    max_features: int = DEFAULT_SELECTED_MAX_FEATURES
     force_retune: bool = False
     directory: Path = FIGURES_DIR
     run_id: str = field(
@@ -610,6 +647,161 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         )
         return Xp, pipeline
 
+    # ─────────────────────────── Feature-set filters ─────────────────────────── #
+
+    @staticmethod
+    def _normalize_config_feature(feature: str) -> str:
+        return feature.removesuffix("_before")
+
+    @classmethod
+    def compact_feature_candidates(cls) -> set[str]:
+        """Return curated compact feature names after train-time renaming/pivoting."""
+        candidates: set[str] = set()
+        for path, key in (
+            (TRAINING_COMPACT_TEAM_CONFIG, "team_features"),
+            (TRAINING_COMPACT_PLAYER_CONFIG, "player_features"),
+        ):
+            payload = json_loader(path)
+            values = payload.get(key, []) if isinstance(payload, dict) else []
+            normalized = [cls._normalize_config_feature(str(v)) for v in values]
+            if key == "team_features":
+                candidates.update(normalized)
+                continue
+            for feature in normalized:
+                if feature in cls._meta_columns() or feature == "position":
+                    continue
+                candidates.update(f"{role}_{feature}" for role in COMPACT_ROLE_PREFIXES)
+                if feature.endswith("_win_likelihood"):
+                    candidates.add(f"players_{feature}")
+        return candidates
+
+    @staticmethod
+    def _mandatory_anchor_features(columns: pd.Index | list[str]) -> list[str]:
+        return [
+            col
+            for col in columns
+            if any(pattern in col for pattern in MANDATORY_ANCHOR_PATTERNS)
+        ]
+
+    def _selected_feature_report_path(self) -> Path:
+        return (
+            FEATURE_REPORTS_DIR / f"{self.model_name}_recommended_compact_features.json"
+        )
+
+    def _load_selected_feature_candidates(
+        self, columns: pd.Index | list[str]
+    ) -> list[str]:
+        """Load prior report recommendations, preserving mandatory anchors."""
+        columns_list = list(columns)
+        available = set(columns_list)
+        paths = [
+            self._selected_feature_report_path(),
+            FEATURE_REPORTS_DIR / "recommended_compact_features.json",
+        ]
+        ranked: list[str] = []
+        for path in paths:
+            if not path.exists():
+                continue
+            try:
+                payload = json.loads(path.read_text())
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Could not parse selected feature report %s: %s", path, exc
+                )
+                continue
+            by_count = payload.get("recommendations_by_count", {})
+            preferred = by_count.get(str(self.max_features)) or by_count.get(
+                self.max_features
+            )
+            ranked = list(preferred or payload.get("recommended_features", []))
+            break
+        if not ranked:
+            logger.warning(
+                "No selected feature report found for %s; keeping current features.",
+                self.model_name,
+            )
+            return columns_list
+
+        anchors = [
+            col
+            for col in self._mandatory_anchor_features(columns_list)
+            if col in available
+        ]
+        selected: list[str] = []
+        for col in [*anchors, *ranked]:
+            if col in available and col not in selected:
+                selected.append(col)
+            if len(selected) >= self.max_features:
+                break
+        return selected or columns_list
+
+    def _apply_feature_set_filter(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Apply full/compact/selected feature-set policy to a feature matrix."""
+        if self.feature_set == "full":
+            return X
+        if self.feature_set == "compact":
+            allowed = self.compact_feature_candidates()
+            keep = [col for col in X.columns if col in allowed]
+        elif self.feature_set == "selected":
+            keep = self._load_selected_feature_candidates(list(X.columns))
+        else:
+            raise ValueError(f"Unknown feature_set: {self.feature_set}")
+
+        if not keep:
+            logger.warning(
+                "Feature set '%s' matched no columns for %s; falling back to full features.",
+                self.feature_set,
+                self.model_name,
+            )
+            return X
+        logger.info(
+            "Feature set '%s' keeps %d/%d features for %s.",
+            self.feature_set,
+            len(keep),
+            X.shape[1],
+            self.model_name,
+        )
+        return X.loc[:, keep]
+
+    def _store_split_report(
+        self,
+        splits: dict[str, tuple[pd.DataFrame, pd.Series]],
+        *,
+        target_col: str,
+    ) -> None:
+        report: dict[str, Any] = {"model_name": self.model_name, "target": target_col}
+        for name, (X_split, y_split) in splits.items():
+            payload: dict[str, Any] = {
+                "rows": int(len(X_split)),
+                "games": int(X_split["gameid"].nunique())
+                if "gameid" in X_split
+                else None,
+            }
+            if "date" in X_split:
+                dates = pd.to_datetime(X_split["date"], errors="coerce").dropna()
+                payload["date_min"] = (
+                    dates.min().isoformat() if not dates.empty else None
+                )
+                payload["date_max"] = (
+                    dates.max().isoformat() if not dates.empty else None
+                )
+            if "league" in X_split:
+                payload["league_counts"] = {
+                    str(k): int(v) for k, v in X_split["league"].value_counts().items()
+                }
+            y_num = pd.to_numeric(y_split, errors="coerce")
+            if self.problem_type == "classification":
+                payload["target_counts"] = {
+                    str(k): int(v) for k, v in y_num.value_counts(dropna=False).items()
+                }
+            else:
+                payload["target_mean"] = float(y_num.mean())
+                payload["target_std"] = float(y_num.std())
+            report[name] = payload
+        self.insight_path("split_report.json").write_text(
+            json.dumps(report, indent=2, default=str) + "\n"
+        )
+
     # ─────────────────────────────── Storage ──────────────────────────────── #
 
     def _store_pickle(self, filename: str, data: Any) -> None:
@@ -648,6 +840,57 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def store_residual_summary(self, summary: dict[str, Any]) -> None:
         self._store_pickle(f"{self.model_name}_residual_summary.pkl", summary)
         self.insight_path("residual_summary.json").write_text(json.dumps(summary))
+
+    def store_prop_evaluation_report(
+        self,
+        y_true: pd.Series,
+        y_pred: np.ndarray,
+        eval_meta: pd.DataFrame,
+    ) -> None:
+        actual = pd.to_numeric(y_true, errors="coerce").to_numpy(dtype=float)
+        pred = np.asarray(y_pred, dtype=float)
+        frame = eval_meta.reset_index(drop=True).copy()
+        frame["actual"] = actual
+        frame["prediction"] = pred
+        frame["residual"] = actual - pred
+        frame = frame.replace([np.inf, -np.inf], np.nan).dropna(
+            subset=["actual", "prediction", "residual"]
+        )
+        report: dict[str, Any] = {
+            "model_name": self.model_name,
+            "n": int(len(frame)),
+            "metrics": self.compute_regression_metrics(
+                pd.Series(frame["actual"]), frame["prediction"].to_numpy()
+            ),
+            "line_backtest": {
+                "available": False,
+                "reason": "Historical market lines/odds are not stored in the training set yet.",
+                "required_fields": ["line", "over_odds", "under_odds", "placed_at"],
+            },
+            "residual_cohorts": {},
+        }
+        for column in ("league", "patch", "game"):
+            if column not in frame.columns:
+                continue
+            cohorts: dict[str, Any] = {}
+            for value, group in frame.groupby(column, dropna=True):
+                if len(group) < MIN_PROP_COHORT_SIZE:
+                    continue
+                residuals = group["residual"].to_numpy(dtype=float)
+                cohorts[str(value)] = {
+                    "n": int(len(group)),
+                    "mae": float(np.mean(np.abs(residuals))),
+                    "rmse": float(np.sqrt(np.mean(np.square(residuals)))),
+                    "residual_sigma": float(np.std(residuals, ddof=1))
+                    if len(group) > 1
+                    else 0.0,
+                    "bias": float(np.mean(residuals)),
+                }
+            if cohorts:
+                report["residual_cohorts"][column] = cohorts
+        self.insight_path("prop_evaluation_report.json").write_text(
+            json.dumps(report, indent=2, default=str) + "\n"
+        )
 
     # ─────────────────────────────── Metrics ──────────────────────────────── #
 
@@ -895,6 +1138,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         y_test: pd.Series,
         eval_gameids: pd.Series,
         eval_sides: pd.Series,
+        eval_meta: pd.DataFrame | None = None,
     ) -> None:
         """Validate & store: metrics, predictions, and observability artifacts."""
         try:
@@ -925,6 +1169,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                         y_test, y_pred, model_name=self.model_name
                     )
                 )
+                if eval_meta is not None:
+                    self.store_prop_evaluation_report(y_test, y_pred, eval_meta)
                 self.plot_regression_results(y_test, y_pred)
                 self.plot_regression_error_over_samples(y_test, y_pred, metric="mae")
                 self.plot_regression_error_over_time(
@@ -1020,6 +1266,32 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         if process_player_likelihoods:
             X = self.process_players_likelihood_columns(X, agg="mean")
 
+        # Curated compact configs are written for side-POV rows, so apply them
+        # before prop targets are collapsed into one row per game.
+        if self.feature_set == "compact":
+            X = self._apply_feature_set_filter(X)
+
+        if self.problem_type == "regression" and is_prop_target(target_col):
+            X, y_game, meta_game = build_game_level_prop_features(
+                X,
+                meta_df,
+                y,
+                target_col=target_col,
+            )
+            if y_game is None:
+                msg = f"Could not build game-level target for {target_col}."
+                raise ValueError(msg)
+            y = y_game
+            meta_df = meta_game
+            logger.info(
+                "Collapsed prop target '%s' to one row per game: %d rows.",
+                target_col,
+                len(X),
+            )
+
+        if self.feature_set == "selected":
+            X = self._apply_feature_set_filter(X)
+
         # If 'date' is missing (preprocessor may drop it), reattach via PROCESSED_TEAMS
         if "date" not in meta_df.columns:
             try:
@@ -1036,7 +1308,11 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         split_keys = ["gameid", "league"] + (
             ["season"] if "season" in meta_df.columns else []
         )
-        extra_split_cols = ["date"] if "date" in meta_df.columns else []
+        extra_split_cols = [
+            col
+            for col in ("date", "patch")
+            if col in meta_df.columns and col not in split_keys
+        ]
         X_for_split = pd.concat([X, meta_df[split_keys + extra_split_cols]], axis=1)
 
         # Choose splitter (temporal if 'date' is available)
@@ -1061,6 +1337,15 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     random_state=RANDOM_STATE,
                 )
             )
+
+        self._store_split_report(
+            {
+                "train": (X_train, y_train),
+                "validation": (X_val, y_val),
+                "test": (X_test, y_test),
+            },
+            target_col=target_col,
+        )
 
         # ── CRITICAL: drop meta (incl. 'date') from the actual feature matrices, with logs ── #
         X_train = self._strip_meta_from_features(X_train, "train")
@@ -1201,6 +1486,9 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                         X_validation=X_val,
                         y_validation=y_val,
                         model_name=self.model_name,
+                        max_features=self.max_features,
+                        feature_counts=SELECTED_FEATURE_COUNTS,
+                        problem_type=self.problem_type,
                     ).get("recommended_features", [])
                 elif feature_selection == "importance":
                     selected = FeatureSelector.select_by_importance(
@@ -1225,7 +1513,22 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
         # ─────────────────────────── Validate ──────────────────────────── #
         if validate:
-            self.validate_model(model, X_test, y_test, eval_gameids, eval_sides)
+            eval_meta_for_test = meta_df.loc[
+                X_test.index,
+                [
+                    c
+                    for c in ["league", "patch", "side", "gameid", "game"]
+                    if c in meta_df.columns
+                ],
+            ]
+            self.validate_model(
+                model,
+                X_test,
+                y_test,
+                eval_gameids,
+                eval_sides,
+                eval_meta_for_test,
+            )
 
             # Observability extras
             try:
@@ -1255,20 +1558,12 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
             if store_cohorts:
                 try:
-                    eval_meta = meta_df.loc[
-                        X_test.index,
-                        [
-                            c
-                            for c in ["league", "patch", "side", "gameid"]
-                            if c in meta_df.columns
-                        ],
-                    ]
                     # classification: also persist cohort metrics with probabilities if available
                     y_proba = None
                     if self.problem_type == "classification":
                         y_proba = self._predict_positive_probability(model, X_test)
                     self.store_cohort_metrics(
-                        eval_meta, y_test, model.predict(X_test), y_proba
+                        eval_meta_for_test, y_test, model.predict(X_test), y_proba
                     )
                 except (ValueError, AttributeError) as e:
                     logger.warning("Cohort metrics failed: %s", e)

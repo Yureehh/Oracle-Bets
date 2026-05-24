@@ -74,6 +74,7 @@ from lol_bets.data_generation.feature_engineering.ratings_features.trueskill imp
     expected_win_probability as trueskill_win_probability,
 )
 from lol_bets.prediction_models.gbdt_model import FeaturePipeline, GradientBoostingModel
+from lol_bets.prediction_models.prop_features import build_game_level_prop_features
 
 if TYPE_CHECKING:
     from lol_bets.inference.team import Team
@@ -863,11 +864,6 @@ class MatchPredictor:
             )
             raise RuntimeError(msg)
 
-        if not any(c.startswith("opp_") for c in X.columns):
-            X = GradientBoostingModel.fuse_opposing_team_features(X)
-        else:
-            X = GradientBoostingModel.add_explicit_ema_diffs(X, drop_opponents=False)
-        X = GradientBoostingModel.process_players_likelihood_columns(X)
         X = self.keep_necessary_columns(X, model_name=model_name)
 
         # TabNet needs numpy float32 with encoded categoricals
@@ -934,20 +930,43 @@ class MatchPredictor:
             "team2_win_probability": float(proba[0, 0]),
         }
 
+    def calculate_prop_features(
+        self, blue_team: Team, red_team: Team, account_for_side: bool
+    ) -> pd.DataFrame:
+        blue_row = self.calculate_team_and_player_stats(
+            blue_team, red_team, account_for_side
+        )
+        red_row = self.calculate_team_and_player_stats(
+            red_team, blue_team, account_for_side
+        )
+        X_side = pd.concat([blue_row, red_row], ignore_index=True)
+        meta_side = pd.DataFrame(
+            {
+                "gameid": ["live", "live"],
+                "side": ["Blue", "Red"],
+                "league": [
+                    blue_team.team_stats.get("league", np.nan),
+                    red_team.team_stats.get("league", np.nan),
+                ],
+            }
+        )
+        X_game, _, _ = build_game_level_prop_features(X_side, meta_side)
+        return X_game
+
     def predict_gamelength(
         self, team1: Team, team2: Team, account_for_side: bool = True
     ) -> float:
-        X = self.calculate_team_and_player_stats(team1, team2, account_for_side)
+        X = self.calculate_prop_features(team1, team2, account_for_side)
         return self._predict_regression(X, model_name="gamelength")
 
     def predict_total_kills(
         self, team1: Team, team2: Team, account_for_side: bool = True
     ) -> float:
-        X = self.calculate_team_and_player_stats(team1, team2, account_for_side)
+        X = self.calculate_prop_features(team1, team2, account_for_side)
         return self._predict_regression(X, model_name="total_kills")
 
     def predict_total_towers(
         self, team1: Team, team2: Team, account_for_side: bool = True
     ) -> float:
-        X = self.calculate_team_and_player_stats(team1, team2, account_for_side)
+        X = self.calculate_prop_features(team1, team2, account_for_side)
         return self._predict_regression(X, model_name="total_towers")

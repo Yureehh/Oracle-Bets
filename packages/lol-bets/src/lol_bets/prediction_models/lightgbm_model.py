@@ -22,8 +22,11 @@ from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import MODELS_DIR
 from sklearn.metrics import log_loss
 
+from lol_bets.prediction_models.gbdt_model import (
+    DEFAULT_SELECTED_MAX_FEATURES,
+    GradientBoostingModel,
+)
 from lol_bets.prediction_models.gbdt_model import DEFAULT_TRIALS as _TRIALS_CAP
-from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
 
 if TYPE_CHECKING:
     from oracle_bets_core.pd import pd
@@ -305,6 +308,8 @@ class ModelFactory:
         training_player_data: pd.DataFrame,
         model_type: str = "lightgbm",
         force_retune: bool = False,
+        feature_set: str = "full",
+        max_features: int = DEFAULT_SELECTED_MAX_FEATURES,
     ) -> GradientBoostingModel:
         if problem_type not in ["classification", "regression"]:
             msg = f"Unsupported problem type: {problem_type}"
@@ -317,6 +322,8 @@ class ModelFactory:
                 team_data=training_team_data,
                 player_data=training_player_data,
                 force_retune=force_retune,
+                feature_set=feature_set,
+                max_features=max_features,
             )
 
         if model_type == "tabnet":
@@ -328,6 +335,8 @@ class ModelFactory:
                 team_data=training_team_data,
                 player_data=training_player_data,
                 force_retune=force_retune,
+                feature_set=feature_set,
+                max_features=max_features,
             )
 
         msg = f"Unsupported model type: {model_type}. Supported: {ModelFactory.SUPPORTED_MODELS}"
