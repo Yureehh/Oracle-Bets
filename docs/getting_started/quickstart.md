@@ -34,10 +34,11 @@ uv run oracle-bets discord run
 
 Requires `DISCORD_TOKEN` and trained model artifacts.
 
-## Compact training config
+## Compact training
 
-To use the compact training feature set, set:
+Compact selection is a training-time choice. Keep ingestion broad, then choose the feature set during training:
 
 ```bash
-export TRAINING_CONFIG_VARIANT=compact
+uv run oracle-bets lol train --model-type lightgbm --targets outcome --feature-set compact
+uv run oracle-bets lol train --model-type lightgbm --targets outcome --feature-set selected --max-features 120
 ```

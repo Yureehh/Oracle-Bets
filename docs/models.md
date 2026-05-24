@@ -40,6 +40,16 @@ for the selected targets:
 uv run oracle-bets lol train --model-type lightgbm --targets all --force-retune
 ```
 
+Feature-set controls:
+
+```bash
+uv run oracle-bets lol train --model-type lightgbm --targets outcome --feature-set full
+uv run oracle-bets lol train --model-type lightgbm --targets outcome --feature-set compact
+uv run oracle-bets lol train --model-type lightgbm --targets outcome --feature-set selected --max-features 120
+```
+
+`full` keeps the full generated surface. `compact` applies the curated compact configs at train time. `selected` uses the latest feature-selection report and keeps mandatory anchor features before filling the remaining slots up to `--max-features`. Prop models train one row per map because game length, total kills, and total towers are game-level targets.
+
 Classification artifacts include a validation-fitted probability calibrator when
 the validation split has enough samples. Regression artifacts include residual
 summaries with sigma, MAE, RMSE, and percentiles; these power Discord over/under
