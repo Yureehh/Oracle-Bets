@@ -13,6 +13,8 @@ usually consumed as `diff_ema_*`; closing-speed EMAs stay as own-team context.
 Example:
 
 ```bash
-TRAINING_CONFIG_VARIANT=compact uv run oracle-bets lol ingest
+uv run oracle-bets lol ingest
 uv run oracle-bets lol train --model-type lightgbm --feature-selection report
+uv run oracle-bets lol train --model-type lightgbm --feature-set compact
+uv run oracle-bets lol train --model-type lightgbm --feature-set selected --max-features 120
 ```

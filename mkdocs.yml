@@ -26,6 +26,7 @@ nav:
       - Overview: getting_started/overview.md
       - Installation: getting_started/installation.md
       - Quickstart: getting_started/quickstart.md
+  - Commands: commands.md
   - Pipeline: pipeline.md
   - Models: models.md
   - Audits:

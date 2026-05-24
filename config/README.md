@@ -7,5 +7,6 @@ Runtime and model configuration is scoped by module.
 Example:
 
 ```bash
-TRAINING_CONFIG_VARIANT=compact uv run oracle-bets lol ingest
+uv run oracle-bets lol ingest
+uv run oracle-bets lol train --model-type lightgbm --feature-set compact
 ```

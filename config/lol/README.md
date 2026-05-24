@@ -9,5 +9,6 @@ League of Legends configuration for `lol-bets`.
 Example:
 
 ```bash
-TRAINING_CONFIG_VARIANT=compact uv run oracle-bets lol ingest
+uv run oracle-bets lol ingest
+uv run oracle-bets lol train --model-type lightgbm --feature-set compact
 ```

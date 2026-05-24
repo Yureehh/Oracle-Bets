@@ -157,3 +157,4 @@ test.py
 
 # Claude files
 .claude/
+.codex/

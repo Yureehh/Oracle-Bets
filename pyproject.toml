@@ -68,6 +68,7 @@ where = [
   "packages/oracle-bets-core/src",
   "packages/lol-bets/src",
   "packages/oracle-bets-discord/src",
+  "packages/oracle-bets-dashboard/src",
 ]
 
 [tool.commitizen]

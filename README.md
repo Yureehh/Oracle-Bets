@@ -42,28 +42,28 @@ DISCORD_TOKEN=your-discord-bot-token
 ### Run the pipeline
 
 ```bash
-oracle-bets lol ingest
-oracle-bets lol train --model-type lightgbm --targets all
+uv run oracle-bets lol ingest
+uv run oracle-bets lol train --model-type lightgbm --targets all
 ```
 
 Optional:
 
 ```bash
-oracle-bets lol health
-oracle-bets discord run
+uv run oracle-bets lol health
+uv run oracle-bets discord run
 ```
 
 Supported LoL training targets are `all`, `outcome`, `props`, `gamelength`,
 `total_kills`, and `total_towers`. For example:
 
 ```bash
-oracle-bets lol train --model-type lightgbm --targets total_kills,total_towers
+uv run oracle-bets lol train --model-type lightgbm --targets total_kills,total_towers
 ```
 
 Use `--force-retune` when you want to ignore cached best hyperparameters:
 
 ```bash
-oracle-bets lol train --model-type lightgbm --targets all --force-retune
+uv run oracle-bets lol train --model-type lightgbm --targets all --force-retune
 ```
 
 Legacy `src/` entrypoints and import shims have been removed. Use the package
@@ -82,12 +82,12 @@ Override the suite root with `ORACLE_BETS_HOME`, the LoL root with
 Docs are built with MkDocs Material.
 
 ```bash
-mkdocs serve
+uv run mkdocs serve
 ```
 
 Open `http://127.0.0.1:8000/` in a browser.
 
-Discord market commands are documented in `docs/lol_market_predictions.md`.
+CLI and bot commands are documented in `docs/commands.md`. Discord market commands are documented in `docs/lol_market_predictions.md`.
 Examples:
 
 ```text
