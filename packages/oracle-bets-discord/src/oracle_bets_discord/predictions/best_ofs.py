@@ -110,6 +110,67 @@ def bo5(p1: float, p2: float | None = None) -> dict[str, float]:
     }
 
 
+# ---------- handicap helpers ---------- #
+
+
+def _fair_odds(p: float) -> str:
+    """Return fair decimal odds string for probability p."""
+    if p <= 0:
+        return "∞"
+    return f"{1.0 / p:.2f}"
+
+
+def handicap_lines_bo3(t1: str, p1: float, t2: str, p2: float | None = None) -> str:
+    """Return formatted BO3 handicap market block (+1.5 / -1.5)."""
+    p1, p2 = _canon(p1, p2)
+    d = bo3(p1, p2)
+    t1_plus = 1.0 - d["t2_2_0"]  # t1 doesn't get swept: t1_2_0 + t1_2_1 + t2_2_1
+    t2_plus = 1.0 - d["t1_2_0"]  # t2 doesn't get swept
+    t1_minus = d["t1_2_0"]  # t1 sweeps
+    t2_minus = d["t2_2_0"]  # t2 sweeps
+    return (
+        f"**BO3 – Handicap Markets (+1.5 / -1.5)**\n"
+        f"• {t1} +1.5 (not swept):  {_pct(t1_plus)} → fair odds {_fair_odds(t1_plus)}\n"
+        f"• {t2} +1.5 (not swept):  {_pct(t2_plus)} → fair odds {_fair_odds(t2_plus)}\n"
+        f"• {t1} -1.5 (must sweep): {_pct(t1_minus)} → fair odds {_fair_odds(t1_minus)}\n"
+        f"• {t2} -1.5 (must sweep): {_pct(t2_minus)} → fair odds {_fair_odds(t2_minus)}\n"
+        f"_Use `!edge <market_odds> <prob%>` to check edge, "
+        f'then `!bet record --market handicap --selection "{t1} +1.5"`_'
+    )
+
+
+def handicap_lines_bo5(t1: str, p1: float, t2: str, p2: float | None = None) -> str:
+    """Return formatted BO5 handicap market block (+1.5, -1.5, +2.5, -2.5)."""
+    p1, p2 = _canon(p1, p2)
+    d = bo5(p1, p2)
+    # +1.5: wins series OR loses 2-3
+    t1_plus15 = d["t1_series"] + d["t2_2_3"]
+    t2_plus15 = d["t2_series"] + d["t1_3_2"]
+    # -1.5: wins 3-0 or 3-1
+    t1_minus15 = d["t1_3_0"] + d["t1_3_1"]
+    t2_minus15 = d["t2_0_3"] + d["t2_1_3"]
+    # +2.5: doesn't get swept 0-3
+    t1_plus25 = 1.0 - d["t2_0_3"]
+    t2_plus25 = 1.0 - d["t1_3_0"]
+    # -2.5: wins 3-0
+    t1_minus25 = d["t1_3_0"]
+    t2_minus25 = d["t2_0_3"]
+    return (
+        f"**BO5 – Handicap Markets (+1.5 / -1.5)**\n"
+        f"• {t1} +1.5: {_pct(t1_plus15)} → fair odds {_fair_odds(t1_plus15)}\n"
+        f"• {t2} +1.5: {_pct(t2_plus15)} → fair odds {_fair_odds(t2_plus15)}\n"
+        f"• {t1} -1.5: {_pct(t1_minus15)} → fair odds {_fair_odds(t1_minus15)}\n"
+        f"• {t2} -1.5: {_pct(t2_minus15)} → fair odds {_fair_odds(t2_minus15)}\n\n"
+        f"**BO5 – Handicap Markets (+2.5 / -2.5)**\n"
+        f"• {t1} +2.5 (not swept): {_pct(t1_plus25)} → fair odds {_fair_odds(t1_plus25)}\n"
+        f"• {t2} +2.5 (not swept): {_pct(t2_plus25)} → fair odds {_fair_odds(t2_plus25)}\n"
+        f"• {t1} -2.5 (3-0 sweep): {_pct(t1_minus25)} → fair odds {_fair_odds(t1_minus25)}\n"
+        f"• {t2} -2.5 (3-0 sweep): {_pct(t2_minus25)} → fair odds {_fair_odds(t2_minus25)}\n"
+        f"_Use `!edge <market_odds> <prob%>` to check edge, "
+        f'then `!bet record --market handicap --selection "{t1} +1.5"`_'
+    )
+
+
 # ---------- Discord-facing class (what your bot expects) ---------- #
 
 
@@ -136,7 +197,7 @@ class BestOfs:
     @staticmethod
     def best_of_three(t1: str, p1: float, t2: str, p2: float | None = None) -> str:
         d = bo3(p1, p2)
-        return (
+        series_block = (
             f"**BO3 – Series Win Probabilities**\n"
             f"• {t1} wins series: {_pct(d['t1_series'])}\n"
             f"• {t2} wins series: {_pct(d['t2_series'])}\n\n"
@@ -147,11 +208,12 @@ class BestOfs:
             f"• {t2} 2–1: {_pct(d['t2_2_1'])}\n"
             f"• Exactly 3 games: {_pct(d['exactly_3'])}"
         )
+        return series_block + "\n\n" + handicap_lines_bo3(t1, p1, t2, p2)
 
     @staticmethod
     def best_of_five(t1: str, p1: float, t2: str, p2: float | None = None) -> str:
         d = bo5(p1, p2)
-        return (
+        series_block = (
             f"**BO5 – Series Win Probabilities**\n"
             f"• {t1} wins series: {_pct(d['t1_series'])}\n"
             f"• {t2} wins series: {_pct(d['t2_series'])}\n\n"
@@ -167,3 +229,4 @@ class BestOfs:
             f"• At least 4 games: {_pct(d['at_least_4'])}\n"
             f"• Exactly 5 games: {_pct(d['exactly_5'])}"
         )
+        return series_block + "\n\n" + handicap_lines_bo5(t1, p1, t2, p2)
