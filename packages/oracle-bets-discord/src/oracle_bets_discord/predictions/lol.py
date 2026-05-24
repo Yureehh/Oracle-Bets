@@ -417,6 +417,50 @@ def _format_prop_line(label: str, signal: OverUnderSignal) -> str:
     return "\n".join(lines)
 
 
+def _market_odds(probability: float, edge: float | None) -> float | None:
+    if edge is None or probability <= 0:
+        return None
+    return (1.0 + edge) / probability
+
+
+def _format_record_bet_commands(
+    blue_team_name: str, red_team_name: str, line_signals: dict[str, OverUnderSignal]
+) -> str:
+    commands: list[str] = []
+    event = f"{blue_team_name} vs {red_team_name}"
+    market_names = {"Length": "length", "Kills": "kills", "Towers": "towers"}
+    for label, signal in line_signals.items():
+        market = market_names.get(label, label.casefold())
+        for selection, probability, edge, odds in (
+            (
+                "over",
+                signal.over_probability,
+                signal.over_edge,
+                _market_odds(signal.over_probability, signal.over_edge),
+            ),
+            (
+                "under",
+                signal.under_probability,
+                signal.under_edge,
+                _market_odds(signal.under_probability, signal.under_edge),
+            ),
+        ):
+            if edge is None or edge <= 0 or odds is None:
+                continue
+            commands.append(
+                f'!bet record --event "{event}" --market {market} '
+                f"--selection {selection} --line {signal.line:g} --odds {odds:.2f} "
+                f'--prob {probability:.3f} --edge {edge:.3f} --sport "League of Legends"'
+            )
+    if not commands:
+        return ""
+    return (
+        "\n\nRecord Positive-Edge Bets Manually\n"
+        "Copy one of these after you place the bet yourself:\n"
+        + "\n".join(f"- `{command}`" for command in commands[:3])
+    )
+
+
 def format_prop_market_output(
     *,
     blue_team_name: str,
@@ -436,6 +480,7 @@ def format_prop_market_output(
     )
     for label, signal in line_signals.items():
         output += _format_prop_line(label, signal)
+    output += _format_record_bet_commands(blue_team_name, red_team_name, line_signals)
     output += (
         "\n\nMeaning\n"
         "- Expected total is the model's central estimate for one map.\n"
