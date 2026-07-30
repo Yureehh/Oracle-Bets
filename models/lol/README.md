@@ -1,13 +1,8 @@
-# models/lol
+# LoL model workspace
 
-Generated League of Legends model artifacts for `lol-bets`.
+Routine full training atomically replaces the four LightGBM directories here:
+winner, game length, total kills, and total towers. Temporary `.staging/` and
+`.backup/` directories are cleaned after publication.
 
-- `OutcomePrediction_<ModelType>/`: trained outcome model and preprocessing artifacts.
-- `league_elo.parquet`: learned per-league Elo plus conservative `strength_pool` Elo and support metadata.
-- `team_league_mapping.parquet`: latest team-to-home-league mapping with pool metadata.
-
-Example:
-
-```bash
-uv run oracle-bets lol train --model-type lightgbm
-```
+This workspace is mutable. Long-lived candidate/champion bundles belong in the
+checksum-verified registry at `data/state/model-registry/lol/`.

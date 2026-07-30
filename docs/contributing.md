@@ -1,23 +1,19 @@
 # Contributing
 
-## Setup
+Keep changes surgical and preserve unrelated worktree edits.
 
-```bash
-uv sync --extra dev
-pre-commit install
-```
+For model or feature changes:
 
-## Lint and format
+1. state the temporal availability of every input;
+2. show that swapped teams produce exactly complementary winner probabilities;
+3. compare untouched temporal log loss, Brier, ECE, and cohort calibration;
+4. record feature-schema and dataset fingerprints;
+5. do not promote automatically.
 
-```bash
-ruff check .
-ruff format .
-```
+For ingestion changes, update source-column reconciliation and identity tests.
+For market changes, prefer false negatives over false matches. No contribution
+may add automated betting, signing, wallet, private-key, or fund movement.
 
-## Tests
-
-```bash
-pytest
-```
-
-If you plan to open pull requests, keep commits small and include a short description of changes.
+Before handoff run the commands in [Testing](testing.md). Generated data,
+models, reports, logs, and secrets are not committed; reviewed configuration,
+notebooks with cleared outputs, migration manifests, and documentation are.

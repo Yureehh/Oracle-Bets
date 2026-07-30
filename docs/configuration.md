@@ -1,31 +1,70 @@
 # Configuration
 
-League of Legends configuration files live under `config/lol/`.
+Configuration is intentionally small and each retained value has a runtime
+consumer.
 
-## Data ingestion
+## Product contract
 
-- `config/lol/data_ingestion/import_columns.json` - columns to load from Oracle's Elixir.
-- `config/lol/data_ingestion/team_name_replacements_and_invalid_games.json` - data cleanup rules.
-- `config/lol/data_ingestion/considered_leagues.json` - named league-selection profiles.
-- `config/lol/data_ingestion/league_taxonomy.json` - league region/tier metadata.
-- `reports/lol/ingestion/teams_by_league.json` - generated team lists by league.
-- `reports/lol/ingestion/filtered_teams_by_league.json` - generated team lists filtered to the active league profile.
+`config/product/product.json` controls:
 
-The default active profile is `tier1_plus_erls`, which keeps current Tier 1,
-2025 Americas bridge leagues, international events, major ERLs, and APAC feeder
-leagues. Switch to `tier1_current` for a stricter market-facing dataset or
-`research_all_supported` for broad experiments.
+- timezone: `Europe/Rome`;
+- default fixture window: 36 hours;
+- market comparison: read-only;
+- league profile: `tier1_plus_erls`;
+- candidate-training triggers: 50 new valid maps or 20 major-league maps;
+- promotion: manual only.
 
-## Training
+There is no execution, API, dashboard, or automated-staking configuration
+because those products do not exist.
 
-- `config/lol/training/training_team_config.json` and `config/lol/training/training_compact_team_config.json`
-- `config/lol/training/training_player_config.json` and `config/lol/training/training_compact_player_config.json`
+## League scope
 
-Full training configs keep the broad generated surface. Compact configs are
-curated baselines and can be reviewed against
-`reports/lol/features/recommended_compact_features.json` after running
-`oracle-bets lol train --feature-selection report`.
+`config/lol/data_ingestion/considered_leagues.json` defines named research
+profiles. `tier1_plus_erls` is the one operational default across ingestion,
+training, schedule filtering, prediction, and reporting. An explicit CLI league
+override is for research and should be recorded with the resulting report.
 
-## Environment variables
+## Team identity
 
-See `docs/getting_started/installation.md` for required environment keys.
+`config/lol/data_ingestion/team_aliases.json` has two separate contracts:
+
+- `external_aliases` maps current provider/event branding to a canonical team;
+- `historical_identity_merges` joins verified historical IDs after review.
+
+Aliases never justify fabricating history. Unknown or ambiguous teams are
+skipped and reported.
+
+## Source and feature columns
+
+`import_columns.json` is the source allowlist. Training JSON files classify
+team/player inputs used by full, compact, and flattened artifacts. Every
+ingestion produces a column-reconciliation report classifying source columns as
+present, missing, or new and as required, metadata, feature, or candidate.
+
+## Hyperparameters
+
+`default_models_parameters.json` contains conventional initialization and
+search priors:
+
+- half-life 9 maps;
+- Elo 1500 / K 32 / divisor 400;
+- Glicko-2 1500 / deviation 350 / volatility 0.06 / tau 0.5;
+- Plackett-Luce and TrueSkill conventional 25 / 8.333 priors;
+- inactivity grace 45 days and half-life 180 days;
+- Optuna 100 trials with seed 42.
+
+These are not silent fallbacks.
+
+Reviewed production rating values live in `hyperparameters/tuned/ratings/`.
+Reviewed LightGBM values live in `hyperparameters/tuned/lightgbm/`. Missing
+reviewed files are hard errors. Routine workflows never run Optuna.
+
+## Secrets and local paths
+
+Use environment variables or a user-owned `0600` file outside the repository:
+
+- `PANDASCORE_API_KEY`
+- `DISCORD_WEBHOOK_URL`
+- `ORACLES_ELIXIR_LOCAL_DIR` when the default Drive location is unsuitable
+
+Never commit secrets, webhook URLs, private keys, or wallet material.

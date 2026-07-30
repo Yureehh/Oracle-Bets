@@ -1,119 +1,87 @@
 # Oracle Bets
 
-Oracle Bets is a modular sports and e-sports prediction suite. The first module, `lol-bets`, ingests League of Legends data, computes ratings and features, trains prediction models, and serves inference through a shared Discord bot.
+Oracle Bets is a local-first League of Legends betting-research system focused
+on calibrated probability accuracy, leakage prevention, conservative market
+matching, and real paper-profit evidence.
 
-## Features
+It ingests 2024–2026 Oracle's Elixir files from Google Drive Desktop, generates
+chronological team/player features and ratings, trains four LightGBM targets,
+calibrates them on temporal holdouts, predicts upcoming PandaScore fixtures,
+compares read-only with Polymarket, writes JSON/Markdown reports, and optionally
+sends a one-way Discord webhook.
 
-- Oracle's Elixir data ingestion and cleaning
-- League, team, and player ratings (Elo, Glicko2, Plackett-Luce, TrueSkill)
-- Leak-free feature engineering and EMA metrics
-- Gradient Boosting models for outcomes and regression targets
-- Match predictor and Discord bot
-- Read-only prediction-market discovery plus edge and half-Kelly sizing signals
+There is no automated betting, wallet, signing, private-key, order-submission,
+or fund-movement code.
 
-## Quickstart
-
-### Install
+## Install
 
 ```bash
+cd /Users/yureeh/dev/oracle_bets
 uv sync --extra dev
-```
-
-Or with pip:
-
-```bash
-python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
 ```
 
-### Configure environment
-
-Create a `.env` file (do not commit) with:
+Keep the Oracle's Elixir Drive folder available offline. Set provider secrets
+outside Git:
 
 ```bash
-BUCKET_NAME=your-oracles-elixir-bucket
-ACCESS_ID=your-aws-access-key
-SECRET_ID=your-aws-secret
-PANDASCORE_API_KEY=your-pandascore-token
-DISCORD_TOKEN=your-discord-bot-token
+export PANDASCORE_API_KEY="..."
+export DISCORD_WEBHOOK_URL="..."
 ```
 
-### Run the pipeline
+## Normal workflow
 
 ```bash
 uv run oracle-bets lol ingest
-uv run oracle-bets lol train --model-type lightgbm --targets all
-```
-
-Optional:
-
-```bash
+uv run oracle-bets lol validate-data
+uv run oracle-bets lol train --targets all --feature-set compact
 uv run oracle-bets lol health
-uv run oracle-bets discord run
+uv run oracle-bets daily lol --dry-run --skip-market-search
 ```
 
-Supported LoL training targets are `all`, `outcome`, `props`, `gamelength`,
-`total_kills`, and `total_towers`. For example:
+Routine training refits weights and calibrators with reviewed production
+hyperparameters and never runs Optuna.
+
+## Explicit research retuning
 
 ```bash
-uv run oracle-bets lol train --model-type lightgbm --targets total_kills,total_towers
+uv run oracle-bets lol retune --targets all --feature-set compact
+uv run oracle-bets lol promote-tuning <run-id>
+uv run oracle-bets lol train --targets all --feature-set compact
 ```
 
-Use `--force-retune` when you want to ignore cached best hyperparameters:
+Retuning writes candidates under a timestamped report. Promotion is explicit
+and requires the complete four-target bundle.
+
+## Repository layout
+
+- `packages/oracle-bets-core`: CLI, evidence, health, market, settlement, and lifecycle support.
+- `packages/lol-bets`: LoL ingestion, features, ratings, training, calibration, inference, and daily workflow.
+- `packages/oracle-bets-discord`: one-way LoL report formatting.
+- `config`: source, league, identity, feature, and reviewed parameter contracts.
+- `data/lol`: generated datasets.
+- `data/state`: canonical evidence and immutable model registry.
+- `models/lol`: mutable full training workspace.
+- `reports/lol`: ingestion, training, and daily review artifacts.
+- `notebooks/lol`: thin read-only analysis notebooks.
+- `ops/launchd`: daily and monthly scheduler examples.
+
+Generated data, databases, models, logs, and reports are ignored. Reviewed
+configuration, docs, cleared notebooks, and migration manifests are tracked.
+
+## Verification
 
 ```bash
-uv run oracle-bets lol train --model-type lightgbm --targets all --force-retune
+uv run pytest tests/lol
+uv run pytest tests/core
+uv run ruff check packages tests
+uv run mkdocs build --strict
+uv run oracle-bets lol health
+uv run oracle-bets lol validate-data
+uv run oracle-bets daily lol --dry-run --skip-market-search
 ```
 
-Legacy `src/` entrypoints and import shims have been removed. Use the package
-imports and `oracle-bets` CLI above.
+Read the [documentation](docs/index.md) and [command reference](docs/commands.md).
 
-### Scoped Files
-
-LoL-owned files live under module subdirectories: `config/lol/`, `data/lol/`,
-`models/lol/`, `notebooks/lol/`, `reports/lol/`, `logs/lol/`, and `tests/lol/`.
-Override the suite root with `ORACLE_BETS_HOME`, the LoL root with
-`ORACLE_BETS_LOL_HOME`, or a specific directory with `ORACLE_BETS_DATA_DIR`,
-`ORACLE_BETS_MODELS_DIR`, `ORACLE_BETS_REPORTS_DIR`, or `ORACLE_BETS_LOGS_DIR`.
-
-## Documentation
-
-Docs are built with MkDocs Material.
-
-```bash
-uv run mkdocs serve
-```
-
-Open `http://127.0.0.1:8000/` in a browser.
-
-CLI and bot commands are documented in `docs/commands.md`. Discord market commands are documented in `docs/lol_market_predictions.md`.
-Examples:
-
-```text
-!lol predict "Team WE" "LNG Esports" --bo5
-!lol props "Team WE" "LNG Esports" --kills-line 26.5 --kills-over-odds 1.85
-!lol edge "Team WE" "LNG Esports"
-```
-
-## Project layout
-
-- `packages/oracle-bets-core/` - shared paths, logging, pandas/FireDucks shim, module contracts, betting math, market adapters, and CLI
-- `packages/lol-bets/` - League of Legends ingestion, feature engineering, ratings, training, and inference
-- `packages/oracle-bets-discord/` - Discord bot, formatting, command routing, and module registry
-- `docs/audits/` - model and data-quality audits that guide algorithm changes
-- `config/lol/` - League of Legends configuration
-- `data/lol/`, `models/lol/`, `reports/lol/`, `logs/lol/` - generated LoL artifacts
-- `tests/lol/` - current unit and smoke tests
-
-## License
-
-Apache-2.0. If you want a different license, update `LICENSE` and `pyproject.toml`.
-
-## Acknowledgements
-
-Please visit and support [Oracle's Elixir](https://www.oracleselixir.com), which provides the backbone data source behind this project. Thanks to Tim Sevenhuysen, BuckeyeSundae, TZero, Addie Thompson, and the Oracle's Elixir Data Science community for their guidance and feedback.
-
-## Disclaimer
-
-This project is for research and analytics. It is not financial advice, and any betting or wagering use is at your own risk.
+Historical data is supplied by [Oracle's Elixir](https://www.oracleselixir.com).
+This is research software, not financial advice; betting can lose money.

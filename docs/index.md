@@ -1,29 +1,21 @@
 # Oracle Bets
 
-Oracle Bets is a modular sports and esports prediction suite. Its first module,
-`lol-bets`, ingests League of Legends match data, computes ratings and features,
-trains prediction models, and serves inference through shared Discord commands.
+Oracle Bets is a local-first League of Legends betting-research system. It
+turns historical Oracle's Elixir data and upcoming PandaScore fixtures into
+calibrated probabilities, prop estimates, reviewable reports, one-way Discord
+messages, and read-only Polymarket comparisons.
 
-## What it does
+The objective is long-run decision quality and profit evidence, in this order:
 
-- Ingests historical match data from Oracle's Elixir (S3 CSVs).
-- Builds league, team, and player ratings (Elo, Glicko2, Plackett-Luce, TrueSkill).
-- Generates leak-free feature tables for training and inference.
-- Trains Gradient Boosting models for outcomes and regression targets.
-- Produces match predictions and optional Discord bot outputs.
+1. prevent temporal and identity leakage;
+2. minimize out-of-sample log loss and Brier score;
+3. maintain calibration across time and important cohorts;
+4. match markets conservatively and record the price actually available;
+5. assess paper ROI, CLV, drawdown, and calibration together.
 
-## Data sources
+The repository contains no automated betting, wallet, signing, private-key,
+order-submission, or fund-movement path. Counter-Strike and real sports are
+future architecture concerns, not active implementations.
 
-- Oracle's Elixir match data (primary historical source).
-- PandaScore API for upcoming schedules.
-
-## Disclaimer
-
-This project is for research and analytics. It is not financial advice, and any betting or wagering use is at your own risk.
-
-## Where to start
-
-- Getting Started for setup and quickstart steps.
-- Pipeline for how data moves from ingestion to features.
-- Models for how ratings and GBDT models are trained.
-- Predictions for inference and Discord bot usage.
+Start with [Getting started](getting_started.md), then read the
+[architecture](architecture.md) and [daily operations](daily_operations.md).

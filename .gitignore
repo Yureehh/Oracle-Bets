@@ -85,9 +85,16 @@ target/
 !/data/lol/README.md
 !/data/lol/**/
 !/data/lol/**/README.md
+!/data/state/
+!/data/state/README.md
+!/data/state/archives/
+!/data/state/archives/legacy-ledger/
+!/data/state/archives/legacy-ledger/README.md
+!/data/state/archives/legacy-ledger/manifest.json
 
-# Generated rating hyperparameters. Commit only after explicit validation.
-/config/lol/hyperparameters/best_hyperparams/*.json
+/data/lol/raw/oracles_elixir
+
+# Production rating hyperparameters are reviewed, tracked inputs.
 /artifacts/
 
 # Mac OS-specific storage files
@@ -158,3 +165,6 @@ test.py
 # Claude files
 .claude/
 .codex/
+
+# Ontology Atlas
+.ontology-agent/

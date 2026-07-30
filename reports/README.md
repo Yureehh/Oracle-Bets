@@ -1,7 +1,6 @@
 # reports
 
-Generated evaluation reports are scoped by module.
-
-- `lol/`: League of Legends model metrics, figures, and validation outputs.
-
-The files in this tree are generated and ignored by Git, except README files.
+Generated, immutable review artifacts are scoped by module. `lol/` contains
+ingestion, training, and daily reports; `audits/` contains periodic owner
+reviews. Reports are inputs to notebooks, not interchangeable with them:
+production code writes reports and notebooks only read them.

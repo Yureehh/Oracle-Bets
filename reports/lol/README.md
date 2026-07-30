@@ -1,13 +1,10 @@
-# reports/lol
+# LoL reports
 
-Generated League of Legends evaluation outputs.
+- `ingestion/`: source history, data-quality, and column-reconciliation reports.
+- `training/runs/<run-id>/`: model cards, metrics, calibration, attribution,
+  figures, candidates from explicit retuning, and a combined JSON/Markdown
+  summary. `training/latest.json` points to the latest completed run.
+- `daily/`: timestamped JSON and Markdown reports, including dry runs.
 
-- `ingestion/`: generated league/team metadata from raw ingestion data.
-- `evaluation_insights/`: metrics, predictions, model cards, feature importance, and cohort tables.
-- `figures/`: plots for accuracy, calibration, SHAP, and cohort diagnostics.
-
-Example:
-
-```bash
-uv run oracle-bets lol train --model-type lightgbm
-```
+Training keeps the latest 12 completed runs. Notebooks read these artifacts;
+the production pipeline does not execute notebooks.

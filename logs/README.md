@@ -1,7 +1,6 @@
 # logs
 
-Runtime logs are scoped by module.
-
-- `lol/`: League of Legends ingestion, feature, schedule, and training logs.
-
-Log files are generated and ignored by Git.
+All application topics share `lol/oracle-bets.log`. It rotates at 10 MiB and
+keeps five backups by default, limiting retained application logs to roughly
+60 MiB. Override only with `ORACLE_BETS_LOG_MAX_BYTES` and
+`ORACLE_BETS_LOG_BACKUPS`. Log files are generated and ignored.
