@@ -100,7 +100,6 @@ def load_file(file_path: str | Path, *, file_type: str = "json") -> Any | pd.Dat
 
 
 json_loader = lambda p: load_file(p, file_type="json")  # noqa: E731
-csv_loader = lambda p: load_file(p, file_type="csv")  # noqa: E731
 parquet_loader = lambda p: load_file(p, file_type="parquet")  # noqa: E731
 
 
@@ -185,8 +184,7 @@ def safe_store_df_as_parquet(
     loggers: list[Any] | None = None,
 ) -> None:
     """
-    Save *df* to *output_path* (gzip parquet).  Falls back to polars on pandas
-    failure, propagating an exception only if both writers fail.
+    Save *df* to *output_path* as gzip-compressed parquet.
     """
     loggers = loggers or [_log]
     out = Path(output_path)
@@ -200,20 +198,7 @@ def safe_store_df_as_parquet(
     try:
         df_to_write.to_parquet(out, compression="gzip")
         _log_to_all("info", "Saved DataFrame → %s (pandas)", out)
-    except (ImportError, OSError, ValueError) as exc1:
-        _log_to_all(
-            "warning", "pandas.to_parquet failed (%s), falling back to polars", exc1
-        )
-        try:
-            import polars as pl
-
-            pl.DataFrame(df_to_write).write_parquet(out, compression="gzip")
-            _log_to_all("info", "Saved DataFrame → %s (polars)", out)
-        except Exception as exc2:
-            _log_to_all(
-                "exception",
-                "Failed to save DataFrame with both pandas and polars: %s",
-                exc2,
-            )
-            msg = f"Could not write parquet at '{out}': {exc2}"
-            raise DataFrameStoreError(msg) from exc2
+    except (ImportError, OSError, ValueError) as exc:
+        _log_to_all("exception", "Failed to save parquet with pandas: %s", exc)
+        msg = f"Could not write parquet at '{out}': {exc}"
+        raise DataFrameStoreError(msg) from exc

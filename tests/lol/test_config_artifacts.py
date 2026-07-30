@@ -15,9 +15,7 @@ CONFIG_FILES = [
     ROOT / "config/lol/training/flattened_team_config.json",
     ROOT / "config/lol/training/flattened_player_config.json",
 ]
-TEAM_CLEANUP_CONFIG = (
-    ROOT / "config/lol/data_ingestion/team_name_replacements_and_invalid_games.json"
-)
+TEAM_ALIASES_CONFIG = ROOT / "config/lol/data_ingestion/team_aliases.json"
 NEW_TEAM_FEATURES = {
     "first_pick",
     "strength_pool",
@@ -34,9 +32,14 @@ NEW_TEAM_FEATURES = {
     "ema_csdiff_shareat25",
     "ema_win_gamelength",
     "ema_loss_gamelength",
+    "days_since_last_game",
+    "roster_continuity",
+    "roster_uncertainty",
+    "rating_uncertainty",
 }
 NEW_TEAM_FEATURE_PREFIXES = ("diff_ema_",)
 MODERATE_OPTUNA_TRIALS = 100
+TEAMS_PER_IDENTITY_MERGE = 2
 
 
 def _load_cols(path: str, key: str) -> list[str]:
@@ -83,7 +86,7 @@ def test_team_training_config_matches_existing_artifact_columns():
             for item in missing
         )
     ):
-        pytest.skip("team training artifact predates strength-pool feature revamp")
+        pytest.skip("team training artifact predates configured feature additions")
 
     assert missing == set()
 
@@ -98,7 +101,8 @@ def test_first_pick_is_team_level_ingestion_feature():
 
     assert "first_pick" in import_config["team"]
     assert "first_pick" not in import_config["player"]
-    assert "first_pick" in team_config["team_features"]
+    assert "first_pick" not in team_config["team_features"]
+    assert "side_win_likelihood" not in team_config["team_features"]
 
 
 def test_team_configs_use_strength_pool_and_drop_noisy_economy_columns():
@@ -151,6 +155,32 @@ def test_compact_configs_prefer_explicit_diff_ema_features():
     assert "ema_kda_before" not in compact_player
 
 
+def test_winner_configs_exclude_unavailable_and_constant_matchup_features():
+    team = json.loads(
+        (ROOT / "config/lol/training/training_team_config.json").read_text()
+    )["team_features"]
+    compact = json.loads(
+        (ROOT / "config/lol/training/training_compact_team_config.json").read_text()
+    )["team_features"]
+    player = json.loads(
+        (ROOT / "config/lol/training/training_player_config.json").read_text()
+    )["player_features"]
+    prohibited = {
+        "game",
+        "game_in_series",
+        "is_bo1",
+        "is_bo3",
+        "is_bo5",
+        "is_deciding_game",
+        "h2h_games_before",
+        "season_avg_gamelength",
+    }
+
+    assert not prohibited & set(team)
+    assert not prohibited & set(compact)
+    assert "patch" not in player
+
+
 def test_final_team_style_features_are_configured_for_ema_and_training():
     team_flat = json.loads(
         (ROOT / "config/lol/training/flattened_team_config.json").read_text()
@@ -173,13 +203,26 @@ def test_final_team_style_features_are_configured_for_ema_and_training():
     assert "diff_ema_win_gamelength_before" not in compact_team
 
 
-def test_stale_best_hyperparameter_files_are_not_committed():
+def test_reviewed_rating_hyperparameters_are_tracked_inputs():
     gitignore = (ROOT / ".gitignore").read_text()
     defaults = json.loads(
         (ROOT / "config/lol/hyperparameters/default_models_parameters.json").read_text()
     )
+    tuned_dir = ROOT / "config/lol/hyperparameters/tuned/ratings"
+    expected = {
+        "leagues_elo_hyperparameters.json",
+        "player_elo_hyperparameters.json",
+        "player_glicko_hyperparameters.json",
+        "player_pl_hyperparameters.json",
+        "player_trueskill_hyperparameters.json",
+        "team_elo_hyperparameters.json",
+        "team_glicko_hyperparameters.json",
+        "team_pl_hyperparameters.json",
+        "team_trueskill_hyperparameters.json",
+    }
 
-    assert "/config/lol/hyperparameters/best_hyperparams/*.json" in gitignore
+    assert "/config/lol/hyperparameters/tuned/ratings/*.json" not in gitignore
+    assert expected == {path.name for path in tuned_dir.glob("*.json")}
     assert defaults["optuna"]["trials"] == MODERATE_OPTUNA_TRIALS
 
 
@@ -232,31 +275,14 @@ def test_player_artifact_gap_is_explicit():
     assert {"flattened players", "training players"} <= failed
 
 
-def test_manual_invalid_games_are_current_if_configured():
-    artifact = ROOT / "data/lol/raw/raw_data.parquet"
-    if not artifact.exists():
-        pytest.skip("raw data artifact is not available")
-
-    cleanup_config = json.loads(TEAM_CLEANUP_CONFIG.read_text())
-    invalid_games = set(cleanup_config.get("invalid_games", []))
-    if not invalid_games:
-        return
-
-    df = pd.read_parquet(artifact, columns=["gameid"])
-    raw_games = set(df["gameid"].dropna().astype(str))
-
-    assert invalid_games <= raw_games
-
-
 def test_team_name_replacements_have_current_raw_evidence():
     artifact = ROOT / "data/lol/raw/raw_data.parquet"
     if not artifact.exists():
         pytest.skip("raw data artifact is not available")
 
-    cleanup_config = json.loads(TEAM_CLEANUP_CONFIG.read_text())
-    replacements = cleanup_config.get("team_name_replacements", [])
-    if not replacements:
-        return
+    alias_config = json.loads(TEAM_ALIASES_CONFIG.read_text())
+    replacements = alias_config.get("historical_identity_merges", [])
+    assert replacements
 
     teams = pd.read_parquet(
         artifact,
@@ -278,3 +304,17 @@ def test_team_name_replacements_have_current_raw_evidence():
     ]
 
     assert missing == []
+
+
+def test_team_alias_sections_have_distinct_valid_semantics():
+    config = json.loads(TEAM_ALIASES_CONFIG.read_text())
+    external = config["external_aliases"]
+    merges = config["historical_identity_merges"]
+
+    assert external
+    assert all(source.strip() and target.strip() for source, target in external.items())
+    assert all(len(pair) == TEAMS_PER_IDENTITY_MERGE for pair in merges)
+    old_ids = [pair[0]["teamid"] for pair in merges]
+    new_ids = [pair[1]["teamid"] for pair in merges]
+    assert len(old_ids) == len(set(old_ids))
+    assert not set(old_ids) & set(new_ids)

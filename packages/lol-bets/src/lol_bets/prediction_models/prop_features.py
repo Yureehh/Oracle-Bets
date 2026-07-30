@@ -13,10 +13,87 @@ PROP_TARGETS: tuple[str, ...] = ("gamelength", "total_kills", "total_towers")
 SIDE_ORDER: tuple[str, str] = ("Blue", "Red")
 SIDE_PREFIX: dict[str, str] = {"Blue": "blue", "Red": "red"}
 TARGET_TOLERANCE = 1e-9
+TEAMS_PER_GAME = 2
+MATCHUP_EXCLUDED_FEATURES = frozenset({"first_pick", "side_win_likelihood"})
 
 
 def is_prop_target(target_col: str) -> bool:
     return target_col in PROP_TARGETS
+
+
+def build_game_level_outcome_features(
+    X_team: pd.DataFrame,
+    meta_team: pd.DataFrame,
+    y_team: pd.Series | None = None,
+    *,
+    target_col: str = "result",
+) -> tuple[pd.DataFrame, pd.Series | None, pd.DataFrame]:
+    """
+    Build one canonical, side-free winner row per game.
+
+    Team IDs determine the canonical order. Numeric features become signed
+    Team-A minus Team-B deltas, while categorical features become sorted pairs.
+    Reversing a caller therefore builds the same feature row.
+    """
+    required = {"gameid", "teamid", "teamname"}
+    missing = required - set(meta_team.columns)
+    if missing:
+        msg = f"Outcome matchup builder missing metadata columns: {sorted(missing)}"
+        raise ValueError(msg)
+
+    frame = pd.concat(
+        [meta_team.reset_index(drop=True), X_team.reset_index(drop=True)], axis=1
+    )
+    if y_team is not None:
+        frame["__target"] = pd.to_numeric(y_team, errors="coerce").to_numpy()
+    feature_cols = [
+        column for column in X_team.columns if column not in MATCHUP_EXCLUDED_FEATURES
+    ]
+    numeric_cols = [
+        column for column in feature_cols if is_numeric_dtype(X_team[column])
+    ]
+
+    feature_rows: list[dict[str, Any]] = []
+    target_rows: list[float] = []
+    meta_rows: list[dict[str, Any]] = []
+    for gameid, game in frame.groupby("gameid", sort=False):
+        if len(game) != TEAMS_PER_GAME:
+            msg = f"Game '{gameid}' must have exactly two teams for outcome training."
+            raise ValueError(msg)
+        ordered = game.sort_values(["teamid", "teamname"], kind="mergesort")
+        first, second = ordered.iloc[0], ordered.iloc[1]
+        out: dict[str, Any] = {}
+        for column in feature_cols:
+            left, right = first.get(column), second.get(column)
+            if column in numeric_cols:
+                out[f"delta_{column}"] = _finite_or_nan(left) - _finite_or_nan(right)
+            else:
+                values = sorted(
+                    str(value) for value in (left, right) if pd.notna(value)
+                )
+                out[f"pair_{column}"] = "|".join(values) if values else "Unknown"
+        feature_rows.append(out)
+        meta_rows.append(
+            {
+                "gameid": gameid,
+                "date": first.get("date"),
+                "league": first.get("league"),
+                "season": first.get("season"),
+                "patch": first.get("patch"),
+                "canonical_teamid": first["teamid"],
+                "canonical_teamname": first["teamname"],
+            }
+        )
+        if y_team is not None:
+            target = _finite_or_nan(first.get("__target"))
+            if not np.isfinite(target) or target not in {0.0, 1.0}:
+                msg = f"Game '{gameid}' has invalid canonical winner target."
+                raise ValueError(msg)
+            target_rows.append(target)
+
+    X_game = pd.DataFrame(feature_rows)
+    y_game = pd.Series(target_rows, name=target_col) if y_team is not None else None
+    return X_game, y_game, pd.DataFrame(meta_rows)
 
 
 def build_game_level_prop_features(
@@ -34,21 +111,14 @@ def build_game_level_prop_features(
     total for the full game, not one label per team.
     """
     _require_meta(meta_side)
+    meta_cols = [
+        "gameid",
+        "side",
+        *[c for c in ("date", "league", "season", "patch") if c in meta_side.columns],
+    ]
+    feature_side = X_side.drop(columns=meta_cols, errors="ignore")
     frame = pd.concat(
-        [
-            meta_side[
-                [
-                    "gameid",
-                    "side",
-                    *[
-                        c
-                        for c in ("date", "league", "season", "patch")
-                        if c in meta_side.columns
-                    ],
-                ]
-            ],
-            X_side,
-        ],
+        [meta_side[meta_cols], feature_side],
         axis=1,
     ).copy()
     frame["side"] = frame["side"].astype(str).str.strip().str.title()
@@ -58,9 +128,11 @@ def build_game_level_prop_features(
     feature_rows: list[dict[str, Any]] = []
     target_rows: list[float] = []
     meta_rows: list[dict[str, Any]] = []
-    feature_cols = list(X_side.columns)
+    feature_cols = list(feature_side.columns)
     numeric_cols = [
-        c for c in feature_cols if c in X_side and is_numeric_dtype(X_side[c])
+        c
+        for c in feature_cols
+        if c in feature_side and is_numeric_dtype(feature_side[c])
     ]
 
     for gameid, game in frame.groupby("gameid", sort=False):
@@ -79,7 +151,7 @@ def build_game_level_prop_features(
         for col in numeric_cols:
             blue_val = _finite_or_nan(blue.get(col))
             red_val = _finite_or_nan(red.get(col))
-            out[f"mean_{col}"] = np.nanmean([blue_val, red_val])
+            out[f"mean_{col}"] = _mean_or_nan(blue_val, red_val)
             out[f"absdiff_{col}"] = (
                 abs(blue_val - red_val) if _both_finite(blue_val, red_val) else np.nan
             )
@@ -147,8 +219,16 @@ def _meta_payload(side_rows: pd.DataFrame, gameid: Any) -> dict[str, Any]:
 
 
 def _finite_or_nan(value: Any) -> float:
-    parsed = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
-    return float(parsed) if pd.notna(parsed) else np.nan
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return parsed if np.isfinite(parsed) else np.nan
+
+
+def _mean_or_nan(left: float, right: float) -> float:
+    values = [value for value in (left, right) if np.isfinite(value)]
+    return float(np.mean(values)) if values else np.nan
 
 
 def _both_finite(left: float, right: float) -> bool:

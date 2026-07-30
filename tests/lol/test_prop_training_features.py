@@ -1,5 +1,7 @@
 import json
+import warnings
 
+import numpy as np
 import pytest
 from lol_bets.prediction_models import gbdt_model as gbdt_module
 from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
@@ -52,6 +54,24 @@ def test_prop_feature_builder_collapses_two_side_rows_to_one_game():
     assert "result" not in X_game.columns
 
 
+def test_prop_builder_drops_metadata_duplicated_in_feature_rows():
+    X_side = pd.DataFrame(
+        {
+            "gameid": ["g1", "g1"],
+            "side": ["Blue", "Red"],
+            "league": ["LCK", "LCK"],
+            "feature": [1.0, 2.0],
+        }
+    )
+    meta = X_side[["gameid", "side", "league"]].copy()
+
+    out, _, meta_out = build_game_level_prop_features(X_side, meta)
+
+    assert out.columns.is_unique
+    assert len(out) == 1
+    assert meta_out.loc[0, "league"] == "LCK"
+
+
 def test_prop_feature_builder_rejects_target_disagreement():
     X = pd.DataFrame({"diff_ema_team_kpm": [1.0, -1.0]})
     meta = pd.DataFrame({"gameid": ["g1", "g1"], "side": ["Blue", "Red"]})
@@ -61,12 +81,56 @@ def test_prop_feature_builder_rejects_target_disagreement():
         build_game_level_prop_features(X, meta, y, target_col="total_kills")
 
 
+def test_prop_feature_builder_all_nan_mean_does_not_warn():
+    X = pd.DataFrame({"diff_ema_team_kpm": [np.nan, np.nan]})
+    meta = pd.DataFrame({"gameid": ["g1", "g1"], "side": ["Blue", "Red"]})
+    y = pd.Series([27.0, 27.0], name="total_kills")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        X_game, _, _ = build_game_level_prop_features(
+            X, meta, y, target_col="total_kills"
+        )
+
+    assert caught == []
+    assert pd.isna(X_game.loc[0, "mean_diff_ema_team_kpm"])
+    assert pd.isna(X_game.loc[0, "absdiff_diff_ema_team_kpm"])
+    assert pd.isna(X_game.loc[0, "sum_diff_ema_team_kpm"])
+
+
 def test_compact_player_config_expands_to_role_features():
     candidates = GradientBoostingModel.compact_feature_candidates()
 
     assert "top_diff_ema_kda" in candidates
     assert "jng_diff_ema_kda" in candidates
     assert "players_trueskill_win_likelihood" in candidates
+    assert "players_rating_consensus" in candidates
+    assert "rating_disagreement" in candidates
+
+
+def test_raw_season_is_training_metadata_not_model_feature():
+    assert "season" in GradientBoostingModel._meta_columns()
+    assert "season" not in GradientBoostingModel.compact_feature_candidates()
+
+
+def test_rating_consensus_features_combine_team_and_player_strength_models():
+    X = pd.DataFrame(
+        {
+            "elo_win_likelihood": [0.60],
+            "trueskill_win_likelihood": [0.70],
+            "players_elo_win_likelihood": [0.55],
+            "players_glicko2_win_likelihood": [0.65],
+            "players_pl_win_likelihood": [0.60],
+            "players_trueskill_win_likelihood": [0.70],
+        }
+    )
+
+    out = GradientBoostingModel.add_rating_consensus_features(X)
+
+    assert out.loc[0, "team_rating_consensus"] == pytest.approx(0.65)
+    assert out.loc[0, "players_rating_consensus"] == pytest.approx(0.625)
+    assert out.loc[0, "rating_consensus"] == pytest.approx(0.6375)
+    assert out.loc[0, "rating_disagreement"] > 0
 
 
 def test_selected_feature_set_respects_max_features_and_anchors(tmp_path, monkeypatch):
@@ -103,3 +167,18 @@ def test_selected_feature_set_respects_max_features_and_anchors(tmp_path, monkey
     assert len(out.columns) == SELECTED_MAX_FEATURES
     assert "league_elo_win_likelihood" in out.columns
     assert "diff_ema_golddiffat15" in out.columns
+
+
+def test_selected_feature_set_requires_a_recommendation_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(gbdt_module, "FEATURE_REPORTS_DIR", tmp_path)
+    model = DummyModel(
+        model_name="Dummy",
+        problem_type="classification",
+        team_data=pd.DataFrame(),
+        player_data=pd.DataFrame(),
+        feature_set="selected",
+        max_features=SELECTED_MAX_FEATURES,
+    )
+
+    with pytest.raises(FileNotFoundError, match="recommendation report"):
+        model._apply_feature_set_filter(pd.DataFrame({"feature": [1.0]}))

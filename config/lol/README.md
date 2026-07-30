@@ -10,5 +10,5 @@ Example:
 
 ```bash
 uv run oracle-bets lol ingest
-uv run oracle-bets lol train --model-type lightgbm --feature-set compact
+uv run oracle-bets lol train --feature-set compact
 ```

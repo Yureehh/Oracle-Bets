@@ -5,6 +5,8 @@
     "gameid",
     "side",
     "position",
+    "days_since_last_game",
+    "rating_uncertainty",
     "trueskill_win_likelihood",
     "ema_gamelength_before",
     "diff_ema_kda_before",

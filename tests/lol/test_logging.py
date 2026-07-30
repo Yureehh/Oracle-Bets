@@ -1,7 +1,13 @@
 import logging
 from logging.handlers import RotatingFileHandler
 
-from oracle_bets_core.logger import LOG_TOPIC, create_logger
+from oracle_bets_core.logger import (
+    DEFAULT_LOG_BACKUPS,
+    DEFAULT_LOG_MAX_BYTES,
+    LOG_TOPIC,
+    create_logger,
+    instantiate_logger,
+)
 
 
 def test_create_logger_uses_single_rotating_file_handler(tmp_path):
@@ -23,3 +29,13 @@ def test_create_logger_uses_single_rotating_file_handler(tmp_path):
             handler.close()
             logger.removeHandler(handler)
         logging.Logger.manager.loggerDict.pop(name, None)
+
+
+def test_application_topics_share_one_bounded_handler():
+    data = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
+    schedule = instantiate_logger(LOG_TOPIC.SCHEDULE_GENERATION)
+
+    assert data.handlers[0] is schedule.handlers[0]
+    assert isinstance(data.handlers[0], RotatingFileHandler)
+    assert data.handlers[0].maxBytes == DEFAULT_LOG_MAX_BYTES
+    assert data.handlers[0].backupCount == DEFAULT_LOG_BACKUPS

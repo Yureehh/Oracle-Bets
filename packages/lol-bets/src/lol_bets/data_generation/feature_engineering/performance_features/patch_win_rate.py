@@ -7,7 +7,9 @@ using an Exponentially Weighted Mean (EWM) model.
 
 from __future__ import annotations
 
-from lol_bets.data_generation.ingestion.oracles_elixir import get_opponent
+from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
+    add_opponent_columns,
+)
 from oracle_bets_core.io_utils import get_identity, get_sorting_keys, json_loader
 from oracle_bets_core.paths import DEFAULT_MODELS_PARAMETERS
 from oracle_bets_core.pd import pd
@@ -19,7 +21,7 @@ EPSILON = 1e-8  # Small constant to prevent division by zero
 
 
 def _validate_inputs(df: pd.DataFrame, identity: str) -> None:
-    required = {identity, "patch", "result"}
+    required = {identity, "gameid", "side", "patch", "result"}
     missing = required - set(df.columns)
     if missing:
         msg = f"Input DataFrame is missing required columns: {missing}"
@@ -120,9 +122,11 @@ def patch_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFram
     # Compute EMA features
     df = compute_ema_patch(df, identity)
 
-    # Opponent columns (keep existing helper signature)
-    df["opp_ema_patch_win_rate_before"] = get_opponent(
-        df["ema_patch_win_rate_before"].tolist(), entity=entity
+    # Opponent columns
+    df = add_opponent_columns(
+        df,
+        entity=entity,
+        source_columns=["ema_patch_win_rate_before"],
     )
 
     # Vectorized likelihood (no per-row apply)

@@ -59,7 +59,9 @@ class DataPreprocessor:
         if problem_type == "regression":
             self._handle_regression_specifics(target_col)
 
-        return self.training_data  # type: ignore[return-value]
+        if self.training_data is None:
+            raise RuntimeError("training data merge did not produce a frame")
+        return self.training_data
 
     # ──────────────────────────────────────────────────────────────────────
     # Steps
@@ -97,8 +99,8 @@ class DataPreprocessor:
         numeric_cols = self.player_data.select_dtypes(
             include=["number"]
         ).columns.tolist()
-        # Never pivot per-player match outcomes into features
-        numeric_cols = [c for c in numeric_cols if c != "result"]
+        # Never pivot supervised target columns into player-derived features.
+        numeric_cols = [c for c in numeric_cols if c not in TARGET_COLUMNS]
         if not numeric_cols:
             msg = "No numeric columns found in player data to pivot."
             raise ValueError(msg)
@@ -175,7 +177,6 @@ class DataPreprocessor:
         Light regression cleaning:
           - numeric cast with coercion
           - drop NaNs in target
-          - keep central 1–99% quantile range (remove extreme outliers)
         """
         if self.training_data is None:
             msg = "Call preprocess() before regression handling."
@@ -199,21 +200,6 @@ class DataPreprocessor:
                 "Dropped %d rows with NaN in target '%s'.", removed_nan, target_col
             )
 
-        # Remove extreme outliers (1st–99th percentiles)
-        q_low, q_high = self.training_data[target_col].quantile([0.01, 0.99])
-        keep_mask = self.training_data[target_col].between(
-            q_low, q_high, inclusive="both"
-        )
-        kept = int(keep_mask.sum())
-        dropped = len(self.training_data) - kept
-        if dropped:
-            logger.warning(
-                "Removed %d outlier rows outside [%.3f, %.3f] for '%s'.",
-                dropped,
-                q_low,
-                q_high,
-                target_col,
-            )
-        self.training_data = self.training_data.loc[keep_mask].reset_index(drop=True)
+        self.training_data = self.training_data.reset_index(drop=True)
 
         logger.info("Regression-specific preprocessing complete for '%s'.", target_col)

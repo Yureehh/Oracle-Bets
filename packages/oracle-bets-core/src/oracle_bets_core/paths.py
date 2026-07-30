@@ -10,17 +10,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final
 
 from dotenv import load_dotenv
-
-# --------------------------------------------------------------------------- #
-# Model Type Configuration
-# --------------------------------------------------------------------------- #
-ModelType = Literal["LightGBM", "TabNet"]
-
-# Change this to switch between model types for inference
-ACTIVE_MODEL_TYPE: ModelType = "LightGBM"
 
 # --------------------------------------------------------------------------- #
 # Environment
@@ -78,6 +70,18 @@ SUITE_ROOT: Final[Path] = (
 
 LOL_HOME: Final = _env_path("ORACLE_BETS_LOL_HOME")
 
+PRODUCT_CONFIG_DIR: Final = SUITE_ROOT / "config" / "product"
+PRODUCT_CONFIG: Final = PRODUCT_CONFIG_DIR / "product.json"
+PRODUCT_STATE_DIR: Final = (
+    _env_path("ORACLE_BETS_STATE_DIR") or SUITE_ROOT / "data" / "state"
+)
+EVIDENCE_DB: Final = PRODUCT_STATE_DIR / "oracle_bets.db"
+BACKUPS_DIR: Final = PRODUCT_STATE_DIR / "backups"
+EXPORTS_DIR: Final = PRODUCT_STATE_DIR / "exports"
+MODEL_REGISTRY_DIR: Final = PRODUCT_STATE_DIR / "model-registry" / "lol"
+LEGACY_LEDGER_DB: Final = SUITE_ROOT / "data" / "ledger.db"
+LEGACY_LEDGER_ARCHIVE_DIR: Final = PRODUCT_STATE_DIR / "archives" / "legacy-ledger"
+
 DATA_DIR: Final = _scoped_dir("data")
 CONFIG_DIR: Final = _scoped_dir("config")
 MODELS_DIR: Final = _scoped_dir("models")
@@ -90,6 +94,7 @@ LOGS_DIR: Final = _scoped_dir("logs")
 # --------------------------------------------------------------------------- #
 RAW_DIR: Final = DATA_DIR / "raw"
 INTERIM_DIR: Final = DATA_DIR / "interim"
+QUARANTINE_DIR: Final = INTERIM_DIR / "quarantine"
 PROCESSED_DIR: Final = DATA_DIR / "processed"
 PROCESSED_TEAMS_DIR: Final = PROCESSED_DIR / "teams"
 PROCESSED_PLAYERS_DIR: Final = PROCESSED_DIR / "players"
@@ -101,13 +106,10 @@ DATA_INGESTION_DIR: Final = CONFIG_DIR / "data_ingestion"
 EXTRAS_DIR: Final = REPORTS_DIR / "ingestion"
 TRAINING_AND_INPUT_COLS_DIR: Final = CONFIG_DIR / "training"
 
-YEARS_RANGE_PATH: Final = DATA_INGESTION_DIR / "years_range.json"
 IMPORT_COLUMNS: Final = DATA_INGESTION_DIR / "import_columns.json"
-TEAM_REPLACEMENTS_AND_INVALID_GAMES: Final = (
-    DATA_INGESTION_DIR / "team_name_replacements_and_invalid_games.json"
-)
 CONSIDERED_LEAGUES: Final = DATA_INGESTION_DIR / "considered_leagues.json"
 LEAGUE_TAXONOMY: Final = DATA_INGESTION_DIR / "league_taxonomy.json"
+TEAM_ALIASES: Final = DATA_INGESTION_DIR / "team_aliases.json"
 
 # --------------------------------------------------------------------------- #
 # Concrete data artefacts
@@ -120,6 +122,7 @@ INTERIM_PLAYER_DATA: Final = INTERIM_DIR / "player_data.parquet"
 PROCESSED_TEAMS: Final = PROCESSED_TEAMS_DIR / "team_data.parquet"
 PROCESSED_PLAYERS: Final = PROCESSED_PLAYERS_DIR / "player_data.parquet"
 SCHEDULE: Final = PROCESSED_DIR / "schedule.parquet"
+QUARANTINED_RAW_DATA: Final = QUARANTINE_DIR / "oracles_elixir.parquet"
 
 FLATTENED_TEAMS: Final = PROCESSED_TEAMS_DIR / "flattened_teams.parquet"
 FLATTENED_PLAYERS: Final = PROCESSED_PLAYERS_DIR / "flattened_players.parquet"
@@ -149,26 +152,24 @@ FLATTENED_PLAYER_CONFIG: Final = (
 # --------------------------------------------------------------------------- #
 LEAGUE_ELO: Final = MODELS_DIR / "league_elo.parquet"
 TEAM_LEAGUES_MAPPING: Final = MODELS_DIR / "team_league_mapping.parquet"
-WHOLE_HISTORY_RATING_PATH: Final = MODELS_DIR / "whr.pkl"
 
 
 # --------------------------------------------------------------------------- #
-# Dynamic model path helpers (uses ACTIVE_MODEL_TYPE)
+# Dynamic LightGBM model path helpers
 # --------------------------------------------------------------------------- #
 def _model_dir(base_name: str) -> Path:
-    """Get model directory with type suffix (e.g., OutcomePrediction_TabNet/)."""
-    return MODELS_DIR / f"{base_name}_{ACTIVE_MODEL_TYPE}"
+    return MODELS_DIR / f"{base_name}_LightGBM"
 
 
 def _model_path(base_name: str) -> Path:
     """Get path to the main model file."""
-    full_name = f"{base_name}_{ACTIVE_MODEL_TYPE}"
+    full_name = f"{base_name}_LightGBM"
     return _model_dir(base_name) / f"{full_name}.pkl"
 
 
 def _model_artifact(base_name: str, artifact: str) -> Path:
     """Get path to a model artifact (e.g., categorical_features, feature_pipeline)."""
-    full_name = f"{base_name}_{ACTIVE_MODEL_TYPE}"
+    full_name = f"{base_name}_LightGBM"
     return _model_dir(base_name) / f"{full_name}_{artifact}.pkl"
 
 
@@ -182,17 +183,17 @@ OUTCOME_PREDICTION_CATEGORICAL_FEATURES: Path = _model_artifact(
 OUTCOME_PREDICTION_FINAL_FEATURES: Path = _model_artifact(
     "OutcomePrediction", "final_features"
 )
-OUTCOME_PREDICTION_BEST_HYPERPARAMETERS: Path = _model_artifact(
-    "OutcomePrediction", "best_hyperparameters"
-)
 OUTCOME_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
     "OutcomePrediction", "feature_pipeline"
 )
-OUTCOME_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
-    "OutcomePrediction", "categorical_encodings"
-)
 OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR: Path = _model_artifact(
     "OutcomePrediction", "probability_calibrator"
+)
+OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY: Path = _model_artifact(
+    "OutcomePrediction", "probability_uncertainty"
+)
+OUTCOME_PREDICTION_MATCHUP_SCHEMA: Path = _model_artifact(
+    "OutcomePrediction", "outcome_matchup_schema"
 )
 
 # --------------------------------------------------------------------------- #
@@ -205,17 +206,14 @@ GAMELENGTH_PREDICTION_CATEGORICAL_FEATURES: Path = _model_artifact(
 GAMELENGTH_PREDICTION_FINAL_FEATURES: Path = _model_artifact(
     "GamelengthPrediction", "final_features"
 )
-GAMELENGTH_PREDICTION_BEST_HYPERPARAMETERS: Path = _model_artifact(
-    "GamelengthPrediction", "best_hyperparameters"
-)
 GAMELENGTH_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
     "GamelengthPrediction", "feature_pipeline"
 )
-GAMELENGTH_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
-    "GamelengthPrediction", "categorical_encodings"
-)
 GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY: Path = _model_artifact(
     "GamelengthPrediction", "residual_summary"
+)
+GAMELENGTH_PREDICTION_PROP_CALIBRATOR: Path = _model_artifact(
+    "GamelengthPrediction", "prop_calibrator"
 )
 
 # --------------------------------------------------------------------------- #
@@ -228,17 +226,14 @@ TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES: Path = _model_artifact(
 TOTAL_KILLS_PREDICTION_FINAL_FEATURES: Path = _model_artifact(
     "TotalKillsPrediction", "final_features"
 )
-TOTAL_KILLS_PREDICTION_BEST_HYPERPARAMETERS: Path = _model_artifact(
-    "TotalKillsPrediction", "best_hyperparameters"
-)
 TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
     "TotalKillsPrediction", "feature_pipeline"
 )
-TOTAL_KILLS_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
-    "TotalKillsPrediction", "categorical_encodings"
-)
 TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY: Path = _model_artifact(
     "TotalKillsPrediction", "residual_summary"
+)
+TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR: Path = _model_artifact(
+    "TotalKillsPrediction", "prop_calibrator"
 )
 
 # --------------------------------------------------------------------------- #
@@ -251,17 +246,14 @@ TOTAL_TOWERS_PREDICTION_CATEGORICAL_FEATURES: Path = _model_artifact(
 TOTAL_TOWERS_PREDICTION_FINAL_FEATURES: Path = _model_artifact(
     "TotalTowersPrediction", "final_features"
 )
-TOTAL_TOWERS_PREDICTION_BEST_HYPERPARAMETERS: Path = _model_artifact(
-    "TotalTowersPrediction", "best_hyperparameters"
-)
 TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE: Path = _model_artifact(
     "TotalTowersPrediction", "feature_pipeline"
 )
-TOTAL_TOWERS_PREDICTION_CATEGORICAL_ENCODINGS: Path = _model_artifact(
-    "TotalTowersPrediction", "categorical_encodings"
-)
 TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY: Path = _model_artifact(
     "TotalTowersPrediction", "residual_summary"
+)
+TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR: Path = _model_artifact(
+    "TotalTowersPrediction", "prop_calibrator"
 )
 
 # --------------------------------------------------------------------------- #
@@ -269,21 +261,22 @@ TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY: Path = _model_artifact(
 # --------------------------------------------------------------------------- #
 HYPERPARAMETERS: Final = CONFIG_DIR / "hyperparameters"
 DEFAULT_MODELS_PARAMETERS: Final = HYPERPARAMETERS / "default_models_parameters.json"
-BEST_HYPERPARAMETERS: Final = HYPERPARAMETERS / "best_hyperparams"
+TUNED_RATING_HYPERPARAMETERS: Final = HYPERPARAMETERS / "tuned" / "ratings"
+TUNED_LIGHTGBM_HYPERPARAMETERS: Final = HYPERPARAMETERS / "tuned" / "lightgbm"
 LEAGUES_ELO_HYPERPARAMETERS: Final = (
-    BEST_HYPERPARAMETERS / "leagues_elo_hyperparameters.json"
+    TUNED_RATING_HYPERPARAMETERS / "leagues_elo_hyperparameters.json"
 )
 ENTITY_ELO_HYPERPARAMETERS: Final = (
-    BEST_HYPERPARAMETERS / "entity_elo_hyperparameters.json"
+    TUNED_RATING_HYPERPARAMETERS / "entity_elo_hyperparameters.json"
 )
 ENTITY_GLICKO_HYPERPARAMETERS: Final = (
-    BEST_HYPERPARAMETERS / "entity_glicko_hyperparameters.json"
+    TUNED_RATING_HYPERPARAMETERS / "entity_glicko_hyperparameters.json"
 )
 ENTITY_PL_HYPERPARAMETERS: Final = (
-    BEST_HYPERPARAMETERS / "entity_pl_hyperparameters.json"
+    TUNED_RATING_HYPERPARAMETERS / "entity_pl_hyperparameters.json"
 )
 ENTITY_TRUESKILL_HYPERPARAMETERS: Final = (
-    BEST_HYPERPARAMETERS / "entity_trueskill_hyperparameters.json"
+    TUNED_RATING_HYPERPARAMETERS / "entity_trueskill_hyperparameters.json"
 )
 
 # --------------------------------------------------------------------------- #
@@ -292,6 +285,8 @@ ENTITY_TRUESKILL_HYPERPARAMETERS: Final = (
 FIGURES_DIR: Final = REPORTS_DIR / "figures"
 INSIGHTS_DIR: Final = REPORTS_DIR / "evaluation_insights"
 FEATURE_REPORTS_DIR: Final = REPORTS_DIR / "features"
+DATA_QUALITY_REPORT: Final = EXTRAS_DIR / "data_quality.json"
+HISTORY_REFRESH_MANIFEST: Final = EXTRAS_DIR / "history_refresh.json"
 
 # --------------------------------------------------------------------------- #
 # Directory bootstrap
@@ -300,6 +295,7 @@ _directories: list[Path] = [
     DATA_DIR,
     RAW_DIR,
     INTERIM_DIR,
+    QUARANTINE_DIR,
     PROCESSED_DIR,
     PROCESSED_TEAMS_DIR,
     PROCESSED_PLAYERS_DIR,
@@ -313,7 +309,7 @@ _directories: list[Path] = [
     EXTRAS_DIR,
     TRAINING_AND_INPUT_COLS_DIR,
     HYPERPARAMETERS,
-    BEST_HYPERPARAMETERS,
+    TUNED_RATING_HYPERPARAMETERS,
     NOTEBOOKS_DIR,
     LOGS_DIR,
 ]

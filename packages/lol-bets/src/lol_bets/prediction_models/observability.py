@@ -13,14 +13,15 @@ Your concrete model must define the following attributes:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.stats as st
 import seaborn as sns
 import shap
 from oracle_bets_core.logger import logger
@@ -58,6 +59,10 @@ class MLObservabilityMixin:
       - self.run_id: str  (optional; defaults to "default" if absent)
     """
 
+    model_name: str
+    problem_type: str
+    run_id: str
+
     # ────────────────────────── internal helpers ────────────────────────── #
 
     @staticmethod
@@ -75,11 +80,17 @@ class MLObservabilityMixin:
     @property
     def fig_dir(self) -> Path:
         run_id = getattr(self, "run_id", "default")
+        report_root = getattr(self, "report_root", None)
+        if report_root is not None:
+            return Path(report_root) / self.model_name / "figures"
         return FIGURES_DIR / self.model_name / run_id
 
     @property
     def insight_dir(self) -> Path:
         run_id = getattr(self, "run_id", "default")
+        report_root = getattr(self, "report_root", None)
+        if report_root is not None:
+            return Path(report_root) / self.model_name
         return INSIGHTS_DIR / self.model_name / run_id
 
     def fig_path(self, filename: str) -> Path:
@@ -91,31 +102,6 @@ class MLObservabilityMixin:
         path = self.insight_dir / filename
         self._ensure_dir(path)
         return path
-
-    # ─────────────────────────── correlations ──────────────────────────── #
-
-    def store_correlation(
-        self,
-        X: pd.DataFrame,
-        y: pd.Series,
-        figsize: tuple[int, int] = FIGSIZE,
-        cmap: str = CMAP,
-    ) -> None:
-        """Persist a correlation heatmap (features + target)."""
-        try:
-            df = pd.concat([X.select_dtypes("number"), y.rename("target")], axis=1)
-            corr = df.corr(numeric_only=True)
-            fig = plt.figure(figsize=figsize)
-            sns.heatmap(corr, cmap=cmap, cbar=True)
-            plt.title("Correlation Matrix Heatmap")
-            plt.tight_layout()
-            out = self.fig_path("correlation_matrix.png")
-            plt.savefig(out, dpi=300, bbox_inches="tight")
-            plt.close(fig)
-            logger.info("Stored correlation heatmap for %s.", self.model_name)
-        except Exception as e:
-            logger.error("Correlation heatmap failed: %s", e)
-            raise
 
     # ───────────────────── classification diagnostics ───────────────────── #
 
@@ -376,30 +362,50 @@ class MLObservabilityMixin:
     # ───────────────────── feature importance / SHAP ───────────────────── #
 
     def store_feature_importance(self, model, feature_names: list[str]) -> None:
-        """Persist importance table + bar plot (top-N)."""
+        """Persist LightGBM gain/split importance and a top-gain plot."""
         try:
-            importances = getattr(model, "feature_importances_", None)
-            if importances is None:
+            raw_model = getattr(model, "raw_model", model)
+            booster = getattr(raw_model, "booster_", None)
+            if booster is None:
                 logger.warning("Model has no feature_importances_; skipping.")
                 return
+            gain = np.asarray(booster.feature_importance(importance_type="gain"))
+            split = np.asarray(booster.feature_importance(importance_type="split"))
+            if len(gain) != len(feature_names) or len(split) != len(feature_names):
+                self._raise_importance_shape_error()
+            gain_total = float(gain.sum())
+            split_total = float(split.sum())
             ranks = sorted(
-                zip(feature_names, importances, strict=False),
+                zip(feature_names, gain, strict=True),
                 key=lambda x: float(x[1]),
                 reverse=True,
             )
             df = pd.DataFrame(
                 {
-                    "Feature": [r[0] for r in ranks],
-                    "Importance": [float(r[1]) for r in ranks],
+                    "feature": feature_names,
+                    "gain": gain.astype(float),
+                    "gain_fraction": (
+                        gain.astype(float) / gain_total if gain_total else 0.0
+                    ),
+                    "split": split.astype(float),
+                    "split_fraction": (
+                        split.astype(float) / split_total if split_total else 0.0
+                    ),
                 }
-            )
+            ).sort_values(["gain", "split"], ascending=False)
             out_tbl = self.insight_path("feature_importances.parquet")
             df.to_parquet(out_tbl, index=False, compression="gzip")
             self.plot_feature_importance(ranks)
-            logger.info("Stored feature importances for %s.", self.model_name)
+            logger.info(
+                "Stored gain/split feature importances for %s.", self.model_name
+            )
         except Exception as e:
             logger.error("Storing feature importances failed: %s", e)
             raise
+
+    @staticmethod
+    def _raise_importance_shape_error() -> None:
+        raise ValueError("Feature names do not match LightGBM importance vectors.")
 
     def plot_feature_importance(
         self, sorted_importances: list[tuple[str, float]], top_n: int = TOP_N_FEATURES
@@ -442,12 +448,24 @@ class MLObservabilityMixin:
             result = permutation_importance(
                 model, Xpi, ypi, n_repeats=10, n_jobs=-1, random_state=42
             )
+            table = pd.DataFrame(
+                {
+                    "feature": feature_names,
+                    "importance_mean": result.importances_mean.astype(float),
+                    "importance_std": result.importances_std.astype(float),
+                }
+            ).sort_values("importance_mean", ascending=False)
+            table.to_parquet(
+                self.insight_path("permutation_importances.parquet"),
+                index=False,
+                compression="gzip",
+            )
             idx = result.importances_mean.argsort()[-top_n:]
             fig = plt.figure(figsize=(10, 8))
             plt.boxplot(
                 result.importances[idx].T,
                 vert=False,
-                labels=np.array(feature_names)[idx],
+                tick_labels=np.array(feature_names)[idx],
             )
             plt.title(f"Top {top_n} Permutation Importances")
             plt.tight_layout()
@@ -470,7 +488,17 @@ class MLObservabilityMixin:
         try:
             base_model = getattr(model, "raw_model", model)
             explainer = shap.TreeExplainer(base_model)
-            shap_values = explainer.shap_values(X)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=(
+                        "LightGBM binary classifier with TreeExplainer shap values "
+                        "output has changed to a list of ndarray"
+                    ),
+                    category=UserWarning,
+                    module=r"shap\.explainers\._tree",
+                )
+                shap_values = explainer.shap_values(X)
             # Binary-class LightGBM returns [shap_class0, shap_class1]
             if self.problem_type == "classification" and isinstance(shap_values, list):
                 shap_values = shap_values[1]
@@ -479,6 +507,16 @@ class MLObservabilityMixin:
                 return
 
             mean_abs = np.abs(shap_values).mean(axis=0)
+            pd.DataFrame(
+                {
+                    "feature": feature_names,
+                    "mean_absolute_shap": mean_abs.astype(float),
+                }
+            ).sort_values("mean_absolute_shap", ascending=False).to_parquet(
+                self.insight_path("shap_importances.parquet"),
+                index=False,
+                compression="gzip",
+            )
             top_idx = np.argsort(mean_abs)[-top_n:]
             top_names = [feature_names[i] for i in top_idx]
 
@@ -611,7 +649,7 @@ class MLObservabilityMixin:
             df = pd.DataFrame({"y": y_true.to_numpy(), "p": y_proba})
             df["bin"] = pd.qcut(df["p"], q=n_bins, duplicates="drop")
             tbl = (
-                df.groupby("bin")
+                df.groupby("bin", observed=False)
                 .agg(
                     bin_mean_p=("p", "mean"),
                     bin_emp_rate=("y", "mean"),
@@ -623,221 +661,17 @@ class MLObservabilityMixin:
                 tbl["n"] * (tbl["bin_mean_p"] - tbl["bin_emp_rate"]).abs()
             ).sum() / tbl["n"].sum()
             tbl["ece"] = ece
+            tbl["bin"] = tbl["bin"].astype(str)
             out_tbl = self.insight_path("calibration_table.parquet")
             tbl.to_parquet(out_tbl, index=False, compression="gzip")
             logger.info(
-                "Stored calibration table (ECE=%.4f) for %s.", ece, self.model_name
+                "Stored quantile-bin calibration table (ECE=%.4f) for %s.",
+                ece,
+                self.model_name,
             )
             return tbl
         except Exception as e:
             logger.error("Calibration table failed: %s", e)
-            raise
-
-    # ───────────────────────── betting / ROI tools ─────────────────────── #
-
-    def store_decision_and_roi_curves(
-        self,
-        y_true: pd.Series,
-        y_proba: np.ndarray,
-        odds_for_1: np.ndarray,  # decimal odds for positive class (e.g., Blue win)
-        thresholds: np.ndarray | None = None,
-    ) -> None:
-        """
-        Expected value & realized ROI across thresholds: bet class '1' if p>=t.
-        odds_for_1 is the market decimal odds for the positive class.
-        """
-        try:
-            if thresholds is None:
-                thresholds = np.linspace(0.5, 0.95, 46)  # focus on confident bets
-            rows = []
-            y = y_true.to_numpy()
-            p = y_proba
-            o = odds_for_1
-
-            for t in thresholds:
-                mask = p >= t
-                n = int(mask.sum())
-                if n == 0:
-                    rows.append(
-                        {"thr": float(t), "n_bets": 0, "exp_value": 0.0, "roi": 0.0}
-                    )
-                    continue
-                # Expected value per bet: p*(o-1) - (1-p)*1
-                ev = (p[mask] * (o[mask] - 1.0) - (1.0 - p[mask]) * 1.0).mean()
-                # Realized ROI per bet: win pays (o-1), loss pays -1
-                payoff = np.where(y[mask] == 1, o[mask] - 1.0, -1.0)
-                roi = float(np.mean(payoff))
-                rows.append(
-                    {"thr": float(t), "n_bets": n, "exp_value": float(ev), "roi": roi}
-                )
-
-            df = pd.DataFrame(rows)
-            out_tbl = self.insight_path("decision_roi_curves.parquet")
-            df.to_parquet(out_tbl, index=False, compression="gzip")
-
-            # Plot EV and ROI
-            fig, ax1 = plt.subplots(figsize=(10, 6))
-            ax1.plot(df["thr"], df["exp_value"], label="Expected Value", marker="o")
-            ax1.set_xlabel("Threshold")
-            ax1.set_ylabel("Expected Value")
-            ax2 = ax1.twinx()
-            ax2.plot(
-                df["thr"], df["roi"], label="Realized ROI", color="orange", marker="x"
-            )
-            ax2.set_ylabel("Realized ROI")
-            fig.legend(loc="lower left")
-            fig.tight_layout()
-            out = self.fig_path("ev_roi_curves.png")
-            fig.savefig(out, dpi=300)
-            plt.close(fig)
-            logger.info("Stored decision/ROI curves for %s.", self.model_name)
-        except Exception as e:
-            logger.error("Decision/ROI curves failed: %s", e)
-            raise
-
-    def store_bet_cards(
-        self,
-        df_eval: pd.DataFrame,
-        y_proba: np.ndarray,
-        side_label: str = "side",
-        top_reasons_path: Path | str | None = None,
-        proba_col_name: str = "win_proba",
-        max_rows: int = 20000,
-    ) -> None:
-        """
-        Create compact per-row 'bet cards':
-        gameid, side, probability, and (optional) top SHAP reasons.
-        """
-        try:
-            n = min(len(df_eval), max_rows)
-            cards = pd.DataFrame(
-                {
-                    "gameid": df_eval["gameid"].iloc[:n].to_numpy(),
-                    side_label: df_eval[side_label].iloc[:n].to_numpy(),
-                    proba_col_name: y_proba[:n],
-                }
-            )
-            if top_reasons_path:
-                path = Path(top_reasons_path)
-                if path.exists():
-                    reasons = pd.read_parquet(path)
-                    reasons = reasons.set_index("row_index")
-
-                    # align on index
-                    def _get_reasons(i: int) -> list[dict[str, Any]]:
-                        try:
-                            rec = reasons.loc[i]
-                            return (
-                                rec["reasons"]
-                                if isinstance(rec, pd.Series)
-                                else rec.to_dict().get("reasons", [])
-                            )
-                        except (KeyError, TypeError):
-                            return []
-
-                    cards["reasons"] = [_get_reasons(i) for i in df_eval.index[:n]]
-            out_tbl = self.insight_path("bet_cards.parquet")
-            cards.to_parquet(out_tbl, index=False, compression="gzip")
-            logger.info("Stored bet cards for %s.", self.model_name)
-        except Exception as e:
-            logger.error("Bet cards failed: %s", e)
-            raise
-
-    # ─────────────────────────── drift monitoring ──────────────────────── #
-
-    def store_feature_psi(
-        self,
-        train_df: pd.DataFrame,
-        serve_df: pd.DataFrame,
-        max_features: int = 2000,
-    ) -> pd.DataFrame:
-        """
-        Population Stability Index per feature (numeric only); PSI>0.2 = drift warning.
-        """
-        try:
-
-            def _psi(a, b, bins=10):
-                a = np.asarray(a, dtype=float)
-                b = np.asarray(b, dtype=float)
-                qa = np.quantile(a[~np.isnan(a)], np.linspace(0, 1, bins + 1))
-                qa[0], qa[-1] = -np.inf, np.inf
-                ca = np.histogram(a, qa)[0] / max(1, len(a))
-                cb = np.histogram(b, qa)[0] / max(1, len(b))
-                ca = np.clip(ca, 1e-6, 1)
-                cb = np.clip(cb, 1e-6, 1)
-                return float(np.sum((ca - cb) * np.log(ca / cb)))
-
-            num_cols = [
-                c
-                for c in train_df.select_dtypes("number").columns
-                if c in serve_df.columns
-            ][:max_features]
-            rows = []
-            for c in num_cols:
-                rows.append(  # noqa: PERF401
-                    {
-                        "feature": c,
-                        "psi": _psi(train_df[c].values, serve_df[c].values),
-                    }
-                )
-            df = pd.DataFrame(rows).sort_values("psi", ascending=False)
-            out_tbl = self.insight_path("feature_psi.parquet")
-            df.to_parquet(out_tbl, index=False, compression="gzip")
-
-            # Plot top drifters
-            top = df.head(25)
-            fig = plt.figure(figsize=(10, 8))
-            sns.barplot(y="feature", x="psi", data=top, orient="h")
-            plt.axvline(0.2, color="orange", linestyle="--", label="Warn (0.2)")
-            plt.axvline(0.3, color="red", linestyle="--", label="High (0.3)")
-            plt.legend()
-            plt.tight_layout()
-            out = self.fig_path("feature_psi_top.png")
-            plt.savefig(out, dpi=300)
-            plt.close(fig)
-            logger.info("Stored PSI drift report for %s.", self.model_name)
-            return df
-        except Exception as e:
-            logger.error("PSI computation failed: %s", e)
-            raise
-
-    # ───────────────────── importance stability (CV) ───────────────────── #
-
-    def store_importance_stability(
-        self, fold_importances: list[np.ndarray], feature_names: list[str]
-    ) -> None:
-        """
-        Given a list of feature_importances_ arrays (one per CV fold), store
-        mean, std, and rank stability (Spearman) across folds.
-        """
-        try:
-            M = np.vstack(fold_importances)  # shape: n_folds x n_features
-            mean_imp = M.mean(axis=0)
-            std_imp = M.std(axis=0)
-            data = {
-                "feature": feature_names,
-                "mean_importance": mean_imp,
-                "std_importance": std_imp,
-                "cv": np.where(
-                    mean_imp != 0, std_imp / np.maximum(mean_imp, 1e-9), np.nan
-                ),
-            }
-            if st is not None and len(M) > 1:
-                ranks = np.argsort(np.argsort(-M, axis=1), axis=1)  # descending rank
-                rhos = []
-                for i in range(len(M)):
-                    rhos.extend(
-                        st.spearmanr(ranks[i], ranks[j]).statistic
-                        for j in range(i + 1, len(M))
-                    )
-                data["avg_rank_spearman"] = float(np.nanmean(rhos)) if rhos else np.nan
-
-            summary = pd.DataFrame(data).sort_values("mean_importance", ascending=False)
-            out_tbl = self.insight_path("importance_stability.parquet")
-            summary.to_parquet(out_tbl, index=False, compression="gzip")
-            logger.info("Stored importance stability for %s.", self.model_name)
-        except Exception as e:
-            logger.error("Importance stability failed: %s", e)
             raise
 
     # ─────────────────────────── model card JSON ───────────────────────── #
@@ -863,8 +697,26 @@ class MLObservabilityMixin:
                 "data_window": data_window or {},
                 "rows": {"train": n_rows_train, "val": n_rows_val, "test": n_rows_test},
                 "n_features": len(features),
-                "feature_hash": str(hash(tuple(sorted(features)))),
+                "feature_hash": hashlib.sha256(
+                    json.dumps(
+                        sorted(features),
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
                 "hyperparameters": hyperparams or {},
+                "calibration": {
+                    "mode": getattr(self, "calibration", None),
+                    "method": getattr(self, "calibration_method", None),
+                    "selected_probability_method": getattr(
+                        getattr(self, "probability_calibrator", None), "method", None
+                    ),
+                    "selected_prop_method": getattr(
+                        getattr(self, "prop_calibrator", None), "method", None
+                    ),
+                    "calibration_size": getattr(self, "calibration_size", None),
+                    "tune_size": getattr(self, "tune_size", None),
+                    "test_size": getattr(self, "test_size", None),
+                },
                 "code_version": code_version,
                 "data_hash": data_hash,
             }

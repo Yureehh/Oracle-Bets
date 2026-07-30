@@ -2,7 +2,7 @@
 
 Rating-system features for LoL.
 
-This folder contains Elo, Glicko2, Plackett-Luce, TrueSkill, league Elo, and WHR
+This folder contains Elo, Glicko2, Plackett-Luce, TrueSkill, and league Elo
 implementations. Ratings should be tuned and validated with walk-forward splits.
 
 Example:

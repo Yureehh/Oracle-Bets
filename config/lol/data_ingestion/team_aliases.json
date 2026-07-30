@@ -1,0 +1,46 @@
+{
+  "_comment": "External aliases are used only for provider-name resolution. Historical identity merges rewrite Oracle's Elixir names and IDs before history reconciliation.",
+  "suffixes_to_strip": [
+    "esports",
+    "esport",
+    "e-sports",
+    "gaming",
+    "team",
+    "club"
+  ],
+  "external_aliases": {
+    "AG.AL": "Anyone's Legend"
+  },
+  "historical_identity_merges": [
+    [
+      {
+        "name": "Partizan Esports",
+        "teamid": "oe:team:e42ade212c09777da0f54bffe481f6d"
+      },
+      {
+        "name": "Partizan Sangal",
+        "teamid": "oe:team:a66e91a2f91dd5b797328cdebf35039"
+      }
+    ],
+    [
+      {
+        "name": "Fluxo",
+        "teamid": "oe:team:ca3882dbcefa68eac0892e3218080db"
+      },
+      {
+        "name": "Fluxo W7M",
+        "teamid": "oe:team:45c362a0cfc4b81f597b5ab89250df5"
+      }
+    ],
+    [
+      {
+        "name": "MGN Vikings Esports",
+        "teamid": "oe:team:fe099196385a285d6d6edde504dc1f6"
+      },
+      {
+        "name": "MVK Esports",
+        "teamid": "oe:team:bc3824b0bbb8139d16109178faa4822"
+      }
+    ]
+  ]
+}

@@ -3,7 +3,7 @@ Data Generator (typed / lightly-refactored).
 
 Daily pipeline:
 
-1. Ingest last *N* seasons of Oracle-Elixir data from S3.
+1. Ingest last *N* seasons of Oracle-Elixir data from public Google Drive files.
 2. Clean & split into team / player sets.
 3. Generate engineered features.
 4. Add ratings (ELO, Glicko2, PL, TrueSkill) + performance metrics.
@@ -25,19 +25,20 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Literal
 
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from oracle_bets_core.io_utils import json_loader, safe_store_df_as_parquet
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
+    DATA_QUALITY_REPORT,
     FLATTENED_PLAYER_CONFIG,
     FLATTENED_TEAM_CONFIG,
+    HISTORY_REFRESH_MANIFEST,
     INTERIM_PLAYER_DATA,
     INTERIM_TEAM_DATA,
     PROCESSED_DIR,
     PROCESSED_PLAYERS,
     PROCESSED_TEAMS,
+    QUARANTINED_RAW_DATA,
     RAW_DATA,
     TRAINING_COMPACT_PLAYER_CONFIG,
     TRAINING_COMPACT_TEAM_CONFIG,
@@ -52,10 +53,37 @@ from lol_bets.data_generation.feature_engineering.features_generator import (
 from lol_bets.data_generation.feature_engineering.performance_features.performance_metrics import (
     PerformanceMetrics,
 )
-from lol_bets.data_generation.feature_engineering.ratings_features.rating_models import (
-    Ratings,
+from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
+    calculate_elo,
 )
-from lol_bets.data_generation.ingestion.oracles_elixir import OraclesElixir
+from lol_bets.data_generation.feature_engineering.ratings_features.glicko import (
+    calculate_glicko2,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.leagues_elo import (
+    calculate_leagues_elo,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.plackett_luce import (
+    calculate_plackett_luce,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.trueskill import (
+    calculate_trueskill,
+)
+from lol_bets.data_generation.ingestion.history import (
+    HistoryRefreshMode,
+    SourceHistoryError,
+    merge_history,
+    refresh_years,
+    write_history_manifest,
+)
+from lol_bets.data_generation.ingestion.oracles_elixir import (
+    OraclesElixir,
+    OraclesElixirError,
+)
+from lol_bets.data_generation.ingestion.quality import (
+    quarantine_oracles_elixir_data,
+    write_quality_report,
+)
+from lol_bets.prediction_models.feature_contract import default_feature_registry
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -73,19 +101,17 @@ def _dbl(msg: str) -> None:
 
 
 # ───────────────────────────────  constants  ──────────────────────────────────
-BUCKET_ENV: Final[str] = "BUCKET_NAME"
-AWS_ID_ENV: Final[str] = "ACCESS_ID"
-AWS_SECRET_ENV: Final[str] = "SECRET_ID"  # noqa: S105
-
 YEARS_BACK: Final[int] = 3
 Entity = Literal["team", "player"]
 
 
 # ───────────────────────────────  helpers  ────────────────────────────────────
-def _years_to_process() -> list[str]:
+def _years_to_process(
+    mode: HistoryRefreshMode = HistoryRefreshMode.INCREMENTAL,
+) -> list[str]:
     """Return the most recent `YEARS_BACK` seasons (descending) as strings."""
     now = dt.date.today().year
-    return [str(y) for y in range(now, now - YEARS_BACK, -1)]
+    return [str(year) for year in refresh_years(now, mode, years_back=YEARS_BACK)]
 
 
 def _parallelise(
@@ -113,15 +139,6 @@ def _parallelise(
         return results["team"], results["player"]
 
 
-def _require_env(key: str) -> str:
-    """Fail-fast env lookup that raises a pipeline-specific error."""
-    val = os.getenv(key)
-    if not val:
-        msg = f"Environment variable '{key}' not set"
-        raise DataGeneratorError(msg)
-    return val
-
-
 class DataGeneratorError(RuntimeError):
     """Custom error for DataGenerator exceptions."""
 
@@ -131,48 +148,81 @@ class DataGeneratorError(RuntimeError):
 class DataGenerator:
     """End-to-end data update pipeline."""
 
+    history_mode: HistoryRefreshMode = HistoryRefreshMode.INCREMENTAL
+
     # populated in __post_init__
-    bucket_name: str = field(init=False)
-    s3_session: boto3.Session = field(init=False)
     oracle: OraclesElixir = field(init=False)
 
     feature_generator: FeatureGenerator = field(default_factory=FeatureGenerator)
-    rating_models: Ratings = field(default_factory=Ratings)
 
     team_data: pd.DataFrame = field(default_factory=pd.DataFrame, init=False)
     player_data: pd.DataFrame = field(default_factory=pd.DataFrame, init=False)
 
     # ───────────────────────  initialisation  ────────────────────────────
     def __post_init__(self) -> None:
-        self.bucket_name = _require_env(BUCKET_ENV)
-        self.s3_session = boto3.Session(
-            aws_access_key_id=_require_env(AWS_ID_ENV),
-            aws_secret_access_key=_require_env(AWS_SECRET_ENV),
-        )
-        self.oracle = OraclesElixir(session=self.s3_session, bucket=self.bucket_name)
+        if not isinstance(self.history_mode, HistoryRefreshMode):
+            self.history_mode = HistoryRefreshMode(self.history_mode)
+        self.oracle = OraclesElixir()
         _dbl("DataGenerator initialised.")
 
     # ───────────────────────  ingest  ────────────────────────────────────
-    def ingest_data_from_s3(self) -> pd.DataFrame:
-        years = _years_to_process()
+    def ingest_data(self) -> pd.DataFrame:
+        years = _years_to_process(self.history_mode)
         _dbl(f"Ingesting seasons: {years}")
         try:
-            raw = self.oracle.ingest_data(years=years)
-            if raw.empty:
+            incoming = self.oracle.ingest_data(years=years)
+            if incoming.empty:
                 msg = f"No data ingested for years: {years}"
                 raise DataGeneratorError(msg)
-            _dbl(f"Ingested {len(raw):,} rows")
+            incoming = incoming.drop_duplicates().reset_index(drop=True)
+            existing = (
+                pd.read_parquet(RAW_DATA)
+                if RAW_DATA.exists()
+                else pd.DataFrame(columns=incoming.columns)
+            )
+            raw, manifest = merge_history(
+                existing,
+                incoming,
+                mode=self.history_mode,
+                refreshed_at=dt.datetime.now(dt.UTC),
+            )
+            write_history_manifest(manifest, HISTORY_REFRESH_MANIFEST)
+            _dbl(
+                f"History refresh ({self.history_mode.value}) produced "
+                f"{len(raw):,} rows: +{manifest.added_rows:,}, "
+                f"updated {manifest.updated_rows:,}."
+            )
             safe_store_df_as_parquet(raw, RAW_DATA, [logger, data_pipeline_logger])
             return raw
-        except (BotoCoreError, ClientError) as exc:  # AWS-side errors
-            msg = f"S3 ingest failed: {exc}"
+        except (OraclesElixirError, SourceHistoryError) as exc:
+            msg = f"Oracle Elixir ingest failed: {exc}"
             raise DataGeneratorError(msg) from exc
 
     # ───────────────────────  split & persist  ───────────────────────────
+    def _quality_gate_raw(self, raw: pd.DataFrame) -> pd.DataFrame:
+        """Merge exact duplicates and persist quarantined rows plus a manifest."""
+        accepted, quarantined, report = quarantine_oracles_elixir_data(
+            raw,
+            manual_invalid_games=(),
+        )
+        write_quality_report(report, DATA_QUALITY_REPORT)
+        safe_store_df_as_parquet(
+            quarantined,
+            QUARANTINED_RAW_DATA,
+            [logger, data_pipeline_logger],
+        )
+        _dbl(
+            "Raw quality gate accepted "
+            f"{report.accepted_games:,} games and quarantined "
+            f"{report.quarantined_games:,}."
+        )
+        return accepted
+
     def clean_and_store_data(self, raw: pd.DataFrame) -> None:
         """Split raw into team/player, persist interim. Sorting done in clean_data()."""
-        self.team_data = self.oracle.clean_data(raw, "team")
-        self.player_data = self.oracle.clean_data(raw, "player")
+        accepted = self._quality_gate_raw(raw)
+        self.team_data = self.oracle.clean_data(accepted, "team")
+        self.player_data = self.oracle.clean_data(accepted, "player")
 
         self._store_team_and_player(
             INTERIM_TEAM_DATA,
@@ -184,17 +234,21 @@ class DataGenerator:
     def _enrich_ratings(self) -> None:
         _dbl("Adding ratings …")
         # League ELO for teams first (writes league artefacts used by other models)
-        self.team_data = self.rating_models.compute_leagues_elo(self.team_data)
+        self.team_data = calculate_leagues_elo(self.team_data, entity="team")
         # Player + Team ratings, in parallel per model
         for fn in (
-            self.rating_models.compute_elo,
-            self.rating_models.compute_glicko2,
-            self.rating_models.compute_plackett_luce,
-            self.rating_models.compute_trueskill,
+            calculate_elo,
+            calculate_glicko2,
+            calculate_plackett_luce,
+            calculate_trueskill,
         ):
             self.team_data, self.player_data = _parallelise(
                 fn, self.team_data, self.player_data
             )
+        self.team_data = self.feature_generator.add_rating_uncertainty(self.team_data)
+        self.player_data = self.feature_generator.add_rating_uncertainty(
+            self.player_data
+        )
 
     def _enrich_performance(self) -> None:
         _dbl("Adding performance metrics …")
@@ -270,6 +324,7 @@ class DataGenerator:
         cfg = json_loader(config_path)
         key = "flattened_cols" if kind == "flattened" else f"{entity}_features"
         cols: list[str] = cfg[key]
+        default_feature_registry().validate_materialization(cols)
 
         missing = set(cols) - set(df.columns)
         if missing:
@@ -279,9 +334,10 @@ class DataGenerator:
         if kind == "flattened":
             # last row per entity, drop _after suffix for cleaner inference columns
             after = {c: c.replace("_after", "") for c in cols if "_after" in c}
+            identity = f"{entity}name" if entity == "team" else f"{entity}id"
             out = (
-                df.sort_values([f"{entity}id", "date"])
-                .groupby(f"{entity}id", sort=False)
+                df.sort_values([identity, "date"])
+                .groupby(identity, sort=False)
                 .tail(1)[cols]
                 .rename(columns=after)
             )
@@ -313,7 +369,7 @@ class DataGenerator:
         def _timed(_: str) -> float:
             return (dt.datetime.now() - start).total_seconds()
 
-        raw = self.ingest_data_from_s3()
+        raw = self.ingest_data()
         _dbl(f"  [1/5] Ingestion: {_timed('ingest'):.1f}s")
 
         self.clean_and_store_data(raw)

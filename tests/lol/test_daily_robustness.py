@@ -1,0 +1,251 @@
+"""Tests for daily workflow failure handling, snapshots, and market matching."""
+
+import datetime as dt
+
+from lol_bets.daily import (
+    DailyStepResult,
+    DailyWorkflowConfig,
+    _build_prediction_messages,
+    _team_matches_text,
+    append_prediction_snapshots,
+    build_prediction_snapshot_rows,
+    format_step_summary,
+    run_daily_lol_workflow,
+    select_market_candidates,
+)
+from lol_bets.inference.team import InsufficientRosterHistoryError
+from oracle_bets_core.markets import MarketQuote
+from oracle_bets_core.pd import pd
+
+EXPECTED_WIN_PROBABILITY = 0.6
+EXPECTED_MARKET_PRICE = 0.55
+EXPECTED_TOTAL_KILLS = 27.5
+
+
+def _future_schedule() -> pd.DataFrame:
+    start = dt.datetime.now(dt.UTC) + dt.timedelta(hours=6)
+    return pd.DataFrame(
+        [
+            {
+                "league": "LCK",
+                "team_a": "T1",
+                "team_b": "Gen.G",
+                "start_utc": start.isoformat(),
+                "best_of": 3,
+                "market_query": "LCK T1 Gen.G",
+                "discord_label": "LCK | T1 vs Gen.G | BO3",
+            }
+        ]
+    )
+
+
+class _FakePredictor:
+    outcome_calibrator = object()
+
+    def predict_match(self, team1, *_args, **_kwargs):
+        if team1.name == "T1":
+            return {"team1_win_probability": 0.6, "team2_win_probability": 0.4}
+        return {"team1_win_probability": 0.4, "team2_win_probability": 0.6}
+
+    def predict_gamelength(self, *_args, **_kwargs):
+        return 31.2
+
+    def predict_total_kills(self, *_args, **_kwargs):
+        return 27.5
+
+    def predict_total_towers(self, *_args, **_kwargs):
+        return 13.1
+
+
+class _FakeMarketSearch:
+    def search(self, _query: str, **_kwargs):
+        return []
+
+
+def test_insufficient_roster_history_is_reported_separately(monkeypatch):
+    import lol_bets.daily as daily_module
+
+    def fail_for_history(*_args, **_kwargs):
+        raise InsufficientRosterHistoryError("missing top")
+
+    monkeypatch.setattr(
+        daily_module, "build_match_prediction_message", fail_for_history
+    )
+    messages, details = _build_prediction_messages(
+        _future_schedule(),
+        cfg=DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        predictor_factory=_FakePredictor,
+        market_search_factory=_FakeMarketSearch,
+    )
+
+    assert details[0]["status"] == "insufficient_history"
+    assert "no prediction was fabricated" in messages[-1]
+
+
+# ── schedule fetch failure handling ─────────────────────────────────────── #
+
+
+def test_schedule_fetch_failure_yields_failed_step_not_crash(tmp_path, monkeypatch):
+    import lol_bets.daily as daily_module
+
+    # Ensure no stored-schedule fallback exists for this test.
+    monkeypatch.setattr(daily_module, "SCHEDULE", tmp_path / "missing.parquet")
+
+    def broken_fetcher(**_kwargs):
+        msg = "PandaScore down"
+        raise RuntimeError(msg)
+
+    result = run_daily_lol_workflow(
+        DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        schedule_fetcher=broken_fetcher,
+        predictor_factory=_FakePredictor,
+        market_search_factory=_FakeMarketSearch,
+    )
+
+    assert not result.ok
+    schedule_steps = [step for step in result.steps if step.name == "schedule"]
+    assert len(schedule_steps) == 1
+    assert not schedule_steps[0].ok
+    assert "PandaScore down" in schedule_steps[0].detail
+    assert result.schedule.empty
+
+
+def test_schedule_fetch_failure_does_not_run_mutating_steps(tmp_path, monkeypatch):
+    import lol_bets.daily as daily_module
+
+    monkeypatch.setattr(daily_module, "SCHEDULE", tmp_path / "missing.parquet")
+    called = {"ingest": False}
+
+    def broken_fetcher(**_kwargs):
+        msg = "boom"
+        raise RuntimeError(msg)
+
+    def data_generator_factory():
+        called["ingest"] = True
+        msg = "must not ingest after schedule failure"
+        raise AssertionError(msg)
+
+    result = run_daily_lol_workflow(
+        DailyWorkflowConfig(dry_run=False, skip_market_search=True),
+        schedule_fetcher=broken_fetcher,
+        data_generator_factory=data_generator_factory,
+        predictor_factory=_FakePredictor,
+        market_search_factory=_FakeMarketSearch,
+        webhook_sender=lambda *_a, **_k: None,
+    )
+
+    assert not result.ok
+    assert not called["ingest"]
+
+
+# ── step summary honesty ────────────────────────────────────────────────── #
+
+
+def test_step_summary_marks_skipped_and_failed_steps():
+    steps = [
+        DailyStepResult("ingest", ok=False, detail="Google Drive timeout"),
+        DailyStepResult("validate-data", ok=True, detail="skipped after failure"),
+        DailyStepResult("train", ok=True, detail="skipped after failure"),
+    ]
+
+    summary = format_step_summary(steps)
+
+    assert "FAILED: ingest" in summary
+    assert "SKIPPED: validate-data" in summary
+    assert "SKIPPED: train" in summary
+    assert "predictions suppressed" in summary
+
+
+def test_step_summary_all_ok_has_no_failure_banner():
+    steps = [DailyStepResult("schedule", ok=True, detail="3 matches in next 2 days")]
+
+    summary = format_step_summary(steps)
+
+    assert "OK: schedule" in summary
+    assert "predictions suppressed" not in summary
+
+
+# ── prediction snapshots ────────────────────────────────────────────────── #
+
+
+def _snapshot_rows() -> list[dict]:
+    row = _future_schedule().iloc[0]
+    return build_prediction_snapshot_rows(
+        row,
+        team_a_name="T1",
+        team_b_name="Gen.G",
+        match_type="bo3",
+        team_a_win=0.6,
+        team_b_win=0.4,
+        probability_source="calibrated",
+        prop_values={"total_kills": 27.5},
+        quotes=[
+            MarketQuote(
+                source="polymarket",
+                market_id="1",
+                question="Will T1 beat Gen.G in League of Legends?",
+                outcome="T1",
+                implied_probability=0.55,
+                liquidity=1500,
+            )
+        ],
+    )
+
+
+def test_snapshot_rows_cover_both_selections_and_props():
+    rows = _snapshot_rows()
+
+    winner_rows = [r for r in rows if r["market"] == "winner"]
+    assert {r["selection"] for r in winner_rows} == {"T1", "Gen.G"}
+    t1_row = next(r for r in winner_rows if r["selection"] == "T1")
+    assert t1_row["model_value"] == EXPECTED_WIN_PROBABILITY
+    assert t1_row["poly_price"] == EXPECTED_MARKET_PRICE
+    prop_rows = [r for r in rows if r["market"] == "total_kills_mean"]
+    assert len(prop_rows) == 1
+    assert prop_rows[0]["model_value"] == EXPECTED_TOTAL_KILLS
+
+
+def test_snapshot_append_is_idempotent_per_day(tmp_path):
+    path = tmp_path / "prediction_snapshots.parquet"
+    rows = _snapshot_rows()
+
+    append_prediction_snapshots(rows, path=path)
+    append_prediction_snapshots(rows, path=path)
+
+    stored = pd.read_parquet(path)
+    keys = ["run_date", "team_a", "team_b", "start_utc", "market", "selection"]
+    assert not stored.duplicated(subset=keys).any()
+    assert len(stored) == len(rows)
+
+
+# ── conservative market matching ────────────────────────────────────────── #
+
+
+def test_short_team_tokens_do_not_match_generic_english():
+    assert not _team_matches_text("Team WE", "Will we see a new champion in LoL?")
+    assert _team_matches_text("Team WE", "Will Team WE beat LNG Esports?")
+
+
+def test_all_informative_tokens_must_match():
+    assert not _team_matches_text(
+        "Bilibili Gaming", "Will Gaming fans watch the finals?"
+    )
+    assert _team_matches_text(
+        "Bilibili Gaming", "Will Bilibili Gaming win the LPL split?"
+    )
+
+
+def test_market_candidates_reject_stopword_false_positives():
+    quotes = [
+        MarketQuote(
+            source="polymarket",
+            market_id="1",
+            question="Will we get a new League of Legends champion?",
+            outcome="Yes",
+            implied_probability=0.5,
+        )
+    ]
+
+    out = select_market_candidates(quotes, team_a="Team WE", team_b="LNG Esports")
+
+    assert out == []

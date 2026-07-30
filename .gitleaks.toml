@@ -1,0 +1,9 @@
+title = "Oracle Bets secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documentation uses explicit non-secret placeholders."
+paths = ['''README\.md''', '''docs/getting_started/installation\.md''']
+regexes = ['''your-[a-z-]+''']

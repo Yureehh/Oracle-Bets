@@ -11,22 +11,24 @@ LightGBM Model and Model Factory (lean, laptop-friendly).
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import lightgbm as lgb
 import numpy as np
 import optuna
-from oracle_bets_core.io_utils import load_model
 from oracle_bets_core.logger import logger
-from oracle_bets_core.paths import MODELS_DIR
+from oracle_bets_core.paths import TUNED_LIGHTGBM_HYPERPARAMETERS
 from sklearn.metrics import log_loss
 
 from lol_bets.prediction_models.gbdt_model import (
-    DEFAULT_SELECTED_MAX_FEATURES,
+    DEFAULT_TRIALS as _TRIALS_CAP,
+)
+from lol_bets.prediction_models.gbdt_model import (
     GradientBoostingModel,
 )
-from lol_bets.prediction_models.gbdt_model import DEFAULT_TRIALS as _TRIALS_CAP
 
 if TYPE_CHECKING:
     from oracle_bets_core.pd import pd
@@ -37,6 +39,9 @@ _DEFAULT_N_ESTIMATORS = 3000
 _EARLY_STOP_ROUNDS = 50
 _RANDOM_STATE = 42
 _ALLOWED_BOOSTING_TYPES = ("gbdt",)
+_HPARAM_CACHE_VERSION = 2
+_HPARAM_PARAMS_KEY = "params"
+_HPARAM_METADATA_KEY = "metadata"
 
 
 class _LGBWithThreshold:
@@ -53,7 +58,7 @@ class _LGBWithThreshold:
         return getattr(self.raw_model, "feature_importances_", None)
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        return self.raw_model.predict_proba(X)
+        return np.asarray(self.raw_model.predict_proba(X))
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         proba = self.predict_proba(X)
@@ -84,16 +89,20 @@ class LightGBMModel(GradientBoostingModel):
         categorical_features: list[str] | None,
     ) -> Any:  # sourcery skip: move-assign
         """Fit a single LightGBM model with early stopping."""
-        # Load cached best hparams if present; otherwise run HPO (clamped for laptops)
+        # Retuning is explicit; routine retraining must never launch Optuna silently.
         best_params = self._maybe_load_cached_hparams()
         if best_params is None:
-            logger.info(
-                "No cached hyperparameters found; running Optuna (cap=%d).", _TRIALS_CAP
-            )
+            if not self.force_retune:
+                msg = (
+                    f"No compatible production hyperparameters for {self.model_name}. "
+                    "Run `oracle-bets lol retune`, review its report, then run "
+                    "`oracle-bets lol promote-tuning <run-id>`."
+                )
+                raise RuntimeError(msg)
+            logger.info("Running explicit Optuna retune (cap=%d).", _TRIALS_CAP)
             best_params = self._optimize_hyperparameters(X_train, y_train, X_val, y_val)
-            self.store_best_hyperparameters(best_params)
         else:
-            logger.info("Loaded cached hyperparameters for %s.", self.model_name)
+            logger.info("Loaded reviewed hyperparameters for %s.", self.model_name)
 
         params = dict(best_params)
         params.setdefault("n_estimators", _DEFAULT_N_ESTIMATORS)
@@ -126,7 +135,8 @@ class LightGBMModel(GradientBoostingModel):
         fit_kwargs: dict[str, Any] = {
             "X": X_train,
             "y": y_train,
-            "eval_set": [(X_val, y_val)],
+            "eval_X": X_val,
+            "eval_y": y_val,
             "eval_metric": params.get("metric"),
         }
         if categorical_features:
@@ -163,11 +173,19 @@ class LightGBMModel(GradientBoostingModel):
     ) -> dict[str, Any]:
         """Optuna search with a compact space + early stopping. Good perf / runtime tradeoff for laptops."""
 
-        def _store_if_best(study: optuna.Study, trial: optuna.Trial) -> None:
+        def _store_if_best(
+            study: optuna.Study,
+            trial: optuna.trial.FrozenTrial,
+        ) -> None:
             """Persist hyperparameters whenever Optuna finds a new best."""
             try:
                 if study.best_trial == trial:
-                    self.store_best_hyperparameters(trial.params)
+                    if trial.value is None:
+                        return
+                    self.store_best_hyperparameters(
+                        trial.params,
+                        score=float(trial.value),
+                    )
             except Exception as e:
                 logger.debug("Failed to store interim best hyperparameters: %s", e)
 
@@ -218,7 +236,8 @@ class LightGBMModel(GradientBoostingModel):
             fit_kwargs: dict[str, Any] = {
                 "X": X_train,
                 "y": y_train,
-                "eval_set": [(X_val, y_val)],
+                "eval_X": X_val,
+                "eval_y": y_val,
                 "eval_metric": params.get("metric"),
             }
             cat_cols = [
@@ -238,7 +257,7 @@ class LightGBMModel(GradientBoostingModel):
             clf.fit(**fit_kwargs)
 
             if self.problem_type == "classification":
-                preds = clf.predict_proba(X_val)[:, 1]
+                preds = np.asarray(clf.predict_proba(X_val))[:, 1]
                 # sklearn >= 1.5: no 'eps' kwarg -> clip manually to avoid log(0)
                 preds = np.clip(preds, 1e-15, 1 - 1e-15)
                 return float(log_loss(y_val, preds))
@@ -246,98 +265,164 @@ class LightGBMModel(GradientBoostingModel):
             residuals = np.asarray(y_val, dtype=float) - np.asarray(preds, dtype=float)
             return float(np.sqrt(np.mean(np.square(residuals))))
 
-        study = optuna.create_study(
-            direction="minimize",
-            sampler=optuna.samplers.TPESampler(seed=_RANDOM_STATE),
-        )
         n_trials = min(self.trials, _TRIALS_CAP)
         logger.info("Optuna: running %d trials (cap).", n_trials)
-        study.optimize(
-            _objective,
-            n_trials=n_trials,
-            show_progress_bar=False,
-            callbacks=[_store_if_best],
-        )
+        previous_verbosity = optuna.logging.get_verbosity()
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        try:
+            study = optuna.create_study(
+                direction="minimize",
+                sampler=optuna.samplers.TPESampler(seed=_RANDOM_STATE),
+            )
+            study.optimize(
+                _objective,
+                n_trials=n_trials,
+                show_progress_bar=False,
+                callbacks=[_store_if_best],
+            )
+        finally:
+            optuna.logging.set_verbosity(previous_verbosity)
         logger.info(
             "Optuna best value: %.6f | params: %s", study.best_value, study.best_params
         )
         # Ensure final best is stored even if callback failed silently
-        self.store_best_hyperparameters(study.best_params)
+        self.store_best_hyperparameters(
+            study.best_params,
+            score=float(study.best_value),
+        )
         return study.best_params
 
     # ─────────────────────────── utilities ─────────────────────────── #
 
+    def _hparams_path(self):
+        if self.force_retune:
+            if self.report_root is None:
+                raise RuntimeError(
+                    "Research retuning requires a run-scoped report root."
+                )
+            return self.report_root / self.model_name / "tuned_hyperparameters.json"
+        return TUNED_LIGHTGBM_HYPERPARAMETERS / f"{self.model_name}.json"
+
+    def _feature_schema_fingerprint(self) -> str:
+        payload = json.dumps(
+            {
+                "team_columns": sorted(map(str, self.team_data.columns)),
+                "player_columns": sorted(map(str, self.player_data.columns)),
+                "feature_set": self.feature_set,
+                "max_features": self.max_features,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def _hparam_cache_metadata(self) -> dict[str, Any]:
+        return {
+            "version": _HPARAM_CACHE_VERSION,
+            "model_type": "lightgbm",
+            "model_name": self.model_name,
+            "problem_type": self.problem_type,
+            "feature_set": self.feature_set,
+            "max_features": self.max_features,
+            "calibration": self.calibration,
+            "calibration_method": self.calibration_method,
+            "calibration_size": self.calibration_size,
+            "tune_size": self.tune_size,
+            "test_size": self.test_size,
+            "feature_schema_fingerprint": self._feature_schema_fingerprint(),
+            "random_seed": _RANDOM_STATE,
+            "objective": (
+                "binary_logloss" if self.problem_type == "classification" else "rmse"
+            ),
+            "code_version": self.git_code_version(),
+            "search_space_version": 1,
+            "dataset_fingerprint": self.dataset_fingerprint,
+        }
+
+    def store_best_hyperparameters(
+        self,
+        hyperparams: dict[str, Any],
+        *,
+        score: float | None = None,
+    ) -> None:
+        """Persist tuned params with provenance needed for safe cache reuse."""
+        path = self._hparams_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            _HPARAM_PARAMS_KEY: dict(hyperparams),
+            _HPARAM_METADATA_KEY: self._hparam_cache_metadata()
+            | {"validation_score": score},
+        }
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+        logger.debug("Stored %s", path.name)
+
+    def _validate_cached_hparams(self, hp: Any) -> dict[str, Any] | None:
+        if not isinstance(hp, dict) or not hp:
+            return None
+        if hp.get("boosting_type", "gbdt") not in _ALLOWED_BOOSTING_TYPES:
+            logger.info(
+                "Ignoring cached hyperparameters for %s: unsupported boosting_type=%s.",
+                self.model_name,
+                hp.get("boosting_type"),
+            )
+            return None
+        return hp
+
+    def _params_from_cache_payload(self, payload: Any) -> dict[str, Any] | None:
+        if not isinstance(payload, dict) or not payload:
+            return None
+        if {
+            _HPARAM_PARAMS_KEY,
+            _HPARAM_METADATA_KEY,
+        } <= set(payload):
+            metadata = payload[_HPARAM_METADATA_KEY]
+            current = self._hparam_cache_metadata()
+            identity_keys = (
+                "version",
+                "model_type",
+                "model_name",
+                "problem_type",
+                "feature_set",
+                "max_features",
+                "feature_schema_fingerprint",
+            )
+            if any(metadata.get(key) != current[key] for key in identity_keys):
+                logger.info(
+                    "Ignoring cached hyperparameters for %s: cache model identity does not match.",
+                    self.model_name,
+                )
+                return None
+            if metadata != current:
+                logger.info(
+                    "Reusing reviewed hyperparameters for %s across non-schema run settings.",
+                    self.model_name,
+                )
+            return self._validate_cached_hparams(payload[_HPARAM_PARAMS_KEY])
+        logger.info(
+            "Ignoring cached hyperparameters for %s: cache has no provenance metadata.",
+            self.model_name,
+        )
+        return None
+
     def _maybe_load_cached_hparams(self) -> dict[str, Any] | None:
-        """Load best_hyperparameters from models/lol/<ModelName>/"""
+        """Load reviewed production hyperparameters from tracked JSON."""
         if self.force_retune:
             logger.info(
-                "Ignoring cached hyperparameters for %s (--force-retune).",
+                "Ignoring production hyperparameters for explicit retuning of %s.",
                 self.model_name,
             )
             return None
-        path = (
-            MODELS_DIR / self.model_name / f"{self.model_name}_best_hyperparameters.pkl"
-        )
+        path = self._hparams_path()
         try:
             if path.exists():
-                hp = load_model(path)
-                if isinstance(hp, dict) and hp:
-                    if hp.get("boosting_type", "gbdt") not in _ALLOWED_BOOSTING_TYPES:
-                        logger.info(
-                            "Ignoring cached hyperparameters for %s: unsupported boosting_type=%s.",
-                            self.model_name,
-                            hp.get("boosting_type"),
-                        )
-                        return None
-                    return hp
+                return self._params_from_cache_payload(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
         except Exception as e:
             logger.warning("Failed to load cached hyperparameters from %s: %s", path, e)
         return None
-
-
-class ModelFactory:
-    """Factory class to create models based on the problem type."""
-
-    SUPPORTED_MODELS = ("lightgbm", "tabnet")
-
-    @staticmethod
-    def create_model(
-        model_name: str,
-        problem_type: str,
-        training_team_data: pd.DataFrame,
-        training_player_data: pd.DataFrame,
-        model_type: str = "lightgbm",
-        force_retune: bool = False,
-        feature_set: str = "full",
-        max_features: int = DEFAULT_SELECTED_MAX_FEATURES,
-    ) -> GradientBoostingModel:
-        if problem_type not in ["classification", "regression"]:
-            msg = f"Unsupported problem type: {problem_type}"
-            raise ValueError(msg)
-
-        if model_type == "lightgbm":
-            return LightGBMModel(
-                model_name=model_name,
-                problem_type=problem_type,
-                team_data=training_team_data,
-                player_data=training_player_data,
-                force_retune=force_retune,
-                feature_set=feature_set,
-                max_features=max_features,
-            )
-
-        if model_type == "tabnet":
-            from lol_bets.prediction_models.tabnet_model import TabNetModel
-
-            return TabNetModel(
-                model_name=model_name,
-                problem_type=problem_type,
-                team_data=training_team_data,
-                player_data=training_player_data,
-                force_retune=force_retune,
-                feature_set=feature_set,
-                max_features=max_features,
-            )
-
-        msg = f"Unsupported model type: {model_type}. Supported: {ModelFactory.SUPPORTED_MODELS}"
-        raise ValueError(msg)

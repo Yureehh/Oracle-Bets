@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
+import os
+import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import lol_bets.inference.match_predictor as match_predictor_module
 import numpy as np
-from lol_bets.inference.team import Team
-from oracle_bets_core.betting import OverUnderSignal, decimal_odds_from_probability
-from oracle_bets_core.io_utils import parquet_loader
-from oracle_bets_core.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
+from oracle_bets_core.betting import (
+    OverUnderSignal,
+    decimal_odds_from_probability,
+    expected_edge,
+    kelly_fraction,
+)
+from oracle_bets_core.logger import logger
 from oracle_bets_core.pd import pd
 
 from oracle_bets_discord.formatting import (
     MESSAGE_LIMIT,
-    dataframe_to_markdown,
-    handle_command_error,
 )
-from oracle_bets_discord.predictions.best_ofs import BestOfs
+from oracle_bets_discord.predictions.best_ofs import bo1, bo2, bo3, bo5
+
+if TYPE_CHECKING:
+    from lol_bets.inference.team import Team
 
 # ── config & constants ──────────────────────────────────────────────────── #
 
@@ -29,21 +34,74 @@ _EMPTY_ROSTER: dict[str, str | None] = {
     "bot": None,
     "sup": None,
 }
-VALID_MATCH_TYPES: list[str] = ["bo1", "bo2", "bo3", "bo5"]
-POSITIONS: tuple[str, ...] = ("top", "jng", "mid", "bot", "sup")
-WEEKS_FOR_DELAY: int = 3
 LOW_CONFIDENCE_WARNING_COUNT: int = 2
+# Defaults; override with ORACLE_BETS_BANKROLL / ORACLE_BETS_KELLY_FRACTION /
+# ORACLE_BETS_STAKE_CAP so displayed stakes match the reader's actual bankroll.
+POLYMARKET_BANKROLL: float = 500.0
+POLYMARKET_KELLY_MULTIPLIER: float = 0.25
+VALUE_EDGE_THRESHOLD: float = 0.05
+WATCH_EDGE_THRESHOLD: float = 0.02
+BINARY_SELECTION_COUNT: int = 2
 
-PLEASE_PROVIDE_TEAMS = "Please provide both a blue and red team name."
-TEAMS_MUST_BE_DIFFERENT = "The two teams must be different."
-FIRST_PICK_TEAM_MUST_MATCH = "First-pick team must match one of the two teams."
 
-# ── lazy, single-shot predictor ─────────────────────────────────────────── #
+def _env_float(name: str, default: float | None) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using default %s.", name, raw, default)
+        return default
 
 
-@lru_cache(maxsize=1)
-def get_match_predictor() -> match_predictor_module.MatchPredictor:
-    return match_predictor_module.MatchPredictor()
+@dataclass(frozen=True)
+class StakingConfig:
+    """Bankroll and Kelly sizing used for *display only* (no bets are placed)."""
+
+    bankroll: float
+    kelly_fraction: float
+    stake_cap: float | None
+
+    @property
+    def kelly_label(self) -> str:
+        if self.kelly_fraction > 0 and (1.0 / self.kelly_fraction).is_integer():
+            return f"1/{int(1.0 / self.kelly_fraction)}"
+        return f"{self.kelly_fraction:g}x"
+
+    @property
+    def cap_label(self) -> str:
+        if self.stake_cap is None:
+            return "No stake cap"
+        return f"Stake cap: €{self.stake_cap:.0f}"
+
+
+def get_staking_config() -> StakingConfig:
+    """Resolve staking display settings from the environment with safe defaults."""
+    bankroll = _env_float("ORACLE_BETS_BANKROLL", POLYMARKET_BANKROLL)
+    kelly = _env_float("ORACLE_BETS_KELLY_FRACTION", POLYMARKET_KELLY_MULTIPLIER)
+    cap = _env_float("ORACLE_BETS_STAKE_CAP", None)
+    if bankroll is None or bankroll <= 0:
+        bankroll = POLYMARKET_BANKROLL
+    if kelly is None or not (0 < kelly <= 1):
+        kelly = POLYMARKET_KELLY_MULTIPLIER
+    if cap is not None and cap <= 0:
+        cap = None
+    return StakingConfig(bankroll=bankroll, kelly_fraction=kelly, stake_cap=cap)
+
+
+@dataclass(frozen=True)
+class WinnerMarketRow:
+    market: str
+    pick: str
+    probability: float
+    poly_price: float | None = None
+
+
+@dataclass(frozen=True)
+class PriceQuote:
+    market: str
+    selections: tuple[tuple[str, float], ...]
 
 
 # ── small helpers ───────────────────────────────────────────────────────── #
@@ -57,34 +115,93 @@ def get_empty_roster() -> dict[str, str | None]:
 # ── schedule / leagues formatting ───────────────────────────────────────── #
 
 
-def format_leagues_message(leagues: list[str]) -> str:
-    if not leagues:
-        return "No leagues found. Please check the league names."
-    formatted = "\n".join(f"- {lg}" for lg in leagues)
-    return f"Leagues playing in the next 7 days are:\n{formatted}"
-
-
 def format_schedule_message(schedule_df: pd.DataFrame) -> str:
-    if schedule_df.empty or "league" not in schedule_df.columns:
+    messages = format_schedule_messages(schedule_df)
+    if not messages:
         return "No upcoming matches found."
-
-    parts: list[str] = []
-    too_long_alert = "Message too long. Please specify a narrower filter."
-
-    for league in np.sort(schedule_df["league"].unique()):
-        block = format_league(schedule_df, league)
-        est_len = len("\n".join(parts)) + len(block)
-        if est_len > MESSAGE_LIMIT - len(too_long_alert):
-            parts.append(too_long_alert)
-            break
-        parts.append(block)
-
-    final = "\n".join(parts)
-    return final or "No upcoming matches found. Double-check the league names."
+    if len(messages) == 1:
+        return messages[0]
+    return messages[0] + "\nMessage split; run the daily workflow for all chunks."
 
 
-def format_league(df: pd.DataFrame, league: str) -> str:
-    league_df = df[df["league"] == league].head(5).copy()
+def format_schedule_messages(
+    schedule_df: pd.DataFrame,
+    *,
+    message_limit: int = MESSAGE_LIMIT,
+) -> list[str]:
+    if schedule_df.empty or "league" not in schedule_df.columns:
+        return ["No upcoming matches found."]
+
+    df = schedule_df.copy()
+    df["start_utc"] = pd.to_datetime(df["start_utc"], errors="coerce", utc=True)
+    df = df.dropna(subset=["start_utc"]).sort_values(
+        ["start_utc", "league", "team_a"], kind="mergesort"
+    )
+    if df.empty:
+        return ["No upcoming matches found."]
+
+    chunks: list[str] = []
+    current = ""
+
+    for day, day_df in df.groupby(df["start_utc"].dt.date, sort=True):
+        day_header = f"**Upcoming LoL Games - {day}**"
+        blocks = [day_header]
+        blocks.extend(
+            format_league(day_df, league, max_matches=None).rstrip()
+            for league in np.sort(day_df["league"].unique())
+        )
+        day_message = "\n\n".join(blocks)
+        for block in _split_schedule_block(day_message, message_limit):
+            if not current:
+                current = block
+                continue
+            candidate = current + "\n\n" + block
+            if len(candidate) >= message_limit:
+                chunks.append(current)
+                current = block
+            else:
+                current = candidate
+
+    if current:
+        chunks.append(current)
+    return chunks or ["No upcoming matches found. Double-check the league names."]
+
+
+def _split_schedule_block(block: str, message_limit: int) -> list[str]:
+    if len(block) < message_limit:
+        return [block]
+    lines = block.splitlines()
+    chunks: list[str] = []
+    current = ""
+    for raw_line in lines:
+        # A single pathological line must never exceed the Discord limit on
+        # its own; the API rejects the whole message.
+        line = (
+            raw_line
+            if len(raw_line) < message_limit
+            else raw_line[: message_limit - 2] + "…"
+        )
+        candidate = line if not current else current + "\n" + line
+        if len(candidate) >= message_limit:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def format_league(
+    df: pd.DataFrame,
+    league: str,
+    *,
+    max_matches: int | None = 5,
+) -> str:
+    league_df = df[df["league"] == league].copy()
+    if max_matches is not None:
+        league_df = league_df.head(max_matches)
     display_cols = {
         "start_utc": "Start (UTC)",
         "team_a": "Team A",
@@ -101,257 +218,7 @@ def format_league(df: pd.DataFrame, league: str) -> str:
         ).dt.strftime("%Y-%m-%d %H:%M")
     md = league_df.to_markdown(index=False)
     md = "\n".join(line.lstrip() for line in md.split("\n"))
-    return f"Upcoming {league} Games (Next 5 Matches Within 7 Days):\n```{md}```\n\n"
-
-
-# ── cached parquet reads for profiles ───────────────────────────────────── #
-
-
-@lru_cache(maxsize=2)
-def _parquet_cached(path: str) -> pd.DataFrame:
-    return parquet_loader(Path(path))
-
-
-def get_player_data(entity_name: str, players_path: Path) -> pd.DataFrame | None:
-    try:
-        df = _parquet_cached(str(players_path))
-        if "playername" not in df.columns:
-            msg = "Column 'playername' not found in players data."
-            raise KeyError(msg)  # noqa: TRY301
-        filtered = df[df["playername"].str.casefold() == entity_name.casefold()]
-        return None if filtered.empty else filtered
-    except Exception as e:
-        msg = f"Error processing player data: {e}"
-        raise ValueError(msg) from e
-
-
-def get_team_data(entity_name: str, teams_path: Path) -> pd.DataFrame | None:
-    try:
-        df = _parquet_cached(str(teams_path))
-        if "teamname" not in df.columns:
-            msg = "Column 'teamname' not found in teams data."
-            raise KeyError(msg)  # noqa: TRY301
-        filtered = df[df["teamname"].str.casefold() == entity_name.casefold()]
-        return None if filtered.empty else filtered
-    except Exception as e:
-        msg = f"Error processing team data: {e}"
-        raise ValueError(msg) from e
-
-
-# ── profile formatting ──────────────────────────────────────────────────── #
-
-
-def format_player_profile(data: pd.DataFrame, truncate: bool = False) -> str:
-    row = data.iloc[0]
-    stats_names = [
-        "Position",
-        "Team",
-        "Elo",
-        "Glicko2 Score",
-        "Plackett-Luce Score",
-        "TrueSkill Score",
-        "Blue Side Win Rate",
-        "Red Side Win Rate",
-        "K/D/A Ratio",
-        "K/D/A at 15",
-        "Gold Diff At 15",
-        "CS Diff At 15",
-        "XP Diff At 15",
-        "CSPM",
-        "DPM",
-        "EGPM",
-        "VSPM",
-        "Damage Share",
-        "XP Efficiency",
-    ]
-    if truncate:
-        stats_names = stats_names[:8]
-
-    def val(k: str, *alts: str) -> float:
-        """Prefer EMA versions if present, else raw; returns np.nan if missing."""
-        for a in (k, *alts):
-            if a in row.index:
-                return row[a]
-        return np.nan
-
-    kd15 = (
-        f"{val('ema_killsat15'):.2f} / {val('ema_deathsat15'):.2f} / {val('ema_assistsat15'):.2f}"
-        if all(
-            x in row.index
-            for x in ("ema_killsat15", "ema_deathsat15", "ema_assistsat15")
-        )
-        else "N/A"
-    )
-
-    stats_values = [
-        str(row.get("position", "")).capitalize(),
-        str(row.get("teamname", "N/A")),
-        f"{val('elo'):.2f}" if "elo" in row.index else "N/A",
-        f"{val('glicko2_mu', 'gl2_mu'):.2f}"
-        if any(c in row.index for c in ("glicko2_mu", "gl2_mu"))
-        else "N/A",
-        f"{val('pl_mu'):.2f}" if "pl_mu" in row.index else "N/A",
-        f"{val('trueskill_mu'):.2f}" if "trueskill_mu" in row.index else "N/A",
-        f"{float(val('ema_blue_side', 'blue_side', 'side_blue') or 0) * 100:.2f}%",
-        f"{float(val('ema_red_side', 'red_side', 'side_red') or 0) * 100:.2f}%",
-        f"{float(val('ema_kda', 'kda') or 0):.2f}",
-        kd15,
-        f"{float(val('ema_golddiffat15', 'golddiffat15') or 0):.2f}",
-        f"{float(val('ema_csdiffat15', 'csdiffat15') or 0):.2f}",
-        f"{float(val('ema_xpdiffat15', 'xpdiffat15') or 0):.2f}",
-        f"{float(val('ema_cspm', 'cspm') or 0):.2f}",
-        f"{float(val('ema_dpm', 'dpm') or 0):.2f}",
-        f"{float(val('ema_egpm', 'egpm') or 0):.2f}",
-        f"{float(val('ema_vspm', 'vspm') or 0):.2f}",
-        f"{float(val('ema_damageshare', 'damageshare') or 0) * 100:.2f}%",
-        f"{float(val('ema_xp_efficiency', 'xp_efficiency') or 0):.2f}",
-    ]
-    if truncate:
-        stats_values = stats_values[:8]
-
-    df_out = pd.DataFrame({"Stat": stats_names, "Value": stats_values})
-    return dataframe_to_markdown(df_out)
-
-
-def format_team_profile(data: pd.DataFrame) -> str:
-    row = data.iloc[0]
-    stats_names = [
-        "Elo",
-        "Glicko-2 Score",
-        "Plackett-Luce Score",
-        "TrueSkill Score",
-        "League Elo",
-        "Patch Win Rate",
-        "Season Win Rate",
-        "Blue Side Win Rate",
-        "Red Side Win Rate",
-        "AVG Gamelength in Minutes",
-    ]
-    stats_values = [
-        f"{row.get('elo', np.nan):.2f}" if "elo" in row.index else "N/A",
-        f"{row.get('glicko2_mu', np.nan):.2f}" if "glicko2_mu" in row.index else "N/A",
-        f"{row.get('pl_mu', np.nan):.2f}" if "pl_mu" in row.index else "N/A",
-        f"{row.get('trueskill_mu', np.nan):.2f}"
-        if "trueskill_mu" in row.index
-        else "N/A",
-        f"{row.get('league_elo', np.nan):.2f}" if "league_elo" in row.index else "N/A",
-        f"{float(row.get('ema_patch_win_rate', 0)) * 100:.2f}%",
-        f"{float(row.get('ema_season_win_rate', 0)) * 100:.2f}%",
-        f"{float(row.get('ema_blue_side', 0)) * 100:.2f}%",
-        f"{float(row.get('ema_red_side', 0)) * 100:.2f}%",
-        f"{float(row.get('ema_gamelength', row.get('gamelength', 0))):.2f}",
-    ]
-    df_out = pd.DataFrame({"Stat": stats_names, "Value": stats_values})
-    return dataframe_to_markdown(df_out)
-
-
-# ── async profile getters ───────────────────────────────────────────────── #
-
-
-async def get_formatted_team_profile(team_name: str) -> tuple[str | None, str | None]:
-    try:
-        team_profile = get_team_data(team_name, FLATTENED_TEAMS)
-        if team_profile is not None and not team_profile.empty:
-            return format_team_profile(team_profile), None
-        return None, f"Data for team '{team_name}' not found in the database."
-    except Exception as e:
-        return None, handle_command_error(e, "Team profile retrieval failed.")
-
-
-async def get_formatted_player_profile(
-    player_name: str, truncate: bool = False
-) -> tuple[str | None, str | None]:
-    try:
-        player_profile = get_player_data(player_name, FLATTENED_PLAYERS)
-        if player_profile is not None and not player_profile.empty:
-            return format_player_profile(player_profile, truncate), None
-        return None, f"Data for player '{player_name}' not found in the database."
-    except Exception as e:
-        return None, handle_command_error(e, "Player profile retrieval failed.")
-
-
-# ── prediction helpers ──────────────────────────────────────────────────── #
-
-
-def add_roster_to_output(output: str, team_a: Team, team_b: Team) -> str:
-    def fmt(team: Team) -> str:
-        parts: list[str] = []
-        for role in POSITIONS:
-            name = team.roster.get(role)
-            parts.append(str(name) if name else "N/A")
-        return " \t-  \t".join(parts)
-
-    output += "\n## Found Rosters\n"
-    output += f"**{team_a.name}:**\t {fmt(team_a)}\n"
-    output += f"**{team_b.name}:**\t {fmt(team_b)}"
-    return output
-
-
-def add_break_flags_to_output(
-    output: str,
-    break_blue_flag: bool,
-    blue_team_name: str,
-    break_red_flag: bool,
-    red_team_name: str,
-) -> str:
-    if break_blue_flag:
-        output += f"\n\nCAREFUL! {blue_team_name} has not played in the last {WEEKS_FOR_DELAY} weeks."
-    if break_red_flag:
-        output += f"\n\nCAREFUL! {red_team_name} has not played in the last {WEEKS_FOR_DELAY} weeks."
-    return output
-
-
-def process_roster(
-    roster_str: str | None, positions: list[str] | None = None
-) -> dict[str, str]:
-    if not roster_str:
-        msg = "Roster string cannot be empty."
-        raise ValueError(msg)
-    positions = positions or list(POSITIONS)
-    players = [p.strip() for p in roster_str.split(",")]
-    if len(players) != len(positions):
-        msg = f"Roster does not contain the correct number of players: expected {len(positions)}, got {len(players)}."
-        raise ValueError(msg)
-    return dict(zip(positions, players, strict=False))
-
-
-def strip_team_names(team1: str | None, team2: str | None) -> tuple[str, str]:
-    return (team1 or "").strip(), (team2 or "").strip()
-
-
-def resolve_first_pick(
-    team_a_name: str,
-    team_b_name: str,
-    first_pick_team_name: str | None,
-) -> tuple[bool | None, bool | None]:
-    if not first_pick_team_name:
-        return None, None
-    first_pick = first_pick_team_name.strip().casefold()
-    if first_pick == team_a_name.casefold():
-        return True, False
-    if first_pick == team_b_name.casefold():
-        return False, True
-    msg = FIRST_PICK_TEAM_MUST_MATCH
-    raise ValueError(msg)
-
-
-def add_selection_context_to_output(
-    output: str,
-    team_a: Team,
-    team_b: Team,
-    account_for_side: bool,
-    first_pick_team_name: str | None,
-) -> str:
-    if not account_for_side and not first_pick_team_name:
-        return output
-    output += "\n\n## Selection Context"
-    if account_for_side:
-        output += f"\n- Map side: {team_a.name}=Blue, {team_b.name}=Red"
-    if first_pick_team_name:
-        output += f"\n- First pick: {first_pick_team_name.strip()}"
-    else:
-        output += "\n- First pick: unknown/neutral"
-    return output
+    return f"Upcoming {league} Games:\n```{md}```\n\n"
 
 
 def _pct(value: float) -> str:
@@ -359,14 +226,14 @@ def _pct(value: float) -> str:
 
 
 def _odds(value: float) -> str:
+    if value <= 0:
+        return "∞"
+    if value >= 1:
+        return "1.00"
     return f"{decimal_odds_from_probability(value):.2f}"
 
 
-def _roster_count(team: Team) -> int:
-    return sum(1 for role in POSITIONS if team.roster.get(role))
-
-
-def _confidence_label(warnings: list[str]) -> str:
+def confidence_label(warnings: list[str]) -> str:
     if len(warnings) >= LOW_CONFIDENCE_WARNING_COUNT:
         return "Low"
     if warnings:
@@ -374,18 +241,437 @@ def _confidence_label(warnings: list[str]) -> str:
     return "High"
 
 
-def _format_warnings(warnings: list[str]) -> str:
+def format_warnings(warnings: list[str]) -> str:
     if not warnings:
-        return "\nWarnings\n- None."
-    return "\nWarnings\n" + "\n".join(f"- {warning}" for warning in warnings)
+        return ""
+    summary = "; ".join(warning.removesuffix(".") for warning in warnings)
+    return f"\n\nWarning: {summary}."
+
+
+def outcome_probability_source(predictor) -> str:
+    calibrator = getattr(predictor, "outcome_calibrator", None)
+    method = getattr(calibrator, "method", None)
+    if method and method != "raw":
+        return f"calibrated model ({method})"
+    if method == "raw":
+        return "raw model (selected by calibration)"
+    return "raw model"
+
+
+def prop_probability_source(predictor, prop_name: str) -> str:
+    calibrator = getattr(predictor, f"{prop_name}_prop_calibrator", None)
+    method = getattr(calibrator, "method", None)
+    return f"prop calibrator ({method})" if method else "residual sigma fallback"
+
+
+def context_line(
+    team_a: Team,
+    team_b: Team,
+    account_for_side: bool,
+    first_pick_team_name: str | None,
+) -> str:
+    side = f"{team_a.name}=Blue, {team_b.name}=Red" if account_for_side else "ignored"
+    first_pick = first_pick_team_name.strip() if first_pick_team_name else "unknown"
+    return f"- Context: side {side} | first pick {first_pick}"
+
+
+def _selection_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+
+def _team_keys(team_name: str) -> set[str]:
+    words = re.findall(r"[A-Za-z0-9]+", team_name)
+    keys = {_selection_key(team_name)}
+    if words:
+        keys.add(_selection_key("".join(word[0] for word in words)))
+        keys.add(_selection_key(words[0]))
+    return keys
+
+
+def _parse_polymarket_price(raw: str) -> float:
+    value = raw.strip().casefold().removesuffix("c")
+    try:
+        price = float(value)
+    except ValueError as e:
+        msg = f"Invalid Polymarket price: {raw!r}."
+        raise ValueError(msg) from e
+    if price > 1:
+        price = price / 100.0
+    if not 0 < price < 1:
+        msg = f"Polymarket price must be between 0 and 1, got {raw!r}."
+        raise ValueError(msg)
+    return price
+
+
+def parse_polymarket_price_quotes(raw_quotes: list[str] | None) -> list[PriceQuote]:
+    quotes: list[PriceQuote] = []
+    for raw_quote in raw_quotes or []:
+        if ":" not in raw_quote:
+            msg = f"Price quote must include a market label, got {raw_quote!r}."
+            raise ValueError(msg)
+        market, raw_selections = raw_quote.split(":", 1)
+        selections: list[tuple[str, float]] = []
+        for raw_selection in raw_selections.split(","):
+            if "=" not in raw_selection:
+                msg = f"Price selection must look like Name=74c, got {raw_selection!r}."
+                raise ValueError(msg)
+            name, price = raw_selection.split("=", 1)
+            selections.append((name.strip(), _parse_polymarket_price(price)))
+        if not selections:
+            msg = f"Price quote has no selections: {raw_quote!r}."
+            raise ValueError(msg)
+        quotes.append(PriceQuote(market=market.strip(), selections=tuple(selections)))
+    return quotes
+
+
+def _base_market_rows(
+    match_type: str,
+    team_a_name: str,
+    team_b_name: str,
+    map_a: float,
+    map_b: float,
+) -> list[WinnerMarketRow]:
+    if match_type == "bo1":
+        d = bo1(map_a, map_b)
+        return [
+            WinnerMarketRow("Map Winner", team_a_name, d["t1"]),
+            WinnerMarketRow("Map Winner", team_b_name, d["t2"]),
+        ]
+    if match_type == "bo2":
+        d = bo2(map_a, map_b)
+        return [
+            WinnerMarketRow("Game 1 Winner", team_a_name, map_a),
+            WinnerMarketRow("Game 1 Winner", team_b_name, map_b),
+            WinnerMarketRow("2-0", team_a_name, d["t1_2_0"]),
+            WinnerMarketRow("1-1", "Draw", d["tie_1_1"]),
+            WinnerMarketRow("2-0", team_b_name, d["t2_0_2"]),
+        ]
+    if match_type == "bo3":
+        d = bo3(map_a, map_b)
+        return [
+            WinnerMarketRow("Game 1 Winner", team_a_name, map_a),
+            WinnerMarketRow("Game 1 Winner", team_b_name, map_b),
+            WinnerMarketRow("Series Winner", team_a_name, d["t1_series"]),
+            WinnerMarketRow("Series Winner", team_b_name, d["t2_series"]),
+            WinnerMarketRow("Over 2.5 Maps", "Over", d["exactly_3"]),
+            WinnerMarketRow("Under 2.5 Maps", "Under", 1.0 - d["exactly_3"]),
+            WinnerMarketRow("Game Handicap 1.5", f"{team_a_name} -1.5", d["t1_2_0"]),
+            WinnerMarketRow(
+                "Game Handicap 1.5", f"{team_b_name} +1.5", 1.0 - d["t1_2_0"]
+            ),
+            WinnerMarketRow("Game Handicap 1.5", f"{team_b_name} -1.5", d["t2_2_0"]),
+            WinnerMarketRow(
+                "Game Handicap 1.5", f"{team_a_name} +1.5", 1.0 - d["t2_2_0"]
+            ),
+        ]
+    d = bo5(map_a, map_b)
+    game4_a = d["at_least_4"] * map_a + (1.0 - d["at_least_4"]) * 0.5
+    game4_b = d["at_least_4"] * map_b + (1.0 - d["at_least_4"]) * 0.5
+    game5_a = d["exactly_5"] * map_a + (1.0 - d["exactly_5"]) * 0.5
+    game5_b = d["exactly_5"] * map_b + (1.0 - d["exactly_5"]) * 0.5
+    return [
+        WinnerMarketRow("Series Winner", team_a_name, d["t1_series"]),
+        WinnerMarketRow("Series Winner", team_b_name, d["t2_series"]),
+        WinnerMarketRow("Over 3.5 Maps", "Over", d["at_least_4"]),
+        WinnerMarketRow("Under 3.5 Maps", "Under", 1.0 - d["at_least_4"]),
+        WinnerMarketRow("Over 4.5 Maps", "Over", d["exactly_5"]),
+        WinnerMarketRow("Under 4.5 Maps", "Under", 1.0 - d["exactly_5"]),
+        WinnerMarketRow(
+            "Game Handicap 1.5", f"{team_a_name} -1.5", d["t1_3_0"] + d["t1_3_1"]
+        ),
+        WinnerMarketRow(
+            "Game Handicap 1.5", f"{team_b_name} +1.5", 1.0 - d["t1_3_0"] - d["t1_3_1"]
+        ),
+        WinnerMarketRow(
+            "Game Handicap 1.5", f"{team_b_name} -1.5", d["t2_0_3"] + d["t2_1_3"]
+        ),
+        WinnerMarketRow(
+            "Game Handicap 1.5", f"{team_a_name} +1.5", 1.0 - d["t2_0_3"] - d["t2_1_3"]
+        ),
+        WinnerMarketRow("Game Handicap 2.5", f"{team_a_name} -2.5", d["t1_3_0"]),
+        WinnerMarketRow("Game Handicap 2.5", f"{team_b_name} +2.5", 1.0 - d["t1_3_0"]),
+        WinnerMarketRow("Game Handicap 2.5", f"{team_b_name} -2.5", d["t2_0_3"]),
+        WinnerMarketRow("Game Handicap 2.5", f"{team_a_name} +2.5", 1.0 - d["t2_0_3"]),
+        WinnerMarketRow("Game 1 Winner", team_a_name, map_a),
+        WinnerMarketRow("Game 1 Winner", team_b_name, map_b),
+        WinnerMarketRow("Game 2 Winner", team_a_name, map_a),
+        WinnerMarketRow("Game 2 Winner", team_b_name, map_b),
+        WinnerMarketRow("Game 3 Winner", team_a_name, map_a),
+        WinnerMarketRow("Game 3 Winner", team_b_name, map_b),
+        WinnerMarketRow("Game 4 Winner", team_a_name, game4_a),
+        WinnerMarketRow("Game 4 Winner", team_b_name, game4_b),
+        WinnerMarketRow("Game 5 Winner", team_a_name, game5_a),
+        WinnerMarketRow("Game 5 Winner", team_b_name, game5_b),
+    ]
+
+
+def _market_key(market: str) -> str:
+    text = market.casefold()
+    game_match = re.search(r"(?:game|g)\s*([1-5]).*winner|^g\s*([1-5])$", text)
+    if game_match:
+        game_number = game_match.group(1) or game_match.group(2)
+        return f"game{game_number}winner"
+    total_match = re.search(r"total\s*games?.*([234]\.5)|^tg\s*([34]\.5)$", text)
+    if total_match:
+        line = total_match.group(1) or total_match.group(2)
+        return f"totalgames{line}"
+    handicap_match = re.search(r"handicap.*([12]\.5)|^h\s*([12]\.5)$", text)
+    if handicap_match:
+        line = handicap_match.group(1) or handicap_match.group(2)
+        return f"handicap{line}"
+    if "moneyline" in text or "series" in text or "match winner" in text:
+        return "serieswinner"
+    if "map winner" in text:
+        return "mapwinner"
+    return _selection_key(market)
+
+
+def _row_market_key(row: WinnerMarketRow) -> str:
+    total_map_match = re.search(r"([234]\.5)\s*maps", row.market.casefold())
+    if total_map_match and row.pick.casefold() in {"over", "under"}:
+        return f"{row.pick.casefold()}{total_map_match.group(1)}"
+    key = _market_key(row.market)
+    if key.startswith("totalgames"):
+        line = key.removeprefix("totalgames")
+        side = "over" if row.pick.casefold() == "over" else "under"
+        return f"{side}{line}"
+    return key
+
+
+def _select_row_for_quote(  # noqa: PLR0911, PLR0912
+    rows: list[WinnerMarketRow],
+    quote: PriceQuote,
+    selection: str,
+    selection_index: int,
+    team_a_name: str,
+    team_b_name: str,
+) -> WinnerMarketRow | None:
+    quote_key = _market_key(quote.market)
+    if quote_key.startswith("totalgames"):
+        side_key = _selection_key(selection)
+        if side_key == "1":
+            side_key = "over"
+        elif side_key == "2":
+            side_key = "under"
+        quote_key = f"{side_key}{quote_key.removeprefix('totalgames')}"
+    candidates = [row for row in rows if _row_market_key(row) == quote_key]
+    if not candidates:
+        return None
+
+    selection_key = _selection_key(selection)
+    team_a_keys = _team_keys(team_a_name)
+    team_b_keys = _team_keys(team_b_name)
+    for row in candidates:
+        row_key = _selection_key(row.pick)
+        if selection_key == "1" and team_a_name in row.pick:
+            return row
+        if selection_key == "2" and team_b_name in row.pick:
+            return row
+        if selection_key == "1" and row_key == "over":
+            return row
+        if selection_key == "2" and row_key == "under":
+            return row
+        if selection_key == row_key:
+            return row
+        if selection_key in {"over", "under"} and selection_key == row_key:
+            return row
+        if selection_key in team_a_keys and team_a_name in row.pick:
+            return row
+        if selection_key in team_b_keys and team_b_name in row.pick:
+            return row
+
+    if len(candidates) == BINARY_SELECTION_COUNT and selection_index < len(candidates):
+        return candidates[selection_index]
+    return None
+
+
+def _price_rows(
+    rows: list[WinnerMarketRow],
+    quotes: list[PriceQuote],
+    team_a_name: str,
+    team_b_name: str,
+) -> tuple[list[WinnerMarketRow], set[tuple[str, str]], list[str]]:
+    priced: list[WinnerMarketRow] = []
+    priced_keys: set[tuple[str, str]] = set()
+    unsupported: list[str] = []
+    for quote in quotes:
+        matched = False
+        for idx, (selection, price) in enumerate(quote.selections):
+            row = _select_row_for_quote(
+                rows, quote, selection, idx, team_a_name, team_b_name
+            )
+            if row is None:
+                continue
+            matched = True
+            priced_row = WinnerMarketRow(
+                market=row.market,
+                pick=row.pick,
+                probability=row.probability,
+                poly_price=price,
+            )
+            priced.append(priced_row)
+            priced_keys.add((priced_row.market, priced_row.pick))
+        if not matched:
+            unsupported.append(quote.market)
+    priced.sort(key=lambda row: _edge(row), reverse=True)
+    return priced, priced_keys, unsupported
+
+
+def _edge(row: WinnerMarketRow) -> float:
+    if row.poly_price is None:
+        return float("-inf")
+    return expected_edge(1.0 / row.poly_price, row.probability)
+
+
+def _action(edge: float | None) -> str:
+    if edge is None:
+        return "PRICE NEEDED"
+    if edge >= VALUE_EDGE_THRESHOLD:
+        return "VALUE"
+    if edge >= WATCH_EDGE_THRESHOLD:
+        return "WATCH"
+    return "PASS"
+
+
+def _format_market_table_row(
+    row: WinnerMarketRow, staking: StakingConfig | None = None
+) -> str:
+    staking = staking or get_staking_config()
+    fair = _odds(row.probability)
+    if row.poly_price is None:
+        return (
+            f"{row.market[:18]:<18} {row.pick[:12]:<12} {_pct(row.probability):>7} "
+            f"{'--':>5} {fair:>6} {'--':>7} {'--':>9} {'--':>8} PRICE NEEDED"
+        )
+    odds = 1.0 / row.poly_price
+    edge = expected_edge(odds, row.probability)
+    kelly = kelly_fraction(odds, row.probability, fraction=staking.kelly_fraction)
+    stake = staking.bankroll * kelly
+    if staking.stake_cap is not None:
+        stake = min(stake, staking.stake_cap)
+    if edge < 0:
+        stake = 0.0
+    return (
+        f"{row.market[:18]:<18} {row.pick[:12]:<12} {_pct(row.probability):>7} "
+        f"{row.poly_price * 100:>4.0f}c {fair:>6} {edge * 100:>+6.1f}% "
+        f"{kelly * 100:>8.1f}% €{stake:>6.2f} {_action(edge)}"
+    )
+
+
+def _default_unpriced_rows(
+    rows: list[WinnerMarketRow],
+    match_type: str,
+    priced_keys: set[tuple[str, str]],
+) -> list[WinnerMarketRow]:
+    if match_type == "bo5":
+        wanted = {
+            ("Series Winner", rows[0].pick),
+            ("Series Winner", rows[1].pick),
+            ("Over 3.5 Maps", "Over"),
+            ("Over 4.5 Maps", "Over"),
+            ("Game Handicap 1.5", rows[6].pick),
+            ("Game Handicap 1.5", rows[8].pick),
+        }
+    else:
+        wanted = {(row.market, row.pick) for row in rows[:6]}
+    if match_type != "bo1":
+        wanted.update(
+            (row.market, row.pick) for row in rows if row.market == "Game 1 Winner"
+        )
+    return [
+        row
+        for row in rows
+        if (row.market, row.pick) in wanted
+        and (row.market, row.pick) not in priced_keys
+    ]
+
+
+def format_winner_market_output(
+    *,
+    blue_team_name: str,
+    red_team_name: str,
+    match_type: str,
+    blue_win: float,
+    red_win: float,
+    probability_source: str,
+    warnings: list[str],
+    context: str,
+    price_quotes: list[str] | None = None,
+    notes: list[str] | None = None,
+    blue_range: tuple[float, float] | None = None,
+    red_range: tuple[float, float] | None = None,
+    uncertainty_confidence: float | None = None,
+    drivers: list[str] | None = None,
+) -> str:
+    rows = _base_market_rows(
+        match_type, blue_team_name, red_team_name, blue_win, red_win
+    )
+    quotes = parse_polymarket_price_quotes(price_quotes)
+    priced_rows, priced_keys, unsupported = _price_rows(
+        rows, quotes, blue_team_name, red_team_name
+    )
+    unpriced_rows = _default_unpriced_rows(rows, match_type, priced_keys)
+    table_rows = priced_rows + unpriced_rows
+
+    staking = get_staking_config()
+    lines = [
+        f"**LoL Markets: {blue_team_name} vs {red_team_name} ({match_type.upper()})**",
+    ]
+    if priced_rows:
+        lines.append(
+            f"Bankroll: €{staking.bankroll:.0f} | Kelly: {staking.kelly_label} | "
+            f"{staking.cap_label}"
+        )
+    lines.extend(
+        [
+            f"Source: {probability_source} | Confidence: {confidence_label(warnings)}",
+            *(
+                [
+                    "Evidence: map probabilities come from the champion map model; "
+                    "series markets are derived from them."
+                ]
+                if match_type != "bo1"
+                else []
+            ),
+            "",
+            "```text",
+            (
+                f"{'Market':<18} {'Pick':<12} {'Model':>7} {'Poly':>5} "
+                f"{'Fair':>6} {'Edge':>7} {'Kelly':>9} {'Stake':>8} Action"
+            ),
+            *[_format_market_table_row(row, staking) for row in table_rows],
+            "```",
+        ]
+    )
+    if unsupported:
+        lines.append(
+            "Unsupported prices ignored: " + ", ".join(sorted(set(unsupported)))
+        )
+    if blue_range is not None and red_range is not None:
+        uncertainty_label = (
+            f"{uncertainty_confidence * 100:.0f}%"
+            if uncertainty_confidence is not None
+            else "held-out"
+        )
+        lines.append(
+            f"Probability range ({uncertainty_label} calibration uncertainty): "
+            f"{blue_team_name} {_pct(blue_range[0])}–{_pct(blue_range[1])}; "
+            f"{red_team_name} {_pct(red_range[0])}–{_pct(red_range[1])}."
+        )
+    if drivers:
+        lines.append("Main model drivers (descriptive, not causal):")
+        lines.extend(f"- {driver}" for driver in drivers)
+    lines.append(context.removeprefix("- "))
+    # Informational notes are displayed alongside warnings but do not count
+    # against the confidence tier shown above.
+    return "\n".join(lines) + format_warnings([*warnings, *(notes or [])])
 
 
 def _format_prop_line(label: str, signal: OverUnderSignal) -> str:
     lines = [
-        f"\n{label} Line {signal.line:g}",
-        f"- Over probability: {_pct(signal.over_probability)}",
-        f"- Under probability: {_pct(signal.under_probability)}",
-        f"- Fair odds: Over {signal.over_fair_odds:.2f} | Under {signal.under_fair_odds:.2f}",
+        f"{label} {signal.line:g}",
+        f"- Over: {_pct(signal.over_probability)} | fair {signal.over_fair_odds:.2f}",
+        f"- Under: {_pct(signal.under_probability)} | fair {signal.under_fair_odds:.2f}",
     ]
     if signal.over_edge is not None or signal.under_edge is not None:
         over_edge = (
@@ -411,53 +697,22 @@ def _format_prop_line(label: str, signal: OverUnderSignal) -> str:
             if signal.under_half_kelly_fraction is not None
             else "n/a"
         )
-        lines.append(
-            f"- Suggested stake: half-Kelly Over {over_stake} | Under {under_stake}"
-        )
+        lines.append(f"- Half-Kelly: Over {over_stake} | Under {under_stake}")
     return "\n".join(lines)
 
 
-def _market_odds(probability: float, edge: float | None) -> float | None:
-    if edge is None or probability <= 0:
-        return None
-    return (1.0 + edge) / probability
-
-
-def _format_record_bet_commands(
+def _format_manual_research_note(
     blue_team_name: str, red_team_name: str, line_signals: dict[str, OverUnderSignal]
 ) -> str:
-    commands: list[str] = []
-    event = f"{blue_team_name} vs {red_team_name}"
-    market_names = {"Length": "length", "Kills": "kills", "Towers": "towers"}
-    for label, signal in line_signals.items():
-        market = market_names.get(label, label.casefold())
-        for selection, probability, edge, odds in (
-            (
-                "over",
-                signal.over_probability,
-                signal.over_edge,
-                _market_odds(signal.over_probability, signal.over_edge),
-            ),
-            (
-                "under",
-                signal.under_probability,
-                signal.under_edge,
-                _market_odds(signal.under_probability, signal.under_edge),
-            ),
-        ):
-            if edge is None or edge <= 0 or odds is None:
-                continue
-            commands.append(
-                f'!bet record --event "{event}" --market {market} '
-                f"--selection {selection} --line {signal.line:g} --odds {odds:.2f} "
-                f'--prob {probability:.3f} --edge {edge:.3f} --sport "League of Legends"'
-            )
-    if not commands:
+    _ = blue_team_name, red_team_name
+    if not any(
+        (signal.over_edge or 0) > 0 or (signal.under_edge or 0) > 0
+        for signal in line_signals.values()
+    ):
         return ""
     return (
-        "\n\nRecord Positive-Edge Bets Manually\n"
-        "Copy one of these after you place the bet yourself:\n"
-        + "\n".join(f"- `{command}`" for command in commands[:3])
+        "\n\nPaper research only. Record any real owner decision manually in "
+        "canonical evidence; Oracle Bets never places a bet."
     )
 
 
@@ -469,350 +724,28 @@ def format_prop_market_output(
     total_kills: float,
     total_towers: float,
     line_signals: dict[str, OverUnderSignal],
+    calibration_sources: dict[str, str],
     warnings: list[str],
+    notes: list[str] | None = None,
 ) -> str:
     output = (
-        f"**Prop Predictions: {blue_team_name} vs {red_team_name}**\n\n"
-        "Projected Totals\n"
-        f"- Expected game length: **{gamelength:.1f} minutes**\n"
-        f"- Expected total kills: **{total_kills:.1f}**\n"
-        f"- Expected total towers: **{total_towers:.1f}**\n"
+        f"**LoL Props: {blue_team_name} vs {red_team_name}**\n\n"
+        f"- Length: **{gamelength:.1f}m**\n"
+        f"- Kills: **{total_kills:.1f}**\n"
+        f"- Towers: **{total_towers:.1f}**\n"
     )
     for label, signal in line_signals.items():
-        output += _format_prop_line(label, signal)
-    output += _format_record_bet_commands(blue_team_name, red_team_name, line_signals)
-    output += (
-        "\n\nMeaning\n"
-        "- Expected total is the model's central estimate for one map.\n"
-        "- Over/Under probability uses historical model error, not just the mean.\n"
-        "- Fair odds are no-vig decimal odds implied by the model probability.\n"
-        "- Edge compares model probability to market odds when odds are supplied.\n"
-        "- Half-Kelly is a bankroll fraction suggestion, never an auto-bet.\n"
-        "- Map 3/4/5 props are interpreted only after that map is confirmed."
+        output += "\n" + _format_prop_line(label, signal)
+    output += _format_manual_research_note(
+        blue_team_name,
+        red_team_name,
+        line_signals,
     )
-    output += f"\n\nConfidence: **{_confidence_label(warnings)}**"
-    output += _format_warnings(warnings)
+    if calibration_sources:
+        sources = " | ".join(
+            f"{label}: {source}" for label, source in calibration_sources.items()
+        )
+        output += f"\n\n- Probability source: {sources}"
+    output += f"\n\nConfidence: **{confidence_label(warnings)}**"
+    output += format_warnings([*warnings, *(notes or [])])
     return output
-
-
-# ── main async prediction entrypoints ───────────────────────────────────── #
-
-
-async def predict_and_format_result(
-    ctx,
-    blue_team_name: str,
-    red_team_name: str,
-    blue_roster_str: str | None,
-    red_roster_str: str | None,
-    match_type: str,
-    account_for_side: bool,
-    first_pick_team_name: str | None = None,
-) -> None:
-    """Create teams, predict outcomes, and format result for bo1/bo3/bo5."""
-    if match_type not in VALID_MATCH_TYPES:
-        await ctx.send(
-            content=f"Invalid match type: {match_type}. Please specify 'bo1', 'bo2', 'bo3', or 'bo5'."
-        )
-        return
-
-    msg = await ctx.send(content="```Calculating win probabilities...```")
-    try:
-        blue_roster = (
-            process_roster(blue_roster_str) if blue_roster_str else get_empty_roster()
-        )
-        red_roster = (
-            process_roster(red_roster_str) if red_roster_str else get_empty_roster()
-        )
-        blue_first_pick, red_first_pick = resolve_first_pick(
-            blue_team_name, red_team_name, first_pick_team_name
-        )
-        blue_team = Team(
-            name=blue_team_name,
-            side="Blue",
-            first_pick=blue_first_pick,
-            roster=blue_roster,
-        )
-        red_team = Team(
-            name=red_team_name,
-            side="Red",
-            first_pick=red_first_pick,
-            roster=red_roster,
-        )
-        # inactivity flags (robust to missing dates)
-        today = pd.Timestamp.today().normalize()
-        days_delay = int(WEEKS_FOR_DELAY) * 7
-
-        def _parse_date(x) -> pd.Timestamp | pd.NaT:  # pyright: ignore[reportInvalidTypeForm]
-            d = pd.to_datetime(x, errors="coerce")
-            return d.normalize() if pd.notna(d) else pd.NaT
-
-        blue_last = _parse_date(blue_team.team_stats.get("date"))
-        red_last = _parse_date(red_team.team_stats.get("date"))
-        break_blue_flag = bool(
-            pd.notna(blue_last) and (today - blue_last).days >= days_delay
-        )
-        break_red_flag = bool(
-            pd.notna(red_last) and (today - red_last).days >= days_delay
-        )
-        predictor = get_match_predictor()
-        # Predict both orientations and average
-        p1 = predictor.predict_match(
-            blue_team, red_team, account_for_side=account_for_side
-        )
-        p2 = predictor.predict_match(
-            red_team, blue_team, account_for_side=account_for_side
-        )
-        # p1: team1=blue; p2: team2=blue (flipped)  # noqa: ERA001
-        blue_win = (p1["team1_win_probability"] + p2["team2_win_probability"]) / 2.0
-        red_win = 1.0 - blue_win
-        warnings: list[str] = []
-        if predictor.outcome_calibrator is None:
-            warnings.append(
-                "Outcome calibration artifact is missing; raw model probability is being used."
-            )
-        if _roster_count(blue_team) < len(POSITIONS) or _roster_count(red_team) < len(
-            POSITIONS
-        ):
-            warnings.append(
-                "One or both rosters are incomplete, so roster features use fallback state."
-            )
-        if not account_for_side:
-            warnings.append("Side selection is ignored for this command.")
-        # series breakdown
-        if match_type == "bo1":
-            output = BestOfs.best_of_one(
-                blue_team_name, blue_win, red_team_name, red_win
-            )
-        elif match_type == "bo2":
-            output = BestOfs.best_of_two(
-                blue_team_name, blue_win, red_team_name, red_win
-            )
-        elif match_type == "bo3":
-            output = BestOfs.best_of_three(
-                blue_team_name, blue_win, red_team_name, red_win
-            )
-        else:  # "bo5"
-            output = BestOfs.best_of_five(
-                blue_team_name, blue_win, red_team_name, red_win
-            )
-        output += (
-            "\n\n## Winner Market Read"
-            f"\n- {blue_team_name} fair odds: {_odds(blue_win)}"
-            f"\n- {red_team_name} fair odds: {_odds(red_win)}"
-            f"\n- Probability source: {'calibrated model' if predictor.outcome_calibrator is not None else 'raw model'}"
-            f"\n- Confidence: {_confidence_label(warnings)}"
-            "\n- Meaning: compare fair odds to the market price; a bet only has edge when the market pays above fair odds."
-        )
-        output = add_selection_context_to_output(
-            output, blue_team, red_team, account_for_side, first_pick_team_name
-        )
-        output = add_roster_to_output(output, blue_team, red_team)
-        output = add_break_flags_to_output(
-            output, break_blue_flag, blue_team_name, break_red_flag, red_team_name
-        )
-        output += _format_warnings(warnings)
-        # stay under Discord limit
-        await msg.edit(content=output[: MESSAGE_LIMIT - 1])
-
-    except Exception as e:
-        await msg.edit(
-            content=handle_command_error(e, "Could not complete the prediction.")
-        )
-
-
-async def predict_and_format_props(
-    ctx,
-    blue_team_name: str,
-    red_team_name: str,
-    blue_roster_str: str | None,
-    red_roster_str: str | None,
-    account_for_side: bool,
-    first_pick_team_name: str | None = None,
-    kills_line: float | None = None,
-    kills_over_odds: float | None = None,
-    kills_under_odds: float | None = None,
-    towers_line: float | None = None,
-    towers_over_odds: float | None = None,
-    towers_under_odds: float | None = None,
-    length_line: float | None = None,
-    length_over_odds: float | None = None,
-    length_under_odds: float | None = None,
-) -> None:
-    """Predict game props (gamelength, total kills, total towers) for a single game."""
-    msg = await ctx.send(content="```Calculating prop predictions...```")
-    try:
-        blue_roster = (
-            process_roster(blue_roster_str) if blue_roster_str else get_empty_roster()
-        )
-        red_roster = (
-            process_roster(red_roster_str) if red_roster_str else get_empty_roster()
-        )
-        blue_first_pick, red_first_pick = resolve_first_pick(
-            blue_team_name, red_team_name, first_pick_team_name
-        )
-        blue_team = Team(
-            name=blue_team_name,
-            side="Blue",
-            first_pick=blue_first_pick,
-            roster=blue_roster,
-        )
-        red_team = Team(
-            name=red_team_name,
-            side="Red",
-            first_pick=red_first_pick,
-            roster=red_roster,
-        )
-
-        predictor = get_match_predictor()
-        gamelength = predictor.predict_gamelength(
-            blue_team, red_team, account_for_side=account_for_side
-        )
-        total_kills = predictor.predict_total_kills(
-            blue_team, red_team, account_for_side=account_for_side
-        )
-        total_towers = predictor.predict_total_towers(
-            blue_team, red_team, account_for_side=account_for_side
-        )
-
-        warnings: list[str] = []
-        if _roster_count(blue_team) < len(POSITIONS) or _roster_count(red_team) < len(
-            POSITIONS
-        ):
-            warnings.append(
-                "One or both rosters are incomplete, so roster features use fallback state."
-            )
-        if not account_for_side:
-            warnings.append("Side selection is ignored for this command.")
-
-        line_signals: dict[str, OverUnderSignal] = {}
-        for label, prop_name, mean, line, over_odds, under_odds in (
-            (
-                "Length",
-                "gamelength",
-                gamelength,
-                length_line,
-                length_over_odds,
-                length_under_odds,
-            ),
-            (
-                "Kills",
-                "total_kills",
-                total_kills,
-                kills_line,
-                kills_over_odds,
-                kills_under_odds,
-            ),
-            (
-                "Towers",
-                "total_towers",
-                total_towers,
-                towers_line,
-                towers_over_odds,
-                towers_under_odds,
-            ),
-        ):
-            if line is None:
-                continue
-            try:
-                line_signals[label] = predictor.price_prop_line(
-                    prop_name=prop_name,
-                    mean=mean,
-                    line=line,
-                    over_odds=over_odds,
-                    under_odds=under_odds,
-                )
-            except RuntimeError as e:
-                warnings.append(str(e))
-
-        output = format_prop_market_output(
-            blue_team_name=blue_team_name,
-            red_team_name=red_team_name,
-            gamelength=gamelength,
-            total_kills=total_kills,
-            total_towers=total_towers,
-            line_signals=line_signals,
-            warnings=warnings,
-        )
-        output = add_selection_context_to_output(
-            output, blue_team, red_team, account_for_side, first_pick_team_name
-        )
-        await msg.edit(content=output[: MESSAGE_LIMIT - 1])
-    except Exception as e:
-        await msg.edit(
-            content=handle_command_error(e, "Could not complete prop predictions.")
-        )
-
-
-async def validate_and_predict(
-    ctx,
-    blue_team_name: str,
-    red_team_name: str,
-    blue_roster_str: str | None,
-    red_roster_str: str | None,
-    match_type: str,
-    side_consideration: bool,
-    first_pick_team_name: str | None = None,
-):
-    """Validates inputs and triggers prediction."""
-    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
-    if not blue_team_name or not red_team_name:
-        await ctx.send(PLEASE_PROVIDE_TEAMS)
-        return
-    if blue_team_name.casefold() == red_team_name.casefold():
-        await ctx.send(TEAMS_MUST_BE_DIFFERENT)
-        return
-    await predict_and_format_result(
-        ctx,
-        blue_team_name,
-        red_team_name,
-        blue_roster_str,
-        red_roster_str,
-        match_type,
-        side_consideration,
-        first_pick_team_name,
-    )
-
-
-async def validate_and_predict_props(
-    ctx,
-    blue_team_name: str,
-    red_team_name: str,
-    blue_roster_str: str | None,
-    red_roster_str: str | None,
-    side_consideration: bool,
-    first_pick_team_name: str | None = None,
-    kills_line: float | None = None,
-    kills_over_odds: float | None = None,
-    kills_under_odds: float | None = None,
-    towers_line: float | None = None,
-    towers_over_odds: float | None = None,
-    towers_under_odds: float | None = None,
-    length_line: float | None = None,
-    length_over_odds: float | None = None,
-    length_under_odds: float | None = None,
-):
-    blue_team_name, red_team_name = strip_team_names(blue_team_name, red_team_name)
-    if not blue_team_name or not red_team_name:
-        await ctx.send(PLEASE_PROVIDE_TEAMS)
-        return
-    if blue_team_name.casefold() == red_team_name.casefold():
-        await ctx.send(TEAMS_MUST_BE_DIFFERENT)
-        return
-    await predict_and_format_props(
-        ctx,
-        blue_team_name,
-        red_team_name,
-        blue_roster_str,
-        red_roster_str,
-        side_consideration,
-        first_pick_team_name,
-        kills_line,
-        kills_over_odds,
-        kills_under_odds,
-        towers_line,
-        towers_over_odds,
-        towers_under_odds,
-        length_line,
-        length_over_odds,
-        length_under_odds,
-    )

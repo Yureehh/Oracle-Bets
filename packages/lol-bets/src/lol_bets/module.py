@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pickle
 from dataclasses import dataclass
 
 from oracle_bets_core.interfaces import ArtifactCheck, ArtifactHealth
@@ -10,17 +11,22 @@ from oracle_bets_core.paths import (
     FLATTENED_TEAMS,
     GAMELENGTH_PREDICTION_FEATURE_PIPELINE,
     GAMELENGTH_PREDICTION_MODEL_PATH,
+    GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
     GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY,
     LEAGUE_ELO,
     OUTCOME_PREDICTION_FEATURE_PIPELINE,
+    OUTCOME_PREDICTION_MATCHUP_SCHEMA,
     OUTCOME_PREDICTION_MODEL_PATH,
     OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR,
+    OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY,
     TEAM_LEAGUES_MAPPING,
     TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_KILLS_PREDICTION_MODEL_PATH,
+    TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR,
     TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY,
     TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_TOWERS_PREDICTION_MODEL_PATH,
+    TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR,
     TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY,
     TRAINING_PLAYER_DATA,
     TRAINING_TEAM_DATA,
@@ -36,6 +42,23 @@ LEAGUE_ELO_COLUMNS = {
     "strength_pool_elo",
     "strength_pool_cross_games",
 }
+FLATTENED_TEAM_COLUMNS = {"teamname", "teamid", "gameid", "date", "league"}
+FLATTENED_PLAYER_COLUMNS = {
+    "teamname",
+    "playername",
+    "position",
+    "date",
+    "gameid",
+    "side",
+    "elo",
+    "glicko2_mu",
+    "glicko2_phi",
+    "pl_mu",
+    "pl_sigma",
+    "trueskill_mu",
+    "trueskill_sigma",
+}
+CALIBRATOR_VERSION = 3
 
 
 def _check_file(name: str, path) -> ArtifactCheck:
@@ -72,6 +95,85 @@ def _check_parquet_schema(name: str, path, required: set[str]) -> ArtifactCheck:
     return file_check
 
 
+def _check_flattened_parquet(
+    name: str,
+    path,
+    required: set[str],
+    *,
+    unique_keys: list[str],
+) -> ArtifactCheck:
+    file_check = _check_file(name, path)
+    if not file_check.ok:
+        return file_check
+    try:
+        df = pd.read_parquet(path)
+    except Exception as exc:
+        return ArtifactCheck(
+            name=name,
+            path=str(path),
+            ok=False,
+            reason=f"unreadable parquet: {exc}",
+        )
+    missing = required - set(df.columns)
+    if missing:
+        return ArtifactCheck(
+            name=name,
+            path=str(path),
+            ok=False,
+            reason=f"outdated schema; missing {', '.join(sorted(missing))}",
+        )
+    duplicate_count = int(df.duplicated(unique_keys, keep=False).sum())
+    if duplicate_count:
+        return ArtifactCheck(
+            name=name,
+            path=str(path),
+            ok=False,
+            reason=(
+                "duplicate flattened snapshots; "
+                f"{duplicate_count} rows share {', '.join(unique_keys)}"
+            ),
+        )
+    return file_check
+
+
+def _check_calibrator_schema(
+    name: str,
+    path,
+    *,
+    required_attrs: set[str],
+    expected_version: int = CALIBRATOR_VERSION,
+) -> ArtifactCheck:
+    file_check = _check_file(name, path)
+    if not file_check.ok:
+        return file_check
+    try:
+        with path.open("rb") as f:
+            artifact = pickle.load(f)  # noqa: S301
+    except Exception as exc:
+        return ArtifactCheck(
+            name=name,
+            path=str(path),
+            ok=False,
+            reason=f"unreadable calibrator: {exc}",
+        )
+
+    missing = [attr for attr in sorted(required_attrs) if not hasattr(artifact, attr)]
+    version = getattr(artifact, "version", None)
+    if missing or version != expected_version:
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if version != expected_version:
+            details.append(f"version {version!r} != {expected_version}")
+        return ArtifactCheck(
+            name=name,
+            path=str(path),
+            ok=False,
+            reason=f"outdated calibrator schema; {'; '.join(details)}",
+        )
+    return file_check
+
+
 @dataclass(frozen=True)
 class LoLBetsModule:
     """LoL prediction module metadata and health checks."""
@@ -81,15 +183,39 @@ class LoLBetsModule:
     def artifact_health(self) -> ArtifactHealth:
         """Artifacts required for Discord/inference."""
         checks = (
-            _check_file("flattened teams", FLATTENED_TEAMS),
-            _check_file("flattened players", FLATTENED_PLAYERS),
+            _check_flattened_parquet(
+                "flattened teams",
+                FLATTENED_TEAMS,
+                FLATTENED_TEAM_COLUMNS,
+                unique_keys=["teamname"],
+            ),
+            _check_parquet_schema(
+                "flattened players",
+                FLATTENED_PLAYERS,
+                FLATTENED_PLAYER_COLUMNS,
+            ),
             _check_file("outcome model", OUTCOME_PREDICTION_MODEL_PATH),
             _check_file(
                 "outcome feature pipeline", OUTCOME_PREDICTION_FEATURE_PIPELINE
             ),
-            _check_file(
+            _check_file("outcome matchup schema", OUTCOME_PREDICTION_MATCHUP_SCHEMA),
+            _check_calibrator_schema(
                 "outcome probability calibrator",
                 OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR,
+                required_attrs={"global_calibrator", "segments", "version"},
+            ),
+            _check_calibrator_schema(
+                "outcome probability uncertainty",
+                OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY,
+                required_attrs={
+                    "bins",
+                    "confidence",
+                    "fit_split",
+                    "interval",
+                    "sample_count",
+                    "version",
+                },
+                expected_version=1,
             ),
             _check_file("gamelength model", GAMELENGTH_PREDICTION_MODEL_PATH),
             _check_file(
@@ -98,12 +224,22 @@ class LoLBetsModule:
             _check_file(
                 "gamelength residual summary", GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY
             ),
+            _check_calibrator_schema(
+                "gamelength prop calibrator",
+                GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
+                required_attrs={"global_residuals", "segment_residuals", "version"},
+            ),
             _check_file("total kills model", TOTAL_KILLS_PREDICTION_MODEL_PATH),
             _check_file(
                 "total kills feature pipeline", TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE
             ),
             _check_file(
                 "total kills residual summary", TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY
+            ),
+            _check_calibrator_schema(
+                "total kills prop calibrator",
+                TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR,
+                required_attrs={"global_residuals", "segment_residuals", "version"},
             ),
             _check_file("total towers model", TOTAL_TOWERS_PREDICTION_MODEL_PATH),
             _check_file(
@@ -113,6 +249,11 @@ class LoLBetsModule:
             _check_file(
                 "total towers residual summary",
                 TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY,
+            ),
+            _check_calibrator_schema(
+                "total towers prop calibrator",
+                TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR,
+                required_attrs={"global_residuals", "segment_residuals", "version"},
             ),
             _check_parquet_schema(
                 "team league mapping", TEAM_LEAGUES_MAPPING, TEAM_LEAGUE_COLUMNS
@@ -133,13 +274,3 @@ class LoLBetsModule:
         from lol_bets.inference.match_predictor import MatchPredictor
 
         return MatchPredictor().predict_match(*args, **kwargs)
-
-    def predict_props(self, *args, **kwargs):
-        from lol_bets.inference.match_predictor import MatchPredictor
-
-        predictor = MatchPredictor()
-        return {
-            "gamelength": predictor.predict_gamelength(*args, **kwargs),
-            "total_kills": predictor.predict_total_kills(*args, **kwargs),
-            "total_towers": predictor.predict_total_towers(*args, **kwargs),
-        }

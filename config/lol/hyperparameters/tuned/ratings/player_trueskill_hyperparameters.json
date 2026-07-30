@@ -1,0 +1,1 @@
+{"mu": 15.0, "sigma": 7.0, "beta": 9.5, "decay_factor": 0.85, "transfer_factor": 0.5, "initial_elo_adjustment_factor": 0.2, "position_reset_factor": 0.2}

@@ -7,10 +7,12 @@ with performance-minded implementations and leak-free temporal evolution.
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import optuna
 from oracle_bets_core.io_utils import get_sorting_keys, json_loader
@@ -26,17 +28,23 @@ from sklearn.metrics import log_loss
 from tqdm import tqdm
 
 try:
-    from numba import njit
+    _numba_njit: Any = importlib.import_module("numba").njit
 except Exception:
-    njit = None
+    _numba_njit = None
+njit: Any = _numba_njit
 
 # ------------------------------------------------------------------------------
 # Global Config / Constants
 # ------------------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
-TRIALS_NUM = 25
+TRIALS_NUM = int(config.get("optuna", {}).get("trials", 100))
+OPTUNA_SEED = int(config.get("optuna", {}).get("seed", 42))
 MAX_EXPONENT = 8.0  # To prevent overflow in expected outcome calc
+INACTIVITY_GRACE_DAYS = config.get("shared", {}).get("inactivity_grace_days", 45)
+INACTIVITY_HALF_LIFE_DAYS = config.get("shared", {}).get(
+    "inactivity_half_life_days", 180
+)
 
 
 # ------------------------------------------------------------------------------
@@ -245,6 +253,20 @@ def handle_position_switch(
     elo_ratings[entity_id]["last_position"] = new_position
 
 
+def apply_inactivity_decay(
+    rating_data: dict[str, Any], current_date: pd.Timestamp, baseline_elo: float
+) -> None:
+    """Regress stale Elo toward its prior after a grace period."""
+    last_active = rating_data.get("last_active")
+    if last_active is None:
+        return
+    inactive_days = max(0, (current_date - last_active).days - INACTIVITY_GRACE_DAYS)
+    if inactive_days <= 0:
+        return
+    retention = 0.5 ** (inactive_days / INACTIVITY_HALF_LIFE_DAYS)
+    rating_data["elo"] = baseline_elo + (rating_data["elo"] - baseline_elo) * retention
+
+
 def linear_decay_reset(
     elo_ratings: dict[int | str, dict[str, Any]],
     current_season: int,
@@ -358,6 +380,10 @@ def process_game(
     Return the updated dictionary so it persists across matches.
     """
     current_season = game_group.iloc[0]["season"]
+    current_date = pd.Timestamp(game_group.iloc[0]["date"])
+    if pd.isna(current_date):
+        raise ValueError("rating game date cannot be missing")
+    current_date = cast("pd.Timestamp", current_date)
 
     # Seasonal decay reset in-place
     linear_decay_reset(
@@ -392,6 +418,7 @@ def process_game(
                 baseline_elo=baseline_elo,
                 transfer_factor=transfer_factor,
             )
+        apply_inactivity_decay(elo_ratings[ent_id], current_date, baseline_elo)
 
     # If dealing with players, handle position switching
     if entity.lower() == "player":
@@ -440,6 +467,8 @@ def process_game(
         elo_ratings[bid]["elo"] = blue_new_elos[i]
     for i, rid in enumerate(red_ids):
         elo_ratings[rid]["elo"] = red_new_elos[i]
+    for ent_id in entity_ids:
+        elo_ratings[ent_id]["last_active"] = current_date
 
     # Write columns back to df (per row):
     # - 'elo_before' = own entity Elo before
@@ -467,6 +496,8 @@ def tune_elo_hyperparameters(
     entity: str,
     hyperparameters_path: Path,
     league_elo_dict: dict[str, float],
+    *,
+    force_retune: bool = False,
 ) -> dict[str, float]:
     """
     Either load hyperparameters if they exist, or compute them via Optuna.
@@ -474,8 +505,13 @@ def tune_elo_hyperparameters(
     """
     # Attempt to load existing hyperparameters
     best_params = load_hyperparameters(hyperparameters_path)
-    if best_params:
+    if best_params and not force_retune:
         return best_params
+    if not force_retune:
+        raise FileNotFoundError(
+            f"Missing reviewed Elo hyperparameters at {hyperparameters_path}; "
+            "run the explicit rating retune workflow."
+        )
 
     logger.info(
         f"No hyperparameters found at {hyperparameters_path}. Starting tuning process..."
@@ -538,8 +574,12 @@ def tune_elo_hyperparameters(
         return loss
 
     # Create and optimize the Optuna study
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=True)
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=OPTUNA_SEED),
+    )
+    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=False)
 
     # Retrieve and log the best parameters
     best_params = study.best_params
@@ -754,7 +794,12 @@ def run_elo_computation(
 
     grouped = df.groupby(["date", "gameid"], sort=False)
     if show_progress:
-        grouped = tqdm(grouped, desc="Processing games", total=grouped.ngroups)
+        grouped = tqdm(
+            grouped,
+            desc="Processing games",
+            total=grouped.ngroups,
+            disable=not sys.stderr.isatty(),
+        )
 
     for _, game_grp in grouped:
         elo_ratings = process_game(

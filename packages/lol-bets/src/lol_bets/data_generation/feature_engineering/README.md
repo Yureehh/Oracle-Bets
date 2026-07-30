@@ -4,7 +4,7 @@ LoL feature creation.
 
 - `features_generator.py`: team/player derived features, series context, breaks, and head-to-head.
 - `performance_features/`: EMA win rates and in-game stat trends.
-- `ratings_features/`: Elo, Glicko2, Plackett-Luce, TrueSkill, league Elo, and WHR experiments.
+- `ratings_features/`: Elo, Glicko2, Plackett-Luce, TrueSkill, and league Elo.
 
 Example:
 

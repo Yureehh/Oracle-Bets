@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 
+import pytest
 from oracle_bets_core.league_selection import selected_leagues
+from oracle_bets_core.league_taxonomy import add_league_taxonomy_columns
+from oracle_bets_core.pd import pd
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -17,6 +20,16 @@ def test_active_league_profile_drives_selected_leagues():
     assert {"LTA", "LTA N", "LTA S"} <= set(selected_leagues())
     assert {"LFL", "LES", "PRM", "TCL", "PCS", "VCS", "LJL"} <= set(selected_leagues())
     assert "LCKC" not in selected_leagues()
+
+
+def test_product_profile_is_the_active_operational_profile():
+    product = json.loads((ROOT / "config/product/product.json").read_text())
+    selection = json.loads(
+        (ROOT / "config/lol/data_ingestion/considered_leagues.json").read_text()
+    )
+
+    assert product["leagues"]["profile"] == "tier1_plus_erls"
+    assert product["leagues"]["profile"] == selection["active_profile"]
 
 
 def test_active_profile_has_taxonomy_entries():
@@ -61,6 +74,23 @@ def test_league_taxonomy_uses_single_macro_strength_key():
     assert "league_group" not in values
     assert "strength_group" not in values
     assert "macro_group" not in values
+
+
+def test_league_taxonomy_attachment_rejects_unknown_leagues_by_default():
+    df = pd.DataFrame({"league": ["LCK", "Definitely Unknown League"]})
+
+    with pytest.raises(ValueError, match="League taxonomy missing entries"):
+        add_league_taxonomy_columns(df)
+
+
+def test_league_taxonomy_attachment_can_use_defaults_explicitly():
+    df = pd.DataFrame({"league": ["Definitely Unknown League"]})
+
+    out = add_league_taxonomy_columns(df, strict=False)
+
+    assert out.loc[0, "league_region"] == "Unknown"
+    assert out.loc[0, "league_tier"] == "minor"
+    assert out.loc[0, "strength_pool"] == "minor"
 
 
 def test_removed_league_prior_columns_are_not_configured():

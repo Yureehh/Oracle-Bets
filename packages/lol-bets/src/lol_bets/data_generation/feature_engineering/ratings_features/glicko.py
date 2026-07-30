@@ -8,9 +8,10 @@ with Glicko-2 functions from the 'glicko2' library.
 from __future__ import annotations
 
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import optuna
 from glicko2 import Glicko2, Rating
@@ -32,12 +33,17 @@ from tqdm import tqdm
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
-TRIALS_NUM = 25
+TRIALS_NUM = int(config.get("optuna", {}).get("trials", 100))
+OPTUNA_SEED = int(config.get("optuna", {}).get("seed", 42))
 
 # Default Glicko-2 parameters (parallel to how Elo had baseline ratings)
 DEFAULT_MU = config.get("glicko2", {}).get("mu", 1500.0)
 DEFAULT_PHI = config.get("glicko2", {}).get("phi", 350.0)
 DEFAULT_SIGMA = config.get("glicko2", {}).get("sigma", 0.06)
+INACTIVITY_GRACE_DAYS = config.get("shared", {}).get("inactivity_grace_days", 45)
+INACTIVITY_HALF_LIFE_DAYS = config.get("shared", {}).get(
+    "inactivity_half_life_days", 180
+)
 
 WIN = 1  # Helper constant for clarity in `rate_match_using_mean`
 
@@ -222,6 +228,28 @@ def handle_position_switch(
     glicko2_ratings[entity_id]["last_position"] = new_position
 
 
+def apply_inactivity_decay(
+    rating_data: dict[str, Any],
+    current_date: pd.Timestamp,
+    baseline_mu: float,
+    baseline_phi: float,
+) -> None:
+    """Regress stale strength and grow Glicko uncertainty toward its prior."""
+    last_active = rating_data.get("last_active")
+    if last_active is None:
+        return
+    inactive_days = max(0, (current_date - last_active).days - INACTIVITY_GRACE_DAYS)
+    if inactive_days <= 0:
+        return
+    retention = 0.5 ** (inactive_days / INACTIVITY_HALF_LIFE_DAYS)
+    old: Rating = rating_data["rating"]
+    rating_data["rating"] = Rating(
+        mu=baseline_mu + (old.mu - baseline_mu) * retention,
+        phi=baseline_phi - (baseline_phi - old.phi) * retention,
+        sigma=old.sigma,
+    )
+
+
 def handle_new_entity(
     ent_id: int | str,
     glicko2_ratings: dict[int | str, dict[str, Any]],
@@ -229,6 +257,8 @@ def handle_new_entity(
     new_league: str,
     current_season: int,
     baseline_mu: float,
+    baseline_phi: float,
+    baseline_sigma: float,
     init_adjust_factor: float,
 ) -> None:
     """Initialize Glicko-2 rating for a new entity, referencing league offsets."""
@@ -243,7 +273,7 @@ def handle_new_entity(
     initial_mu = baseline_mu + clamp(init_adjustment, -max_diff, max_diff)
 
     glicko2_ratings[ent_id] = {
-        "rating": Rating(mu=initial_mu, phi=DEFAULT_PHI, sigma=DEFAULT_SIGMA),
+        "rating": Rating(mu=initial_mu, phi=baseline_phi, sigma=baseline_sigma),
         "season": current_season,
         "league": new_league,
     }
@@ -298,6 +328,8 @@ def process_game(
     entity: str,
     entity_key: str,
     baseline_mu: float,
+    baseline_phi: float,
+    baseline_sigma: float,
     decay_factor: float,
     league_elo_dict: dict[str, float],
     transfer_factor: float,
@@ -306,6 +338,10 @@ def process_game(
 ) -> dict[int | str, dict[str, Any]]:
     """Process a single grouped game, updating Glicko-2 ratings for both sides."""
     current_season = game_group.iloc[0]["season"]
+    current_date = pd.Timestamp(game_group.iloc[0]["date"])
+    if pd.isna(current_date):
+        raise ValueError("rating game date cannot be missing")
+    current_date = cast("pd.Timestamp", current_date)
 
     # Seasonal decay
     linear_decay_reset(
@@ -327,6 +363,8 @@ def process_game(
                 new_league=new_league,
                 current_season=current_season,
                 baseline_mu=baseline_mu,
+                baseline_phi=baseline_phi,
+                baseline_sigma=baseline_sigma,
                 init_adjust_factor=initial_elo_adjustment_factor,
             )
         elif not is_cross_league_competition(new_league):
@@ -338,6 +376,9 @@ def process_game(
                 baseline_mu=baseline_mu,
                 transfer_factor=transfer_factor,
             )
+        apply_inactivity_decay(
+            glicko2_ratings[ent_id], current_date, baseline_mu, baseline_phi
+        )
 
     # Position switching (players)
     if entity.lower() == "player":
@@ -389,6 +430,8 @@ def process_game(
         glicko2_ratings[bid]["rating"] = updated_blue_ratings[i]
     for i, rid in enumerate(red_ids):
         glicko2_ratings[rid]["rating"] = updated_red_ratings[i]
+    for ent_id in entity_ids:
+        glicko2_ratings[ent_id]["last_active"] = current_date
 
     # Write columns back to df (per row) — opp columns are per-opponent entity, mirroring Elo behavior
     df.loc[blue_rows.index, "glicko2_mu_before"] = [r.mu for r in blue_old_ratings]
@@ -418,11 +461,18 @@ def tune_glicko2_hyperparameters(
     entity: str,
     hyperparameters_path: Path,
     league_elo_dict: dict[str, float],
+    *,
+    force_retune: bool = False,
 ) -> dict[str, float]:
     """Load Glicko-2 hyperparameters or compute them via Optuna."""
     best_params = load_hyperparameters(hyperparameters_path)
-    if best_params:
+    if best_params and not force_retune:
         return best_params
+    if not force_retune:
+        raise FileNotFoundError(
+            f"Missing reviewed Glicko hyperparameters at {hyperparameters_path}; "
+            "run the explicit rating retune workflow."
+        )
 
     logger.info(
         f"No hyperparameters found at {hyperparameters_path}. Starting tuning process..."
@@ -482,8 +532,12 @@ def tune_glicko2_hyperparameters(
 
         return loss
 
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=True)
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=OPTUNA_SEED),
+    )
+    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=False)
 
     best_params = study.best_params
     logger.info(f"Best hyperparameters: {best_params}")
@@ -713,7 +767,12 @@ def run_glicko2_computation(
 
     grouped = df.groupby(["date", "gameid"], sort=False)
     if show_progress:
-        grouped = tqdm(grouped, desc="Processing games", total=grouped.ngroups)
+        grouped = tqdm(
+            grouped,
+            desc="Processing games",
+            total=grouped.ngroups,
+            disable=not sys.stderr.isatty(),
+        )
 
     for _, game_grp in grouped:
         glicko2_ratings = process_game(
@@ -724,6 +783,8 @@ def run_glicko2_computation(
             entity=entity,
             entity_key=entity_key,
             baseline_mu=mu,
+            baseline_phi=phi,
+            baseline_sigma=sigma,
             decay_factor=decay_factor,
             league_elo_dict=league_elo_dict,
             transfer_factor=transfer_factor,

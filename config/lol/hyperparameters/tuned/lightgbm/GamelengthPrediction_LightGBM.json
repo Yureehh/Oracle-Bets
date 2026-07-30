@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "calibration": "auto",
+    "calibration_method": "auto",
+    "calibration_size": 0.15,
+    "code_version": "04654c7d0dcc92150cf3378d474f47e7f5b23272",
+    "dataset_fingerprint": "94c1fafe3f07dd32b1db3b71a8654a4857236837079431c9e901008c35331d81",
+    "feature_schema_fingerprint": "38a22c8c93dd07f211b00dfdd4067b245ab3e888d819283ed075906b6dae8e3d",
+    "feature_set": "compact",
+    "max_features": 120,
+    "model_name": "GamelengthPrediction_LightGBM",
+    "model_type": "lightgbm",
+    "objective": "rmse",
+    "problem_type": "regression",
+    "random_seed": 42,
+    "search_space_version": 1,
+    "test_size": 0.15,
+    "tune_size": 0.1,
+    "validation_score": 5.028586074688295,
+    "version": 2
+  },
+  "params": {
+    "bagging_freq": 3,
+    "boosting_type": "gbdt",
+    "colsample_bytree": 0.6270616267962215,
+    "feature_fraction": 0.6526057196129027,
+    "learning_rate": 0.013614382897916062,
+    "max_depth": 4,
+    "min_child_samples": 108,
+    "min_split_gain": 0.031468704529462425,
+    "num_leaves": 134,
+    "reg_alpha": 0.002331962199920928,
+    "reg_lambda": 0.09076283207546318,
+    "subsample": 0.6942605637240036
+  }
+}

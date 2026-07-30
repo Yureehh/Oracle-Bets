@@ -42,17 +42,12 @@ class ArtifactHealth:
 class PredictionModule(Protocol):
     """Minimal surface every sport/e-sport prediction module should expose."""
 
-    id: str
+    @property
+    def id(self) -> str:
+        """Stable module identifier."""
 
     def artifact_health(self) -> ArtifactHealth:
         """Return required-artifact health without mutating state."""
 
     def predict_match(self, *args: Any, **kwargs: Any) -> Any:
         """Predict a match outcome."""
-
-
-class PropsPredictionModule(PredictionModule, Protocol):
-    """Optional extension for modules that expose secondary markets/props."""
-
-    def predict_props(self, *args: Any, **kwargs: Any) -> Any:
-        """Predict secondary markets/props."""

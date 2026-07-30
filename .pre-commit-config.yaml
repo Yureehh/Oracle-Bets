@@ -30,6 +30,9 @@ repos:
     rev: v1.5.0
     hooks:
       - id: detect-secrets
+        args:
+          - --exclude-lines
+          - '"(code_version|dataset_fingerprint|feature_schema_fingerprint)"'
 
   # TOML files linter
   - repo: https://github.com/ComPWA/taplo-pre-commit

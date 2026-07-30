@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "timezone": "Europe/Rome",
+  "fixture_window_hours": 36,
+  "market": {
+    "read_only": true
+  },
+  "leagues": {
+    "profile": "tier1_plus_erls"
+  },
+  "training": {
+    "new_valid_maps_trigger": 50,
+    "new_major_maps_trigger": 20
+  },
+  "promotion": {
+    "automatic": false
+  }
+}

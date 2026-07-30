@@ -12,6 +12,10 @@ from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import numpy as np
+from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
+    add_opponent_columns,
+)
+from lol_bets.data_generation.ingestion.quality import normalize_result
 from oracle_bets_core.io_utils import get_sorting_keys
 from oracle_bets_core.league_taxonomy import add_league_taxonomy_columns
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
@@ -26,12 +30,14 @@ data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 # Helpers/constants shared by multiple methods
 # ────────────────────────────────────────────────────────────────────────────
 _OPPOSITE_SIDE = {"Blue": "Red", "Red": "Blue"}  # quick side-flip
-GAME_ID_PARTS = 2
 GAMES_IN_BO3 = 3
 GAMES_IN_BO5 = 5
 BREAK_THRESHOLD_DAYS = 45  # ~1.5 months, indicates split break
 H2H_MIN_GAMES = 2  # minimum games to compute head-to-head
 EARLY_GAME_MARKERS = (10, 15, 20, 25)
+_EXPECTED_ROSTER = ("top", "jng", "mid", "bot", "sup")
+DEFAULT_GLICKO_PHI = 350.0
+DEFAULT_SKILL_SIGMA = 8.333
 
 
 # Replace zeros with NaN without using pandas' deprecated downcasting in replace
@@ -41,31 +47,25 @@ def _zero_to_nan(series: pd.Series) -> pd.Series:
 
 
 def _safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
-    return np.divide(
-        pd.to_numeric(numerator, errors="coerce"),
-        _zero_to_nan(denominator).abs(),
+    return pd.Series(
+        np.divide(
+            pd.to_numeric(numerator, errors="coerce"),
+            _zero_to_nan(denominator).abs(),
+        ),
+        index=numerator.index,
     )
 
 
-def _result_to_numeric(series: pd.Series) -> pd.Series:
-    if pd.api.types.is_numeric_dtype(series):
-        return pd.to_numeric(series, errors="coerce")
-    return series.map(
-        {
-            "W": 1,
-            "Win": 1,
-            "win": 1,
-            "Won": 1,
-            "won": 1,
-            True: 1,
-            "L": 0,
-            "Loss": 0,
-            "loss": 0,
-            "Lose": 0,
-            "lose": 0,
-            False: 0,
-        }
-    ).astype("float64")
+def _days_since_previous_date(df: pd.DataFrame, entity_col: str) -> pd.Series:
+    """Days since an entity's prior distinct match date, aligned to every row."""
+    dates = df[[entity_col, "date"]].copy()
+    dates["date"] = pd.to_datetime(dates["date"], errors="coerce")
+    distinct = dates.drop_duplicates().sort_values([entity_col, "date"])
+    distinct["_days_since"] = (
+        distinct.groupby(entity_col, observed=True)["date"].diff().dt.days
+    )
+    merged = dates.merge(distinct, on=[entity_col, "date"], how="left", validate="m:1")
+    return pd.Series(merged["_days_since"].to_numpy(), index=df.index, dtype="float64")
 
 
 # ---------------------------------------------------------------------------
@@ -167,31 +167,13 @@ class FeatureGenerator:
         req = {"playerid", "season", "patch", "result", "kills", "deaths", "date"}
         _check_required(data, required=req)
 
-        # Normalize inputs to numeric to avoid None/object arithmetic surprises
+        # Normalize inputs to numeric to avoid None/object arithmetic surprises.
+        # Unknown/missing results stay NaN and are excluded from win/loss
+        # histories instead of being silently counted as losses.
         df = data.copy()
-        df["result"] = (
-            df["result"]
-            .map(
-                {
-                    "W": 1,
-                    "Win": 1,
-                    "win": 1,
-                    "Won": 1,
-                    "won": 1,
-                    True: 1,
-                    "L": 0,
-                    "Loss": 0,
-                    "loss": 0,
-                    "Lose": 0,
-                    "lose": 0,
-                    False: 0,
-                }
-            )
-            .astype("float64")
-            .fillna(0.0)
-        )
-        df["kills"] = pd.to_numeric(df["kills"], errors="coerce").fillna(0.0)
-        df["deaths"] = pd.to_numeric(df["deaths"], errors="coerce").fillna(0.0)
+        df["result"] = normalize_result(df["result"])
+        df["kills"] = pd.to_numeric(df["kills"], errors="coerce")
+        df["deaths"] = pd.to_numeric(df["deaths"], errors="coerce")
         df = df.sort_values(["playerid", "date"], kind="mergesort").reset_index(
             drop=True
         )
@@ -200,16 +182,42 @@ class FeatureGenerator:
             by: list[str], result_value: int, metric_values: pd.Series
         ) -> pd.Series:
             """
-            Expanding mean of metric for rows matching result_value, grouped by `by`,
-            using only prior games (shifted).
+            Expanding mean of metric for rows matching result_value, grouped by
+            `by`, using only games from strictly earlier dates. Oracle's Elixir
+            dates do not guarantee intra-day ordering, so same-date maps must
+            not feed each other (mirrors the head-to-head handling).
             """
-            mask = df["result"].eq(result_value)
-            groups = df[by].apply(tuple, axis=1)
-            running_sum = metric_values.where(mask, 0.0).groupby(groups).cumsum()
-            running_count = mask.groupby(groups).cumsum()
-            prev_sum = running_sum.groupby(groups).shift()
-            prev_count = running_count.groupby(groups).shift()
-            return prev_sum.div(prev_count.mask(prev_count == 0))
+            mask = df["result"].eq(float(result_value)) & metric_values.notna()
+            date_keys = [*by, "date"]
+            tmp = df[date_keys].copy()
+            tmp["_val"] = metric_values.where(mask, 0.0)
+            tmp["_cnt"] = mask.astype("float64")
+            daily = (
+                tmp.groupby(date_keys, observed=True, as_index=False)
+                .agg(_val=("_val", "sum"), _cnt=("_cnt", "sum"))
+                .sort_values(date_keys, kind="mergesort")
+            )
+            groupers = [daily[key] for key in by]
+            prev_sum = (
+                daily.groupby(by, observed=True)["_val"]
+                .cumsum()
+                .groupby(groupers, sort=False)
+                .shift()
+            )
+            prev_count = (
+                daily.groupby(by, observed=True)["_cnt"]
+                .cumsum()
+                .groupby(groupers, sort=False)
+                .shift()
+            )
+            daily["_prev_avg"] = prev_sum.div(prev_count.mask(prev_count == 0))
+            merged = df[date_keys].merge(
+                daily[[*date_keys, "_prev_avg"]],
+                on=date_keys,
+                how="left",
+                validate="m:1",
+            )
+            return pd.Series(merged["_prev_avg"].to_numpy(), index=df.index)
 
         for scope, group_cols in (
             ("season", ["playerid", "season"]),
@@ -251,6 +259,7 @@ class FeatureGenerator:
         df = data.copy()
         df = add_league_taxonomy_columns(df, league_col="league")
         df["season"] = df["patch"].astype(str).str.split(".").str[0]
+        df["days_since_last_game"] = _days_since_previous_date(df, "playerid")
 
         # Base per-game stats
         df["team_kills"] = df.groupby(["gameid", "teamid"], observed=True)[
@@ -333,6 +342,7 @@ class FeatureGenerator:
         )
         df = FeatureGenerator.add_team_control_features(df)
         df = FeatureGenerator.add_team_vision_features(df, player_data)
+        df = FeatureGenerator.add_roster_features(df, player_data)
 
         # ── Team cumulative mean, reset each *season* and *patch* ────────────
         for grp, pfx in (
@@ -344,6 +354,8 @@ class FeatureGenerator:
                 group_cols=list(grp),
                 value_cols=["gamelength"],
                 prefix=pfx,
+                sort_also_by=["date"],
+                exclude_same_date=True,
             )
 
         # ── Optional: recent-N rolling mean ───────────────────────────────────
@@ -370,6 +382,7 @@ class FeatureGenerator:
                 value_cols=["gamelength"],
                 prefix=pfx,
                 sort_also_by=["date"],
+                exclude_same_date=True,
             )
 
         df = df.merge(
@@ -422,7 +435,7 @@ class FeatureGenerator:
     def add_closing_speed_features(df: pd.DataFrame) -> pd.DataFrame:
         """Split game length by prior win/loss context for own-team EMAs."""
         out = df.copy()
-        result_num = _result_to_numeric(out["result"]) if "result" in out else None
+        result_num = normalize_result(out["result"]) if "result" in out else None
         if result_num is not None and "gamelength" in out:
             gamelength = pd.to_numeric(out["gamelength"], errors="coerce")
             out["win_gamelength"] = gamelength.where(result_num == 1)
@@ -433,7 +446,7 @@ class FeatureGenerator:
     def add_objective_conversion_features(df: pd.DataFrame) -> pd.DataFrame:
         """Add objective-to-structure and first-objective conversion signals."""
         out = df.copy()
-        result_num = _result_to_numeric(out["result"]) if "result" in out else None
+        result_num = normalize_result(out["result"]) if "result" in out else None
         if {"epic_monsters", "towers"} <= set(out.columns):
             out["towers_per_epic_monster"] = _safe_divide(
                 out["towers"], out["epic_monsters"]
@@ -486,7 +499,7 @@ class FeatureGenerator:
     def add_lead_conversion_features(df: pd.DataFrame) -> pd.DataFrame:
         """Add win/loss conversion rates for teams ahead or behind by gold."""
         out = df.copy()
-        result_num = _result_to_numeric(out["result"]) if "result" in out else None
+        result_num = normalize_result(out["result"]) if "result" in out else None
         if result_num is not None:
             for minute in (15, 25):
                 gold_col = f"golddiffat{minute}"
@@ -544,11 +557,73 @@ class FeatureGenerator:
         return team_df.merge(vision, on=["gameid", "teamid"], how="left")
 
     @staticmethod
+    def add_roster_features(
+        team_df: pd.DataFrame, player_df: pd.DataFrame | None
+    ) -> pd.DataFrame:
+        """Add pre-match lineup continuity relative to the prior distinct match date."""
+        if player_df is None:
+            return team_df
+        player_key = "playerid" if "playerid" in player_df else "playername"
+        required = {"teamid", "date", player_key}
+        if not required <= set(player_df.columns):
+            return team_df
+
+        lineups = player_df[list(required)].dropna(subset=[player_key]).copy()
+        lineups["date"] = pd.to_datetime(lineups["date"], errors="coerce")
+        lineups = (
+            lineups.groupby(["teamid", "date"], observed=True)[player_key]
+            .agg(frozenset)
+            .reset_index(name="_roster")
+            .sort_values(["teamid", "date"])
+        )
+        lineups["_previous_roster"] = lineups.groupby("teamid", observed=True)[
+            "_roster"
+        ].shift()
+        lineups["roster_continuity"] = [
+            len(current & previous) / len(_EXPECTED_ROSTER)
+            if len(current) == len(_EXPECTED_ROSTER)
+            and isinstance(previous, frozenset)
+            and len(previous) == len(_EXPECTED_ROSTER)
+            else np.nan
+            for current, previous in zip(
+                lineups["_roster"], lineups["_previous_roster"], strict=True
+            )
+        ]
+        lineups["roster_uncertainty"] = (1.0 - lineups["roster_continuity"]).fillna(1.0)
+
+        out = team_df.copy()
+        out["date"] = pd.to_datetime(out["date"], errors="coerce")
+        return out.merge(
+            lineups[["teamid", "date", "roster_continuity", "roster_uncertainty"]],
+            on=["teamid", "date"],
+            how="left",
+            validate="m:1",
+        )
+
+    @staticmethod
+    def add_rating_uncertainty(df: pd.DataFrame) -> pd.DataFrame:
+        """Expose normalized uncertainty already estimated by rating systems."""
+        out = df.copy()
+        sources: list[pd.Series] = []
+        for column, baseline in (
+            ("glicko2_phi_before", DEFAULT_GLICKO_PHI),
+            ("pl_sigma_before", DEFAULT_SKILL_SIGMA),
+            ("trueskill_sigma_before", DEFAULT_SKILL_SIGMA),
+        ):
+            if column in out:
+                sources.append(pd.to_numeric(out[column], errors="coerce") / baseline)
+        if sources:
+            out["rating_uncertainty"] = pd.concat(sources, axis=1).mean(axis=1)
+        return out
+
+    @staticmethod
     def add_series_context(df: pd.DataFrame) -> pd.DataFrame:
         """
         Add series format and game context features.
 
-        Uses gameid pattern and game column to infer BO format.
+        Uses explicit scheduled best-of metadata when present. It does not infer
+        BO format from completed series length, because that leaks whether a
+        BO3/BO5 ended early.
 
         Added columns
         -------------
@@ -557,11 +632,11 @@ class FeatureGenerator:
         is_bo1 : uint8
             1 if match is Best-of-1 format
         is_bo3 : uint8
-            1 if match is Best-of-3 format (games 2 or 3 played)
+            1 if match is scheduled Best-of-3 format
         is_bo5 : uint8
-            1 if match is Best-of-5 format (games 4 or 5 played)
+            1 if match is scheduled Best-of-5 format
         is_deciding_game : uint8
-            1 if this is game 3 in BO3 or game 5 in BO5
+            1 if this is game 3 in BO3 or game 5 in BO5, when scheduled format is known
         """
         _check_required(df, required={"gameid", "game"})
 
@@ -570,43 +645,24 @@ class FeatureGenerator:
         # game column already has game number (1, 2, 3, etc.)
         out["game_in_series"] = out["game"].astype(int)
 
-        # Infer BO format from max game number per match
-        # Extract match identifier by removing game number suffix
-        # gameid format varies: sometimes ends with "_game1", sometimes different patterns
-        # Group by removing trailing digits or "_gameN" pattern
-        # Approach: group by (date, league, team pair) to identify unique matches
-
-        # Use all but last underscore segment if gameid has underscore
-        def _extract_match_id(gid: str) -> str:
-            if "_" in gid:
-                # Try to remove game suffix (e.g., "_1", "_2", "_game1")
-                parts = gid.rsplit("_", 1)
-                if len(parts) == GAME_ID_PARTS and (
-                    parts[1].isdigit() or parts[1].startswith("game")
-                ):
-                    return parts[0]
-            return gid
-
-        out["_match_id"] = out["gameid"].apply(_extract_match_id)
-
-        # Get max game number per match
-        match_max_game = out.groupby("_match_id", observed=True)["game"].transform(
-            "max"
-        )
+        best_of = pd.Series(np.nan, index=out.index, dtype="float64")
+        for col in ("best_of", "bestof", "bestOf", "match_type"):
+            if col not in out.columns:
+                continue
+            raw = out[col].astype(str).str.extract(r"(\d+)", expand=False)
+            best_of = pd.to_numeric(raw, errors="coerce")
+            break
 
         # Determine BO format
-        out["is_bo1"] = (match_max_game == 1).astype("uint8")
-        out["is_bo3"] = (match_max_game.isin([2, 3])).astype("uint8")
-        out["is_bo5"] = (match_max_game.isin([4, 5])).astype("uint8")
+        out["is_bo1"] = best_of.eq(1).astype("uint8")
+        out["is_bo3"] = best_of.eq(3).astype("uint8")
+        out["is_bo5"] = best_of.eq(5).astype("uint8")
 
         # Deciding game: game 3 in BO3, game 5 in BO5
         out["is_deciding_game"] = (
             ((out["is_bo3"] == 1) & (out["game"] == GAMES_IN_BO3))
             | ((out["is_bo5"] == 1) & (out["game"] == GAMES_IN_BO5))
         ).astype("uint8")
-
-        # Clean up temporary column
-        out = out.drop(columns=["_match_id"])
 
         data_pipeline_logger.info("Series context features added.")
         return out
@@ -630,9 +686,7 @@ class FeatureGenerator:
         out = df.sort_values(["teamid", "date"], kind="mergesort").copy()
 
         # Days since last game
-        out["days_since_last_game"] = (
-            out.groupby("teamid", observed=True)["date"].diff().dt.days
-        )
+        out["days_since_last_game"] = _days_since_previous_date(out, "teamid")
 
         # First game after break (>45 days gap)
         out["is_after_break"] = (
@@ -665,39 +719,12 @@ class FeatureGenerator:
 
         out = df.sort_values(["date", "gameid"], kind="mergesort").copy()
 
-        # Normalize result to numeric
-        if not pd.api.types.is_numeric_dtype(out["result"]):
-            result_map = {
-                "W": 1,
-                "Win": 1,
-                "win": 1,
-                True: 1,
-                "L": 0,
-                "Loss": 0,
-                "loss": 0,
-                False: 0,
-            }
-            out["_result_num"] = out["result"].map(result_map).astype("float64")
-        else:
-            out["_result_num"] = out["result"].astype("float64")
-
-        # Create opponent mapping per game
-        # For each row, get the opponent teamid from the same gameid but opposite side
-        game_teams = (
-            out.groupby("gameid", observed=True)
-            .apply(
-                lambda g: dict(zip(g["side"], g["teamid"], strict=False)),
-                include_groups=False,
-            )
-            .to_dict()
-        )
-
-        def _get_opponent(row):
-            teams = game_teams.get(row["gameid"], {})
-            opp_side = _OPPOSITE_SIDE.get(row["side"])
-            return teams.get(opp_side)
-
-        out["_opponent_id"] = out.apply(_get_opponent, axis=1)
+        out["_result_num"] = normalize_result(out["result"])
+        out = add_opponent_columns(
+            out,
+            entity="team",
+            source_columns=["teamid"],
+        ).rename(columns={"opp_teamid": "_opponent_id"})
 
         # Create matchup key (sorted team pair for consistency)
         out["_matchup"] = out.apply(
@@ -707,19 +734,40 @@ class FeatureGenerator:
             axis=1,
         )
 
-        # For each team, compute expanding h2h stats against each opponent
-        # Group by (teamid, opponent) and compute cumulative stats shifted
+        # For each team, compute h2h stats against each opponent using only
+        # prior dates. Oracle's Elixir dates do not guarantee exact start order,
+        # so same-date maps must not feed each other.
         out = out.sort_values(["teamid", "_opponent_id", "date"], kind="mergesort")
-
-        # Cumulative games and wins vs this opponent (shifted for leak-free)
-        grp = out.groupby(["teamid", "_opponent_id"], observed=True, sort=False)
-        out["h2h_games_before"] = grp.cumcount()  # 0-indexed, so this is count before
-        running_wins = grp["_result_num"].cumsum()
-        out["h2h_wins_before"] = (
-            running_wins.groupby([out["teamid"], out["_opponent_id"]], sort=False)
+        h2h_keys = ["teamid", "_opponent_id"]
+        date_keys = [*h2h_keys, "date"]
+        daily = (
+            out[[*date_keys, "gameid", "_result_num"]]
+            .groupby(date_keys, observed=True, as_index=False)
+            .agg(_daily_games=("gameid", "count"), _daily_wins=("_result_num", "sum"))
+            .sort_values(date_keys, kind="mergesort")
+        )
+        groupers = [daily[key] for key in h2h_keys]
+        daily["h2h_games_before"] = (
+            daily.groupby(h2h_keys, observed=True)["_daily_games"]
+            .cumsum()
+            .groupby(groupers, sort=False)
             .shift()
             .fillna(0)
             .astype(int)
+        )
+        daily["h2h_wins_before"] = (
+            daily.groupby(h2h_keys, observed=True)["_daily_wins"]
+            .cumsum()
+            .groupby(groupers, sort=False)
+            .shift()
+            .fillna(0)
+            .astype(int)
+        )
+        out = out.merge(
+            daily[[*date_keys, "h2h_games_before", "h2h_wins_before"]],
+            on=date_keys,
+            how="left",
+            validate="m:1",
         )
 
         # Win rate (only if >= H2H_MIN_GAMES prior games)
@@ -757,9 +805,45 @@ def _add_expanding_mean(
     value_cols: list[str],
     prefix: str,
     sort_also_by: list[str] | None = None,
+    exclude_same_date: bool = False,
+    date_col: str = "date",
 ) -> pd.DataFrame:
     sort_keys = list(group_cols) + (sort_also_by or [])
     df = df.sort_values(sort_keys, kind="mergesort")
+
+    if exclude_same_date:
+        _check_required(df, required={date_col})
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        date_keys = [*group_cols, date_col]
+        daily = (
+            df[date_keys + value_cols]
+            .groupby(date_keys, observed=True, as_index=False)
+            .agg({col: ["sum", "count"] for col in value_cols})
+        )
+        daily.columns = [
+            "_".join(str(part) for part in col if part)
+            if isinstance(col, tuple)
+            else col
+            for col in daily.columns
+        ]
+        daily = daily.sort_values(date_keys, kind="mergesort")
+        for col in value_cols:
+            groupers = [daily[group_col] for group_col in group_cols]
+            sum_col = f"{col}_sum"
+            count_col = f"{col}_count"
+            prev_sum = daily.groupby(group_cols, observed=True)[sum_col].cumsum()
+            prev_count = daily.groupby(group_cols, observed=True)[count_col].cumsum()
+            daily[f"{prefix}{col}"] = (
+                prev_sum.groupby(groupers, sort=False)
+                .shift()
+                .div(prev_count.groupby(groupers, sort=False).shift())
+            )
+        return df.merge(
+            daily[date_keys + [f"{prefix}{col}" for col in value_cols]],
+            on=date_keys,
+            how="left",
+            validate="m:1",
+        )
 
     for col in value_cols:
         grp = df.groupby(group_cols, observed=True)[col]

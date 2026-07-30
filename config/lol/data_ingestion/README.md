@@ -4,7 +4,7 @@ Configuration for Oracle's Elixir ingestion.
 
 - `import_columns.json`: source columns kept for team/player rows.
 - `considered_leagues.json`: named league-selection profiles for ingestion.
-- `team_name_replacements_and_invalid_games.json`: manual data fixes.
+- `team_aliases.json`: external aliases plus verified historical identity merges.
 - `league_taxonomy.json`: region/tier metadata plus the single `strength_pool` key used by learned macro League Elo.
 
 Generated league/team summaries live in `reports/lol/ingestion/`.

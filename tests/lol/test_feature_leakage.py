@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from lol_bets.data_generation.feature_engineering.features_generator import (
     FeatureGenerator,
     _add_expanding_mean,
@@ -19,6 +20,8 @@ EXPECTED_WIN_GAMELENGTH = 1800
 EXPECTED_TEAM_WPM = 3.2
 EXPECTED_TEAM_VSPM = 6.2
 EXPECTED_TEAM_CONTROL_WARDS = 9
+EXPECTED_SAME_DATE_EXCLUDED_MEAN = 35.0
+EXPECTED_PRIOR_H2H_SAME_DATE_EXCLUDED = 2
 BLUE_GOLD_EMA = 110.0
 RED_GOLD_EMA = 90.0
 GOLD_EMA_DIFF = 20.0
@@ -32,6 +35,10 @@ MODEL_TOP_KDA = 5.0
 MODEL_OPP_TOP_KDA = 3.0
 MODEL_TOP_KDA_DIFF = 2.0
 DEATHLESS_KDA = 11
+EXPECTED_TWO_DAY_GAP = 2
+EXPECTED_ROSTER_CONTINUITY = 0.8
+EXPECTED_SAME_DAY_PLAYER_MEAN = 15.0
+EXPECTED_PRIOR_LOSS_MEAN = 10.0
 
 
 def test_player_win_loss_metrics_shift_within_player_season_patch():
@@ -55,6 +62,81 @@ def test_player_win_loss_metrics_shift_within_player_season_patch():
     assert out.loc[1, "kills_prev_avg_season_win"] == PLAYER_A_FIRST_KILLS
     assert np.isnan(out.loc[2, "kills_prev_avg_season_win"])
     assert out.loc[3, "kills_prev_avg_season_win"] == PLAYER_B_FIRST_KILLS
+
+
+def test_inactivity_and_roster_features_use_prior_distinct_dates():
+    team_df = pd.DataFrame(
+        {
+            "teamid": ["a", "a", "a"],
+            "date": pd.to_datetime(["2026-01-01", "2026-01-01", "2026-01-03"]),
+            "season": ["2026", "2026", "2026"],
+        }
+    )
+    player_rows = []
+    for match_date, roster in (
+        ("2026-01-01", ["top", "jng", "mid", "bot", "sup"]),
+        ("2026-01-03", ["top", "jng", "new_mid", "bot", "sup"]),
+    ):
+        player_rows.extend(
+            {"teamid": "a", "date": match_date, "playerid": player} for player in roster
+        )
+    player_df = pd.DataFrame(player_rows)
+
+    gaps = FeatureGenerator.add_break_indicator(team_df)
+    out = FeatureGenerator.add_roster_features(gaps, player_df)
+
+    assert np.isnan(out.loc[0, "days_since_last_game"])
+    assert np.isnan(out.loc[1, "days_since_last_game"])
+    assert out.loc[2, "days_since_last_game"] == EXPECTED_TWO_DAY_GAP
+    assert out.loc[2, "roster_continuity"] == EXPECTED_ROSTER_CONTINUITY
+    assert out.loc[2, "roster_uncertainty"] == pytest.approx(
+        1 - EXPECTED_ROSTER_CONTINUITY
+    )
+
+
+def test_player_win_loss_metrics_exclude_same_date_maps():
+    # Same-date maps (e.g. games of one series) must not feed each other,
+    # because Oracle's Elixir dates do not guarantee intra-day ordering.
+    df = pd.DataFrame(
+        {
+            "playerid": ["a", "a", "a"],
+            "season": ["2025", "2025", "2025"],
+            "patch": ["15.1", "15.1", "15.1"],
+            "result": [1, 1, 1],
+            "kills": [10, 20, 30],
+            "deaths": [1, 2, 3],
+            "date": pd.to_datetime(["2025-01-01", "2025-01-01", "2025-01-02"]),
+        }
+    )
+
+    out = FeatureGenerator.compute_win_loss_metrics(df)
+
+    # Both 01-01 maps have no strictly-prior date -> NaN.
+    assert np.isnan(out.loc[0, "kills_prev_avg_season_win"])
+    assert np.isnan(out.loc[1, "kills_prev_avg_season_win"])
+    # The 01-02 map sees the average of both prior-day maps.
+    assert out.loc[2, "kills_prev_avg_season_win"] == EXPECTED_SAME_DAY_PLAYER_MEAN
+
+
+def test_player_win_loss_metrics_ignore_missing_results():
+    # A missing result must not be silently counted as a loss.
+    df = pd.DataFrame(
+        {
+            "playerid": ["a", "a", "a"],
+            "season": ["2025", "2025", "2025"],
+            "patch": ["15.1", "15.1", "15.1"],
+            "result": [0, None, 0],
+            "kills": [10, 20, 30],
+            "deaths": [1, 2, 3],
+            "date": pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03"]),
+        }
+    )
+
+    out = FeatureGenerator.compute_win_loss_metrics(df)
+
+    # Loss history on 01-03 must only include the 01-01 loss (kills=10),
+    # not the unknown-result 01-02 game.
+    assert out.loc[2, "kills_prev_avg_season_loss"] == EXPECTED_PRIOR_LOSS_MEAN
 
 
 def test_player_kda_uses_kills_plus_assists_for_deathless_games():
@@ -114,6 +196,31 @@ def test_expanding_mean_shift_resets_at_group_boundary():
     )
 
 
+def test_expanding_mean_can_exclude_same_date_rows():
+    df = pd.DataFrame(
+        {
+            "teamid": ["a", "a", "a"],
+            "season": ["2025", "2025", "2025"],
+            "date": pd.to_datetime(["2025-01-01", "2025-01-01", "2025-01-02"]),
+            "gamelength": [30.0, 40.0, 50.0],
+        }
+    )
+
+    out = _add_expanding_mean(
+        df,
+        group_cols=["teamid", "season"],
+        value_cols=["gamelength"],
+        prefix="team_season_avg_",
+        sort_also_by=["date"],
+        exclude_same_date=True,
+    )
+
+    same_day = out[out["date"].eq(pd.Timestamp("2025-01-01"))]
+    next_day = out[out["date"].eq(pd.Timestamp("2025-01-02"))].iloc[0]
+    assert same_day["team_season_avg_gamelength"].isna().all()
+    assert next_day["team_season_avg_gamelength"] == EXPECTED_SAME_DATE_EXCLUDED_MEAN
+
+
 def test_head_to_head_wins_shift_within_matchup():
     df = pd.DataFrame(
         {
@@ -140,6 +247,69 @@ def test_head_to_head_wins_shift_within_matchup():
     assert rows.loc[("g1", "a"), "h2h_wins_before"] == 0
     assert rows.loc[("g2", "a"), "h2h_wins_before"] == 1
     assert rows.loc[("g3", "c"), "h2h_wins_before"] == 0
+
+
+def test_head_to_head_excludes_same_date_maps():
+    df = pd.DataFrame(
+        {
+            "teamid": ["a", "b", "a", "b", "a", "b"],
+            "gameid": ["g1", "g1", "g2", "g2", "g3", "g3"],
+            "date": pd.to_datetime(
+                [
+                    "2025-01-01",
+                    "2025-01-01",
+                    "2025-01-01",
+                    "2025-01-01",
+                    "2025-01-02",
+                    "2025-01-02",
+                ]
+            ),
+            "result": [1, 0, 0, 1, 1, 0],
+            "side": ["Blue", "Red", "Blue", "Red", "Blue", "Red"],
+        }
+    )
+
+    out = FeatureGenerator.add_head_to_head_history(df).set_index(["gameid", "teamid"])
+
+    assert out.loc[("g1", "a"), "h2h_games_before"] == 0
+    assert out.loc[("g2", "a"), "h2h_games_before"] == 0
+    assert (
+        out.loc[("g3", "a"), "h2h_games_before"]
+        == EXPECTED_PRIOR_H2H_SAME_DATE_EXCLUDED
+    )
+    assert out.loc[("g3", "a"), "h2h_wins_before"] == 1
+
+
+def test_series_context_uses_explicit_best_of_not_completed_length():
+    df = pd.DataFrame(
+        {
+            "gameid": ["match_game1", "match_game2", "match_game3"],
+            "game": [1, 2, 3],
+            "best_of": [5, 5, 5],
+        }
+    )
+
+    out = FeatureGenerator.add_series_context(df)
+
+    assert out["is_bo5"].tolist() == [1, 1, 1]
+    assert out["is_bo3"].tolist() == [0, 0, 0]
+    assert out["is_deciding_game"].tolist() == [0, 0, 0]
+
+
+def test_series_context_does_not_infer_best_of_from_observed_game_count():
+    df = pd.DataFrame(
+        {
+            "gameid": ["match_game1", "match_game2"],
+            "game": [1, 2],
+        }
+    )
+
+    out = FeatureGenerator.add_series_context(df)
+
+    assert out["is_bo1"].tolist() == [0, 0]
+    assert out["is_bo3"].tolist() == [0, 0]
+    assert out["is_bo5"].tolist() == [0, 0]
+    assert out["is_deciding_game"].tolist() == [0, 0]
 
 
 def test_team_control_features_are_bounded_and_objective_based():

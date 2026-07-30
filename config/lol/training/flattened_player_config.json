@@ -11,6 +11,8 @@
     "teamname",
     "side",
     "position",
+    "days_since_last_game",
+    "rating_uncertainty",
     "elo_after",
     "glicko2_mu_after",
     "glicko2_phi_after",

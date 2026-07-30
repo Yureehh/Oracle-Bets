@@ -6,6 +6,8 @@ Runtime code shared by every prediction module.
 - `paths.py`: artifact and config locations.
 - `interfaces.py`: prediction-module contracts.
 - `betting.py` and `markets.py`: read-only market decision support.
+- `evidence/`: canonical append-only research records and settlement.
+- `operations/`: workflow, health, backup, and audit orchestration.
 - `pd.py`: FireDucks-first pandas shim.
 
 Example:

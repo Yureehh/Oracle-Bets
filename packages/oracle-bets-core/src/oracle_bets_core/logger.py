@@ -34,8 +34,10 @@ load_dotenv()
 # --------------------------------------------------------------------------- #
 ISO_TIME_FMT: Final = "%Y-%m-%dT%H:%M:%S"
 DEFAULT_FORMAT: Final = "%(asctime)s | %(levelname)s | %(name)s: %(message)s"
-DEFAULT_LOG_MAX_BYTES: Final = 5_000_000
-DEFAULT_LOG_BACKUPS: Final = 3
+DEFAULT_LOG_MAX_BYTES: Final = 10 * 1024 * 1024
+DEFAULT_LOG_BACKUPS: Final = 5
+SCHEDULED_LOG_NAME: Final = "oracle-bets.log"
+_scheduled_file_handler: logging.Handler | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -46,8 +48,6 @@ class LOG_TOPIC(Enum):  # noqa: N801
     """Pre-defined logger namespaces (extend as needed)."""
 
     DATA_PIPELINE = "DataPipelineLogger"
-    MODEL_TRAINING = "ModelTrainingLogger"
-    ORACLE_BOT = "OracleBotLogger"
     SCHEDULE_GENERATION = "ScheduleGenerationLogger"
     GENERAL = "GeneralLogger"
 
@@ -153,7 +153,7 @@ def instantiate_logger(
     topic: LOG_TOPIC, level: int | str = logging.INFO
 ) -> logging.Logger:
     """
-    Convenience helper – writes to one stable rotating file per topic.
+    Convenience helper – writes all application topics to one bounded file.
     """
     if isinstance(level, str):
         effective_level: int | str = level
@@ -163,14 +163,38 @@ def instantiate_logger(
         )
 
     log_to_file = _env_flag("ORACLE_BETS_LOG_TO_FILE", default=True)
-    log_file = LOGS_DIR / f"{str(topic).lower()}.log" if log_to_file else None
-    return create_logger(
-        topic,
-        log_file=log_file,
-        level=effective_level,
-        max_bytes=_env_int("ORACLE_BETS_LOG_MAX_BYTES", default=DEFAULT_LOG_MAX_BYTES),
-        backup_count=_env_int("ORACLE_BETS_LOG_BACKUPS", default=DEFAULT_LOG_BACKUPS),
+    if not log_to_file:
+        return create_logger(topic, level=effective_level)
+
+    lg = logging.getLogger(str(topic))
+    if lg.handlers:
+        return lg
+
+    level_value = (
+        logging.getLevelNamesMapping().get(effective_level.upper(), logging.INFO)
+        if isinstance(effective_level, str)
+        else effective_level
     )
+    lg.setLevel(level_value)
+    lg.propagate = False
+
+    global _scheduled_file_handler  # noqa: PLW0603
+    if _scheduled_file_handler is None:
+        _scheduled_file_handler = _build_handler(
+            log_file=LOGS_DIR / SCHEDULED_LOG_NAME,
+            fmt=DEFAULT_FORMAT,
+            mode="a",
+            max_bytes=_env_int(
+                "ORACLE_BETS_LOG_MAX_BYTES",
+                default=DEFAULT_LOG_MAX_BYTES,
+            ),
+            backup_count=_env_int(
+                "ORACLE_BETS_LOG_BACKUPS",
+                default=DEFAULT_LOG_BACKUPS,
+            ),
+        )
+    lg.addHandler(_scheduled_file_handler)
+    return lg
 
 
 # --------------------------------------------------------------------------- #

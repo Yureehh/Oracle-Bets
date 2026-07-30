@@ -10,6 +10,7 @@ handled elsewhere (side, patch, season win rates).
 from __future__ import annotations
 
 import re
+import sys
 from typing import TYPE_CHECKING
 
 from oracle_bets_core.io_utils import get_identity, get_sorting_keys, json_loader
@@ -23,6 +24,7 @@ from tqdm import tqdm
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from pathlib import Path
 
 # ---------------------------------------------------------------------
 # Constants
@@ -61,7 +63,7 @@ NEUTRAL_PRIORS: dict[str, float] = {
 # ---------------------------------------------------------------------
 # Column selection
 # ---------------------------------------------------------------------
-def _load_flattened_config_path(entity: str) -> str:
+def _load_flattened_config_path(entity: str) -> Path:
     if entity == "team":
         return FLATTENED_TEAM_CONFIG
     if entity == "player":
@@ -121,7 +123,11 @@ def apply_ema(df: pd.DataFrame, identity: str, columns: Iterable[str]) -> pd.Dat
     out = df.copy()
     new_cols = {}  # <- collect here
 
-    for col in tqdm(list(columns), desc="Calculating EMA"):
+    for col in tqdm(
+        list(columns),
+        desc="Calculating EMA",
+        disable=not sys.stderr.isatty(),
+    ):
         grp = out.groupby(identity, sort=False, observed=True)[col]
         ema_after = grp.transform(_ema)
         ema_before = ema_after.groupby(out[identity], sort=False).shift()

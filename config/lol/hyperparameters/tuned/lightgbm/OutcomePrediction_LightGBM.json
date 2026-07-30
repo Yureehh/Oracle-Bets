@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "calibration": "auto",
+    "calibration_method": "auto",
+    "calibration_size": 0.15,
+    "code_version": "04654c7d0dcc92150cf3378d474f47e7f5b23272",
+    "dataset_fingerprint": "94c1fafe3f07dd32b1db3b71a8654a4857236837079431c9e901008c35331d81",
+    "feature_schema_fingerprint": "38a22c8c93dd07f211b00dfdd4067b245ab3e888d819283ed075906b6dae8e3d",
+    "feature_set": "compact",
+    "max_features": 120,
+    "model_name": "OutcomePrediction_LightGBM",
+    "model_type": "lightgbm",
+    "objective": "binary_logloss",
+    "problem_type": "classification",
+    "random_seed": 42,
+    "search_space_version": 1,
+    "test_size": 0.15,
+    "tune_size": 0.1,
+    "validation_score": 0.6294274209603278,
+    "version": 2
+  },
+  "params": {
+    "bagging_freq": 3,
+    "boosting_type": "gbdt",
+    "colsample_bytree": 0.7935334272092152,
+    "feature_fraction": 0.78459753256726,
+    "learning_rate": 0.018040900518363663,
+    "max_depth": 6,
+    "min_child_samples": 104,
+    "min_split_gain": 0.2896605473474786,
+    "num_leaves": 96,
+    "reg_alpha": 0.04703701583494972,
+    "reg_lambda": 0.0005496693654714894,
+    "subsample": 0.7096559520547855
+  }
+}

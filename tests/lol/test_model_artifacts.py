@@ -1,10 +1,60 @@
+import json
+import warnings
+
 import numpy as np
-from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+import pytest
+from lol_bets.prediction_models import lightgbm_model
+from lol_bets.prediction_models.gbdt_model import FeaturePipeline, GradientBoostingModel
+from lol_bets.prediction_models.lightgbm_model import LightGBMModel
 from oracle_bets_core.pd import pd
+from pandas.errors import PerformanceWarning
 
 PAIRWISE_GAME_COUNT = 2
 EXPECTED_ROW_ACCURACY = 0.75
 EXPECTED_PAIRWISE_LOG_LOSS_UPPER_BOUND = 0.7
+SHA256_HEX_LENGTH = 64
+EXPECTED_ECE = 0.15
+EXPECTED_NUM_LEAVES = 31
+EXPECTED_ALPHA = 0.25
+EXPECTED_LEARNING_RATE = 0.05
+EXPECTED_LAST_MEDIAN = 159.0
+EXPECTED_VALIDATION_SCORE = 0.64
+
+
+def test_feature_pipeline_adds_missing_columns_without_fragmentation_warning():
+    columns = [f"feature_{index}" for index in range(160)]
+    pipeline = FeaturePipeline(
+        train_columns=columns,
+        categorical_features=[],
+        categorical_levels={},
+        numeric_medians={column: float(index) for index, column in enumerate(columns)},
+        drop_high_missing=[],
+        drop_low_variance=[],
+        drop_high_correlation=[],
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", PerformanceWarning)
+        transformed = pipeline.transform(pd.DataFrame({"feature_0": [1.0]}))
+
+    assert transformed.columns.tolist() == columns
+    assert transformed.loc[0, "feature_159"] == EXPECTED_LAST_MEDIAN
+    assert not any(
+        isinstance(warning.message, PerformanceWarning) for warning in captured
+    )
+
+
+def test_numeric_imputation_avoids_future_downcasting_warning():
+    frame = pd.DataFrame({"feature": pd.Series([1, None], dtype=object)})
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", FutureWarning)
+        transformed = GradientBoostingModel._impute_apply_numeric(
+            frame, {"feature": 0.0}
+        )
+
+    assert transformed["feature"].tolist() == [1.0, 0.0]
+    assert not any(isinstance(warning.message, FutureWarning) for warning in captured)
 
 
 def test_regression_residual_summary_contains_pricing_fields():
@@ -32,3 +82,112 @@ def test_pairwise_classification_metrics_force_one_market_pick_per_game():
     assert metrics["pairwise_brier"] < EXPECTED_PAIRWISE_LOG_LOSS_UPPER_BOUND
     assert metrics["pairwise_both_predicted_win_at_0_5"] == 1
     assert metrics["row_accuracy_at_0_5"] == EXPECTED_ROW_ACCURACY
+
+
+def test_probability_calibration_metrics_report_ece_and_reliability_line():
+    metrics = GradientBoostingModel.compute_probability_calibration_metrics(
+        pd.Series([0, 0, 1, 1]),
+        np.array([0.1, 0.2, 0.8, 0.9]),
+    )
+
+    assert metrics["calibration_ece"] == EXPECTED_ECE
+    assert metrics["calibration_slope"] > 0
+    assert metrics["calibration_intercept"] < 0
+
+
+def test_stable_dataframe_hash_ignores_column_order_but_tracks_content():
+    left = pd.DataFrame(
+        {
+            "gameid": ["g1", "g2"],
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+            "target": [1, 0],
+        }
+    )
+    reordered = left[["target", "gameid", "date"]]
+    changed = left.copy()
+    changed.loc[1, "target"] = 1
+
+    first_hash = GradientBoostingModel.stable_dataframe_hash(left)
+
+    assert len(first_hash) == SHA256_HEX_LENGTH
+    assert first_hash == GradientBoostingModel.stable_dataframe_hash(reordered)
+    assert first_hash != GradientBoostingModel.stable_dataframe_hash(changed)
+
+
+def test_model_hyperparameters_extracts_json_safe_wrapped_params():
+    class _RawModel:
+        def get_params(self):
+            return {
+                "num_leaves": np.int64(EXPECTED_NUM_LEAVES),
+                "objective": "binary",
+                "nested": {"alpha": np.float64(EXPECTED_ALPHA)},
+                "callbacks": (None, "early_stop"),
+            }
+
+    class _WrappedModel:
+        raw_model = _RawModel()
+
+    params = GradientBoostingModel.model_hyperparameters(_WrappedModel())
+
+    assert params["num_leaves"] == EXPECTED_NUM_LEAVES
+    assert params["objective"] == "binary"
+    assert params["nested"]["alpha"] == EXPECTED_ALPHA
+    assert params["callbacks"] == [None, "early_stop"]
+
+
+def _lightgbm_model(**overrides) -> LightGBMModel:
+    values = {
+        "model_name": "OutcomePrediction",
+        "problem_type": "classification",
+        "team_data": pd.DataFrame(),
+        "player_data": pd.DataFrame(),
+    }
+    values.update(overrides)
+    return LightGBMModel(**values)
+
+
+def test_lightgbm_hyperparameter_cache_requires_matching_metadata(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(lightgbm_model, "TUNED_LIGHTGBM_HYPERPARAMETERS", tmp_path)
+    model = _lightgbm_model(feature_set="compact")
+    params = {"boosting_type": "gbdt", "learning_rate": EXPECTED_LEARNING_RATE}
+
+    model.store_best_hyperparameters(params, score=EXPECTED_VALIDATION_SCORE)
+
+    assert model._maybe_load_cached_hparams() == params
+    payload = json.loads(model._hparams_path().read_text())
+    assert payload["metadata"]["validation_score"] == EXPECTED_VALIDATION_SCORE
+    assert payload["params"] == params
+    assert _lightgbm_model(feature_set="selected")._maybe_load_cached_hparams() is None
+
+
+def test_lightgbm_hyperparameter_cache_ignores_legacy_raw_params(tmp_path, monkeypatch):
+    monkeypatch.setattr(lightgbm_model, "TUNED_LIGHTGBM_HYPERPARAMETERS", tmp_path)
+    model = _lightgbm_model()
+    path = model._hparams_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"boosting_type": "gbdt", "learning_rate": EXPECTED_LEARNING_RATE})
+    )
+
+    assert model._maybe_load_cached_hparams() is None
+
+
+def test_lightgbm_retraining_never_retunes_without_explicit_flag(monkeypatch):
+    model = _lightgbm_model()
+    monkeypatch.setattr(model, "_maybe_load_cached_hparams", lambda: None)
+    monkeypatch.setattr(
+        model,
+        "_optimize_hyperparameters",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not retune")),
+    )
+
+    with pytest.raises(RuntimeError, match="oracle-bets lol retune"):
+        model.train_model(
+            X_train=pd.DataFrame({"x": [0, 1]}),
+            y_train=pd.Series([0, 1]),
+            X_val=pd.DataFrame({"x": [0, 1]}),
+            y_val=pd.Series([0, 1]),
+            categorical_features=None,
+        )

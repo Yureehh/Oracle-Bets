@@ -1,8 +1,8 @@
 # hyperparameters
 
-Default parameters for ratings and model experiments.
+Default search priors for ratings and model experiments.
 
-Use this folder for reproducible fallback parameter choices. Rating
-hyperparameters are generated into `best_hyperparams/` by the ingestion feature
-pipeline when no tuned file exists, and should be accepted only after
-walk-forward validation.
+`tuned/ratings/` contains reviewed rating inputs and `tuned/lightgbm/`
+contains reviewed supervised-model inputs. Routine ingestion and training load
+these files and never start Optuna. Defaults define initial/search priors; they
+are not an automatic fallback for missing tuned artifacts.

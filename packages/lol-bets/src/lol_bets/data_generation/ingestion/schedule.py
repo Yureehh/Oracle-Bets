@@ -9,12 +9,14 @@ Fetches upcoming League of Legends matches from the PandaScore API
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import os
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import requests
 from dateutil import parser
@@ -69,20 +71,28 @@ def default_sleep(seconds: float) -> None:  # pragma: no cover
 # Constants & helpers
 # --------------------------------------------------------------------------- #
 PANDASCORE_BASE_URL = "https://api.pandascore.co/lol/matches/upcoming"
+PANDASCORE_MATCH_URL = "https://api.pandascore.co/matches/{match_id}"
 ACCEPT_JSON_HEADER: dict[str, str] = {"Accept": "application/json"}
 DEFAULT_PER_PAGE = 100
-DEFAULT_REFRESH_HOURS = 48.0
 SCHEDULE_COLUMNS: tuple[str, ...] = (
     "provider",
     "provider_match_id",
     "match_key",
+    "fixture_version",
     "league",
     "serie",
+    "serie_id",
     "tournament",
+    "tournament_id",
     "team_a",
     "team_b",
     "team_a_id",
     "team_b_id",
+    "team_a_lineup_json",
+    "team_b_lineup_json",
+    "lineup_source",
+    "lineup_observed_at",
+    "lineup_refresh_error",
     "start_utc",
     "best_of",
     "status",
@@ -100,19 +110,15 @@ LEGACY_COLUMN_RENAMES = {
 load_dotenv()
 
 
-def _schedule_is_stale(path: str | os.PathLike, max_age_hours: float) -> bool:
-    try:
-        mtime = Path(path).stat().st_mtime
-    except FileNotFoundError:
-        return True
-    age_hours = (time.time() - mtime) / 3600.0
-    return age_hours >= max_age_hours
-
-
 def _clean_text(value: Any) -> str:
     """Normalize API text into a compact parseable string."""
     if value is None:
         return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
@@ -122,6 +128,46 @@ def _match_key(match_id: Any, team_a: str, team_b: str, start_utc: Any) -> str:
     raw = "|".join([team_a.casefold(), team_b.casefold(), str(start_utc)])
     slug = re.sub(r"[^a-z0-9]+", "-", raw.casefold()).strip("-")
     return f"pandascore:{slug}"
+
+
+def fixture_version(row: Any) -> str:
+    """Hash the provider facts that can invalidate a prediction or approval."""
+    payload = {
+        key: _stable_fixture_value(row.get(key))
+        for key in (
+            "provider_match_id",
+            "league",
+            "serie_id",
+            "tournament_id",
+            "team_a_id",
+            "team_b_id",
+            "team_a",
+            "team_b",
+            "start_utc",
+            "best_of",
+            "status",
+            "team_a_lineup_json",
+            "team_b_lineup_json",
+        )
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return f"fixture-{hashlib.sha256(encoded.encode()).hexdigest()[:20]}"
+
+
+def _stable_fixture_value(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, dt.datetime | pd.Timestamp):
+        parsed = pd.Timestamp(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.tz_localize(dt.UTC)
+        return cast("pd.Timestamp", parsed.tz_convert(dt.UTC)).isoformat()
+    return str(value).strip()
 
 
 def _market_query(league: str, team_a: str, team_b: str) -> str:
@@ -134,10 +180,46 @@ def _discord_label(league: str, team_a: str, team_b: str, best_of: Any) -> str:
     return f"{league or 'Unknown league'} | {matchup} | {series}"
 
 
+def _lineup_json(team: dict[str, Any]) -> str:
+    """Preserve provider player IDs, names, and roles without guessing."""
+    players = team.get("players")
+    if not isinstance(players, list):
+        return "[]"
+    lineup = []
+    for player in players:
+        if not isinstance(player, dict):
+            continue
+        name = _clean_text(player.get("name"))
+        role = _clean_text(player.get("role") or player.get("position"))
+        if not name or not role:
+            continue
+        lineup.append(
+            {
+                "provider_player_id": _clean_text(player.get("id")),
+                "name": name,
+                "role": role,
+            }
+        )
+    return json.dumps(
+        sorted(lineup, key=lambda item: (item["role"], item["name"])),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _normalize_lineup_json(value: Any) -> str:
+    if value is None or (not isinstance(value, (list, dict)) and bool(pd.isna(value))):
+        return "[]"
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    text = _clean_text(value)
+    return "[]" if text in {"", "<NA>", "nan"} else text
+
+
 def normalize_schedule_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Return a stable snake_case schedule frame, including legacy file support."""
     if df.empty:
-        return pd.DataFrame(columns=SCHEDULE_COLUMNS)
+        return pd.DataFrame(columns=pd.Index(SCHEDULE_COLUMNS))
 
     out = df.rename(columns=LEGACY_COLUMN_RENAMES).copy()
     if "provider" not in out.columns:
@@ -146,11 +228,29 @@ def normalize_schedule_frame(df: pd.DataFrame) -> pd.DataFrame:
         if col not in out.columns:
             out[col] = pd.NA
 
-    text_cols = ["league", "serie", "tournament", "team_a", "team_b", "status"]
+    text_cols = [
+        "league",
+        "serie",
+        "serie_id",
+        "tournament",
+        "tournament_id",
+        "team_a",
+        "team_b",
+        "status",
+        "lineup_source",
+        "lineup_refresh_error",
+    ]
     for col in text_cols:
         out[col] = out[col].map(_clean_text)
 
     out["provider_match_id"] = out["provider_match_id"].map(_clean_text)
+    out["team_a_id"] = out["team_a_id"].map(_clean_text)
+    out["team_b_id"] = out["team_b_id"].map(_clean_text)
+    for col in ("team_a_lineup_json", "team_b_lineup_json"):
+        out[col] = out[col].map(_normalize_lineup_json)
+    out["lineup_observed_at"] = pd.to_datetime(
+        out["lineup_observed_at"], errors="coerce", utc=True
+    )
     out["start_utc"] = pd.to_datetime(out["start_utc"], errors="coerce", utc=True)
     out["best_of"] = pd.to_numeric(out["best_of"], errors="coerce").astype("Int64")
     out["match_key"] = [
@@ -179,10 +279,37 @@ def normalize_schedule_frame(df: pd.DataFrame) -> pd.DataFrame:
             strict=False,
         )
     ]
+    out["fixture_version"] = [fixture_version(row) for _, row in out.iterrows()]
 
     out = out[list(SCHEDULE_COLUMNS)]
     out = out.sort_values(["start_utc", "league", "team_a"], kind="mergesort")
     return out.reset_index(drop=True)
+
+
+def validate_duplicate_fixture_agreement(df: pd.DataFrame) -> None:
+    """Reject duplicate provider fixtures whose identity facts disagree."""
+    if df.empty or "match_key" not in df.columns:
+        return
+    duplicate_rows = df[df.duplicated(subset=["match_key"], keep=False)]
+    fact_columns = (
+        "provider",
+        "provider_match_id",
+        "league",
+        "team_a",
+        "team_b",
+        "team_a_id",
+        "team_b_id",
+        "start_utc",
+        "best_of",
+    )
+    for match_key, group in duplicate_rows.groupby("match_key", observed=True):
+        normalized = group[list(fact_columns)].astype(str).drop_duplicates()
+        if len(normalized) > 1:
+            msg = (
+                f"Schedule contains conflicting duplicate fixture {match_key}; "
+                "provider ID, teams, competition, time, and format must agree."
+            )
+            raise DataValidationError(msg)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,7 +386,7 @@ class PandaScoreSchedule:
         schedule_df = pd.DataFrame()
         for matches in self._fetch_all_matches():
             parsed = self._parse_and_filter_matches(
-                matches, start_dt, end_dt, time_format
+                matches, start_dt, end_dt, time_format=time_format
             )
             if parsed.empty:
                 continue
@@ -349,11 +476,18 @@ class PandaScoreSchedule:
                     "league": league,
                     "serie": m.get("serie", {}).get("full_name")
                     or m.get("serie", {}).get("name"),
+                    "serie_id": m.get("serie", {}).get("id"),
                     "tournament": m.get("tournament", {}).get("name"),
+                    "tournament_id": m.get("tournament", {}).get("id"),
                     "team_a": team_a_name,
                     "team_b": team_b_name,
                     "team_a_id": team_a.get("id"),
                     "team_b_id": team_b_payload.get("id"),
+                    "team_a_lineup_json": _lineup_json(team_a),
+                    "team_b_lineup_json": _lineup_json(team_b_payload),
+                    "lineup_source": "pandascore_upcoming_match",
+                    "lineup_observed_at": dt.datetime.now(dt.UTC),
+                    "lineup_refresh_error": "",
                     "start_utc": scheduled_at,
                     "best_of": best_of,
                     "status": m.get("status"),
@@ -367,9 +501,16 @@ class PandaScoreSchedule:
                 }
             )
         if not data:
-            msg = "API payload contained no parsable matches."
-            raise DataValidationError(msg)
-        return normalize_schedule_frame(pd.DataFrame(data))
+            # A page of only TBD/unscheduled matches is normal near the end of
+            # the upcoming feed; it must not abort the whole fetch.
+            schedule_logger.warning(
+                "API page contained no parsable matches (%d raw entries); skipping.",
+                len(matches),
+            )
+            return pd.DataFrame()
+        parsed = normalize_schedule_frame(pd.DataFrame(data))
+        validate_duplicate_fixture_agreement(parsed)
+        return parsed
 
     @staticmethod
     def filter_by_league(df: pd.DataFrame, leagues: str) -> pd.DataFrame:
@@ -411,26 +552,25 @@ class PandaScoreSchedule:
         end_dt: dt.datetime,
         time_format: str | None,
     ) -> pd.DataFrame:
+        del time_format  # Retained as a compatibility parameter.
         games_df = self._parse_matches_response(matches)
-        raw_times = games_df["start_utc"]
-        if time_format:
-            parsed = pd.to_datetime(
-                raw_times,
-                format=time_format,
-                errors="coerce",
-                utc=True,
-            )
-            if parsed.isna().all():
-                parsed = pd.to_datetime(raw_times, errors="coerce", utc=True)
-        else:
-            parsed = pd.to_datetime(raw_times, errors="coerce", utc=True)
-        games_df["start_utc"] = parsed
+        if games_df.empty:
+            return games_df
+        # normalize_schedule_frame already parsed start_utc to UTC datetimes;
+        # Public `time_format` is retained for API compatibility but no re-parse with
+        # a strftime pattern is needed (it always fell through to the generic
+        # parser on datetime input).
+        games_df["start_utc"] = pd.to_datetime(
+            games_df["start_utc"], errors="coerce", utc=True
+        )
         games_df = games_df.dropna(subset=["start_utc"])
         mask = (games_df["start_utc"] >= start_dt) & (games_df["start_utc"] <= end_dt)
         return games_df.loc[mask]
 
     @staticmethod
     def _append_to_schedule(curr: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+        validate_duplicate_fixture_agreement(curr)
+        validate_duplicate_fixture_agreement(new)
         combined = pd.concat([curr, new], ignore_index=True)
         combined = normalize_schedule_frame(combined)
         return combined.drop_duplicates(subset=["match_key"], keep="last")
@@ -439,53 +579,123 @@ class PandaScoreSchedule:
     def _should_stop_fetching(df: pd.DataFrame, end_dt: dt.datetime) -> bool:
         return df["start_utc"].min() > end_dt
 
-    @staticmethod
-    def load_schedule(
-        path: str | os.PathLike, leagues: str | None = None
+
+@dataclass(slots=True)
+class PandaScoreLineupRefresher:
+    """Refresh exact fixture and expected-lineup facts from match detail."""
+
+    api_key: str | None = None
+    session: requests.Session = field(default_factory=requests.Session)
+    headers: dict[str, str] = field(default_factory=lambda: ACCEPT_JSON_HEADER.copy())
+    match_url: str = PANDASCORE_MATCH_URL
+    timeout_seconds: float = 10.0
+    logger: Any = schedule_logger
+
+    def __post_init__(self) -> None:
+        self.api_key = self.api_key or os.getenv("PANDASCORE_API_KEY")
+        if not self.api_key:
+            raise ScheduleError(
+                "PandaScore API key missing for expected-lineup refresh."
+            )
+        self.headers = {
+            **self.headers,
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+    def refresh(
+        self,
+        schedule: pd.DataFrame,
+        *,
+        observed_at: dt.datetime | None = None,
     ) -> pd.DataFrame:
-        """
-        Load a previously saved schedule DataFrame from disk.
+        """Refresh each fixture independently; preserve explicit per-row errors."""
+        refreshed = normalize_schedule_frame(schedule)
+        observation = (observed_at or dt.datetime.now(dt.UTC)).astimezone(dt.UTC)
+        authoritative_fields = (
+            "league",
+            "serie",
+            "serie_id",
+            "tournament",
+            "tournament_id",
+            "team_a",
+            "team_b",
+            "team_a_id",
+            "team_b_id",
+            "team_a_lineup_json",
+            "team_b_lineup_json",
+            "start_utc",
+            "best_of",
+            "status",
+        )
+        detail_access_error: str | None = None
+        for index, row in refreshed.iterrows():
+            match_id = _clean_text(row.get("provider_match_id"))
+            if not match_id:
+                refreshed.at[index, "lineup_refresh_error"] = (
+                    "provider_match_id_missing"
+                )
+                continue
+            if detail_access_error is not None:
+                refreshed.at[index, "lineup_refresh_error"] = detail_access_error
+                continue
+            try:
+                response = self.session.get(
+                    self.match_url.format(match_id=match_id),
+                    headers=self.headers,
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                detail_row = _validated_match_detail(response.json(), match_id)
+                for field_name in authoritative_fields:
+                    refreshed.at[index, field_name] = detail_row[field_name]
+                refreshed.at[index, "lineup_source"] = "pandascore_match_detail"
+                refreshed.at[index, "lineup_observed_at"] = observation
+                refreshed.at[index, "lineup_refresh_error"] = ""
+            except requests.HTTPError as exc:
+                status = getattr(exc.response, "status_code", None)
+                if status in {401, 403}:
+                    detail_access_error = f"match_detail_http_{status}"
+                    refreshed.at[index, "lineup_refresh_error"] = detail_access_error
+                    self.logger.warning(
+                        "PandaScore match-detail lineup refresh disabled for this "
+                        "run after HTTP %s; embedded schedule lineups retained. "
+                        "Check API-key and plan permissions.",
+                        status,
+                    )
+                    continue
+                error = f"HTTPError: {' '.join(str(exc).split())[:200]}"
+                refreshed.at[index, "lineup_refresh_error"] = error
+                self.logger.warning(
+                    "Expected-lineup refresh failed for match %s: %s",
+                    match_id,
+                    error,
+                )
+            except (
+                DataValidationError,
+                requests.RequestException,
+                TypeError,
+                ValueError,
+            ) as exc:
+                error = f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
+                refreshed.at[index, "lineup_refresh_error"] = error
+                self.logger.warning(
+                    "Expected-lineup refresh failed for match %s: %s",
+                    match_id,
+                    error,
+                )
+        return normalize_schedule_frame(refreshed)
 
-        Supports Parquet (.parquet/.pq/.parq) and CSV. Returns a DataFrame,
-        optionally filtered by comma-separated league names (case-insensitive).
-        """
-        p = os.fspath(path)
-        if not Path(p).exists():
-            msg = f"Schedule file not found: {p}"
-            raise FileNotFoundError(msg)
 
-        df: pd.DataFrame | None = None
-
-        # Try Parquet first (fastparquet -> pyarrow fallback)
-        try:
-            if p.lower().endswith((".parquet", ".pq", ".parq")):
-                try:
-                    df = pd.read_parquet(p, engine="fastparquet")
-                except (ImportError, ValueError):
-                    df = pd.read_parquet(p)
-            else:
-                # Try reading as Parquet anyway; if it fails, we'll try CSV
-                try:
-                    df = pd.read_parquet(p)
-                except Exception:
-                    df = None
-            if df is None:
-                df = pd.read_csv(p)
-        except Exception as e:
-            msg = f"Failed to load schedule file '{p}': {e}"
-            raise ScheduleError(msg) from e
-
-        df = normalize_schedule_frame(df)
-
-        if not {"league", "team_a", "team_b", "start_utc"} <= set(df.columns):
-            msg = "Schedule file missing required schedule columns."
-            raise DataValidationError(msg)
-
-        if leagues:
-            df = PandaScoreSchedule.filter_by_league(df, leagues)
-
-        schedule_logger.info("Loaded local schedule '%s' with %s rows.", p, len(df))
-        return df.reset_index(drop=True)
+def _validated_match_detail(payload: Any, match_id: str) -> pd.Series:
+    if not isinstance(payload, dict):
+        raise DataValidationError("match detail response must be an object")
+    detail = PandaScoreSchedule._parse_matches_response([payload])
+    if detail.empty:
+        raise DataValidationError("match detail contained no fixture")
+    detail_row = detail.iloc[0]
+    if _clean_text(detail_row["provider_match_id"]) != match_id:
+        raise DataValidationError("match detail ID disagrees with request")
+    return detail_row
 
 
 def fetch_and_store_schedule(
@@ -502,50 +712,18 @@ def fetch_and_store_schedule(
     schedule = PandaScoreSchedule()
     df = schedule.get_schedule(start_datetime=start_dt, max_day_range=window_days)
     if save_path is not None:
-        safe_store_df_as_parquet(df, save_path, [schedule_logger])
-        schedule_logger.info("Schedule stored to %s (%s rows).", save_path, len(df))
+        if df.empty:
+            # Do not clobber a previously stored schedule with an empty frame:
+            # the bot's !schedule command would go blank until the next fetch.
+            schedule_logger.warning(
+                "Fetched 0 upcoming matches; keeping existing schedule at %s.",
+                save_path,
+            )
+        else:
+            safe_store_df_as_parquet(df, Path(save_path), [schedule_logger])
+            schedule_logger.info("Schedule stored to %s (%s rows).", save_path, len(df))
     else:
         schedule_logger.info("Fetched %s upcoming matches (no file output).", len(df))
     if leagues:
         return PandaScoreSchedule.filter_by_league(df, leagues).reset_index(drop=True)
     return df.reset_index(drop=True)
-
-
-def get_or_update_schedule(
-    *,
-    leagues: str | None = None,
-    window_days: int = 7,
-    save_path: str | os.PathLike = SCHEDULE,
-    max_age_hours: float | None = DEFAULT_REFRESH_HOURS,
-    force_refresh: bool = True,
-) -> pd.DataFrame:
-    """
-    Load the stored schedule; fetch and persist if forced, missing, invalid, or stale.
-    """
-    try:
-        if force_refresh:
-            schedule_logger.info("Force-refreshing schedule at %s.", save_path)
-            return fetch_and_store_schedule(
-                window_days=window_days, leagues=leagues, save_path=save_path
-            )
-        if max_age_hours is not None and _schedule_is_stale(save_path, max_age_hours):
-            schedule_logger.info(
-                "Schedule at %s is stale (>%s hours); refreshing.",
-                save_path,
-                max_age_hours,
-            )
-            return fetch_and_store_schedule(
-                window_days=window_days, leagues=leagues, save_path=save_path
-            )
-        return PandaScoreSchedule.load_schedule(save_path, leagues)
-    except (FileNotFoundError, ScheduleError, DataValidationError):
-        return fetch_and_store_schedule(
-            window_days=window_days, leagues=leagues, save_path=save_path
-        )
-
-
-if __name__ == "__main__":
-    # Example usage
-    schedule = PandaScoreSchedule()
-    schedule_df = schedule.get_schedule(start_datetime=dt.datetime.now(dt.UTC))
-    schedule_logger.info("Schedule DataFrame:\n%s", schedule_df.head())

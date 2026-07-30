@@ -14,29 +14,25 @@ Behaviour-for-behaviour identical to the original module, but:
 from __future__ import annotations
 
 import datetime as dt
-import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-import awswrangler as wr
 from dotenv import load_dotenv
+from lol_bets.data_generation.ingestion.quality import (
+    SOURCE_COLUMN_RENAMES,
+    normalize_result,
+    quarantine_oracles_elixir_data,
+)
 from oracle_bets_core.io_utils import FileLoadError, get_sorting_keys, json_loader
 from oracle_bets_core.league_selection import selected_leagues
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
-from oracle_bets_core.paths import (
-    EXTRAS_DIR,
-    IMPORT_COLUMNS,
-    RAW_DATA,
-    TEAM_REPLACEMENTS_AND_INVALID_GAMES,
-)
+from oracle_bets_core.paths import IMPORT_COLUMNS, RAW_DATA, TEAM_ALIASES
 from oracle_bets_core.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    import boto3
+    from pathlib import Path
 
 # --------------------------------------------------------------------------- #
 # Environment & logging
@@ -47,14 +43,15 @@ data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 # --------------------------------------------------------------------------- #
 # Constants (names unchanged so imports elsewhere remain valid)
 # --------------------------------------------------------------------------- #
-ROWS_PER_GAME_FULL: int = 12  # 10 players + 2 team rows
 UNIQUE_PLAYERS_PER_GAME: int = 10
 UNIQUE_TEAMS_PER_GAME: int = 2
 GAP_PLAYER: int = 5
-GAP_TEAM: int = 1
 ROWS_PER_GAME_PER_TEAM: int = 2
 NULL_REPLACEMENTS: list[str] = ["nan", "null", "unknown", "Unknown", "N/A"]
 OPPOSITE_SIDE = {"Blue": "Red", "Red": "Blue"}
+EXPECTED_SIDES = {"Blue", "Red"}
+EXPECTED_POSITIONS = {"top", "jng", "mid", "bot", "sup"}
+EXPECTED_WINNING_ROWS_BY_ENTITY = {"team": 1.0, "player": 5.0}
 EXPECTED_ROWS_BY_ENTITY = {
     "team": UNIQUE_TEAMS_PER_GAME,
     "player": UNIQUE_PLAYERS_PER_GAME,
@@ -65,33 +62,14 @@ class OraclesElixirError(RuntimeError):
     """Base class for all Oracle Elixir ingestion errors."""
 
 
-def _is_bad_full_game(game: pd.DataFrame) -> bool:
-    """Return whether a raw Oracle's Elixir game has invalid row composition."""
-    if len(game) != ROWS_PER_GAME_FULL:
-        return True
-    positions = game["position"].fillna("").astype(str).str.lower()
-    if positions.eq("team").sum() != UNIQUE_TEAMS_PER_GAME:
-        return True
-    if (~positions.eq("team")).sum() != UNIQUE_PLAYERS_PER_GAME:
-        return True
-    team_ids = game["teamid"].fillna(game["teamname"])
-    if team_ids.nunique(dropna=True) != UNIQUE_TEAMS_PER_GAME:
-        return True
-    return (
-        game["teamname"].fillna("").str.contains("unknown", case=False).any()
-        or game["playername"].fillna("").str.contains("unknown", case=False).any()
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Dataclass
 # --------------------------------------------------------------------------- #
 @dataclass(slots=True)
 class OraclesElixir:
-    """Ingest, clean, and format Oracle Elixir CSV dumps from S3."""
+    """Ingest, clean, and format public Oracle Elixir CSV dumps."""
 
-    session: boto3.Session | None
-    bucket: str
+    local_data_dir: Path = RAW_DATA.parent / "oracles_elixir"
 
     # --------------------------------------------------------------------- #
     # Ingestion
@@ -101,7 +79,7 @@ class OraclesElixir:
         years: Sequence[int | str] | int | str | None = None,
     ) -> pd.DataFrame:
         """
-        Download year-specific CSVs from S3 and concatenate them.
+        Read year-specific CSVs from the locally synced Google Drive folder.
         """
         # Normalise *years* into a list[int]
         if years is None:
@@ -111,49 +89,40 @@ class OraclesElixir:
         else:
             year_list = [int(y) for y in years]
 
-        s3_paths = {
-            y: f"s3://{self.bucket}/{y}_LoL_esports_match_data_from_OraclesElixir.csv"
-            for y in year_list
-        }
-
-        logger.info("Connecting to S3 bucket")
-        data_pipeline_logger.info("Connecting to S3 bucket")
-
+        available_years = [
+            year for year in year_list if self._local_csv_path(year).is_file()
+        ]
+        missing = [year for year in year_list if year not in available_years]
         results: dict[int, pd.DataFrame] = {}
-        missing: list[int] = []
+        local_years: list[int] = []
         with ThreadPoolExecutor() as pool:
             futures = {
-                pool.submit(
-                    wr.s3.read_csv,
-                    path,
-                    boto3_session=self.session,
-                    low_memory=False,
-                ): year
-                for year, path in s3_paths.items()
+                pool.submit(self._read_local_csv, self._local_csv_path(year)): year
+                for year in available_years
             }
-            for fut in as_completed(futures):
-                year = futures[fut]
-                path = s3_paths[year]
+            for future in as_completed(futures):
+                year = futures[future]
                 try:
-                    results[year] = fut.result()
+                    results[year] = future.result()
+                    local_years.append(year)
                 except Exception as exc:
-                    if isinstance(exc, (FileNotFoundError, wr.exceptions.NoFilesFound)):
-                        missing.append(year)
-                        logger.warning(
-                            "No file found for year %s at %s; skipping.", year, path
-                        )
-                        data_pipeline_logger.warning(
-                            "No file found for year %s at %s; skipping.", year, path
-                        )
-                        continue
                     logger.error("Failed to ingest data for year %s: %s", year, exc)
                     data_pipeline_logger.exception(
                         "Failed to ingest data for year %s.", year
                     )
                     raise
 
+        if local_years:
+            logger.info("Read local Oracle Elixir files for years: %s", local_years)
+            data_pipeline_logger.info(
+                "Read local Oracle Elixir files for years: %s", local_years
+            )
         if not results:
-            msg = f"No Oracle Elixir files found for years: {year_list}"
+            msg = (
+                "No local Oracle Elixir files found for years "
+                f"{year_list} in {self.local_data_dir}. Ensure Google Drive for "
+                "Desktop is running and the files are available offline."
+            )
             logger.error(msg)
             data_pipeline_logger.error(msg)
             raise OraclesElixirError(msg)
@@ -170,9 +139,45 @@ class OraclesElixir:
         logger.info("Successfully ingested data for years: %s", loaded)
         data_pipeline_logger.info("Successfully ingested data for years: %s", loaded)
         if missing:
-            logger.warning("Skipped missing years: %s", missing)
-            data_pipeline_logger.warning("Skipped missing years: %s", missing)
+            msg = (
+                f"Missing required local Oracle Elixir years: {missing}. "
+                "Refresh Google Drive and make the files available offline."
+            )
+            raise OraclesElixirError(msg)
         return df
+
+    def _local_csv_path(self, year: int) -> Path:
+        return self.local_data_dir / (
+            f"{year}_LoL_esports_match_data_from_OraclesElixir.csv"
+        )
+
+    @staticmethod
+    def _read_local_csv(path: Path) -> pd.DataFrame:
+        before = path.stat()
+        if before.st_size == 0:
+            msg = (
+                f"Local Oracle Elixir file is empty: {path}. "
+                "Wait for Google Drive to finish syncing and make it available offline."
+            )
+            raise OraclesElixirError(msg)
+        try:
+            frame = pd.read_csv(path, low_memory=False)
+        except OSError as exc:
+            msg = (
+                f"Cannot read local Oracle Elixir file {path}: {exc}. "
+                "Ensure Google Drive is running and the file is available offline."
+            )
+            raise OraclesElixirError(msg) from exc
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            msg = (
+                f"Local Oracle Elixir file changed while it was being read: {path}. "
+                "Wait for Google Drive to finish syncing and retry."
+            )
+            raise OraclesElixirError(msg)
+        if frame.empty:
+            raise OraclesElixirError(f"Local Oracle Elixir file has no rows: {path}")
+        return frame
 
     # --------------------------------------------------------------------- #
     # Formatting & basic cleaning
@@ -264,9 +269,12 @@ class OraclesElixir:
         Raises FileLoadError if the JSON file is missing or malformed.
         """
         try:
-            file_data: dict[str, Any] = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
+            loaded = json_loader(TEAM_ALIASES)
+            if not isinstance(loaded, dict):
+                raise TypeError("team replacements configuration must be an object")
+            file_data = cast("dict[str, Any]", loaded)
             replacements: list[list[dict[str, Any]]] = file_data.get(
-                "team_name_replacements", []
+                "historical_identity_merges", []
             )
         except FileLoadError as exc:
             logger.error("Team replacements file error: %s", exc)
@@ -323,13 +331,30 @@ class OraclesElixir:
         """
         Fill null 'teamid' values with 'teamname' where possible.
         Raises OraclesElixirError if 'teamid' or 'teamname' columns are missing.
+
+        Note: fillna must run *before* astype(str). Casting first turns missing
+        values into the literal strings "nan"/"<NA>", which then survive the
+        empty-string filter and pollute identity-keyed features downstream.
         """
+        if not {"teamid", "teamname"} <= set(oracles_elixir_data.columns):
+            msg = "Missing 'teamid' or 'teamname' in dataframe."
+            raise OraclesElixirError(msg)
+
         df = oracles_elixir_data.copy()
-        df["teamname"] = df["teamname"].astype(str).fillna("")
-        df["teamid"] = df["teamid"].astype(str).fillna(df["teamname"])
-        df = df[df["teamid"] != ""]
-        logger.info("Filled null team IDs with team names.")
-        data_pipeline_logger.info("Filled null team IDs with team names.")
+        df["teamname"] = df["teamname"].fillna("").astype(str).str.strip()
+        df["teamid"] = df["teamid"].fillna(df["teamname"]).astype(str).str.strip()
+        # Guard against stringified missing markers from earlier casts/upstream.
+        bad_ids = df["teamid"].str.casefold().isin({"", "nan", "<na>", "none"})
+        removed = int(bad_ids.sum())
+        df = df[~bad_ids]
+        logger.info(
+            "Filled null team IDs with team names; removed %d rows without identity.",
+            removed,
+        )
+        data_pipeline_logger.info(
+            "Filled null team IDs with team names; removed %d rows without identity.",
+            removed,
+        )
         return df
 
     @staticmethod
@@ -343,6 +368,19 @@ class OraclesElixir:
             raise OraclesElixirError(msg)
 
         df = oracles_elixir_data.copy()
+
+        # Forward-fill is only safe on date-ordered rows; otherwise a null patch
+        # can inherit a patch from an unrelated era. The pipeline sorts with
+        # date-led keys before this step, so this is a cheap invariant check.
+        if "date" in df.columns:
+            dates = pd.to_datetime(df["date"], errors="coerce")
+            if not dates.dropna().is_monotonic_increasing:
+                msg = (
+                    "fill_null_patch_value requires date-ordered rows; "
+                    "run sort_data before forward-filling patches."
+                )
+                raise OraclesElixirError(msg)
+
         missing_before = int(df["patch"].isna().sum())
         df["patch"] = df["patch"].ffill()
         missing_after = int(df["patch"].isna().sum())
@@ -364,51 +402,22 @@ class OraclesElixir:
             raise OraclesElixirError(msg)
         return df
 
-    # --------------------------------------------------------------------------- #
-    # Buggy-game detection (NEW)
-    # --------------------------------------------------------------------------- #
-    @staticmethod
-    def _detect_buggy_games(df: pd.DataFrame) -> set[str]:
-        """
-        Identify 'bad' gameids whose row-level composition is clearly wrong, e.g.
-        * missing rows
-        * wrong player / team row counts
-        * 'unknown' placeholders sneaking through
-        """
-        grp = df.groupby("gameid")
-        bad_games = grp.filter(lambda g: _is_bad_full_game(g))
-        return set(bad_games["gameid"].unique())
-
     @classmethod
     def _remove_buggy_games(cls, df: pd.DataFrame) -> pd.DataFrame:
-        """Drop auto-detected AND manually listed bad games."""
-        auto = cls._detect_buggy_games(df)
-        try:
-            cfg = json_loader(TEAM_REPLACEMENTS_AND_INVALID_GAMES)
-            manual = set(cfg.get("invalid_games", []))
-        except FileLoadError:
-            manual = set()  # fail soft – log + carry on
-            logger.warning(
-                "%s not found – no manual invalid_games applied.",
-                TEAM_REPLACEMENTS_AND_INVALID_GAMES,
-            )
-
-        bad_games = auto | manual
-        if not bad_games:
-            return df  # fast path
-
-        cleaned = df[~df["gameid"].isin(bad_games)].reset_index(drop=True)
+        """Drop automatically detected bad games."""
+        cleaned, _, report = quarantine_oracles_elixir_data(df)
+        bad_games = set(report.game_issues) - {"__missing_gameid__"}
+        if not bad_games and not report.exact_duplicate_rows:
+            return df
         logger.info(
-            "Removed %d buggy games (%d auto, %d manual).",
+            "Removed %d buggy games and merged %d exact duplicates.",
             len(bad_games),
-            len(auto),
-            len(manual),
+            report.exact_duplicate_rows,
         )
         data_pipeline_logger.info(
-            "Removed %d buggy games (%d auto, %d manual).",
+            "Removed %d buggy games and merged %d exact duplicates.",
             len(bad_games),
-            len(auto),
-            len(manual),
+            report.exact_duplicate_rows,
         )
         return cleaned
 
@@ -424,7 +433,10 @@ class OraclesElixir:
         """
         if columns is None:
             try:
-                columns = json_loader(IMPORT_COLUMNS)
+                loaded = json_loader(IMPORT_COLUMNS)
+                if not isinstance(loaded, dict):
+                    raise TypeError("import columns configuration must be an object")
+                columns = cast("dict[str, list[str]]", loaded)
             except FileLoadError as exc:
                 logger.error("Import columns file error at %s: %s", IMPORT_COLUMNS, exc)
                 raise
@@ -432,13 +444,7 @@ class OraclesElixir:
             msg = "Must split on either 'player' or 'team'."
             raise OraclesElixirError(msg)
 
-        rename_map = {
-            "earned gpm": "egpm",
-            "team kpm": "team_kpm",
-            "total cs": "total_cs",
-            "firstPick": "first_pick",
-        }
-        df = oracles_elixir_data.rename(columns=rename_map)
+        df = oracles_elixir_data.rename(columns=SOURCE_COLUMN_RENAMES)
 
         if "position" not in df.columns:
             msg = "The dataframe does not contain the 'position' column."
@@ -474,7 +480,7 @@ class OraclesElixir:
     def validate_game_composition(
         oracles_elixir_data: pd.DataFrame, split_on: str
     ) -> pd.DataFrame:
-        """Fail if post-clean data has partial team/player games."""
+        """Fail if post-clean data has partial or malformed team/player games."""
         if split_on not in EXPECTED_ROWS_BY_ENTITY:
             msg = "split_on must be either 'player' or 'team'."
             raise OraclesElixirError(msg)
@@ -495,6 +501,66 @@ class OraclesElixir:
                 f"expected {expected} rows per game; sample={sample}"
             )
             raise OraclesElixirError(msg)
+
+        if "side" in oracles_elixir_data.columns:
+            side_sets = oracles_elixir_data.groupby("gameid", observed=True)[
+                "side"
+            ].agg(lambda values: set(values.astype(str)))
+            bad_sides = side_sets[side_sets != EXPECTED_SIDES]
+            if not bad_sides.empty:
+                sample = {
+                    gameid: sorted(sides) for gameid, sides in bad_sides.head(5).items()
+                }
+                msg = (
+                    f"Invalid {split_on} side composition after cleaning: "
+                    f"expected Blue and Red per game; sample={sample}"
+                )
+                raise OraclesElixirError(msg)
+
+        if split_on == "player" and {"side", "position"} <= set(
+            oracles_elixir_data.columns
+        ):
+            side_counts = oracles_elixir_data.groupby(
+                ["gameid", "side"], observed=True
+            ).size()
+            bad_side_counts = side_counts[side_counts != GAP_PLAYER]
+            if not bad_side_counts.empty:
+                msg = (
+                    "Invalid player side composition after cleaning: "
+                    f"expected five player rows per side; sample={bad_side_counts.head(5).to_dict()}"
+                )
+                raise OraclesElixirError(msg)
+            position_sets = oracles_elixir_data.groupby(
+                ["gameid", "side"], observed=True
+            )["position"].agg(lambda values: set(values.astype(str).str.casefold()))
+            bad_positions = position_sets[position_sets != EXPECTED_POSITIONS]
+            if not bad_positions.empty:
+                sample = {
+                    str(key): sorted(positions)
+                    for key, positions in bad_positions.head(5).items()
+                }
+                msg = (
+                    "Invalid player role composition after cleaning: "
+                    f"expected one top/jng/mid/bot/sup per side; sample={sample}"
+                )
+                raise OraclesElixirError(msg)
+
+        if "result" in oracles_elixir_data.columns:
+            result = normalize_result(oracles_elixir_data["result"])
+            if result.isna().any() or not result.isin([0, 1]).all():
+                msg = f"Invalid {split_on} result labels after cleaning."
+                raise OraclesElixirError(msg)
+            result_sums = result.groupby(
+                oracles_elixir_data["gameid"], observed=True
+            ).sum()
+            expected_winners = EXPECTED_WINNING_ROWS_BY_ENTITY[split_on]
+            bad_results = result_sums[result_sums != expected_winners]
+            if not bad_results.empty:
+                msg = (
+                    f"Invalid {split_on} result composition after cleaning: "
+                    f"sample={bad_results.head(5).to_dict()}"
+                )
+                raise OraclesElixirError(msg)
         logger.info(
             "Validated %d %s games with %d rows each.",
             len(counts),
@@ -618,67 +684,3 @@ class OraclesElixir:
         logger.info("Data cleaning for %ss completed.", split_on)
         data_pipeline_logger.info("Data cleaning for %ss completed.", split_on)
         return df
-
-
-def get_opponent(column: pd.Series, entity: str) -> pd.Series:
-    """Return the opposing entity for each row in *column*."""
-    gap_dict = {"player": GAP_PLAYER, "team": GAP_TEAM}
-    gap = gap_dict.get(entity)
-    if gap is None:
-        msg = "Entity must be either player or team."
-        raise OraclesElixirError(msg)
-
-    opposition: list[Any] = []
-    flag = 0
-    for i in range(len(column)):
-        if flag < gap:
-            opposition.append(column[i + gap])
-        elif gap <= flag < gap * 2:
-            opposition.append(column[i - gap])
-        else:
-            msg = f"Index {i} - Out Of Bounds"
-            raise OraclesElixirError(msg)
-        flag = (flag + 1) % (gap * 2)
-    return pd.Series(opposition)
-
-
-def get_league_teams(parquet_path: str) -> dict:
-    """
-    Read the Parquet at `parquet_path` and return a dict mapping each league
-    to its list of unique team names.
-    """
-    df = pd.read_parquet(parquet_path)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df[df["date"].dt.year == df["date"].dt.year.max()]
-    return df.groupby("league")["teamname"].unique().apply(list).to_dict()
-
-
-def filter_teams_by_league(path2, output_path):
-    # Read the selected leagues from the league selection config.
-    considered_leagues = selected_leagues()
-    # Read the teams by league from the second JSON file
-    with Path(path2).open() as f:
-        teams_by_league = json.load(f)
-    # Filter the teams by league based on the considered leagues
-    filtered_teams = {
-        league: teams
-        for league, teams in teams_by_league.items()
-        if league in considered_leagues
-    }
-    # Write the filtered teams to a new JSON file
-    with Path(output_path).open("w") as f:
-        json.dump(filtered_teams, f, indent=4)
-
-
-if __name__ == "__main__":
-    team_by_league_path = EXTRAS_DIR / "teams_by_league.json"
-    filtered_teams_by_league_path = EXTRAS_DIR / "filtered_teams_by_league.json"
-
-    league_teams = get_league_teams(str(RAW_DATA))
-    with team_by_league_path.open("w") as f:
-        json.dump(league_teams, f, indent=4)
-
-    filter_teams_by_league(
-        str(team_by_league_path),
-        str(filtered_teams_by_league_path),
-    )

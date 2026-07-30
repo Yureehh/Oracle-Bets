@@ -7,16 +7,23 @@ This script calculates league Elo ratings and uses Optuna to optimize hyperparam
 from __future__ import annotations
 
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import optuna
-from oracle_bets_core.io_utils import get_sorting_keys, safe_store_df_as_parquet
+from oracle_bets_core.io_utils import (
+    get_sorting_keys,
+    json_loader,
+    safe_store_df_as_parquet,
+)
 from oracle_bets_core.league_taxonomy import (
     get_league_taxonomy,
 )
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
+    DEFAULT_MODELS_PARAMETERS,
     LEAGUE_ELO,
     LEAGUES_ELO_HYPERPARAMETERS,
     TEAM_LEAGUES_MAPPING,
@@ -29,9 +36,11 @@ from tqdm import tqdm
 # Global Config / Constants
 # ----------------------------------------------------------------------
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
+config = json_loader(DEFAULT_MODELS_PARAMETERS)
 
 ROWS_PER_TEAM = 2  # one per side
-TRIALS_NUM = 25
+TRIALS_NUM = int(config.get("optuna", {}).get("trials", 100))
+OPTUNA_SEED = int(config.get("optuna", {}).get("seed", 42))
 MAX_EXPONENT = 8.0  # clamp for expected outcome stability
 POOL_K_FACTOR_MULTIPLIER = 0.25
 POOL_SHRINKAGE_GAMES = 30
@@ -151,16 +160,16 @@ from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
 
 
 def linear_decay_reset_leagues_elo(
-    elo_ratings: dict[str, dict[str, float | int]],
+    elo_ratings: dict[str, dict[str, Any]],
     baseline: float,
     current_season: int,
     decay_factor: float,
-) -> dict[str, dict[str, float | int]]:
+) -> dict[str, dict[str, Any]]:
     """
     Apply linear decay reset to league Elo ratings at the beginning of a new season.
     Returns a *new* dictionary with the updated Elo ratings.
     """
-    updated_elo_ratings: dict[str, dict[str, float | int]] = defaultdict(
+    updated_elo_ratings: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"elo": baseline, "season": current_season}
     )
     for league, data in elo_ratings.items():
@@ -287,7 +296,7 @@ def tune_hyperparameters(  # noqa: PLR0915
     df: pd.DataFrame,
     entity: str,
     belonging_league: dict[str, list[tuple[pd.Timestamp, str]]],
-    hyperparameters_path: str,
+    hyperparameters_path: str | Path,
 ) -> dict[str, float]:
     """
     Perform hyperparameter tuning using Optuna and return the best parameters.
@@ -473,8 +482,13 @@ def tune_hyperparameters(  # noqa: PLR0915
 
     # Optimize
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
-    study = optuna.create_study(direction="minimize", pruner=pruner)
-    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=True)
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="minimize",
+        pruner=pruner,
+        sampler=optuna.samplers.TPESampler(seed=OPTUNA_SEED),
+    )
+    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=False)
 
     best_params = study.best_params
     logger.info(f"Best hyperparameters: {best_params}")
@@ -512,10 +526,10 @@ def leagues_elo_computation(
     """
     df_wide = pivot_games_to_wide(df)
 
-    league_elo_ratings: dict[str, dict[str, float | int]] = defaultdict(
+    league_elo_ratings: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"elo": initial_elo, "season": int(df_wide["season"].min())}
     )
-    strength_pool_ratings: dict[str, dict[str, float | int]] = defaultdict(
+    strength_pool_ratings: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"elo": initial_elo, "season": int(df_wide["season"].min())}
     )
 
@@ -544,7 +558,12 @@ def leagues_elo_computation(
 
     row_iter = df_wide.itertuples(index=True)
     if not performing_tuning:
-        row_iter = tqdm(row_iter, total=len(df_wide), desc="League Elo")
+        row_iter = tqdm(
+            row_iter,
+            total=len(df_wide),
+            desc="League Elo",
+            disable=not sys.stderr.isatty(),
+        )
 
     for row in row_iter:
         wide_columns, league_elo_ratings, strength_pool_ratings = process_elo_for_row(
@@ -569,7 +588,7 @@ def leagues_elo_computation(
 
 
 def _ensure_rating(
-    ratings: dict[str, dict[str, float | int]],
+    ratings: dict[str, dict[str, Any]],
     key: str,
     initial_elo: float,
     current_season: int,
@@ -635,8 +654,8 @@ def _append_rating_columns(
 
 def process_elo_for_row(
     row,
-    league_elo_ratings: dict[str, dict[str, float | int]],
-    strength_pool_ratings: dict[str, dict[str, float | int]],
+    league_elo_ratings: dict[str, dict[str, Any]],
+    strength_pool_ratings: dict[str, dict[str, Any]],
     belonging_league: dict[str, list[tuple[pd.Timestamp, str]]],
     wide_columns: dict[str, list],
     initial_elo: float,
@@ -645,8 +664,8 @@ def process_elo_for_row(
     decay_factor: float,
 ) -> tuple[
     dict[str, list],
-    dict[str, dict[str, float | int]],
-    dict[str, dict[str, float | int]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
 ]:
     """Process a single wide row to calculate and update Elo ratings for leagues."""
     current_season = int(row.season)
@@ -811,8 +830,8 @@ def finalize_dataframe(
 # ----------------------------------------------------------------------
 def store_results(
     belonging_league: dict[str, list[tuple[pd.Timestamp, str]]],
-    league_elo_ratings: dict[str, dict[str, float | int]],
-    strength_pool_ratings: dict[str, dict[str, float | int]],
+    league_elo_ratings: dict[str, dict[str, Any]],
+    strength_pool_ratings: dict[str, dict[str, Any]],
 ) -> None:
     """Store belonging leagues and league Elo ratings."""
     store_belonging_leagues(belonging_league)
@@ -845,14 +864,16 @@ def store_belonging_leagues(
         }
     belonging_league_df = pd.DataFrame(
         latest_belonging_league.values(),
-        columns=[
-            "teamid",
-            "league",
-            "strength_pool",
-            "league_since",
-            "last_seen",
-            "league_games",
-        ],
+        columns=pd.Index(
+            [
+                "teamid",
+                "league",
+                "strength_pool",
+                "league_since",
+                "last_seen",
+                "league_games",
+            ]
+        ),
     )
     safe_store_df_as_parquet(
         belonging_league_df, TEAM_LEAGUES_MAPPING, [logger, data_pipeline_logger]
@@ -860,8 +881,8 @@ def store_belonging_leagues(
 
 
 def store_leagues_elo(
-    league_elo_ratings: dict[str, dict[str, float | int]],
-    strength_pool_ratings: dict[str, dict[str, float | int]],
+    league_elo_ratings: dict[str, dict[str, Any]],
+    strength_pool_ratings: dict[str, dict[str, Any]],
 ) -> pd.DataFrame:
     """Store the Elo ratings for leagues."""
     league_elo_df = (
@@ -882,17 +903,19 @@ def store_leagues_elo(
                 )
                 for lg, dat in league_elo_ratings.items()
             ],
-            columns=[
-                "league",
-                "elo",
-                "league_games",
-                "league_last_updated",
-                "strength_pool",
-                "strength_pool_elo",
-                "strength_pool_games",
-                "strength_pool_cross_games",
-                "strength_pool_last_updated",
-            ],
+            columns=pd.Index(
+                [
+                    "league",
+                    "elo",
+                    "league_games",
+                    "league_last_updated",
+                    "strength_pool",
+                    "strength_pool_elo",
+                    "strength_pool_games",
+                    "strength_pool_cross_games",
+                    "strength_pool_last_updated",
+                ]
+            ),
         )
         .dropna(subset=["league"])
         .sort_values(by="elo", ascending=False, kind="mergesort")
@@ -908,7 +931,9 @@ def store_leagues_elo(
 def calculate_leagues_elo(
     df: pd.DataFrame,
     entity: str,
-    hyperparameters_path: str = LEAGUES_ELO_HYPERPARAMETERS,
+    hyperparameters_path: str | Path = LEAGUES_ELO_HYPERPARAMETERS,
+    *,
+    force_retune: bool = False,
 ) -> pd.DataFrame:
     """Run the Leagues Elo pipeline with hyperparameter tuning."""
     df_preprocessed = preprocess_dataframe(df, entity)
@@ -917,7 +942,7 @@ def calculate_leagues_elo(
     belonging_league = map_team_to_league(df_preprocessed, "teamid")
 
     # Load or tune hyperparameters
-    if Path(hyperparameters_path).exists():
+    if Path(hyperparameters_path).exists() and not force_retune:
         logger.info(f"Hyperparameters found at {Path(hyperparameters_path).name}")
         data_pipeline_logger.info(
             f"Hyperparameters found at {Path(hyperparameters_path).name}"
@@ -925,11 +950,16 @@ def calculate_leagues_elo(
         # calculate_leagues_elo(): loading best_params
         with Path(hyperparameters_path).open() as f:
             best_params = json.load(f)
-    else:
+    elif force_retune:
         logger.info("No hyperparameters found; starting tuning.")
         data_pipeline_logger.info("No hyperparameters found; starting tuning.")
         best_params = tune_hyperparameters(
             df_preprocessed, entity, belonging_league, hyperparameters_path
+        )
+    else:
+        raise FileNotFoundError(
+            f"Missing reviewed league Elo hyperparameters at {hyperparameters_path}; "
+            "run the explicit rating retune workflow."
         )
 
     return leagues_elo_computation(

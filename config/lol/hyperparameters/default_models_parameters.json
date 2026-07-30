@@ -21,10 +21,6 @@
     "beta": 4.167,
     "draw_probability": 0.0
   },
-  "whr": {
-    "w2": 0.00005,
-    "uncased": true
-  },
   "leagues_elo": {
     "initial_elo": 1500,
     "k_factor": 32,
@@ -33,6 +29,8 @@
   },
   "shared": {
     "decay_factor": 0.9,
+    "inactivity_grace_days": 45,
+    "inactivity_half_life_days": 180,
     "transfer_factor": 0.5,
     "initial_elo_adjustment_factor": 0.5,
     "position_reset_factor": 0.2

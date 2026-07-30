@@ -8,7 +8,9 @@ using an Exponentially Weighted Mean (EWM) model.
 from __future__ import annotations
 
 import numpy as np
-from lol_bets.data_generation.ingestion.oracles_elixir import get_opponent
+from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
+    add_opponent_columns,
+)
 from oracle_bets_core.io_utils import get_identity, get_sorting_keys, json_loader
 from oracle_bets_core.paths import DEFAULT_MODELS_PARAMETERS
 from oracle_bets_core.pd import pd
@@ -21,7 +23,7 @@ EPSILON = 1e-8  # Small constant to prevent division by zero
 
 def _validate_inputs(df: pd.DataFrame, identity: str) -> None:
     """Ensure required columns exist and result is numeric 0/1."""
-    required = {identity, "side", "result"}
+    required = {identity, "gameid", "side", "result"}
     missing = required - set(df.columns)
     if missing:
         msg = f"Input DataFrame is missing required columns: {missing}"
@@ -170,11 +172,10 @@ def side_win_rate_ewm_performance(df: pd.DataFrame, entity: str) -> pd.DataFrame
     df = _compute_side_ema_all(df, identity)
 
     # Opponent EMA “before” columns
-    df["opp_ema_blue_side_before"] = get_opponent(
-        df["ema_blue_side_before"].tolist(), entity=entity
-    )
-    df["opp_ema_red_side_before"] = get_opponent(
-        df["ema_red_side_before"].tolist(), entity=entity
+    df = add_opponent_columns(
+        df,
+        entity=entity,
+        source_columns=["ema_blue_side_before", "ema_red_side_before"],
     )
 
     # Vectorized likelihood

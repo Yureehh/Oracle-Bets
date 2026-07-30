@@ -16,14 +16,18 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import pickle
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from itertools import pairwise
+from statistics import NormalDist
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+from oracle_bets_core.betting import OverUnderSignal, kelly_fraction, price_over_under
 from oracle_bets_core.io_utils import json_loader
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import (
@@ -31,12 +35,14 @@ from oracle_bets_core.paths import (
     FIGURES_DIR,
     MODELS_DIR,
     PROCESSED_TEAMS,
+    SUITE_ROOT,
     TRAINING_COMPACT_PLAYER_CONFIG,
     TRAINING_COMPACT_TEAM_CONFIG,
 )
 from oracle_bets_core.pd import pd
 from pandas.api.types import is_numeric_dtype
 from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
@@ -54,6 +60,7 @@ from lol_bets.prediction_models.data_preprocessor import DataPreprocessor
 from lol_bets.prediction_models.feature_selector import FeatureSelector
 from lol_bets.prediction_models.observability import MLObservabilityMixin
 from lol_bets.prediction_models.prop_features import (
+    build_game_level_outcome_features,
     build_game_level_prop_features,
     is_prop_target,
 )
@@ -62,15 +69,17 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 # Feature selection method type
-FeatureSelectionMethod = Literal[
-    "none", "importance", "cumulative", "rfecv", "boruta", "report"
-]
+FeatureSelectionMethod = Literal["none", "importance", "cumulative", "report"]
 TrainingFeatureSet = Literal["full", "compact", "selected"]
+CalibrationMode = Literal["auto", "none"]
+CalibrationMethod = Literal["raw", "sigmoid", "isotonic", "auto"]
 
 # Defaults
 DEFAULT_TRIALS = 100
 VALIDATION_SIZE = 0.15
 TEST_SIZE = 0.15
+TUNE_SIZE = 0.10
+CALIBRATION_SIZE = 0.15
 LOW_STD_THRESHOLD = 0.03  # coefficient of variation threshold (less aggressive)
 HIGH_CORR_THRESHOLD = 0.95  # Pearson correlation threshold (keep more features)
 MAX_MISSING_FRAC = 0.40  # drop features missing >40% on TRAIN
@@ -81,19 +90,34 @@ ROWS_PER_GAME = 2
 POSITIVE_RESULT_SUM_PER_GAME = 1
 DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
 MIN_CALIBRATION_SAMPLES = 40
+MIN_UNCERTAINTY_SAMPLES = 30
+MIN_UNCERTAINTY_BIN_SAMPLES = 20
+MIN_SEGMENT_SIGMOID_SAMPLES = 80
+MIN_SEGMENT_ISOTONIC_SAMPLES = 150
 MIN_PROP_COHORT_SIZE = 30
 PROBABILITY_EPSILON = 1e-6
+CALIBRATION_BINS = 10
+CALIBRATION_SEGMENT_SHRINKAGE = 120
+CALIBRATION_VERSION = 3
+CONFIDENCE_BAND_LOW = 0.55
+CONFIDENCE_BAND_HIGH = 0.70
+PATCH_FAMILY_PARTS = 2
 COMPACT_ROLE_PREFIXES = ("top", "jng", "mid", "bot", "sup")
 DEFAULT_SELECTED_MAX_FEATURES = 120
 SELECTED_FEATURE_COUNTS = (60, 90, 120, 160)
 MANDATORY_ANCHOR_PATTERNS = (
     "win_likelihood",
+    "rating_consensus",
+    "rating_disagreement",
     "strength_pool",
     "league_elo",
     "first_pick",
     "side_win_likelihood",
     "season_win_likelihood",
     "h2h_",
+    "days_since_last_game",
+    "roster_continuity",
+    "uncertainty",
     "diff_ema_golddiff",
     "diff_ema_xpdiff",
     "diff_ema_csdiff",
@@ -104,6 +128,21 @@ MANDATORY_ANCHOR_PATTERNS = (
     "diff_ema_damageshare",
     "diff_ema_earnedgoldshare",
 )
+DIRECT_RATING_LIKELIHOODS = (
+    "elo_win_likelihood",
+    "glicko2_win_likelihood",
+    "pl_win_likelihood",
+    "trueskill_win_likelihood",
+)
+PLAYER_RATING_LIKELIHOODS = tuple(f"players_{col}" for col in DIRECT_RATING_LIKELIHOODS)
+DERIVED_STRENGTH_FEATURES = (
+    "team_rating_consensus",
+    "team_rating_disagreement",
+    "players_rating_consensus",
+    "players_rating_disagreement",
+    "rating_consensus",
+    "rating_disagreement",
+)
 
 
 @dataclass
@@ -113,10 +152,462 @@ class ProbabilityCalibrator:
     method: str
     model: Any
 
-    def predict(self, probabilities: np.ndarray) -> np.ndarray:
+    def predict(
+        self, probabilities: np.ndarray, metadata: pd.DataFrame | None = None
+    ) -> np.ndarray:
+        _ = metadata
         values = np.asarray(probabilities, dtype=float)
-        calibrated = self.model.predict(values)
+        if self.method == "raw" or self.model is None:
+            calibrated = values
+        elif self.method == "sigmoid":
+            calibrated = self.model.predict_proba(values.reshape(-1, 1))[:, 1]
+        else:
+            calibrated = self.model.predict(values)
         return np.clip(calibrated, PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON)
+
+
+@dataclass(frozen=True)
+class ProbabilityResidualBand:
+    """One probability region's held-out calibration-residual uncertainty."""
+
+    probability_lower: float
+    probability_upper: float
+    residual_lower: float
+    residual_upper: float
+    sample_count: int
+
+    def contains(self, probability: float) -> bool:
+        return self.probability_lower <= probability and (
+            probability < self.probability_upper
+            or (self.probability_upper >= 1.0 and probability <= 1.0)
+        )
+
+
+@dataclass(frozen=True)
+class ProbabilityUncertaintyModel:
+    """
+    Uncertainty in a calibrated probability estimate, fitted out of sample.
+
+    This is not an outcome interval and must not be presented as a guarantee.
+    """
+
+    global_residual_lower: float
+    global_residual_upper: float
+    sample_count: int
+    confidence: float = 0.90
+    bins: tuple[ProbabilityResidualBand, ...] = ()
+    method: str = "held_out_calibration_residual_mean"
+    fit_split: str = "uncertainty_fit"
+    version: int = 1
+
+    @classmethod
+    def fit(
+        cls,
+        y_true: pd.Series | np.ndarray,
+        probabilities: np.ndarray,
+        *,
+        confidence: float = 0.90,
+        bin_count: int = 5,
+    ) -> ProbabilityUncertaintyModel:
+        """Fit mean-residual intervals on a dedicated temporal holdout."""
+        if not 0 < confidence < 1:
+            raise ValueError("confidence must be between 0 and 1")
+        if bin_count < 1:
+            raise ValueError("bin_count must be positive")
+
+        frame = pd.DataFrame(
+            {
+                "actual": pd.to_numeric(pd.Series(y_true), errors="coerce").to_numpy(),
+                "probability": np.asarray(probabilities, dtype=float),
+            }
+        ).replace([np.inf, -np.inf], np.nan)
+        frame = frame.dropna(subset=["actual", "probability"])
+        frame = frame[
+            frame["actual"].isin([0, 1])
+            & frame["probability"].between(0.0, 1.0, inclusive="both")
+        ].copy()
+        if len(frame) < MIN_UNCERTAINTY_SAMPLES:
+            raise ValueError(
+                "Probability uncertainty requires at least "
+                f"{MIN_UNCERTAINTY_SAMPLES} held-out rows."
+            )
+
+        frame["residual"] = frame["actual"] - frame["probability"]
+        z_score = NormalDist().inv_cdf((1.0 + confidence) / 2.0)
+        global_lower, global_upper = cls._mean_residual_interval(
+            frame["residual"].to_numpy(dtype=float), z_score
+        )
+
+        fitted_bins: list[ProbabilityResidualBand] = []
+        edges = np.linspace(0.0, 1.0, bin_count + 1)
+        for index, (lower, upper) in enumerate(pairwise(edges)):
+            mask = frame["probability"].ge(lower) & (
+                frame["probability"].le(upper)
+                if index == bin_count - 1
+                else frame["probability"].lt(upper)
+            )
+            residuals = frame.loc[mask, "residual"].to_numpy(dtype=float)
+            if len(residuals) < MIN_UNCERTAINTY_BIN_SAMPLES:
+                continue
+            residual_lower, residual_upper = cls._mean_residual_interval(
+                residuals, z_score
+            )
+            fitted_bins.append(
+                ProbabilityResidualBand(
+                    probability_lower=float(lower),
+                    probability_upper=float(upper),
+                    residual_lower=residual_lower,
+                    residual_upper=residual_upper,
+                    sample_count=int(len(residuals)),
+                )
+            )
+        return cls(
+            global_residual_lower=global_lower,
+            global_residual_upper=global_upper,
+            sample_count=int(len(frame)),
+            confidence=confidence,
+            bins=tuple(fitted_bins),
+        )
+
+    @staticmethod
+    def _mean_residual_interval(
+        residuals: np.ndarray, z_score: float
+    ) -> tuple[float, float]:
+        mean = float(np.mean(residuals))
+        standard_error = (
+            float(np.std(residuals, ddof=1) / np.sqrt(len(residuals)))
+            if len(residuals) > 1
+            else 0.0
+        )
+        margin = z_score * standard_error
+        # Preserve the calibrated point inside the range.
+        return min(mean - margin, 0.0), max(mean + margin, 0.0)
+
+    def interval(self, probabilities: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return clipped lower/upper ranges for calibrated probabilities."""
+        values = np.asarray(probabilities, dtype=float)
+        lower = np.empty_like(values)
+        upper = np.empty_like(values)
+        for index, probability in enumerate(values):
+            band = next(
+                (
+                    candidate
+                    for candidate in self.bins
+                    if candidate.contains(probability)
+                ),
+                None,
+            )
+            residual_lower = (
+                band.residual_lower if band is not None else self.global_residual_lower
+            )
+            residual_upper = (
+                band.residual_upper if band is not None else self.global_residual_upper
+            )
+            lower[index] = np.clip(
+                probability + residual_lower, PROBABILITY_EPSILON, probability
+            )
+            upper[index] = np.clip(
+                probability + residual_upper,
+                probability,
+                1.0 - PROBABILITY_EPSILON,
+            )
+        return lower, upper
+
+
+@dataclass
+class SegmentProbabilityCalibrator:
+    """One metadata segment's fitted calibration rule and shrinkage metadata."""
+
+    kind: str
+    value: str
+    method: str
+    model: Any
+    sample_count: int
+    shrinkage_weight: float
+    selection_metrics: dict[str, Any] = field(default_factory=dict)
+
+    def predict(self, probabilities: np.ndarray) -> np.ndarray:
+        return ProbabilityCalibrator(method=self.method, model=self.model).predict(
+            probabilities
+        )
+
+
+@dataclass
+class MetadataAwareProbabilityCalibrator:
+    """Global probability calibrator plus conservative metadata-segment overrides."""
+
+    global_calibrator: ProbabilityCalibrator
+    segments: dict[tuple[str, str], SegmentProbabilityCalibrator] = field(
+        default_factory=dict
+    )
+    version: int = CALIBRATION_VERSION
+    segment_order: tuple[str, ...] = (
+        "league_bo_format",
+        "league",
+        "strength_pool",
+        "bo_format",
+        "patch_family",
+        "confidence_band",
+    )
+    report: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def method(self) -> str:
+        return (
+            f"metadata_aware:{self.global_calibrator.method}"
+            if self.segments
+            else self.global_calibrator.method
+        )
+
+    def predict(
+        self, probabilities: np.ndarray, metadata: pd.DataFrame | None = None
+    ) -> np.ndarray:
+        values = np.asarray(probabilities, dtype=float)
+        calibrated = self.global_calibrator.predict(values)
+        if metadata is None or metadata.empty or not self.segments:
+            return calibrated
+
+        meta = calibration_metadata_frame(metadata, probabilities=values)
+        for idx in range(len(values)):
+            for key in self._candidate_keys(meta.iloc[idx]):
+                segment = self.segments.get(key)
+                if segment is None:
+                    continue
+                segment_prob = segment.predict(np.asarray([values[idx]], dtype=float))[
+                    0
+                ]
+                weight = segment.shrinkage_weight
+                calibrated[idx] = (
+                    weight * segment_prob + (1.0 - weight) * calibrated[idx]
+                )
+                break
+        return np.clip(calibrated, PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON)
+
+    def _candidate_keys(self, row: pd.Series) -> list[tuple[str, str]]:
+        keys: list[tuple[str, str]] = []
+        for kind in self.segment_order:
+            value = row.get(kind)
+            if pd.notna(value):
+                keys.append((kind, str(value)))
+        return keys
+
+
+@dataclass
+class PropDistributionCalibrator:
+    """Residual-distribution calibrator for regression over/under pricing."""
+
+    method: str
+    global_residuals: np.ndarray
+    segment_residuals: dict[tuple[str, str], np.ndarray] = field(default_factory=dict)
+    min_league_samples: int = MIN_PROP_COHORT_SIZE
+    shrinkage_samples: int = 50
+    version: int = CALIBRATION_VERSION
+
+    @property
+    def league_residuals(self) -> dict[str, np.ndarray]:
+        """Backward-compatible view for legacy league-only tests/artifacts."""
+        return {
+            value: residuals
+            for (kind, value), residuals in self.segment_residuals.items()
+            if kind == "league"
+        }
+
+    def _empirical_under(self, threshold: float, residuals: np.ndarray) -> float:
+        values = np.asarray(residuals, dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return 0.5
+        return float(np.mean(values <= threshold))
+
+    def _global_under(self, threshold: float) -> float:
+        if self.method == "normal_global":
+            sigma = float(np.std(self.global_residuals, ddof=1))
+            sigma = max(sigma, PROBABILITY_EPSILON)
+            return price_over_under(
+                mean=0.0, line=threshold, sigma=sigma
+            ).under_probability
+        return self._empirical_under(threshold, self.global_residuals)
+
+    def price(
+        self,
+        *,
+        mean: float,
+        line: float,
+        league: str | None = None,
+        metadata: pd.DataFrame | pd.Series | dict[str, Any] | None = None,
+        strength_pool: str | None = None,
+        bo_format: str | None = None,
+        patch: str | None = None,
+        over_odds: float | None = None,
+        under_odds: float | None = None,
+    ) -> OverUnderSignal:
+        threshold = float(line) - float(mean)
+        under_probability = self._global_under(threshold)
+        if self.method in {"league_shrunk", "metadata_shrunk"}:
+            meta = calibration_metadata_frame(
+                _metadata_to_frame(
+                    metadata,
+                    league=league,
+                    strength_pool=strength_pool,
+                    bo_format=bo_format,
+                    patch=patch,
+                )
+            )
+            for key in _calibration_segment_keys(meta.iloc[0]):
+                residuals = self.segment_residuals.get(key)
+                if residuals is None or len(residuals) < self.min_league_samples:
+                    continue
+                segment_under = self._empirical_under(threshold, residuals)
+                weight = len(residuals) / (len(residuals) + self.shrinkage_samples)
+                under_probability = (
+                    weight * segment_under + (1.0 - weight) * under_probability
+                )
+                break
+
+        under_probability = float(
+            np.clip(under_probability, PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON)
+        )
+        over_probability = 1.0 - under_probability
+        sigma = float(np.std(self.global_residuals, ddof=1))
+        signal = price_over_under(
+            mean=mean,
+            line=line,
+            sigma=max(sigma, PROBABILITY_EPSILON),
+        )
+        return OverUnderSignal(
+            mean=mean,
+            line=line,
+            sigma=signal.sigma,
+            over_probability=over_probability,
+            under_probability=under_probability,
+            over_fair_odds=1.0 / over_probability,
+            under_fair_odds=1.0 / under_probability,
+            over_edge=(over_probability * over_odds - 1.0)
+            if over_odds is not None
+            else None,
+            under_edge=(under_probability * under_odds - 1.0)
+            if under_odds is not None
+            else None,
+            over_half_kelly_fraction=kelly_fraction(over_odds, over_probability)
+            if over_odds is not None
+            else None,
+            under_half_kelly_fraction=kelly_fraction(under_odds, under_probability)
+            if under_odds is not None
+            else None,
+        )
+
+
+def _metadata_to_frame(
+    metadata: pd.DataFrame | pd.Series | dict[str, Any] | None,
+    **overrides: Any,
+) -> pd.DataFrame:
+    if metadata is None:
+        frame = pd.DataFrame([{}])
+    elif isinstance(metadata, pd.DataFrame):
+        frame = metadata.copy()
+    elif isinstance(metadata, pd.Series):
+        frame = metadata.to_frame().T
+    else:
+        frame = pd.DataFrame([metadata])
+
+    if frame.empty:
+        frame = pd.DataFrame([{}])
+    for key, value in overrides.items():
+        if value is not None:
+            frame[key] = value
+    return frame
+
+
+def _bo_format_from_row(row: pd.Series) -> str:
+    if str(row.get("bo_format", "")).strip():
+        return str(row["bo_format"]).strip().casefold()
+    match_type = str(row.get("match_type", "")).casefold()
+    for token in ("bo1", "bo3", "bo5"):
+        if token in match_type:
+            return token
+    if (
+        pd.to_numeric(pd.Series([row.get("is_bo1")]), errors="coerce").fillna(0).iloc[0]
+        == 1
+    ):
+        return "bo1"
+    if (
+        pd.to_numeric(pd.Series([row.get("is_bo3")]), errors="coerce").fillna(0).iloc[0]
+        == 1
+    ):
+        return "bo3"
+    if (
+        pd.to_numeric(pd.Series([row.get("is_bo5")]), errors="coerce").fillna(0).iloc[0]
+        == 1
+    ):
+        return "bo5"
+    return "unknown"
+
+
+def _patch_family(value: Any) -> str | None:
+    if pd.isna(value):
+        return None
+    parts = str(value).split(".")
+    if len(parts) >= PATCH_FAMILY_PARTS:
+        return ".".join(parts[:PATCH_FAMILY_PARTS])
+    return str(value) or None
+
+
+def _confidence_band(probability: float) -> str:
+    confidence = max(float(probability), 1.0 - float(probability))
+    if confidence < CONFIDENCE_BAND_LOW:
+        return "low"
+    if confidence < CONFIDENCE_BAND_HIGH:
+        return "medium"
+    return "high"
+
+
+def calibration_metadata_frame(
+    metadata: pd.DataFrame | pd.Series | dict[str, Any] | None,
+    *,
+    probabilities: np.ndarray | None = None,
+) -> pd.DataFrame:
+    frame = _metadata_to_frame(metadata).reset_index(drop=True)
+    if probabilities is not None and len(frame) != len(probabilities):
+        frame = frame.reindex(range(len(probabilities))).ffill().bfill()
+
+    out = pd.DataFrame(index=frame.index)
+    for col in ("league", "strength_pool", "season"):
+        if col in frame.columns:
+            out[col] = frame[col].astype("object").where(frame[col].notna())
+
+    if "patch" in frame.columns:
+        out["patch_family"] = frame["patch"].map(_patch_family)
+    elif "patch_family" in frame.columns:
+        out["patch_family"] = frame["patch_family"].astype("object")
+
+    out["bo_format"] = frame.apply(_bo_format_from_row, axis=1)
+    if "league" in out.columns:
+        out["league_bo_format"] = (
+            out["league"].astype(str) + "|" + out["bo_format"].astype(str)
+        )
+
+    if probabilities is not None:
+        out["confidence_band"] = [_confidence_band(p) for p in probabilities]
+    elif "confidence_band" in frame.columns:
+        out["confidence_band"] = frame["confidence_band"].astype("object")
+
+    return out
+
+
+def _calibration_segment_keys(row: pd.Series) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    for kind in (
+        "league_bo_format",
+        "league",
+        "strength_pool",
+        "bo_format",
+        "patch_family",
+        "confidence_band",
+    ):
+        value = row.get(kind)
+        if pd.notna(value):
+            keys.append((kind, str(value)))
+    return keys
 
 
 @dataclass
@@ -145,22 +636,34 @@ class FeaturePipeline:
             errors="ignore",
         ).copy()
 
-        # Ensure every categorical column exists, then coerce unseen levels to "Unknown"
-        for col in self.categorical_features:
-            if col not in Xp.columns:
-                Xp[col] = "Unknown"
+        # Add absent inference columns in bulk. Repeated ``Xp[col] = value``
+        # fragments wide feature frames and makes routine prediction noisy/slow.
+        categorical_columns = dict.fromkeys(
+            [*self.categorical_features, *self.categorical_levels]
+        )
+        missing_categoricals = {
+            col: "Unknown" for col in categorical_columns if col not in Xp.columns
+        }
+        if missing_categoricals:
+            Xp = pd.concat(
+                [Xp, pd.DataFrame(missing_categoricals, index=Xp.index)], axis=1
+            )
+
+        # Coerce unseen categorical levels to "Unknown".
         for col, levels in self.categorical_levels.items():
-            if col not in Xp.columns:
-                Xp[col] = "Unknown"
             vals = pd.Series(Xp[col], index=Xp.index, dtype="object")
             known = pd.Index(levels, dtype="object")
             vals = vals.where(vals.isin(known), "Unknown")
             Xp[col] = pd.Categorical(vals, categories=levels)
 
         # Add any entirely-missing numeric features with their train medians
-        for col, median in self.numeric_medians.items():
-            if col not in Xp.columns:
-                Xp[col] = median
+        missing_numerics = {
+            col: median
+            for col, median in self.numeric_medians.items()
+            if col not in Xp.columns
+        }
+        if missing_numerics:
+            Xp = pd.concat([Xp, pd.DataFrame(missing_numerics, index=Xp.index)], axis=1)
 
         Xp = GradientBoostingModel._impute_apply_numeric(Xp, self.numeric_medians)
         Xp = GradientBoostingModel._impute_categorical(Xp, self.categorical_features)
@@ -181,17 +684,113 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     feature_set: TrainingFeatureSet = "full"
     max_features: int = DEFAULT_SELECTED_MAX_FEATURES
     force_retune: bool = False
+    calibration: CalibrationMode = "auto"
+    calibration_method: CalibrationMethod = "auto"
+    calibration_size: float = CALIBRATION_SIZE
+    tune_size: float = TUNE_SIZE
+    test_size: float = TEST_SIZE
     directory: Path = FIGURES_DIR
+    artifact_root: Path = MODELS_DIR
+    report_root: Path | None = None
+    dataset_fingerprint: str | None = None
     run_id: str = field(
         default_factory=lambda: dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     )
     training_data: pd.DataFrame = field(init=False)
-    probability_calibrator: ProbabilityCalibrator | None = field(
+    probability_calibrator: Any | None = field(default=None, init=False, repr=False)
+    probability_uncertainty: ProbabilityUncertaintyModel | None = field(
+        default=None, init=False, repr=False
+    )
+    prop_calibrator: PropDistributionCalibrator | None = field(
         default=None, init=False, repr=False
     )
 
     def __post_init__(self) -> None:
         self.training_data = pd.DataFrame()
+
+    # ─────────────────────────── Traceability ─────────────────────────── #
+
+    @staticmethod
+    def stable_dataframe_hash(df: pd.DataFrame) -> str:
+        """Hash dataframe content deterministically for model-card traceability."""
+        normalized = df.reindex(sorted(df.columns), axis=1)
+        payload = normalized.to_json(
+            orient="split",
+            date_format="iso",
+            default_handler=str,
+        )
+        if payload is None:
+            msg = "Pandas did not produce a JSON payload for dataframe hashing."
+            raise RuntimeError(msg)
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    @staticmethod
+    def git_code_version() -> str | None:
+        """Best-effort current git revision without shelling out."""
+        revision = None
+        git_path = SUITE_ROOT / ".git"
+        if git_path.exists():
+            git_dir = git_path
+            if git_path.is_file():
+                content = git_path.read_text().strip()
+                if content.startswith("gitdir:"):
+                    git_dir = (SUITE_ROOT / content.split(":", 1)[1].strip()).resolve()
+
+            head = git_dir / "HEAD"
+            if head.exists():
+                head_value = head.read_text().strip()
+                if not head_value.startswith("ref:"):
+                    revision = head_value or None
+                else:
+                    ref_name = head_value.split(" ", 1)[1]
+                    ref_path = git_dir / ref_name
+                    if ref_path.exists():
+                        revision = ref_path.read_text().strip() or None
+                    else:
+                        packed_refs = git_dir / "packed-refs"
+                        if packed_refs.exists():
+                            for line in packed_refs.read_text().splitlines():
+                                if line.startswith("#") or not line.strip():
+                                    continue
+                                packed_revision, _, packed_ref = line.partition(" ")
+                                if packed_ref == ref_name:
+                                    revision = packed_revision
+                                    break
+        return revision
+
+    @classmethod
+    def model_hyperparameters(cls, model) -> dict[str, Any]:
+        """Extract JSON-safe fitted model parameters for model-card traceability."""
+        raw_model = getattr(model, "raw_model", model)
+        get_params = getattr(raw_model, "get_params", None)
+        if not callable(get_params):
+            return {}
+        try:
+            params = get_params()
+        except Exception as e:
+            logger.warning("Could not extract fitted model parameters: %s", e)
+            return {}
+        if not isinstance(params, dict):
+            return {}
+        return {
+            str(key): cls._json_safe_param(value)
+            for key, value in sorted(params.items(), key=lambda item: str(item[0]))
+        }
+
+    @classmethod
+    def _json_safe_param(cls, value):
+        if value is None or isinstance(value, str | int | float | bool):
+            return value
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, list | tuple):
+            return [cls._json_safe_param(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): cls._json_safe_param(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            }
+        return str(value)
 
     # ───────────────────────────── Preprocessing ───────────────────────────── #
 
@@ -217,6 +816,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         """Columns that must never be used as features."""
         return [
             "gameid",
+            "teamid",
+            "teamname",
             "side",
             "league",
             "season",
@@ -326,6 +927,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         stems: dict[str, list[str]] = {}
         for c in role_cols:
             m = role_pat.match(c)
+            if m is None:
+                continue
             stem = m[2]
             stems.setdefault(stem, []).append(c)
 
@@ -334,6 +937,51 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             out[f"players_{stem}"] = (
                 df[cols].max(axis=1) if agg == "max" else df[cols].mean(axis=1)
             )
+
+        return out
+
+    @staticmethod
+    def add_rating_consensus_features(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Combine correlated rating-family probabilities into compact strength signals.
+
+        The source rating systems are still available to the full model. These
+        consensus features let compact/selected runs test a smaller feature
+        surface without hard-coding one rating family as the winner.
+        """
+        out = df.copy()
+
+        def _add_group(
+            source_cols: tuple[str, ...], consensus_col: str, disagreement_col: str
+        ) -> list[str]:
+            cols = [col for col in source_cols if col in out.columns]
+            if not cols:
+                return []
+            values = out[cols].apply(pd.to_numeric, errors="coerce")
+            out[consensus_col] = values.mean(axis=1)
+            out[disagreement_col] = values.std(axis=1).fillna(0.0)
+            return [consensus_col, disagreement_col]
+
+        consensus_cols = _add_group(
+            DIRECT_RATING_LIKELIHOODS,
+            "team_rating_consensus",
+            "team_rating_disagreement",
+        )
+        consensus_cols += _add_group(
+            PLAYER_RATING_LIKELIHOODS,
+            "players_rating_consensus",
+            "players_rating_disagreement",
+        )
+
+        if consensus_cols:
+            consensus_values = out[
+                [col for col in consensus_cols if col.endswith("_consensus")]
+            ].apply(pd.to_numeric, errors="coerce")
+            disagreement_values = out[
+                [col for col in consensus_cols if col.endswith("_disagreement")]
+            ].apply(pd.to_numeric, errors="coerce")
+            out["rating_consensus"] = consensus_values.mean(axis=1)
+            out["rating_disagreement"] = disagreement_values.mean(axis=1)
 
         return out
 
@@ -530,6 +1178,111 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         )
         return X_train, X_val, X_test, y_train, y_val, y_test
 
+    @staticmethod
+    def temporal_train_tune_cal_test_split(
+        X_with_meta: pd.DataFrame,
+        y: pd.Series,
+        date_col: str = "date",
+        group_col: str = "gameid",
+        tune_size: float = TUNE_SIZE,
+        calibration_size: float = CALIBRATION_SIZE,
+        test_size: float = TEST_SIZE,
+    ) -> tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+    ]:
+        """Time-ordered split for train/tune/cal_fit/cal_select/uncertainty/test."""
+        required = {group_col, date_col}
+        if not required.issubset(X_with_meta.columns):
+            raise ValueError(f"Missing required columns {sorted(required)}")
+        if tune_size <= 0 or calibration_size <= 0 or test_size <= 0:
+            raise ValueError("Tune, calibration, and test fractions must be positive.")
+        if tune_size + calibration_size + test_size >= 1:
+            raise ValueError("Tune + calibration + test fractions must be < 1.")
+
+        g = X_with_meta[[group_col, date_col]].drop_duplicates(subset=group_col).copy()
+        g[date_col] = pd.to_datetime(g[date_col], errors="coerce")
+        g = g.sort_values(date_col).dropna(subset=[date_col])
+        if g.empty:
+            raise ValueError("No valid dates for temporal split.")
+
+        n = len(g)
+        n_test = max(1, int(round(n * test_size)))
+        n_cal = max(3, int(round(n * calibration_size)))
+        n_tune = max(1, int(round(n * tune_size)))
+        n_train = n - n_tune - n_cal - n_test
+        if n_train < 1:
+            raise ValueError("Not enough games for train/tune/calibration/test split.")
+
+        n_cal_fit = max(1, int(round(n_cal * 0.50)))
+        n_cal_select = max(1, int(round(n_cal * 0.25)))
+        n_uncertainty = n_cal - n_cal_fit - n_cal_select
+        if n_uncertainty < 1:
+            n_uncertainty = 1
+            n_cal_fit = max(1, n_cal_fit - 1)
+
+        train = g.iloc[:n_train]
+        tune = g.iloc[n_train : n_train + n_tune]
+        cal_fit = g.iloc[n_train + n_tune : n_train + n_tune + n_cal_fit]
+        cal_select = g.iloc[
+            n_train + n_tune + n_cal_fit : n_train + n_tune + n_cal_fit + n_cal_select
+        ]
+        uncertainty = g.iloc[
+            n_train + n_tune + n_cal_fit + n_cal_select : n_train
+            + n_tune
+            + n_cal_fit
+            + n_cal_select
+            + n_uncertainty
+        ]
+        test = g.iloc[n_train + n_tune + n_cal :]
+
+        def _sel(group_frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+            gids = set(group_frame[group_col])
+            Xp = X_with_meta[X_with_meta[group_col].isin(gids)]
+            yp = y.loc[Xp.index]
+            return Xp, yp
+
+        X_train, y_train = _sel(train)
+        X_tune, y_tune = _sel(tune)
+        X_cal_fit, y_cal_fit = _sel(cal_fit)
+        X_cal_select, y_cal_select = _sel(cal_select)
+        X_uncertainty, y_uncertainty = _sel(uncertainty)
+        X_test, y_test = _sel(test)
+        logger.info(
+            "Temporal calibration split -> train: %d, tune: %d, cal_fit: %d, "
+            "cal_select: %d, uncertainty: %d, test: %d rows",
+            len(X_train),
+            len(X_tune),
+            len(X_cal_fit),
+            len(X_cal_select),
+            len(X_uncertainty),
+            len(X_test),
+        )
+        return (
+            X_train,
+            X_tune,
+            X_cal_fit,
+            X_cal_select,
+            X_uncertainty,
+            X_test,
+            y_train,
+            y_tune,
+            y_cal_fit,
+            y_cal_select,
+            y_uncertainty,
+            y_test,
+        )
+
     # ─────────────────────── Categorical / imputation ─────────────────────── #
 
     @staticmethod
@@ -543,7 +1296,10 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def _impute_apply_numeric(
         X: pd.DataFrame, medians: dict[str, float]
     ) -> pd.DataFrame:
-        return X.fillna(value=medians).infer_objects(copy=False)
+        # Pandas will stop implicitly downcasting object columns during fillna.
+        # Opt in now, then retain the existing explicit inference step.
+        with pd.option_context("future.no_silent_downcasting", True):
+            return X.fillna(value=medians).infer_objects(copy=False)
 
     @staticmethod
     def _impute_categorical(X: pd.DataFrame, cat_cols: list[str]) -> pd.DataFrame:
@@ -673,6 +1429,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 candidates.update(f"{role}_{feature}" for role in COMPACT_ROLE_PREFIXES)
                 if feature.endswith("_win_likelihood"):
                     candidates.add(f"players_{feature}")
+        candidates.update(DERIVED_STRENGTH_FEATURES)
         return candidates
 
     @staticmethod
@@ -716,11 +1473,12 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             ranked = list(preferred or payload.get("recommended_features", []))
             break
         if not ranked:
-            logger.warning(
-                "No selected feature report found for %s; keeping current features.",
-                self.model_name,
+            msg = (
+                f"Feature set 'selected' requires a recommendation report for "
+                f"{self.model_name}. Run a full or compact research training with "
+                "--feature-selection report first."
             )
-            return columns_list
+            raise FileNotFoundError(msg)
 
         anchors = [
             col
@@ -733,7 +1491,13 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 selected.append(col)
             if len(selected) >= self.max_features:
                 break
-        return selected or columns_list
+        if not selected:
+            msg = (
+                f"Selected feature report for {self.model_name} contains no "
+                "available features."
+            )
+            raise ValueError(msg)
+        return selected
 
     def _apply_feature_set_filter(self, X: pd.DataFrame) -> pd.DataFrame:
         """Apply full/compact/selected feature-set policy to a feature matrix."""
@@ -768,8 +1532,16 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         splits: dict[str, tuple[pd.DataFrame, pd.Series]],
         *,
         target_col: str,
+        require_temporal_order: bool,
     ) -> None:
-        report: dict[str, Any] = {"model_name": self.model_name, "target": target_col}
+        report: dict[str, Any] = {
+            "model_name": self.model_name,
+            "target": target_col,
+            "checks": self.validate_split_integrity(
+                splits,
+                require_temporal_order=require_temporal_order,
+            ),
+        }
         for name, (X_split, y_split) in splits.items():
             payload: dict[str, Any] = {
                 "rows": int(len(X_split)),
@@ -802,11 +1574,75 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             json.dumps(report, indent=2, default=str) + "\n"
         )
 
+    @staticmethod
+    def validate_split_integrity(
+        splits: dict[str, tuple[pd.DataFrame, pd.Series]],
+        *,
+        require_temporal_order: bool,
+    ) -> dict[str, Any]:
+        """Validate split boundaries before storing metrics or training artifacts."""
+        seen: dict[Any, str] = {}
+        overlaps: list[dict[str, str]] = []
+        for split_name, (X_split, _) in splits.items():
+            if "gameid" not in X_split.columns:
+                continue
+            for gameid in X_split["gameid"].dropna().unique():
+                if gameid in seen:
+                    overlaps.append(
+                        {
+                            "gameid": str(gameid),
+                            "first_split": seen[gameid],
+                            "second_split": split_name,
+                        }
+                    )
+                else:
+                    seen[gameid] = split_name
+        if overlaps:
+            msg = f"Split gameids must be disjoint; sample={overlaps[:5]}"
+            raise ValueError(msg)
+
+        checks: dict[str, Any] = {"gameids_disjoint": True}
+        if not require_temporal_order:
+            checks["temporal_ordered"] = None
+            return checks
+
+        previous_name: str | None = None
+        previous_max: pd.Timestamp | None = None
+        date_ranges: dict[str, dict[str, str | None]] = {}
+        for split_name, (X_split, _) in splits.items():
+            if "date" not in X_split.columns:
+                checks["temporal_ordered"] = None
+                checks["temporal_order_reason"] = "date column unavailable"
+                return checks
+            dates = pd.to_datetime(X_split["date"], errors="coerce").dropna()
+            if dates.empty:
+                date_ranges[split_name] = {"min": None, "max": None}
+                continue
+            current_min = dates.min()
+            current_max = dates.max()
+            date_ranges[split_name] = {
+                "min": current_min.isoformat(),
+                "max": current_max.isoformat(),
+            }
+            if previous_max is not None and previous_max > current_min:
+                msg = (
+                    "Temporal split order is invalid; "
+                    f"{previous_name} max date {previous_max.date()} is after "
+                    f"{split_name} min date {current_min.date()}."
+                )
+                raise ValueError(msg)
+            previous_name = split_name
+            previous_max = current_max
+
+        checks["temporal_ordered"] = True
+        checks["date_ranges"] = date_ranges
+        return checks
+
     # ─────────────────────────────── Storage ──────────────────────────────── #
 
     def _store_pickle(self, filename: str, data: Any) -> None:
         try:
-            out_dir = MODELS_DIR / self.model_name
+            out_dir = self.artifact_root / self.model_name
             out_dir.mkdir(parents=True, exist_ok=True)
             with (out_dir / filename).open("wb") as f:
                 pickle.dump(data, f)
@@ -834,8 +1670,25 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def store_best_hyperparameters(self, hyperparams: dict[str, Any]) -> None:
         self._store_pickle(f"{self.model_name}_best_hyperparameters.pkl", hyperparams)
 
-    def store_probability_calibrator(self, calibrator: ProbabilityCalibrator) -> None:
+    def store_probability_calibrator(self, calibrator: Any) -> None:
         self._store_pickle(f"{self.model_name}_probability_calibrator.pkl", calibrator)
+
+    def store_probability_uncertainty(
+        self, uncertainty: ProbabilityUncertaintyModel
+    ) -> None:
+        self._store_pickle(
+            f"{self.model_name}_probability_uncertainty.pkl", uncertainty
+        )
+
+    def store_prop_calibrator(self, calibrator: PropDistributionCalibrator) -> None:
+        self._store_pickle(f"{self.model_name}_prop_calibrator.pkl", calibrator)
+
+    def store_calibration_report(self, report: dict[str, Any]) -> None:
+        payload = json.dumps(report, indent=2, default=str) + "\n"
+        self.insight_path("calibration_report.json").write_text(payload)
+        out_dir = self.artifact_root / self.model_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{self.model_name}_calibration_report.json").write_text(payload)
 
     def store_residual_summary(self, summary: dict[str, Any]) -> None:
         self._store_pickle(f"{self.model_name}_residual_summary.pkl", summary)
@@ -914,7 +1767,47 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 metrics["log_loss"] = float(log_loss(y_true, clipped))
                 metrics["roc_auc"] = float(roc_auc_score(y_true, y_proba))
                 metrics["brier"] = float(brier_score_loss(y_true, y_proba))
+                metrics.update(
+                    self.compute_probability_calibration_metrics(y_true, y_proba)
+                )
         metrics["cm"] = confusion_matrix(y_true, y_pred)
+        return metrics
+
+    @staticmethod
+    def compute_probability_calibration_metrics(
+        y_true: pd.Series,
+        y_proba: np.ndarray,
+        *,
+        n_bins: int = CALIBRATION_BINS,
+    ) -> dict[str, float]:
+        """Return ECE plus reliability-line slope/intercept for probability runs."""
+        y = pd.to_numeric(y_true, errors="coerce").to_numpy(dtype=float)
+        p = np.clip(
+            np.asarray(y_proba, dtype=float),
+            PROBABILITY_EPSILON,
+            1.0 - PROBABILITY_EPSILON,
+        )
+        mask = np.isfinite(y) & np.isfinite(p)
+        y = y[mask]
+        p = p[mask]
+        if y.size == 0 or p.size == 0:
+            return {}
+
+        bins = np.linspace(0.0, 1.0, n_bins + 1)
+        bin_ids = np.clip(np.digitize(p, bins, right=True) - 1, 0, n_bins - 1)
+        ece = 0.0
+        for bin_id in range(n_bins):
+            in_bin = bin_ids == bin_id
+            if not in_bin.any():
+                continue
+            weight = float(in_bin.mean())
+            ece += weight * float(abs(p[in_bin].mean() - y[in_bin].mean()))
+
+        metrics = {"calibration_ece": float(ece)}
+        if np.unique(p).size > 1:
+            slope, intercept = np.polyfit(p, y, deg=1)
+            metrics["calibration_slope"] = float(slope)
+            metrics["calibration_intercept"] = float(intercept)
         return metrics
 
     @staticmethod
@@ -1032,28 +1925,329 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             },
         }
 
-    def fit_probability_calibrator(
-        self, model, X_val: pd.DataFrame, y_val: pd.Series
-    ) -> ProbabilityCalibrator | None:
-        """Fit calibration on validation data only."""
-        if self.problem_type != "classification" or not hasattr(model, "predict_proba"):
+    @staticmethod
+    def _fit_prop_candidate(
+        method: str,
+        y_true: pd.Series,
+        y_pred: np.ndarray,
+        eval_meta: pd.DataFrame,
+    ) -> PropDistributionCalibrator:
+        actual = pd.to_numeric(y_true, errors="coerce").to_numpy(dtype=float)
+        pred = np.asarray(y_pred, dtype=float)
+        residuals = actual - pred
+        residuals = residuals[np.isfinite(residuals)]
+        if residuals.size == 0:
+            raise ValueError("No finite residuals available for prop calibration.")
+        segment_residuals: dict[tuple[str, str], np.ndarray] = {}
+        if method in {"league_shrunk", "metadata_shrunk"}:
+            frame = calibration_metadata_frame(eval_meta).reset_index(drop=True)
+            frame["residual"] = actual - pred
+            for kind in (
+                ["league"]
+                if method == "league_shrunk"
+                else [
+                    "league_bo_format",
+                    "league",
+                    "strength_pool",
+                    "bo_format",
+                    "patch_family",
+                ]
+            ):
+                if kind not in frame.columns:
+                    continue
+                for value, group in frame.groupby(kind, dropna=True):
+                    values = group["residual"].to_numpy(dtype=float)
+                    values = values[np.isfinite(values)]
+                    if values.size:
+                        segment_residuals[(kind, str(value))] = values
+        return PropDistributionCalibrator(
+            method=method,
+            global_residuals=residuals,
+            segment_residuals=segment_residuals,
+        )
+
+    @staticmethod
+    def _prop_calibration_log_loss(
+        calibrator: PropDistributionCalibrator,
+        y_true: pd.Series,
+        y_pred: np.ndarray,
+        eval_meta: pd.DataFrame,
+    ) -> dict[str, Any]:
+        actual = pd.to_numeric(y_true, errors="coerce").to_numpy(dtype=float)
+        pred = np.asarray(y_pred, dtype=float)
+        sigma = float(np.std(calibrator.global_residuals, ddof=1))
+        sigma = max(sigma, PROBABILITY_EPSILON)
+        rows: list[dict[str, float]] = []
+        meta = eval_meta.reset_index(drop=True)
+        for idx, (actual_value, mean_value) in enumerate(
+            zip(actual, pred, strict=False)
+        ):
+            if not np.isfinite(actual_value) or not np.isfinite(mean_value):
+                continue
+            league = None
+            row_metadata = None
+            if "league" in meta.columns and idx < len(meta):
+                league = str(meta.iloc[idx]["league"])
+            if idx < len(meta):
+                row_metadata = meta.iloc[idx]
+            for offset in (-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5):
+                line = float(mean_value + offset * sigma)
+                over_actual = int(actual_value > line)
+                prob = calibrator.price(
+                    mean=float(mean_value),
+                    line=line,
+                    league=league,
+                    metadata=row_metadata,
+                ).over_probability
+                rows.append({"actual": over_actual, "probability": prob})
+        if not rows:
+            return {"log_loss": float("inf"), "brier": float("inf"), "n": 0}
+        frame = pd.DataFrame(rows)
+        p = np.clip(
+            frame["probability"].to_numpy(dtype=float),
+            PROBABILITY_EPSILON,
+            1.0 - PROBABILITY_EPSILON,
+        )
+        y = frame["actual"].to_numpy(dtype=int)
+        return {
+            "log_loss": float(log_loss(y, p)),
+            "brier": float(brier_score_loss(y, p)),
+            "n": int(len(frame)),
+        }
+
+    def fit_prop_calibrator(
+        self,
+        y_cal_fit: pd.Series,
+        pred_cal_fit: np.ndarray,
+        meta_cal_fit: pd.DataFrame,
+        y_cal_select: pd.Series,
+        pred_cal_select: np.ndarray,
+        meta_cal_select: pd.DataFrame,
+        y_cal_full: pd.Series,
+        pred_cal_full: np.ndarray,
+        meta_cal_full: pd.DataFrame,
+    ) -> PropDistributionCalibrator | None:
+        """Select residual-distribution prop calibrator, then refit on full calibration."""
+        if self.calibration == "none":
             return None
-        y = pd.to_numeric(y_val, errors="coerce").dropna()
+        candidates: list[dict[str, Any]] = []
+        for method in (
+            "normal_global",
+            "empirical_global",
+            "league_shrunk",
+            "metadata_shrunk",
+        ):
+            try:
+                candidate = self._fit_prop_candidate(
+                    method, y_cal_fit, pred_cal_fit, meta_cal_fit
+                )
+                metrics = self._prop_calibration_log_loss(
+                    candidate, y_cal_select, pred_cal_select, meta_cal_select
+                )
+                candidates.append(
+                    {
+                        "method": method,
+                        "metrics": metrics,
+                    }
+                )
+            except Exception as e:
+                logger.warning("Prop calibration candidate '%s' failed: %s", method, e)
+        if not candidates:
+            return None
+        best = sorted(
+            candidates,
+            key=lambda item: (
+                item["metrics"].get("log_loss", float("inf")),
+                item["metrics"].get("brier", float("inf")),
+            ),
+        )[0]
+        final_calibrator = self._fit_prop_candidate(
+            best["method"], y_cal_full, pred_cal_full, meta_cal_full
+        )
+        self.store_prop_calibrator(final_calibrator)
+        report = {
+            "model_name": self.model_name,
+            "selected_method": final_calibrator.method,
+            "selection_metric": "synthetic_over_under_log_loss",
+            "tie_breaker": "brier",
+            "samples": {
+                "cal_fit": int(len(y_cal_fit)),
+                "cal_select": int(len(y_cal_select)),
+                "cal_full": int(len(y_cal_full)),
+            },
+            "candidates": candidates,
+        }
+        self.store_calibration_report(report)
+        return final_calibrator
+
+    @staticmethod
+    def _probability_quality_metrics(
+        y_true: pd.Series,
+        probabilities: np.ndarray,
+        eval_gameids: pd.Series | None = None,
+    ) -> dict[str, Any]:
+        y = pd.to_numeric(y_true, errors="coerce")
+        p = np.clip(
+            np.asarray(probabilities, dtype=float),
+            PROBABILITY_EPSILON,
+            1.0 - PROBABILITY_EPSILON,
+        )
+        metrics: dict[str, Any] = {
+            "log_loss": float(log_loss(y, p)),
+            "brier": float(brier_score_loss(y, p)),
+        }
+        metrics.update(
+            GradientBoostingModel.compute_probability_calibration_metrics(y, p)
+        )
+        with contextlib.suppress(ValueError):
+            metrics["roc_auc"] = float(roc_auc_score(y, p))
+        if eval_gameids is not None:
+            metrics.update(
+                GradientBoostingModel.compute_pairwise_classification_metrics(
+                    y_true=y,
+                    y_proba=p,
+                    eval_gameids=eval_gameids,
+                )
+            )
+        return metrics
+
+    @staticmethod
+    def _fit_probability_candidate(
+        method: str,
+        probabilities: np.ndarray,
+        y: pd.Series,
+    ) -> ProbabilityCalibrator:
+        if method == "raw":
+            return ProbabilityCalibrator(method="raw", model=None)
+        if method == "sigmoid":
+            model = LogisticRegression(solver="lbfgs")
+            model.fit(probabilities.reshape(-1, 1), y.to_numpy(dtype=int))
+            return ProbabilityCalibrator(method="sigmoid", model=model)
+        if method == "isotonic":
+            model = IsotonicRegression(out_of_bounds="clip")
+            model.fit(probabilities, y.to_numpy(dtype=int))
+            return ProbabilityCalibrator(method="isotonic", model=model)
+        raise ValueError(f"Unknown calibration method: {method}")
+
+    def fit_probability_calibrator(
+        self,
+        model,
+        X_cal_fit: pd.DataFrame,
+        y_cal_fit: pd.Series,
+        X_cal_select: pd.DataFrame,
+        y_cal_select: pd.Series,
+        X_cal_full: pd.DataFrame,
+        y_cal_full: pd.Series,
+        meta_cal_fit: pd.DataFrame | None = None,
+        meta_cal_select: pd.DataFrame | None = None,
+        meta_cal_full: pd.DataFrame | None = None,
+    ) -> MetadataAwareProbabilityCalibrator | None:
+        """Select probability calibration on cal_select, then refit on full calibration."""
+        del meta_cal_fit, meta_cal_select, meta_cal_full
         if (
-            len(y) < MIN_CALIBRATION_SAMPLES
-            or y.nunique() != BINARY_CLASS_UNIQUE_VALUES
+            self.calibration == "none"
+            or self.problem_type != "classification"
+            or not hasattr(model, "predict_proba")
+        ):
+            return None
+
+        y_fit = pd.to_numeric(y_cal_fit, errors="coerce").dropna()
+        y_select = pd.to_numeric(y_cal_select, errors="coerce").dropna()
+        y_full = pd.to_numeric(y_cal_full, errors="coerce").dropna()
+        if (
+            len(y_fit) < MIN_CALIBRATION_SAMPLES
+            or y_fit.nunique() != BINARY_CLASS_UNIQUE_VALUES
+            or y_select.nunique() != BINARY_CLASS_UNIQUE_VALUES
+            or y_full.nunique() != BINARY_CLASS_UNIQUE_VALUES
         ):
             logger.warning(
-                "Skipping probability calibration for %s: insufficient validation diversity.",
+                "Skipping probability calibration for %s: insufficient calibration diversity.",
                 self.model_name,
             )
             return None
-        probabilities = model.predict_proba(X_val.loc[y.index])[:, 1]
-        calibrator = IsotonicRegression(out_of_bounds="clip")
-        calibrator.fit(probabilities, y.to_numpy(dtype=int))
-        wrapped = ProbabilityCalibrator(method="isotonic_validation", model=calibrator)
-        self.store_probability_calibrator(wrapped)
-        return wrapped
+
+        methods = ["raw", "sigmoid", "isotonic"]
+        if self.calibration_method != "auto":
+            methods = [self.calibration_method]
+
+        p_fit = model.predict_proba(X_cal_fit.loc[y_fit.index])[:, 1]
+        p_select = model.predict_proba(X_cal_select.loc[y_select.index])[:, 1]
+        p_full = model.predict_proba(X_cal_full.loc[y_full.index])[:, 1]
+        candidates: list[dict[str, Any]] = []
+        for method in methods:
+            try:
+                candidate = self._fit_probability_candidate(method, p_fit, y_fit)
+                selected_prob = candidate.predict(p_select)
+                metrics = self._probability_quality_metrics(y_select, selected_prob)
+                candidates.append(
+                    {
+                        "method": method,
+                        "metrics": metrics,
+                        "calibrator": candidate,
+                    }
+                )
+            except Exception as e:
+                logger.warning("Calibration candidate '%s' failed: %s", method, e)
+
+        if not candidates:
+            return None
+
+        best = sorted(
+            candidates,
+            key=lambda item: (
+                item["metrics"].get("log_loss", float("inf")),
+                item["metrics"].get("brier", float("inf")),
+            ),
+        )[0]
+        final_global = self._fit_probability_candidate(best["method"], p_full, y_full)
+        global_selection_metrics = best["metrics"]
+        segmented_selection_metrics = global_selection_metrics
+        segments_accepted = False
+        segments: dict[tuple[str, str], SegmentProbabilityCalibrator] = {}
+        segment_reports: list[dict[str, Any]] = []
+        final_calibrator = MetadataAwareProbabilityCalibrator(
+            global_calibrator=final_global,
+            segments=segments,
+            report={
+                "segment_count": len(segments),
+                "segment_reports": segment_reports,
+                "segments_accepted": segments_accepted,
+                "segment_status": "disabled_without_independent_composite_gate",
+                "global_selection_metrics": global_selection_metrics,
+                "segmented_selection_metrics": segmented_selection_metrics,
+            },
+        )
+        self.store_probability_calibrator(final_calibrator)
+        report = {
+            "model_name": self.model_name,
+            "selected_method": final_calibrator.method,
+            "global_method": final_global.method,
+            "calibration_version": CALIBRATION_VERSION,
+            "selection_metric": "log_loss",
+            "tie_breaker": "brier",
+            "segment_count": len(segments),
+            "segments_accepted": segments_accepted,
+            "segment_status": "disabled_without_independent_composite_gate",
+            "segment_min_samples": {
+                "sigmoid": MIN_SEGMENT_SIGMOID_SAMPLES,
+                "isotonic": MIN_SEGMENT_ISOTONIC_SAMPLES,
+            },
+            "segment_shrinkage": CALIBRATION_SEGMENT_SHRINKAGE,
+            "samples": {
+                "cal_fit": int(len(y_fit)),
+                "cal_select": int(len(y_select)),
+                "cal_full": int(len(y_full)),
+            },
+            "candidates": [
+                {"method": item["method"], "metrics": item["metrics"]}
+                for item in candidates
+            ],
+            "segments": segment_reports,
+            "global_selection_metrics": global_selection_metrics,
+            "segmented_selection_metrics": segmented_selection_metrics,
+        }
+        self.store_calibration_report(report)
+        return final_calibrator
 
     def _predict_positive_probability(
         self, model, X: pd.DataFrame
@@ -1064,6 +2258,34 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         if self.probability_calibrator is not None:
             y_proba = self.probability_calibrator.predict(y_proba)
         return y_proba
+
+    def fit_probability_uncertainty(
+        self,
+        model,
+        X_uncertainty: pd.DataFrame,
+        y_uncertainty: pd.Series,
+        metadata: pd.DataFrame | None = None,
+    ) -> ProbabilityUncertaintyModel | None:
+        """Fit and store probability-estimate uncertainty on its own holdout."""
+        if self.problem_type != "classification" or not hasattr(model, "predict_proba"):
+            return None
+        raw = model.predict_proba(X_uncertainty)[:, 1]
+        probabilities = (
+            self.probability_calibrator.predict(raw, metadata=metadata)
+            if self.probability_calibrator is not None
+            else raw
+        )
+        try:
+            uncertainty = ProbabilityUncertaintyModel.fit(y_uncertainty, probabilities)
+        except ValueError as exc:
+            logger.warning(
+                "Skipping probability uncertainty for %s: %s",
+                self.model_name,
+                exc,
+            )
+            return None
+        self.store_probability_uncertainty(uncertainty)
+        return uncertainty
 
     def store_evaluation_metrics(self, metrics: dict[str, Any]) -> None:
         """Persist metrics to JSON (drop non-serializable arrays like CM)."""
@@ -1160,6 +2382,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 self.plot_accuracy_over_samples(y_test, y_pred)
                 if y_proba is not None:
                     self.plot_roc_pr_calibration(y_test, y_proba)
+                    self.store_calibration_table(y_test, y_proba)
                 # historical accuracy uses PROCESSED_TEAMS join by gameid internally
                 self.plot_historical_accuracy(X_test, y_test, y_pred, eval_gameids)
             else:
@@ -1237,7 +2460,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         validate : bool
             Whether to run validation and store metrics
         feature_selection : str
-            Feature selection method: "none", "importance", "cumulative", "rfecv", "boruta", "report"
+            Feature selection method: "none", "importance", "cumulative", "report"
         feature_selection_threshold : float
             Threshold for importance-based selection (default 0.1% of total importance)
 
@@ -1265,6 +2488,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             X = self.fuse_opposing_team_features(X)
         if process_player_likelihoods:
             X = self.process_players_likelihood_columns(X, agg="mean")
+        X = self.add_rating_consensus_features(X)
 
         # Curated compact configs are written for side-POV rows, so apply them
         # before prop targets are collapsed into one row per game.
@@ -1288,6 +2512,14 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 target_col,
                 len(X),
             )
+        elif self.problem_type == "classification" and target_col == "result":
+            X, y_match, meta_match = build_game_level_outcome_features(X, meta_df, y)
+            if y_match is None:
+                msg = "Could not build matchup outcome targets."
+                raise ValueError(msg)
+            y = y_match
+            meta_df = meta_match
+            logger.info("Collapsed outcome target to %d canonical matchups.", len(X))
 
         if self.feature_set == "selected":
             X = self._apply_feature_set_filter(X)
@@ -1315,8 +2547,44 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         ]
         X_for_split = pd.concat([X, meta_df[split_keys + extra_split_cols]], axis=1)
 
+        X_cal_fit = X_cal_select = X_cal_full = X_uncertainty = None
+        y_cal_fit = y_cal_select = y_cal_full = y_uncertainty = None
+        has_dedicated_calibration_split = False
+        used_temporal_split = False
         # Choose splitter (temporal if 'date' is available)
-        if temporal_split and "date" in X_for_split.columns:
+        if (
+            temporal_split
+            and "date" in X_for_split.columns
+            and self.calibration != "none"
+        ):
+            has_dedicated_calibration_split = True
+            used_temporal_split = True
+            (
+                X_train,
+                X_val,
+                X_cal_fit,
+                X_cal_select,
+                X_uncertainty,
+                X_test,
+                y_train,
+                y_val,
+                y_cal_fit,
+                y_cal_select,
+                y_uncertainty,
+                y_test,
+            ) = self.temporal_train_tune_cal_test_split(
+                X_for_split,
+                y,
+                date_col="date",
+                group_col="gameid",
+                tune_size=self.tune_size,
+                calibration_size=self.calibration_size,
+                test_size=self.test_size,
+            )
+            X_cal_full = pd.concat([X_cal_fit, X_cal_select], axis=0)
+            y_cal_full = pd.concat([y_cal_fit, y_cal_select], axis=0)
+        elif temporal_split and "date" in X_for_split.columns:
+            used_temporal_split = True
             X_train, X_val, X_test, y_train, y_val, y_test = (
                 self.temporal_train_val_test_split(
                     X_for_split,
@@ -1324,7 +2592,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     date_col="date",
                     group_col="gameid",
                     val_size=VALIDATION_SIZE,
-                    test_size=TEST_SIZE,
+                    test_size=self.test_size,
                 )
             )
         else:
@@ -1337,19 +2605,73 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     random_state=RANDOM_STATE,
                 )
             )
+        if (
+            X_cal_fit is None
+            or X_cal_select is None
+            or X_cal_full is None
+            or y_cal_fit is None
+            or y_cal_select is None
+            or y_cal_full is None
+        ):
+            X_cal_fit = X_val
+            X_cal_select = X_val
+            X_cal_full = X_val
+            y_cal_fit = y_val
+            y_cal_select = y_val
+            y_cal_full = y_val
+        if X_uncertainty is None or y_uncertainty is None:
+            X_uncertainty = X_val
+            y_uncertainty = y_val
 
-        self._store_split_report(
-            {
+        split_report_entries: dict[str, tuple[pd.DataFrame, pd.Series]] = {
+            "train": (X_train, y_train),
+            "tune": (X_val, y_val),
+            "test": (X_test, y_test),
+        }
+        if has_dedicated_calibration_split:
+            split_report_entries = {
                 "train": (X_train, y_train),
-                "validation": (X_val, y_val),
+                "tune": (X_val, y_val),
+                "calibration_fit": (X_cal_fit, y_cal_fit),
+                "calibration_select": (X_cal_select, y_cal_select),
+                "uncertainty_fit": (X_uncertainty, y_uncertainty),
                 "test": (X_test, y_test),
-            },
+            }
+        self._store_split_report(
+            split_report_entries,
             target_col=target_col,
+            require_temporal_order=used_temporal_split,
         )
+
+        calibration_meta_cols = [
+            col
+            for col in (
+                "gameid",
+                "league",
+                "strength_pool",
+                "patch",
+                "season",
+                "game",
+                "match_type",
+                "is_bo1",
+                "is_bo3",
+                "is_bo5",
+            )
+            if col in X_for_split.columns
+        ]
+        meta_cal_fit_for_cal = X_cal_fit[calibration_meta_cols].copy()
+        meta_cal_select_for_cal = X_cal_select[calibration_meta_cols].copy()
+        meta_cal_full_for_cal = X_cal_full[calibration_meta_cols].copy()
+        meta_uncertainty_for_cal = X_uncertainty[calibration_meta_cols].copy()
+        meta_test_for_cal = X_test[calibration_meta_cols].copy()
 
         # ── CRITICAL: drop meta (incl. 'date') from the actual feature matrices, with logs ── #
         X_train = self._strip_meta_from_features(X_train, "train")
         X_val = self._strip_meta_from_features(X_val, "val")
+        X_cal_fit = self._strip_meta_from_features(X_cal_fit, "cal_fit")
+        X_cal_select = self._strip_meta_from_features(X_cal_select, "cal_select")
+        X_cal_full = self._strip_meta_from_features(X_cal_full, "cal_full")
+        X_uncertainty = self._strip_meta_from_features(X_uncertainty, "uncertainty")
         X_test = self._strip_meta_from_features(X_test, "test")
 
         # Record eval identifiers for artifacts (sourced from meta_df, not features)
@@ -1375,12 +2697,23 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             drop_high_corr_threshold=drop_high_corr_threshold,
         )
         X_val = feature_pipeline.transform(X_val)
+        X_cal_fit = feature_pipeline.transform(X_cal_fit)
+        X_cal_select = feature_pipeline.transform(X_cal_select)
+        X_cal_full = feature_pipeline.transform(X_cal_full)
+        X_uncertainty = feature_pipeline.transform(X_uncertainty)
         X_test = feature_pipeline.transform(X_test)
         categorical_features = feature_pipeline.categorical_features
         train_cols = feature_pipeline.train_columns
 
         # Explicit guardrail: eval splits must perfectly mirror train features
-        for split_name, X_split in {"val": X_val, "test": X_test}.items():
+        for split_name, X_split in {
+            "val": X_val,
+            "cal_fit": X_cal_fit,
+            "cal_select": X_cal_select,
+            "cal_full": X_cal_full,
+            "uncertainty": X_uncertainty,
+            "test": X_test,
+        }.items():
             if list(X_split.columns) != train_cols:
                 msg = f"{split_name} columns misaligned with train features."
                 raise ValueError(msg)
@@ -1428,34 +2761,6 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         except (ValueError, KeyError) as e:
             logger.warning("Pure-bucket categorical check failed: %s", e)
 
-        # ─────────────────── Pre-training Feature Selection ─────────────────── #
-        # RFECV and Boruta run before main training (they use quick internal models)
-        if feature_selection in ("rfecv", "boruta"):
-            logger.info(
-                "Running %s feature selection before training...", feature_selection
-            )
-            selected_features = FeatureSelector.select_features(
-                method=feature_selection,
-                X_train=X_train,
-                y_train=y_train,
-                model=None,  # Uses internal model
-            )
-            # Keep only selected features (+ categoricals that might not be numeric)
-            keep_cols = list(set(selected_features) | set(categorical_features))
-            keep_cols = [c for c in train_cols if c in keep_cols]
-
-            X_train = X_train[keep_cols]
-            X_val = X_val[keep_cols]
-            X_test = X_test[keep_cols]
-            train_cols = keep_cols
-            categorical_features = [c for c in categorical_features if c in keep_cols]
-
-            logger.info(
-                "Feature selection reduced features: %d -> %d",
-                len(feature_pipeline.train_columns),
-                len(train_cols),
-            )
-
         # Persist features metadata
         self.store_model_features(pd.Index(train_cols))
         self.store_categorical_features(categorical_features)
@@ -1472,7 +2777,93 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         )
         if self.problem_type == "classification":
             self.probability_calibrator = self.fit_probability_calibrator(
-                model, X_val, y_val
+                model,
+                X_cal_fit,
+                y_cal_fit,
+                X_cal_select,
+                y_cal_select,
+                X_cal_full,
+                y_cal_full,
+                meta_cal_fit_for_cal,
+                meta_cal_select_for_cal,
+                meta_cal_full_for_cal,
+            )
+            if has_dedicated_calibration_split:
+                self.probability_uncertainty = self.fit_probability_uncertainty(
+                    model,
+                    X_uncertainty,
+                    y_uncertainty,
+                    meta_uncertainty_for_cal,
+                )
+            if self.probability_calibrator is not None:
+                raw_test = model.predict_proba(X_test)[:, 1]
+                calibrated_test = self.probability_calibrator.predict(
+                    raw_test, metadata=meta_test_for_cal
+                )
+                report_path = self.insight_path("calibration_report.json")
+                report: dict[str, Any] = (
+                    json.loads(report_path.read_text())
+                    if report_path.exists()
+                    else {
+                        "model_name": self.model_name,
+                        "selected_method": self.probability_calibrator.method,
+                    }
+                )
+                raw_metrics = self._probability_quality_metrics(
+                    y_test, raw_test, eval_gameids
+                )
+                calibrated_metrics = self._probability_quality_metrics(
+                    y_test, calibrated_test, eval_gameids
+                )
+                report["test_metrics"] = {
+                    "raw": raw_metrics,
+                    "calibrated": calibrated_metrics,
+                }
+                if self.probability_uncertainty is not None:
+                    test_lower, test_upper = self.probability_uncertainty.interval(
+                        calibrated_test
+                    )
+                    report["uncertainty"] = {
+                        "method": self.probability_uncertainty.method,
+                        "fit_split": self.probability_uncertainty.fit_split,
+                        "confidence": self.probability_uncertainty.confidence,
+                        "fit_samples": self.probability_uncertainty.sample_count,
+                        "local_bins": len(self.probability_uncertainty.bins),
+                        "test_mean_width": float(np.mean(test_upper - test_lower)),
+                        "test_rows": int(len(calibrated_test)),
+                        "test_used_for_fit": False,
+                    }
+                if target_col == "result":
+                    # One row is one canonical game pair. Serving scores that
+                    # pair once and returns its exact complement if callers
+                    # reverse the teams, so these are pairwise—not team-row—
+                    # calibration metrics.
+                    report["pairwise_test_metrics"] = {
+                        "raw": raw_metrics,
+                        "calibrated": calibrated_metrics,
+                        "max_probability_sum_error": 0.0,
+                    }
+                self.store_calibration_report(report)
+            if target_col == "result":
+                self._store_pickle(
+                    f"{self.model_name}_outcome_matchup_schema.pkl",
+                    {
+                        "version": 1,
+                        "canonical_key": "teamid_then_teamname",
+                        "excluded_features": ["first_pick", "side_win_likelihood"],
+                    },
+                )
+        elif self.problem_type == "regression" and is_prop_target(target_col):
+            self.prop_calibrator = self.fit_prop_calibrator(
+                y_cal_fit,
+                model.predict(X_cal_fit),
+                meta_cal_fit_for_cal,
+                y_cal_select,
+                model.predict(X_cal_select),
+                meta_cal_select_for_cal,
+                y_cal_full,
+                model.predict(X_cal_full),
+                meta_cal_full_for_cal,
             )
 
         # ─────────────────── Post-training Feature Selection Report ─────────────────── #
@@ -1585,9 +2976,9 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 n_rows_val=len(X_val),
                 n_rows_test=len(X_test),
                 features=train_cols,
-                hyperparams=None,
-                code_version=None,
-                data_hash=None,
+                hyperparams=self.model_hyperparameters(model),
+                code_version=self.git_code_version(),
+                data_hash=self.stable_dataframe_hash(self.training_data),
             )
         except Exception as e:
             logger.warning("Model card storage failed: %s", e)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import sys
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
@@ -40,7 +41,8 @@ DEFAULT_SIGMA = float(ts_config.get("sigma", 8.333))
 DEFAULT_BETA = float(
     ts_config.get("beta", DEFAULT_SIGMA / 2)
 )  # common rule: beta ~ sigma/2
-TRIALS_NUM = 25
+TRIALS_NUM = int(config.get("optuna", {}).get("trials", 100))
+OPTUNA_SEED = int(config.get("optuna", {}).get("seed", 42))
 MIN_FLOAT = 1e-9  # For float comparisons
 
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
@@ -432,14 +434,21 @@ def tune_trueskill_hyperparameters(
     entity: str,
     hyperparameters_path: Path,
     league_elo_dict: dict[str, float],
+    *,
+    force_retune: bool = False,
 ) -> dict[str, float]:
     """
     If existing hyperparams are found, load them. Otherwise, run Optuna to find best
     TrueSkill params that minimize validation log loss.
     """
     best_params = load_hyperparameters(hyperparameters_path)
-    if best_params:
+    if best_params and not force_retune:
         return best_params
+    if not force_retune:
+        raise FileNotFoundError(
+            f"Missing reviewed TrueSkill hyperparameters at {hyperparameters_path}; "
+            "run the explicit rating retune workflow."
+        )
 
     logger.info(
         f"No TrueSkill hyperparameters found at {hyperparameters_path}. Starting tuning..."
@@ -495,8 +504,12 @@ def tune_trueskill_hyperparameters(
 
         return loss
 
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=True)
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=OPTUNA_SEED),
+    )
+    study.optimize(objective, n_trials=TRIALS_NUM, show_progress_bar=False)
     best_params = study.best_params
 
     logger.info(f"Best TrueSkill hyperparameters: {best_params}")
@@ -750,7 +763,12 @@ def run_trueskill_computation(
 
     grouped = df.groupby(["date", "gameid"], sort=False)
     if show_progress:
-        grouped = tqdm(grouped, desc="Processing games", total=grouped.ngroups)
+        grouped = tqdm(
+            grouped,
+            desc="Processing games",
+            total=grouped.ngroups,
+            disable=not sys.stderr.isatty(),
+        )
 
     # Process each match, retaining updated dictionary
     for _, game_grp in grouped:
