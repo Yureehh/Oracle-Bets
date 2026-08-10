@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -40,6 +41,10 @@ from oracle_bets_core.pd import pd
 
 from lol_bets.data_generation.ingestion.quality import normalize_result
 from lol_bets.module import LoLBetsModule
+from lol_bets.operations.provenance import (
+    RepositoryProvenance,
+    require_clean_repository,
+)
 from lol_bets.prediction_models.gbdt_model import DEFAULT_SELECTED_MAX_FEATURES
 from lol_bets.prediction_models.lightgbm_model import LightGBMModel
 from lol_bets.prediction_models.prop_features import PROP_TARGETS
@@ -369,7 +374,7 @@ def train_models(
     test_size: float = 0.15,
 ) -> Path:
     """Train all configured models using shared training tables."""
-    LoLBetsModule().training_artifact_health().raise_if_unhealthy()
+    repository = _training_preflight()
 
     try:
         logger.info("Loading training data…")
@@ -391,6 +396,7 @@ def train_models(
     trained: list[str] = []
     failed: list[str] = []
     dataset_fingerprint = _sha256_file(RAW_DATA)
+    parameter_source, tuning_run_id = _parameter_provenance()
     base_manifest = {
         "schema_version": 1,
         "run_id": run_id,
@@ -401,6 +407,10 @@ def train_models(
         "promotable_full_bundle": promotable,
         "workspace_promoted": False,
         "artifact_root": str(artifact_root),
+        "parameter_source": parameter_source,
+        "tuning_run_id": tuning_run_id,
+        "code_version": repository.revision,
+        "worktree_clean": repository.clean,
     }
 
     logger.info(
@@ -461,8 +471,15 @@ def train_models(
 
     _write_training_summary(report_root, selected_models, manifest)
     if promotable:
-        _promote_training_bundle(artifact_root, selected_models, run_id=run_id)
-        manifest["workspace_promoted"] = True
+        candidate_id = _register_training_candidate(
+            artifact_root,
+            report_root=report_root,
+            run_id=run_id,
+        )
+        manifest["candidate_id"] = candidate_id
+        review = _review_training_candidate(candidate_id, parameter_source)
+        manifest["promotion_status"] = review.status
+        manifest["promotion_reasons"] = list(review.reasons)
     _write_training_manifest(report_root, manifest | {"status": "completed"})
     _publish_latest_training_report(report_root, run_id)
     _prune_training_reports(report_root.parent)
@@ -470,12 +487,15 @@ def train_models(
     return report_root
 
 
+def _training_preflight() -> RepositoryProvenance:
+    repository = require_clean_repository()
+    LoLBetsModule().training_artifact_health().raise_if_unhealthy()
+    return repository
+
+
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912
@@ -530,6 +550,12 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912
                 f"Tuning candidates have inconsistent provenance: {candidate}"
             )
         payloads[name] = payload
+
+    for payload in payloads.values():
+        payload["metadata"] |= {
+            "source": "optuna_reviewed",
+            "promoted_tuning_run_id": run_id,
+        }
 
     TUNED_LIGHTGBM_HYPERPARAMETERS.mkdir(parents=True, exist_ok=True)
     previous: dict[Path, bytes | None] = {}
@@ -703,45 +729,101 @@ def _atomic_write_text(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
-def _promote_training_bundle(
+def _register_training_candidate(
     staging_root: Path,
-    configs: tuple[ModelConfig, ...],
     *,
+    report_root: Path,
     run_id: str,
-) -> None:
-    """Replace the mutable full workspace, rolling back on a publish failure."""
-    backup_root = MODELS_DIR / ".backup" / run_id
-    promoted: list[str] = []
-    backed_up: list[str] = []
-    names = [_lightgbm_model_name(cfg.model_name) for cfg in configs]
-    try:
-        for name in names:
-            source = staging_root / name
-            if not source.is_dir():
-                _raise_missing_staged_model(source)
-        for name in names:
-            destination = MODELS_DIR / name
-            if destination.exists():
-                backup_root.mkdir(parents=True, exist_ok=True)
-                destination.replace(backup_root / name)
-                backed_up.append(name)
-            (staging_root / name).replace(destination)
-            promoted.append(name)
-    except Exception:
-        for name in reversed(promoted):
-            destination = MODELS_DIR / name
-            if destination.exists():
-                shutil.rmtree(destination)
-        for name in backed_up:
-            backup = backup_root / name
-            if backup.exists():
-                backup.replace(MODELS_DIR / name)
-        raise
-    finally:
-        if staging_root.exists():
-            shutil.rmtree(staging_root)
-    if backup_root.exists():
-        shutil.rmtree(backup_root)
+) -> str:
+    """Freeze a complete staged run without changing the serving champion."""
+    from oracle_bets_core.paths import MODEL_REGISTRY_DIR
+
+    from lol_bets.operations.models import ModelRegistry, register_current_candidate
+
+    summary = json.loads((report_root / "summary.json").read_text(encoding="utf-8"))
+    metrics = {
+        f"{model['target']}.{name}": float(value)
+        for model in summary["models"]
+        for name, value in model["metrics"].items()
+        if isinstance(value, (int, float)) and math.isfinite(float(value))
+    }
+    code_versions = {
+        str(model["model_card"].get("code_version") or "unknown")
+        for model in summary["models"]
+    }
+    if len(code_versions) != 1 or "unknown" in code_versions:
+        raise RuntimeError(
+            "Registered candidates require one exact model-card code version."
+        )
+    code_version = "+".join(sorted(code_versions))
+    candidate_id = f"lol-{run_id}"
+    evaluation_root = staging_root / "_evaluation"
+    evaluation_root.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(report_root / "summary.json", evaluation_root / "summary.json")
+    for model in summary["models"]:
+        model_name = str(model["model_name"])
+        split_report = report_root / model_name / "split_report.json"
+        if split_report.is_file():
+            destination = evaluation_root / model_name / "split_report.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(split_report, destination)
+    register_current_candidate(
+        registry=ModelRegistry(MODEL_REGISTRY_DIR),
+        model_id=candidate_id,
+        target="complete_lol_bundle",
+        code_version=code_version,
+        metrics=metrics,
+        created_at=dt.datetime.now(dt.UTC),
+        model_root=staging_root,
+    )
+    shutil.rmtree(staging_root)
+    return candidate_id
+
+
+def _parameter_provenance() -> tuple[str, str | None]:
+    """Identify whether fixed parameters came from reviewed Optuna output."""
+    payloads = []
+    for cfg in ALL_MODEL_CONFIGS:
+        path = (
+            TUNED_LIGHTGBM_HYPERPARAMETERS
+            / f"{_lightgbm_model_name(cfg.model_name)}.json"
+        )
+        try:
+            payloads.append(json.loads(path.read_text(encoding="utf-8")))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return "defaults", None
+    metadata = [payload.get("metadata") or {} for payload in payloads]
+    run_ids = {item.get("promoted_tuning_run_id") for item in metadata}
+    if (
+        all(item.get("source") == "optuna_reviewed" for item in metadata)
+        and len(run_ids) == 1
+        and None not in run_ids
+    ):
+        return "optuna_reviewed", str(next(iter(run_ids)))
+    return "reviewed_tuned", None
+
+
+def _review_training_candidate(candidate_id: str, parameter_source: str):
+    from oracle_bets_core.paths import MODEL_REGISTRY_DIR
+
+    from lol_bets.operations.models import (
+        ModelRegistry,
+        PromotionPolicy,
+        review_candidate_on_sealed_rows,
+    )
+
+    policy = (
+        PromotionPolicy.OPTUNA
+        if parameter_source == "optuna_reviewed"
+        else PromotionPolicy.ROUTINE
+    )
+    return review_candidate_on_sealed_rows(
+        ModelRegistry(MODEL_REGISTRY_DIR),
+        candidate_id,
+        policy=policy,
+        automatic=policy is PromotionPolicy.ROUTINE,
+        reviewed_at=dt.datetime.now(dt.UTC),
+    )
 
 
 def _raise_missing_staged_model(path: Path) -> None:

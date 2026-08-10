@@ -22,14 +22,27 @@ def test_active_league_profile_drives_selected_leagues():
     assert "LCKC" not in selected_leagues()
 
 
-def test_product_profile_is_the_active_operational_profile():
+def test_product_profiles_separate_research_from_daily_serving():
     product = json.loads((ROOT / "config/product/product.json").read_text())
     selection = json.loads(
         (ROOT / "config/lol/data_ingestion/considered_leagues.json").read_text()
     )
 
-    assert product["leagues"]["profile"] == "tier1_plus_erls"
-    assert product["leagues"]["profile"] == selection["active_profile"]
+    assert product["leagues"]["training_profile"] == "research_all_supported"
+    assert product["leagues"]["prediction_profile"] == "tier1_plus_erls"
+    assert product["leagues"]["prediction_profile"] == selection["active_profile"]
+    assert set(product["leagues"]["actionable_exclusions"]) == {"CBLOL", "LCP"}
+    assert set(selected_leagues(product["leagues"]["prediction_profile"])) < set(
+        selected_leagues(product["leagues"]["training_profile"])
+    )
+
+
+def test_actionable_leagues_exclude_shadow_only_competitions():
+    from oracle_bets_core.league_selection import actionable_leagues
+
+    assert "LCP" not in actionable_leagues()
+    assert "CBLOL" not in actionable_leagues()
+    assert {"LCK", "LPL", "LEC", "LCS"} <= set(actionable_leagues())
 
 
 def test_active_profile_has_taxonomy_entries():

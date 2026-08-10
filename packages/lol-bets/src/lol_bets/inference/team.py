@@ -14,7 +14,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 
 from oracle_bets_core.logger import logger
-from oracle_bets_core.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS
+from oracle_bets_core.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS, PROCESSED_PLAYERS
 from oracle_bets_core.pd import pd
 
 from lol_bets.inference.team_resolver import TeamResolutionError, resolve_team_name
@@ -34,6 +34,15 @@ def _read_parquet_cached(path_str: str) -> pd.DataFrame:
     except (ImportError, ValueError):
         # fall back to pyarrow if available
         return pd.read_parquet(path)
+
+
+@lru_cache(maxsize=1)
+def _read_roster_history_cached(path_str: str) -> pd.DataFrame:
+    columns = ["teamname", "playername", "position", "date"]
+    try:
+        return pd.read_parquet(path_str, columns=columns, engine="fastparquet")
+    except (ImportError, ValueError):
+        return pd.read_parquet(path_str, columns=columns)
 
 
 def _require_columns(df: pd.DataFrame, required: Iterable[str], where: str) -> None:
@@ -205,13 +214,6 @@ class Team:
         resolved = resolve_team_name(team_name, known_names)
         if not resolved.ok:
             raise TeamResolutionError(resolved)
-        if resolved.method != "exact":
-            logger.info(
-                "Resolved team '%s' -> '%s' via %s match.",
-                team_name,
-                resolved.resolved_name,
-                resolved.method,
-            )
         resolved_name = resolved.resolved_name
         if resolved_name is None:
             raise TeamResolutionError(resolved)
@@ -225,9 +227,9 @@ class Team:
             rows = rows.sort_values("date", ascending=False)
         return rows.iloc[0]
 
-    def _get_last_roster(self, team_name: str) -> dict[str, str]:
+    def _last_roster_from(self, df: pd.DataFrame, team_name: str) -> dict[str, str]:
         key = team_name.casefold()
-        df = self._player_df[self._player_df["teamname"].str.casefold() == key]
+        df = df[df["teamname"].str.casefold() == key]
         df = self._at_or_before_as_of(df)
         player_names = df["playername"].fillna("").astype(str).str.strip()
         df = df[player_names.ne("") & player_names.str.casefold().ne("nan")]
@@ -256,6 +258,13 @@ class Team:
             if role in _EXPECTED_POS:
                 out[role] = name
         return out
+
+    def _get_last_roster(self, team_name: str) -> dict[str, str]:
+        try:
+            return self._last_roster_from(self._player_df, team_name)
+        except ValueError:
+            history = _read_roster_history_cached(str(PROCESSED_PLAYERS))
+            return self._last_roster_from(history, team_name)
 
     def _lookup_players(self, roster: dict[str, str | None]) -> pd.DataFrame:
         # expect fully-populated roster already validated

@@ -1,9 +1,14 @@
 import datetime as dt
 import json
 
+import pytest
 from lol_bets.daily import (
+    DailyStepResult,
     DailyWorkflowConfig,
+    _deliver_daily_webhook,
+    _resolve_fixture_roster,
     _run_mutating_steps,
+    cadence_reminders,
     expected_roster_from_schedule,
     filter_daily_schedule,
     format_market_candidates,
@@ -23,6 +28,15 @@ from oracle_bets_discord.predictions.lol import format_schedule_messages
 MESSAGE_SPLIT_LIMIT = 420
 EXPECTED_MIN_SPLIT_MESSAGES = 2
 EXPECTED_HORIZON_HOURS = 36
+DAILY_REPORT_SCHEMA_VERSION = 4
+EXPECTED_STABLE_SERIES = 3
+
+
+@pytest.fixture(autouse=True)
+def _isolate_daily_reports(tmp_path, monkeypatch):
+    import lol_bets.daily as daily_module
+
+    monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
 
 
 def _schedule_frame() -> pd.DataFrame:
@@ -138,6 +152,65 @@ def test_expected_lineup_is_used_only_when_all_roles_are_unambiguous():
         team="a",
     )
     assert not missing_ready
+
+
+def test_empty_provider_lineup_uses_exact_three_series_history(monkeypatch):
+    import lol_bets.daily as daily_module
+
+    roles = ("top", "jng", "mid", "bot", "sup")
+    rows = [
+        {
+            "date": dt.datetime(2026, 7, 1 + series, game, tzinfo=dt.UTC),
+            "gameid": f"s{series}-g{game}",
+            "game": game,
+            "teamid": "team-t1",
+            "teamname": "T1",
+            "playername": f"player-{role}",
+            "position": role,
+        }
+        for series in range(EXPECTED_STABLE_SERIES)
+        for game in (1, 2)
+        for role in roles
+    ]
+    monkeypatch.setattr(daily_module, "_roster_history", lambda: pd.DataFrame(rows))
+    row = pd.Series(
+        {
+            "team_a": "T1",
+            "team_a_lineup_json": "[]",
+            "start_utc": dt.datetime(2026, 7, 5, tzinfo=dt.UTC),
+        }
+    )
+
+    resolved = _resolve_fixture_roster(row, team="a")
+
+    assert resolved.ready
+    assert resolved.source == "historical_three_series"
+    assert resolved.roster == {role: f"player-{role}" for role in roles}
+    assert resolved.evidence is not None
+    assert len(resolved.evidence.series_ids) == EXPECTED_STABLE_SERIES
+
+
+def test_partial_provider_lineup_never_uses_historical_fallback(monkeypatch):
+    import lol_bets.daily as daily_module
+
+    monkeypatch.setattr(
+        daily_module,
+        "_roster_history",
+        lambda: (_ for _ in ()).throw(AssertionError("fallback must not be read")),
+    )
+    row = pd.Series(
+        {
+            "team_a": "T1",
+            "team_a_lineup_json": '[{"name":"Zeus","role":"top"}]',
+            "start_utc": dt.datetime(2026, 7, 5, tzinfo=dt.UTC),
+        }
+    )
+
+    resolved = _resolve_fixture_roster(row, team="a")
+
+    assert not resolved.ready
+    assert resolved.source == "provider_lineup_incomplete"
+    assert resolved.evidence is None
 
 
 def test_market_candidate_selection_requires_matchup_context():
@@ -265,6 +338,149 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     assert markdown_path.is_file()
     payload = json.loads(json_path.read_text())
     assert "webhook_url" not in payload["config"]
+    assert payload["evidence_run_id"] is None
+    assert payload["schema_version"] == DAILY_REPORT_SCHEMA_VERSION
+    assert payload["market_reviews"] == result.market_reviews
+    assert payload["market_actions"] == result.market_actions
+    assert payload["cadence_reminders"] == result.cadence_reminders
+    assert payload["open_positions"] == result.open_positions
+    assert "source_freshness" in payload
+    assert "roster_evidence" in payload
+    assert "drift_review" in payload
+    daily_module.write_daily_report(
+        cfg=DailyWorkflowConfig(dry_run=True),
+        steps=result.steps,
+        schedule=result.schedule,
+        excluded_fixtures=result.excluded_fixtures,
+        prediction_details=result.prediction_details,
+        messages=result.messages,
+        market_reviews=result.market_reviews,
+        market_actions=result.market_actions,
+        cadence_reminders=result.cadence_reminders,
+        open_positions=result.open_positions,
+        report_paths=result.report_paths,
+    )
+    assert list((tmp_path / "daily").glob("*.json")) == [json_path]
+    assert list((tmp_path / "daily").glob("*.md")) == [markdown_path]
+
+
+@pytest.mark.parametrize(
+    ("instant", "trigger"),
+    [
+        (dt.datetime(2026, 8, 3, 10, tzinfo=dt.UTC), "monday"),
+        (dt.datetime(2026, 8, 6, 10, tzinfo=dt.UTC), "thursday"),
+        (dt.datetime(2026, 9, 1, 10, tzinfo=dt.UTC), "first_of_month"),
+    ],
+)
+def test_daily_cadence_reminders(instant, trigger):
+    reminders = cadence_reminders(instant)
+
+    assert len(reminders) == 1
+    assert trigger in reminders[0]["triggers"]
+    assert reminders[0]["advisory_only"] is True
+
+
+def test_overlapping_cadence_is_one_combined_reminder():
+    reminders = cadence_reminders(dt.datetime(2026, 6, 1, 10, tzinfo=dt.UTC))
+
+    assert len(reminders) == 1
+    assert reminders[0]["triggers"] == ["monday", "first_of_month"]
+    assert len(reminders[0]["commands"]) == len(set(reminders[0]["commands"]))
+
+
+def test_cadence_uses_rome_date_at_utc_boundary():
+    reminders = cadence_reminders(dt.datetime(2026, 8, 2, 22, 30, tzinfo=dt.UTC))
+
+    assert reminders[0]["local_date"] == "2026-08-03"
+    assert reminders[0]["triggers"] == ["monday"]
+
+
+def test_ordinary_day_has_no_cadence_reminder():
+    assert cadence_reminders(dt.datetime(2026, 8, 5, 10, tzinfo=dt.UTC)) == []
+
+
+def test_daily_defaults_to_operational_leagues_and_hides_academy(
+    tmp_path,
+    monkeypatch,
+):
+    import lol_bets.daily as daily_module
+
+    monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
+    captured = {}
+
+    def schedule_fetcher(**kwargs):
+        captured["leagues"] = kwargs["leagues"]
+        start = dt.datetime.now(dt.UTC) + dt.timedelta(hours=6)
+        return pd.DataFrame(
+            [
+                {
+                    "league": league,
+                    "team_a": "T1",
+                    "team_b": "Gen.G",
+                    "start_utc": start,
+                    "best_of": 3,
+                    "status": "not_started",
+                }
+                for league in (
+                    "LCK",
+                    "LIT",
+                    "LCP",
+                    "CBLOL",
+                    "LCK Challengers League",
+                    "North American Challengers League",
+                )
+            ]
+        )
+
+    result = run_daily_lol_workflow(
+        DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        schedule_fetcher=schedule_fetcher,
+        predictor_factory=_FakePredictor,
+        market_search_factory=_FakeMarketSearch,
+    )
+
+    assert {"LCK", "LIT"}.issubset(set(captured["leagues"].split(",")))
+    assert "LCKC" not in captured["leagues"].split(",")
+    assert "NACL" not in captured["leagues"].split(",")
+    assert result.schedule["league"].tolist() == ["LCK", "LIT"]
+
+
+def test_daily_explicit_league_filter_overrides_operational_profile(
+    tmp_path,
+    monkeypatch,
+):
+    import lol_bets.daily as daily_module
+
+    monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
+
+    def schedule_fetcher(**_kwargs):
+        start = dt.datetime.now(dt.UTC) + dt.timedelta(hours=6)
+        return pd.DataFrame(
+            [
+                {
+                    "league": league,
+                    "team_a": "T1",
+                    "team_b": "Gen.G",
+                    "start_utc": start,
+                    "best_of": 3,
+                    "status": "not_started",
+                }
+                for league in ("LCK", "LIT")
+            ]
+        )
+
+    result = run_daily_lol_workflow(
+        DailyWorkflowConfig(
+            dry_run=True,
+            skip_market_search=True,
+            leagues="LCK",
+        ),
+        schedule_fetcher=schedule_fetcher,
+        predictor_factory=_FakePredictor,
+        market_search_factory=_FakeMarketSearch,
+    )
+
+    assert result.schedule["league"].tolist() == ["LCK"]
 
 
 def test_discord_webhook_disables_all_mentions():
@@ -288,6 +504,19 @@ def test_discord_webhook_disables_all_mentions():
     )
 
     assert captured["json"]["allowed_mentions"] == {"parse": []}
+
+
+def test_discord_webhook_failure_redacts_secret_url(caplog):
+    webhook_url = "https://discord.com/api/webhooks/id/secret-token"
+
+    def fail(url, _messages):
+        raise RuntimeError(f"failed request to {url}")
+
+    result = _deliver_daily_webhook(fail, webhook_url, ["report"])
+
+    assert result == DailyStepResult("discord", False, "delivery failed (RuntimeError)")
+    assert webhook_url not in caplog.text
+    assert "secret-token" not in result.detail
 
 
 def test_daily_refreshes_match_detail_before_filtering(monkeypatch):
@@ -371,6 +600,7 @@ def test_daily_core_steps_use_the_resumable_evidence_journal(
 
     assert captured["run_key"].endswith(":core")
     assert captured["names"] == [
+        "source-check",
         "ingest",
         "identity-graph",
         "validate-data",
@@ -379,3 +609,36 @@ def test_daily_core_steps_use_the_resumable_evidence_journal(
     ]
     assert captured["journal"].store.path == store.path
     assert all(step.ok for step in result)
+
+
+def test_daily_source_failure_blocks_ingest_and_training(tmp_path):
+    called = {"ingest": False, "train": False}
+
+    def fail_source():
+        raise RuntimeError("current_year_file_stale")
+
+    def data_generator_factory():
+        called["ingest"] = True
+        raise AssertionError("stale source must block ingestion")
+
+    def train_fn(**_kwargs):
+        called["train"] = True
+        raise AssertionError("stale source must block training")
+
+    result = _run_mutating_steps(
+        DailyWorkflowConfig(),
+        data_generator_factory=data_generator_factory,
+        train_fn=train_fn,
+        module_factory=lambda: object(),
+        store=EvidenceStore(tmp_path / "daily-journal.db"),
+        scheduled_for=dt.datetime(2026, 8, 10, tzinfo=dt.UTC),
+        effective_config={"horizon_hours": 36},
+        source_check_fn=fail_source,
+    )
+
+    assert not called["ingest"]
+    assert not called["train"]
+    assert result[0].name == "source-check"
+    assert not result[0].ok
+    assert result[0].detail.endswith("current_year_file_stale")
+    assert all(step.detail == "skipped after failure" for step in result[1:])

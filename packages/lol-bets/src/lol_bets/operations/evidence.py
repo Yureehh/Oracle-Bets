@@ -10,9 +10,17 @@ from typing import TYPE_CHECKING, Any
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.evidence.identity import EntityType, canonical_identity_id
 from oracle_bets_core.operations import daily_run_key
+from oracle_bets_core.operations.paper import RESEARCH_PROP_TARGETS
 from oracle_bets_core.paths import (
+    GAMELENGTH_PREDICTION_MODEL_PATH,
+    GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
     MODEL_REGISTRY_DIR,
+    MODELS_DIR,
     OUTCOME_PREDICTION_MODEL_PATH,
+    TOTAL_KILLS_PREDICTION_MODEL_PATH,
+    TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR,
+    TOTAL_TOWERS_PREDICTION_MODEL_PATH,
+    TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR,
 )
 from oracle_bets_core.pd import pd
 
@@ -32,6 +40,7 @@ def record_daily_evidence(
     schedule: pd.DataFrame,
     snapshot_rows: Sequence[dict[str, Any]],
     steps: Sequence[Any],
+    market_actions: Sequence[dict[str, Any]] | None = None,
 ) -> str:
     """Record predictions and honest no-bet outcomes without upgrading prices."""
     store.initialize_schema()
@@ -77,9 +86,19 @@ def record_daily_evidence(
         schedule,
         observed_at=scheduled_for,
     )
-    model_id = _record_model(store, scheduled_for)
+    model_ids = {
+        target: _record_model(store, scheduled_for, target=target)
+        for target in ("map_win", "gamelength", "total_kills", "total_towers")
+    }
     for row in snapshot_rows:
         if row.get("market") != "winner":
+            _record_scalar_forecast(
+                store,
+                run_id=run_id,
+                fixture_id=fixtures.get(_fixture_lookup_key(row)),
+                model_ids=model_ids,
+                row=row,
+            )
             continue
         fixture_id = fixtures.get(_fixture_lookup_key(row))
         if fixture_id is None:
@@ -106,7 +125,7 @@ def record_daily_evidence(
                 "id": prediction_id,
                 "run_id": run_id,
                 "fixture_id": fixture_id,
-                "model_version_id": model_id,
+                "model_version_id": model_ids["map_win"],
                 "selection_id": selection_id,
                 "mode": "prematch",
                 "created_at": _as_utc(row["run_ts"]),
@@ -138,6 +157,8 @@ def record_daily_evidence(
                 },
             },
         )
+        if market_actions is not None:
+            continue
         market_candidate_id = _record_display_market(
             store,
             run_id=run_id,
@@ -177,12 +198,178 @@ def record_daily_evidence(
                 },
             },
         )
+    if market_actions is not None:
+        _record_typed_market_actions(
+            store,
+            run_id=run_id,
+            fixtures=fixtures,
+            schedule=schedule,
+            model_id=model_ids["map_win"],
+            actions=market_actions,
+            created_at=scheduled_for,
+        )
     _supersede_fixture_dependents(
         store,
         fixture_supersessions,
         created_at=scheduled_for,
     )
     return run_id
+
+
+def _record_typed_market_actions(
+    store: EvidenceStore,
+    *,
+    run_id: str,
+    fixtures: dict[str, str],
+    schedule: pd.DataFrame,
+    model_id: str,
+    actions: Sequence[dict[str, Any]],
+    created_at: datetime,
+) -> None:
+    fixture_ids = {
+        _optional_text(row.get("match_key")): fixtures.get(_fixture_lookup_key(row))
+        for _, row in schedule.iterrows()
+    }
+    for action in actions:
+        if not action.get("token_id"):
+            continue
+        fixture_id = fixture_ids.get(_optional_text(action.get("fixture_key")))
+        if fixture_id is None:
+            continue
+        proposal_id = str(action["proposal_id"])
+        prediction_id = _id("prediction", proposal_id)
+        point = float(action["probability"])
+        lower = float(action["probability_lower"])
+        records: list[tuple[EvidenceTable, dict[str, Any]]] = [
+            (
+                EvidenceTable.PREDICTIONS,
+                {
+                    "id": prediction_id,
+                    "run_id": run_id,
+                    "fixture_id": fixture_id,
+                    "model_version_id": model_id,
+                    "selection_id": (
+                        f"{action['target']}:{action.get('game_number') or ''}:"
+                        f"{action.get('total_line') or ''}:{action['selection']}"
+                    ),
+                    "mode": "prematch",
+                    "created_at": created_at,
+                    "probability_point": str(point),
+                    "probability_lower": str(lower),
+                    "probability_upper": str(point),
+                    "warnings_json": list(action.get("warnings") or []),
+                    "idempotency_key": prediction_id,
+                    "payload_json": {
+                        "target": action["target"],
+                        "game_number": action.get("game_number"),
+                        "total_line": action.get("total_line"),
+                        "selection": action["selection"],
+                        "source": "derived_from_symmetric_map_probability",
+                    },
+                },
+            )
+        ]
+        candidate_id = _id(
+            "market",
+            f"{run_id}|{action['market_id']}|{action['token_id']}",
+        )
+        records.append(
+            (
+                EvidenceTable.MARKET_CANDIDATES,
+                {
+                    "id": candidate_id,
+                    "run_id": run_id,
+                    "fixture_id": fixture_id,
+                    "provider": "polymarket",
+                    "provider_market_id": action["market_id"],
+                    "provider_selection_id": action["token_id"],
+                    "discovered_at": created_at,
+                    "match_status": "typed_exact",
+                    "rejection_reason": None,
+                    "idempotency_key": candidate_id,
+                    "payload_json": {
+                        "target": action["target"],
+                        "selection": action["selection"],
+                        "url": action.get("market_url"),
+                    },
+                },
+            )
+        )
+        snapshot_ids: list[tuple[str, float]] = []
+        for observation in action["observations"]:
+            snapshot_id = _id(
+                "snapshot",
+                f"{candidate_id}|{observation['sequence_number']}|"
+                f"{observation['observed_at']}|{observation['book_hash']}",
+            )
+            observation_odds = float(observation["decimal_odds"] or 0.0)
+            snapshot_ids.append((snapshot_id, observation_odds))
+            records.append(
+                (
+                    EvidenceTable.MARKET_SNAPSHOTS,
+                    {
+                        "id": snapshot_id,
+                        "market_candidate_id": candidate_id,
+                        "observed_at": _as_utc(observation["observed_at"]),
+                        "sequence_number": int(observation["sequence_number"]),
+                        "intended_stake_units": str(action.get("stake_units") or 0.0),
+                        "expected_decimal_odds": str(observation_odds),
+                        # Paper units are normalized, not USDC; exact quote cost
+                        # remains in the snapshot payload.
+                        "available_stake_units": str(action.get("stake_units") or 0.0),
+                        "book_json": observation["book"],
+                        "idempotency_key": snapshot_id,
+                        "payload_json": {
+                            "book_hash": observation["book_hash"],
+                            "complete": observation["complete"],
+                            "quote_basis": "minimum_order_shares",
+                            "minimum_order_size": observation.get("minimum_order_size"),
+                            "requested_shares": observation.get("requested_shares"),
+                            "filled_shares": observation.get("filled_shares"),
+                            "hypothetical_cost": observation.get("hypothetical_cost"),
+                        },
+                    },
+                )
+            )
+        worse_snapshot_id = (
+            min(snapshot_ids, key=lambda item: item[1])[0] if snapshot_ids else None
+        )
+        state = str(action["state"])
+        records.append(
+            (
+                EvidenceTable.PROPOSALS,
+                {
+                    "id": proposal_id,
+                    "run_id": run_id,
+                    "prediction_id": prediction_id,
+                    "market_snapshot_id": worse_snapshot_id,
+                    "created_at": created_at,
+                    "state": state,
+                    "rejection_reason": action.get("reason"),
+                    "ruleset_version": "paper-gates-v1",
+                    "strategy": "quarter_kelly"
+                    if state == "paper_actionable"
+                    else None,
+                    "stake_units": str(action.get("stake_units") or 0.0),
+                    "idempotency_key": proposal_id,
+                    "payload_json": {
+                        "odds": action.get("decimal_odds"),
+                        "conservative_edge": action.get("conservative_edge"),
+                        "read_only": True,
+                    },
+                },
+            )
+        )
+        # Predictions, candidates, and proposals are the canonical owner-decision
+        # graph for this daily run. A same-day rerun may observe different books;
+        # retain the original decision terms while appending its new snapshots.
+        new_records = [
+            (table, values)
+            for table, values in records
+            if table is EvidenceTable.MARKET_SNAPSHOTS
+            or store.get(table, str(values["id"])) is None
+        ]
+        store.append_transaction(new_records)
 
 
 def _record_daily_step_events(
@@ -658,7 +845,12 @@ def _optional_text(value: Any) -> str:
     return str(value).strip()
 
 
-def _record_model(store: EvidenceStore, created_at: datetime) -> str:
+def _record_model(
+    store: EvidenceStore,
+    created_at: datetime,
+    *,
+    target: str,
+) -> str:
     registry = ModelRegistry(MODEL_REGISTRY_DIR)
     champion = registry.champion_id()
     model_id = champion or "legacy-current"
@@ -668,25 +860,100 @@ def _record_model(store: EvidenceStore, created_at: datetime) -> str:
     else:
         artifact_uri = str(OUTCOME_PREDICTION_MODEL_PATH)
         checksum = _path_hash(OUTCOME_PREDICTION_MODEL_PATH)
-    evidence_id = _id("model", model_id)
+    target_paths = {
+        "map_win": (OUTCOME_PREDICTION_MODEL_PATH, None),
+        "gamelength": (
+            GAMELENGTH_PREDICTION_MODEL_PATH,
+            GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
+        ),
+        "total_kills": (
+            TOTAL_KILLS_PREDICTION_MODEL_PATH,
+            TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR,
+        ),
+        "total_towers": (
+            TOTAL_TOWERS_PREDICTION_MODEL_PATH,
+            TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR,
+        ),
+    }
+    legacy_artifact, calibrator = target_paths[target]
+    if champion and calibrator is not None:
+        calibrator = registry.artifact_path(
+            calibrator.relative_to(MODELS_DIR).as_posix(),
+            model_id=champion,
+        )
+    if not champion:
+        artifact_uri = str(legacy_artifact)
+        checksum = _path_hash(legacy_artifact)
+    evidence_id = _id("model", f"{model_id}|{target}")
     _append_if_missing(
         store,
         EvidenceTable.MODEL_VERSIONS,
         {
             "id": evidence_id,
             "sport": "lol",
-            "target": "map_win",
+            "target": target,
             "created_at": created_at,
             "artifact_uri": artifact_uri,
             "artifact_checksum": checksum,
-            "idempotency_key": f"lol-model:{model_id}",
+            "idempotency_key": f"lol-model:{model_id}:{target}",
             "payload_json": {
                 "registry_model_id": champion,
                 "bootstrap_legacy": champion is None,
+                "calibrator_uri": str(calibrator) if calibrator else None,
             },
         },
     )
     return evidence_id
+
+
+def _record_scalar_forecast(
+    store: EvidenceStore,
+    *,
+    run_id: str,
+    fixture_id: str | None,
+    model_ids: dict[str, str],
+    row: dict[str, Any],
+) -> None:
+    if fixture_id is None:
+        return
+    target = str(row.get("market", "")).removesuffix("_mean")
+    if target not in RESEARCH_PROP_TARGETS:
+        return
+    model = store.get(EvidenceTable.MODEL_VERSIONS, model_ids[target])
+    assert model is not None
+    model_payload = json.loads(model["payload_json"])
+    forecast_id = _id("forecast", f"{run_id}|{fixture_id}|{target}")
+    evidence_status = (
+        "below_constant_baseline" if target == "total_towers" else "weak_signal"
+    )
+    _append_if_missing(
+        store,
+        EvidenceTable.FORECASTS,
+        {
+            "id": forecast_id,
+            "run_id": run_id,
+            "fixture_id": fixture_id,
+            "model_version_id": model_ids[target],
+            "target": target,
+            "created_at": _as_utc(row["run_ts"]),
+            "point_value": str(float(row["model_value"])),
+            "uncertainty_json": {
+                "method": row.get("uncertainty_method"),
+                "confidence": row.get("uncertainty_confidence"),
+            },
+            "evidence_status": evidence_status,
+            "idempotency_key": forecast_id,
+            "payload_json": {
+                "calibrator_uri": model_payload.get("calibrator_uri"),
+                "calibration_metadata": {
+                    "league": row.get("league"),
+                    "bo_format": row.get("match_type"),
+                },
+                "lineup_ready": row.get("lineup_ready") is True,
+                "roster_ready": row.get("roster_ready") is True,
+            },
+        },
+    )
 
 
 def _record_display_market(

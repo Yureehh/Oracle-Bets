@@ -216,8 +216,6 @@ class FeatureSelector:
             FEATURE_REPORTS_DIR / f"{model_name}_recommended_compact_features.json"
         )
         output_path.write_text(json.dumps(payload, indent=2) + "\n")
-        legacy_path = FEATURE_REPORTS_DIR / "recommended_compact_features.json"
-        legacy_path.write_text(json.dumps(payload, indent=2) + "\n")
         logger.info("Stored feature recommendation report: %s", output_path)
         return payload
 

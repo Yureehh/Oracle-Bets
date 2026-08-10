@@ -34,7 +34,9 @@ from sklearn.metrics import (
     PrecisionRecallDisplay,
     RocCurveDisplay,
     accuracy_score,
+    brier_score_loss,
     f1_score,
+    log_loss,
     mean_absolute_error,
     r2_score,
     roc_auc_score,
@@ -46,6 +48,25 @@ FIGSIZE = (20, 16)
 CMAP = "coolwarm"
 TOP_N_FEATURES = 30
 MIN_WEEKS_FOR_TREND = 4
+
+
+def _expected_calibration_error(
+    actual: np.ndarray,
+    probability: np.ndarray,
+    *,
+    bins: int = 10,
+) -> float:
+    """Return equal-width ECE for one explicit cohort."""
+    boundaries = np.linspace(0.0, 1.0, bins + 1)
+    bin_ids = np.minimum(np.digitize(probability, boundaries[1:-1]), bins - 1)
+    error = 0.0
+    for bin_id in range(bins):
+        mask = bin_ids == bin_id
+        if np.any(mask):
+            error += float(
+                np.mean(mask) * abs(np.mean(probability[mask]) - np.mean(actual[mask]))
+            )
+    return error
 
 
 class MLObservabilityMixin:
@@ -558,7 +579,7 @@ class MLObservabilityMixin:
 
     # ───────────────────────── cohort / calibration ────────────────────── #
 
-    def store_cohort_metrics(  # noqa: PLR0912
+    def store_cohort_metrics(  # noqa: PLR0912, PLR0915
         self,
         df_eval: pd.DataFrame,
         y_true: pd.Series,
@@ -573,7 +594,14 @@ class MLObservabilityMixin:
         We convert predictions to Series with that index to avoid position/label mismatches.
         """
         if cohorts is None:
-            cohorts = ["league", "patch", "side"]
+            cohorts = [
+                "actionable",
+                "league",
+                "league_region",
+                "league_tier",
+                "strength_pool",
+                "patch",
+            ]
 
         try:
             # Ensure identical index across all evaluation vectors
@@ -605,6 +633,14 @@ class MLObservabilityMixin:
                         row["f1"] = float(f1_score(yt, yp, zero_division=0))
                         if y_proba is not None:
                             yp_prob = y_proba.loc[idx]
+                            row["log_loss"] = float(
+                                log_loss(yt, yp_prob, labels=[0, 1])
+                            )
+                            row["brier"] = float(brier_score_loss(yt, yp_prob))
+                            row["calibration_ece"] = _expected_calibration_error(
+                                yt.to_numpy(dtype=float),
+                                yp_prob.to_numpy(dtype=float),
+                            )
                             # Only compute AUC if both classes are present
                             if yt.nunique() > 1:
                                 row["roc_auc"] = float(roc_auc_score(yt, yp_prob))

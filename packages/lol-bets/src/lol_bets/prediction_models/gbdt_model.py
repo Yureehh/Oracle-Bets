@@ -403,15 +403,6 @@ class PropDistributionCalibrator:
     shrinkage_samples: int = 50
     version: int = CALIBRATION_VERSION
 
-    @property
-    def league_residuals(self) -> dict[str, np.ndarray]:
-        """Backward-compatible view for legacy league-only tests/artifacts."""
-        return {
-            value: residuals
-            for (kind, value), residuals in self.segment_residuals.items()
-            if kind == "league"
-        }
-
     def _empirical_under(self, threshold: float, residuals: np.ndarray) -> float:
         values = np.asarray(residuals, dtype=float)
         values = values[np.isfinite(values)]
@@ -1561,6 +1552,15 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 payload["league_counts"] = {
                     str(k): int(v) for k, v in X_split["league"].value_counts().items()
                 }
+            missingness = X_split.isna().mean().sort_values(ascending=False)
+            payload["feature_availability"] = {
+                "columns": int(len(missingness)),
+                "fully_unavailable": int(missingness.eq(1.0).sum()),
+                "worst_missingness": {
+                    str(feature): float(fraction)
+                    for feature, fraction in missingness.head(20).items()
+                },
+            }
             y_num = pd.to_numeric(y_split, errors="coerce")
             if self.problem_type == "classification":
                 payload["target_counts"] = {
@@ -1693,6 +1693,28 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def store_residual_summary(self, summary: dict[str, Any]) -> None:
         self._store_pickle(f"{self.model_name}_residual_summary.pkl", summary)
         self.insight_path("residual_summary.json").write_text(json.dumps(summary))
+
+    def store_sealed_evaluation(
+        self,
+        raw_features: pd.DataFrame,
+        actuals: pd.Series,
+        metadata: pd.DataFrame,
+    ) -> None:
+        """Persist untouched holdout rows so champion and candidate replay identically."""
+        root = self.artifact_root / "_evaluation" / self.model_name
+        root.mkdir(parents=True, exist_ok=True)
+        raw_features.reset_index(drop=True).to_parquet(
+            root / "features.parquet",
+            index=False,
+            compression="gzip",
+        )
+        labels = metadata.reset_index(drop=True).copy()
+        labels.insert(0, "actual", actuals.reset_index(drop=True))
+        labels.to_parquet(
+            root / "labels.parquet",
+            index=False,
+            compression="gzip",
+        )
 
     def store_prop_evaluation_report(
         self,
@@ -2250,13 +2272,16 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         return final_calibrator
 
     def _predict_positive_probability(
-        self, model, X: pd.DataFrame
+        self,
+        model,
+        X: pd.DataFrame,
+        metadata: pd.DataFrame | None = None,
     ) -> np.ndarray | None:
         if self.problem_type != "classification" or not hasattr(model, "predict_proba"):
             return None
         y_proba = model.predict_proba(X)[:, 1]
         if self.probability_calibrator is not None:
-            y_proba = self.probability_calibrator.predict(y_proba)
+            y_proba = self.probability_calibrator.predict(y_proba, metadata=metadata)
         return y_proba
 
     def fit_probability_uncertainty(
@@ -2332,6 +2357,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         predictions: np.ndarray,
         eval_gameids: pd.Series,
         eval_sides: pd.Series,
+        actuals: pd.Series,
+        eval_meta: pd.DataFrame | None = None,
         proba: np.ndarray | None = None,
     ) -> None:
         """Persist per-row predictions (+probabilities for classification)."""
@@ -2339,8 +2366,19 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             frame = {
                 "gameid": eval_gameids.to_numpy(),
                 "side": eval_sides.to_numpy(),
+                "actual": actuals.to_numpy(),
                 "prediction": predictions,
             }
+            for column in (
+                "league",
+                "league_region",
+                "league_tier",
+                "strength_pool",
+                "actionable",
+                "date",
+            ):
+                if eval_meta is not None and column in eval_meta:
+                    frame[column] = eval_meta[column].to_numpy()
             if proba is not None:
                 frame["proba"] = proba
             pd.DataFrame(frame).to_parquet(
@@ -2366,7 +2404,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         try:
             logger.info("Validating %s ...", self.model_name)
             y_pred = model.predict(X_test)
-            y_proba = self._predict_positive_probability(model, X_test)
+            y_proba = self._predict_positive_probability(model, X_test, eval_meta)
 
             if self.problem_type == "classification":
                 metrics = self.compute_classification_metrics(y_test, y_pred, y_proba)
@@ -2402,7 +2440,14 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
             self.log_evaluation_metrics(metrics)
             self.store_evaluation_metrics(metrics)
-            self.store_predictions(y_pred, eval_gameids, eval_sides, proba=y_proba)
+            self.store_predictions(
+                y_pred,
+                eval_gameids,
+                eval_sides,
+                y_test,
+                eval_meta,
+                proba=y_proba,
+            )
 
             logger.info("Validation complete for %s.", self.model_name)
         except Exception as e:
@@ -2673,6 +2718,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         X_cal_full = self._strip_meta_from_features(X_cal_full, "cal_full")
         X_uncertainty = self._strip_meta_from_features(X_uncertainty, "uncertainty")
         X_test = self._strip_meta_from_features(X_test, "test")
+        sealed_test_features = X_test.copy()
 
         # Record eval identifiers for artifacts (sourced from meta_df, not features)
         def _safe_meta_col(col: str) -> pd.Series:
@@ -2908,10 +2954,31 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 X_test.index,
                 [
                     c
-                    for c in ["league", "patch", "side", "gameid", "game"]
+                    for c in [
+                        "league",
+                        "league_region",
+                        "league_tier",
+                        "strength_pool",
+                        "patch",
+                        "side",
+                        "gameid",
+                        "game",
+                        "date",
+                    ]
                     if c in meta_df.columns
                 ],
             ]
+            if "league" in eval_meta_for_test:
+                from oracle_bets_core.league_selection import actionable_leagues
+
+                eval_meta_for_test["actionable"] = eval_meta_for_test["league"].isin(
+                    actionable_leagues()
+                )
+            self.store_sealed_evaluation(
+                sealed_test_features,
+                y_test,
+                eval_meta_for_test,
+            )
             self.validate_model(
                 model,
                 X_test,
@@ -2952,7 +3019,11 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     # classification: also persist cohort metrics with probabilities if available
                     y_proba = None
                     if self.problem_type == "classification":
-                        y_proba = self._predict_positive_probability(model, X_test)
+                        y_proba = self._predict_positive_probability(
+                            model,
+                            X_test,
+                            eval_meta_for_test,
+                        )
                     self.store_cohort_metrics(
                         eval_meta_for_test, y_test, model.predict(X_test), y_proba
                     )

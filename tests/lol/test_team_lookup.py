@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lol_bets.inference import team as team_module
 from lol_bets.inference.team import Team
 from oracle_bets_core.pd import pd
 
@@ -106,3 +107,52 @@ def test_last_roster_ignores_blank_latest_player_names() -> None:
     roster = team._get_last_roster("Team A")
 
     assert roster["top"] == "Top"
+
+
+def test_last_roster_falls_back_to_full_history_when_snapshot_is_incomplete(
+    monkeypatch,
+) -> None:
+    team = Team.__new__(Team)
+    team.name = "Team A"
+    team._as_of = pd.Timestamp("2026-03-01")
+    team._player_df = pd.DataFrame(
+        {
+            "teamname": ["Team A"] * 4,
+            "playername": ["Top", "Mid", "Bot", "Sup"],
+            "position": ["top", "mid", "bot", "sup"],
+            "date": pd.to_datetime(["2026-02-01"] * 4),
+        }
+    )
+    history = pd.DataFrame(
+        {
+            "teamname": ["Team A"] * 6,
+            "playername": ["OldTop", "Top", "Jng", "Mid", "Bot", "Sup"],
+            "position": ["top", "top", "jng", "mid", "bot", "sup"],
+            "date": pd.to_datetime(
+                [
+                    "2026-01-01",
+                    "2026-02-01",
+                    "2026-02-01",
+                    "2026-02-01",
+                    "2026-02-01",
+                    "2026-02-01",
+                ]
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        team_module,
+        "_read_roster_history_cached",
+        lambda _path: history,
+        raising=False,
+    )
+
+    roster = team._get_last_roster("Team A")
+
+    assert roster == {
+        "top": "Top",
+        "jng": "Jng",
+        "mid": "Mid",
+        "bot": "Bot",
+        "sup": "Sup",
+    }

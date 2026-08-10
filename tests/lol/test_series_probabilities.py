@@ -3,7 +3,11 @@ from __future__ import annotations
 import math
 
 import pytest
-from lol_bets.inference.series import SeriesStateError, derive_series_distribution
+from lol_bets.inference.series import (
+    SeriesStateError,
+    derive_series_distribution,
+    total_maps_probability_range,
+)
 
 
 def test_bo3_distribution_is_derived_from_map_probability():
@@ -16,6 +20,11 @@ def test_bo3_distribution_is_derived_from_map_probability():
         {"2-0": 0.36, "2-1": 0.288, "0-2": 0.16, "1-2": 0.192}
     )
     assert distribution.total_maps_probabilities == pytest.approx({2: 0.52, 3: 0.48})
+
+
+def test_total_map_range_includes_interior_extrema():
+    assert total_maps_probability_range(3, 2, 0.4, 0.6) == pytest.approx((0.5, 0.52))
+    assert total_maps_probability_range(3, 3, 0.4, 0.6) == pytest.approx((0.48, 0.5))
 
 
 def test_bo2_supports_draws_without_inventing_a_series_winner():

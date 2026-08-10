@@ -1,10 +1,13 @@
 from datetime import UTC, datetime, timedelta
 
 from lol_bets.inference.roster import (
+    EXPECTED_ROLES,
+    HistoricalRosterEvidence,
     RosterGateEvidence,
     RosterGateState,
     completed_series_with_roster,
     evaluate_roster_gate,
+    infer_historical_roster,
 )
 from oracle_bets_core.pd import pd
 
@@ -59,11 +62,10 @@ def test_unknown_or_emergency_lineup_is_shadow_only():
 def _roster_history(series_count: int = 3) -> pd.DataFrame:
     rows = []
     start = datetime(2026, 7, 1, tzinfo=UTC)
-    roles = ("top", "jng", "mid", "bot", "sup")
     for series_index in range(series_count):
         for game in (1, 2):
             played_at = start + timedelta(days=series_index, hours=game)
-            for role, player in zip(roles, NEW, strict=True):
+            for role, player in zip(EXPECTED_ROLES, NEW, strict=True):
                 rows.append(
                     {
                         "date": played_at,
@@ -103,3 +105,59 @@ def test_completed_series_counter_requires_consecutive_exact_lineups():
         )
         == 0
     )
+
+
+def test_historical_fallback_requires_same_role_mapped_five_for_latest_three_series():
+    inferred = infer_historical_roster(
+        _roster_history(),
+        team_id="team-1",
+        team_name="T1",
+        before=datetime(2026, 7, 5, tzinfo=UTC),
+    )
+
+    assert isinstance(inferred, HistoricalRosterEvidence)
+    assert inferred.roster == dict(zip(EXPECTED_ROLES, NEW, strict=True))
+    assert len(inferred.series_ids) == REQUIRED_STABLE_SERIES
+    assert len(inferred.series_dates) == REQUIRED_STABLE_SERIES
+    assert inferred.evidence_hash.startswith("historical-roster-")
+
+
+def test_historical_fallback_rejects_change_missing_series_and_bad_roles():
+    history = _roster_history()
+    changed = history.copy()
+    changed.loc[
+        (changed["gameid"] == "s2-g2") & changed["position"].eq("top"),
+        "playername",
+    ] = "emergency"
+    duplicate_role = history.copy()
+    duplicate_role.loc[
+        (duplicate_role["gameid"] == "s2-g2") & duplicate_role["position"].eq("sup"),
+        "position",
+    ] = "top"
+
+    kwargs = {
+        "team_id": "team-1",
+        "team_name": "T1",
+        "before": datetime(2026, 7, 5, tzinfo=UTC),
+    }
+    assert infer_historical_roster(changed, **kwargs) is None
+    assert infer_historical_roster(_roster_history(2), **kwargs) is None
+    assert infer_historical_roster(duplicate_role, **kwargs) is None
+
+
+def test_historical_fallback_does_not_mix_a_reused_team_name():
+    history = _roster_history()
+    collision = history.copy()
+    collision["teamid"] = "other-team"
+    collision["playername"] = "wrong-" + collision["playername"]
+    mixed = pd.concat([history, collision], ignore_index=True)
+
+    inferred = infer_historical_roster(
+        mixed,
+        team_id="team-1",
+        team_name="T1",
+        before=datetime(2026, 7, 5, tzinfo=UTC),
+    )
+
+    assert inferred is not None
+    assert inferred.roster == dict(zip(EXPECTED_ROLES, NEW, strict=True))

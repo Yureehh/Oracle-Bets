@@ -8,11 +8,14 @@ from math import fsum, isfinite
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 DRAW_FORMAT = 2
 PROBABILITY_TOLERANCE = 1e-12
+ROOT_IMAGINARY_TOLERANCE = 1e-10
 
 
 class SeriesStateError(ValueError):
@@ -134,3 +137,34 @@ def derive_series_distribution(
         score_probabilities=MappingProxyType(dict(sorted(scores.items()))),
         total_maps_probabilities=MappingProxyType(dict(sorted(totals.items()))),
     )
+
+
+def total_maps_probability_range(
+    best_of: int,
+    total_maps: int,
+    probability_lower: float,
+    probability_upper: float,
+) -> tuple[float, float]:
+    """Return the extrema across a constant-map probability interval."""
+    lower, upper = sorted((float(probability_lower), float(probability_upper)))
+    if lower < 0 or upper > 1:
+        raise SeriesStateError("Probability interval must lie in [0, 1].")
+
+    def probability_at(value: float) -> float:
+        distribution = derive_series_distribution(best_of, [value] * best_of)
+        return float(distribution.total_maps_probabilities.get(total_maps, 0.0))
+
+    # Total-map probability is a polynomial of degree at most best_of. Its
+    # derivative roots contain every interior extremum missed by endpoints.
+    nodes = np.linspace(0.0, 1.0, best_of + 1)
+    values = np.asarray([probability_at(value) for value in nodes])
+    polynomial = np.polynomial.Polynomial.fit(nodes, values, deg=best_of).convert()
+    candidates = [lower, upper]
+    for root in polynomial.deriv().roots():
+        if abs(float(np.imag(root))) > ROOT_IMAGINARY_TOLERANCE:
+            continue
+        value = float(np.real(root))
+        if lower <= value <= upper:
+            candidates.append(value)
+    probabilities = [probability_at(value) for value in candidates]
+    return min(probabilities), max(probabilities)

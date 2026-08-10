@@ -5,17 +5,28 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+from zoneinfo import ZoneInfo
 
-import requests
 from oracle_bets_core.betting import expected_edge
 from oracle_bets_core.config import load_product_config
 from oracle_bets_core.evidence import EvidenceStore
-from oracle_bets_core.league_selection import selected_leagues
+from oracle_bets_core.league_selection import (
+    actionable_leagues,
+    selected_leagues,
+)
 from oracle_bets_core.logger import logger
-from oracle_bets_core.markets import MarketAdapter, MarketQuote, PolymarketGammaAdapter
+from oracle_bets_core.markets import (
+    MarketAdapter,
+    MarketQuote,
+    PolymarketClobClient,
+    PolymarketGammaAdapter,
+    PolymarketMarket,
+)
 from oracle_bets_core.operations import (
     EvidenceWorkflowJournal,
     WorkflowStep,
@@ -24,14 +35,19 @@ from oracle_bets_core.operations import (
 )
 from oracle_bets_core.paths import (
     EVIDENCE_DB,
-    INSIGHTS_DIR,
     MODEL_REGISTRY_DIR,
     RAW_DATA,
     REPORTS_DIR,
     SCHEDULE,
 )
 from oracle_bets_core.pd import pd
-from oracle_bets_discord.formatting import MESSAGE_LIMIT
+from oracle_bets_discord.delivery import (
+    DiscordDeliveryMode,
+    resolve_delivery_mode,
+)
+from oracle_bets_discord.delivery import (
+    send_webhook_messages as send_discord_webhook_messages,
+)
 from oracle_bets_discord.predictions.lol import (
     confidence_label,
     context_line,
@@ -45,33 +61,42 @@ from oracle_bets_discord.predictions.lol import (
 
 from lol_bets.data_generation.ingestion.schedule import (
     PandaScoreLineupRefresher,
+    PandaScoreSchedule,
     fetch_and_store_schedule,
 )
+from lol_bets.data_generation.ingestion.source import inspect_oracle_source
 from lol_bets.inference.roster import (
     EXPECTED_STARTERS,
+    HistoricalRosterEvidence,
     RosterGateDecision,
     RosterGateEvidence,
     completed_series_with_roster,
     evaluate_roster_gate,
+    infer_historical_roster,
 )
-from lol_bets.inference.series import derive_series_distribution
+from lol_bets.inference.series import (
+    derive_series_distribution,
+    total_maps_probability_range,
+)
 from lol_bets.inference.team import InsufficientRosterHistoryError, Team
-from lol_bets.inference.team_resolver import TeamResolutionError
+from lol_bets.inference.team_resolver import (
+    TeamResolutionError,
+    canonical_team_name,
+    resolve_team_name,
+)
 from lol_bets.module import LoLBetsModule
 from lol_bets.operations.evidence import record_daily_evidence
 from lol_bets.operations.identity import sync_history_identity_graph
+from lol_bets.operations.market_actions import evaluate_daily_market_actions
 from lol_bets.operations.models import (
     ModelRegistry,
     evaluate_training_triggers_from_history,
-    orchestrate_candidate_training,
-    register_current_candidate,
 )
 from lol_bets.pipeline import DataGenerator
 from lol_bets.training import train_models, validate_training_tables
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from pathlib import Path
 
     from oracle_bets_core.interfaces import ArtifactHealth
 
@@ -107,15 +132,32 @@ class DailyWorkflowConfig:
     horizon_hours: int = 36
     leagues: str | None = None
     webhook_url: str | None = None
+    delivery_mode: str | None = None
     dry_run: bool = False
     skip_retrain: bool = False
     skip_market_search: bool = False
     targets: str = "all"
     feature_set: str = "compact"
     max_features: int = 120
+    ai_review: bool = True
+    openai_model: str = "gpt-5.6-luna"
+
+
+def _resolve_daily_config(
+    config: DailyWorkflowConfig | None,
+) -> DailyWorkflowConfig:
+    cfg = config or DailyWorkflowConfig()
+    return replace(
+        cfg,
+        leagues=cfg.leagues or ",".join(actionable_leagues()),
+        openai_model=os.getenv("OPENAI_MODEL") or cfg.openai_model,
+        delivery_mode=resolve_delivery_mode(cfg.delivery_mode).value,
+    )
 
 
 EXCLUDED_DAILY_LEAGUES = frozenset({"Equal eSports Cup"})
+MONDAY = 0
+THURSDAY = 3
 RESTRICTED_FIXTURE_STATUSES = frozenset(
     {"abandoned", "canceled", "cancelled", "postponed", "rescheduled"}
 )
@@ -142,17 +184,35 @@ class DailyStepResult:
 
 
 @dataclass(frozen=True)
+class ResolvedFixtureRoster:
+    roster: dict[str, str | None]
+    ready: bool
+    source: str
+    evidence: HistoricalRosterEvidence | None = None
+
+
+@dataclass(frozen=True)
 class DailyWorkflowResult:
     schedule: pd.DataFrame
     messages: list[str]
     steps: list[DailyStepResult] = field(default_factory=list)
     excluded_fixtures: list[dict[str, Any]] = field(default_factory=list)
     prediction_details: list[dict[str, Any]] = field(default_factory=list)
+    market_reviews: list[dict[str, Any]] = field(default_factory=list)
+    market_actions: list[dict[str, Any]] = field(default_factory=list)
+    cadence_reminders: list[dict[str, Any]] = field(default_factory=list)
+    open_positions: dict[str, Any] = field(default_factory=dict)
     report_paths: tuple[Path, Path] | None = None
 
     @property
     def ok(self) -> bool:
         return all(step.ok for step in self.steps)
+
+
+@dataclass(frozen=True)
+class TypedMarketDiscovery:
+    markets: dict[str, tuple[PolymarketMarket, ...]]
+    failures: dict[str, str]
 
 
 def utc_day_window(
@@ -179,6 +239,109 @@ def _daily_time_window(
     scheduled_for, _ = utc_day_window(now=run_now, window_days=1)
     fetch_window_days = (horizon_hours + 23) // 24
     return run_now, scheduled_for, fetch_window_days
+
+
+def cadence_reminders(
+    now: dt.datetime,
+    *,
+    timezone: str = "Europe/Rome",
+) -> list[dict[str, Any]]:
+    """Return one combined advisory reminder for today's Rome-local cadence."""
+    if now.tzinfo is None:
+        raise ValueError("reminder clock must include a timezone")
+    local_zone = ZoneInfo(timezone)
+    local_date = now.astimezone(local_zone).date()
+
+    def local_midnight(value: dt.date) -> str:
+        return dt.datetime.combine(value, dt.time(), tzinfo=local_zone).isoformat()
+
+    triggers: list[str] = []
+    commands: list[str] = []
+    if local_date.weekday() == MONDAY:
+        previous_monday = local_date - dt.timedelta(days=7)
+        triggers.append("monday")
+        commands.extend(
+            [
+                "uv run oracle-bets paper list --state open",
+                "uv run oracle-bets health system",
+                (
+                    "uv run oracle-bets paper performance --since "
+                    f"{local_midnight(previous_monday)}"
+                ),
+            ]
+        )
+    if local_date.weekday() == THURSDAY:
+        current_monday = local_date - dt.timedelta(days=3)
+        triggers.append("thursday")
+        commands.extend(
+            [
+                "uv run oracle-bets paper list --state open",
+                (
+                    "uv run oracle-bets paper performance --since "
+                    f"{local_midnight(current_monday)}"
+                ),
+                "uv run oracle-bets lol market-check",
+            ]
+        )
+    if local_date.day == 1:
+        current_month = local_date.replace(day=1)
+        previous_month_end = current_month - dt.timedelta(days=1)
+        previous_month = previous_month_end.replace(day=1)
+        triggers.append("first_of_month")
+        commands.extend(
+            [
+                (
+                    "uv run oracle-bets audit monthly --period "
+                    f"{previous_month.strftime('%Y-%m')}"
+                ),
+                (
+                    "uv run oracle-bets paper performance --since "
+                    f"{local_midnight(previous_month)}"
+                ),
+            ]
+        )
+    if not triggers:
+        return []
+    return [
+        {
+            "local_date": local_date.isoformat(),
+            "timezone": timezone,
+            "triggers": triggers,
+            "commands": list(dict.fromkeys(commands)),
+            "advisory_only": True,
+        }
+    ]
+
+
+def format_cadence_reminders(reminders: Sequence[dict[str, Any]]) -> str:
+    if not reminders:
+        return ""
+    reminder = reminders[0]
+    labels = ", ".join(str(item) for item in reminder["triggers"])
+    lines = [f"**Operating reminder — {labels}**"]
+    lines.extend(f"- `{command}`" for command in reminder["commands"])
+    return "\n".join(lines)
+
+
+def _open_position_summary(store: EvidenceStore) -> dict[str, Any]:
+    """Read open paper positions without ever mutating or settling them."""
+    from oracle_bets_core.operations.paper_evidence import count_open_positions
+
+    try:
+        count = count_open_positions(store)
+    except Exception as exc:
+        logger.warning("Open paper-position count unavailable: %s", exc)
+        return {"available": False, "count": None}
+    return {"available": True, "count": count}
+
+
+def _format_open_position_summary(summary: dict[str, Any]) -> str:
+    if not summary.get("available"):
+        return "**Open paper positions:** unavailable; inspect with `paper list`."
+    return (
+        f"**Open paper positions: {summary['count']}** — settle only through the "
+        "owner bot controls or `uv run oracle-bets paper settle --help`."
+    )
 
 
 def filter_daily_schedule(
@@ -244,6 +407,12 @@ def split_reportable_schedule(
     return schedule_df.loc[visible_rows].reset_index(drop=True), excluded
 
 
+def _actionable_schedule(schedule: pd.DataFrame) -> pd.DataFrame:
+    if schedule.empty or "league" not in schedule:
+        return schedule
+    return schedule[schedule["league"].isin(actionable_leagues())]
+
+
 def expected_roster_from_schedule(
     row: pd.Series,
     *,
@@ -273,6 +442,79 @@ def expected_roster_from_schedule(
         roster[role] = name
     complete = not ambiguous and all(roster.values())
     return roster, complete
+
+
+def _resolve_fixture_roster(
+    row: pd.Series,
+    *,
+    team: str,
+) -> ResolvedFixtureRoster:
+    """Prefer a complete provider five; use history only when it is absent."""
+    provider_roster, provider_ready = expected_roster_from_schedule(row, team=team)
+    if provider_ready:
+        return ResolvedFixtureRoster(
+            provider_roster,
+            True,
+            str(row.get("lineup_source") or "pandascore_match_detail"),
+        )
+    if not _provider_lineup_absent(row.get(f"team_{team}_lineup_json")):
+        return ResolvedFixtureRoster(
+            get_empty_roster(), False, "provider_lineup_incomplete"
+        )
+
+    team_name = str(row.get(f"team_{team}") or "").strip()
+    fixture_start = row.get("start_utc")
+    history = _roster_history()
+    known_names = history["teamname"].dropna().astype(str).unique().tolist()
+    resolution = resolve_team_name(team_name, known_names)
+    if not resolution.ok or resolution.resolved_name is None:
+        return ResolvedFixtureRoster(
+            get_empty_roster(), False, "historical_roster_unavailable"
+        )
+    canonical_name = resolution.resolved_name
+    dates = pd.to_datetime(history["date"], errors="coerce")
+    cutoff = pd.Timestamp(fixture_start)
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.tz_convert(None)
+    if getattr(dates.dt, "tz", None) is not None:
+        dates = dates.dt.tz_convert(None)
+    matching = history.loc[
+        history["teamname"].astype(str).str.casefold().eq(canonical_name.casefold())
+        & dates.lt(cutoff)
+    ].copy()
+    matching["__date"] = dates.loc[matching.index]
+    team_ids = (
+        matching.sort_values("__date", ascending=False)["teamid"].dropna().astype(str)
+    )
+    team_id = next((value for value in team_ids if value.strip()), "")
+    evidence = infer_historical_roster(
+        history,
+        team_id=team_id,
+        team_name=canonical_name,
+        before=fixture_start,
+    )
+    if evidence is None:
+        return ResolvedFixtureRoster(
+            get_empty_roster(), False, "historical_roster_unavailable"
+        )
+    return ResolvedFixtureRoster(
+        dict(evidence.roster),
+        True,
+        "historical_three_series",
+        evidence,
+    )
+
+
+def _provider_lineup_absent(raw: Any) -> bool:
+    if raw is None:
+        return True
+    if isinstance(raw, str) and not raw.strip():
+        return True
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, list) and not parsed
 
 
 @lru_cache(maxsize=1)
@@ -338,24 +580,18 @@ def match_type_from_best_of(best_of: Any) -> str:
     return "bo1"
 
 
-def send_discord_webhook_messages(
+def _deliver_daily_webhook(
+    webhook_sender: Callable[[str, Sequence[str]], None],
     webhook_url: str,
     messages: Sequence[str],
-    *,
-    session: requests.Session | None = None,
-) -> None:
-    """Post messages to a Discord webhook URL."""
-    http = session or requests.Session()
-    for message in messages:
-        response = http.post(
-            webhook_url,
-            json={
-                "content": message[: MESSAGE_LIMIT - 1],
-                "allowed_mentions": {"parse": []},
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
+) -> DailyStepResult:
+    try:
+        webhook_sender(webhook_url, messages)
+    except Exception as exc:
+        error_type = type(exc).__name__
+        logger.error("Discord webhook delivery failed: %s", error_type)
+        return DailyStepResult("discord", False, f"delivery failed ({error_type})")
+    return DailyStepResult("discord", True, "webhook delivered")
 
 
 def _normalize_market_text(value: str) -> set[str]:
@@ -475,13 +711,29 @@ def build_match_prediction_message(  # noqa: PLR0915
     predictor: Predictor,
     market_search: MarketAdapter | None = None,
     snapshot_sink: list[dict[str, Any]] | None = None,
+    resolution_sink: list[dict[str, str]] | None = None,
 ) -> str:
     """Build one Discord-safe daily prediction message for a scheduled match."""
     team_a_name = str(row.get("team_a") or "").strip()
     team_b_name = str(row.get("team_b") or "").strip()
     match_type = match_type_from_best_of(row.get("best_of"))
-    team_a_roster, team_a_lineup_ready = expected_roster_from_schedule(row, team="a")
-    team_b_roster, team_b_lineup_ready = expected_roster_from_schedule(row, team="b")
+    row = row.copy()
+    team_a_resolution = _resolve_fixture_roster(row, team="a")
+    team_b_resolution = _resolve_fixture_roster(row, team="b")
+    team_a_roster = team_a_resolution.roster
+    team_b_roster = team_b_resolution.roster
+    team_a_lineup_ready = team_a_resolution.ready
+    team_b_lineup_ready = team_b_resolution.ready
+    sources = {team_a_resolution.source, team_b_resolution.source}
+    row["lineup_source"] = (
+        next(iter(sources)) if len(sources) == 1 else "mixed_lineup_sources"
+    )
+    row["team_a_roster_evidence"] = (
+        team_a_resolution.evidence.to_dict() if team_a_resolution.evidence else None
+    )
+    row["team_b_roster_evidence"] = (
+        team_b_resolution.evidence.to_dict() if team_b_resolution.evidence else None
+    )
     lineup_ready = team_a_lineup_ready and team_b_lineup_ready
     team_a = Team(
         name=team_a_name,
@@ -497,6 +749,12 @@ def build_match_prediction_message(  # noqa: PLR0915
         as_of_date=row.get("start_utc"),
         roster=team_b_roster,
     )
+    if resolution_sink is not None:
+        resolution_sink.extend(
+            {"provider_name": supplied, "canonical_name": team.name}
+            for supplied, team in ((team_a_name, team_a), (team_b_name, team_b))
+            if supplied != team.name
+        )
     team_a_roster_gate = _evaluate_team_roster_gate(
         team_a,
         lineup_ready=team_a_lineup_ready,
@@ -637,7 +895,7 @@ def build_match_prediction_message(  # noqa: PLR0915
 
     output += f"\n\nDaily confidence: **{confidence_label(warnings)}**"
     output += format_warnings(warnings)
-    return output[: MESSAGE_LIMIT - 1]
+    return output
 
 
 PREDICTION_SNAPSHOTS = REPORTS_DIR / "prediction_snapshots.parquet"
@@ -693,6 +951,8 @@ def build_prediction_snapshot_rows(
         "lineup_source": row.get("lineup_source"),
         "lineup_observed_at": row.get("lineup_observed_at"),
         "lineup_refresh_error": row.get("lineup_refresh_error"),
+        "team_a_roster_evidence": row.get("team_a_roster_evidence"),
+        "team_b_roster_evidence": row.get("team_b_roster_evidence"),
         "match_type": match_type,
         "probability_source": probability_source,
         "uncertainty_method": uncertainty_method,
@@ -821,6 +1081,10 @@ def _paired_map_series_distribution(
     )
     low = derive_series_distribution(best_of, [a_lower] * best_of)
     high = derive_series_distribution(best_of, [a_upper] * best_of)
+    total_map_ranges = {
+        total: total_maps_probability_range(best_of, total, a_lower, a_upper)
+        for total in point.total_maps_probabilities
+    }
     return {
         "method": "derived_from_map_engine",
         "best_of": best_of,
@@ -852,6 +1116,14 @@ def _paired_map_series_distribution(
         "score_probabilities": dict(point.score_probabilities),
         "total_maps_probabilities": {
             str(total): probability
+            for total, probability in point.total_maps_probabilities.items()
+        },
+        "total_maps_probability_ranges": {
+            str(total): {
+                "point": probability,
+                "lower": total_map_ranges[total][0],
+                "upper": total_map_ranges[total][1],
+            }
             for total, probability in point.total_maps_probabilities.items()
         },
     }
@@ -918,7 +1190,7 @@ def format_step_summary(steps: Sequence[DailyStepResult]) -> str:
         else:
             status = "OK"
         lines.append(f"- {status}: {result.name} - {result.detail}")
-    return "\n".join(lines)[: MESSAGE_LIMIT - 1]
+    return "\n".join(lines)
 
 
 def _run_mutating_steps(
@@ -930,7 +1202,14 @@ def _run_mutating_steps(
     store: EvidenceStore,
     scheduled_for: dt.datetime,
     effective_config: dict[str, Any],
+    source_check_fn: Callable[[], Any] | None = None,
 ) -> list[DailyStepResult]:
+    def _source_check() -> str:
+        report = (source_check_fn or _daily_source_readiness)()
+        report.raise_if_unready()
+        maximum = getattr(report, "current_year_max_match_at", None)
+        return f"fresh through {maximum}" if maximum else "source ready"
+
     def _sync_identities() -> str:
         result = sync_history_identity_graph(
             store,
@@ -979,6 +1258,7 @@ def _run_mutating_steps(
     outcome = run_workflow(
         workflow_key,
         (
+            WorkflowStep("source-check", _source_check, writes=False),
             WorkflowStep(
                 "ingest",
                 lambda: data_generator_factory().run() or "artifacts refreshed",
@@ -1004,8 +1284,7 @@ def _run_mutating_steps(
     return [
         DailyStepResult(
             name=step.name,
-            ok=step.status in {"completed", "skipped_completed", "skipped_dry_run"}
-            or step.status == "skipped_after_failure",
+            ok=step.status in {"completed", "skipped_completed", "skipped_dry_run"},
             detail=(
                 "skipped after failure"
                 if step.status == "skipped_after_failure"
@@ -1035,7 +1314,7 @@ def _train_triggered_candidate(
         history,
         registry=registry,
         evaluated_at=evaluated_at,
-        major_leagues=selected_leagues(product.leagues.profile),
+        major_leagues=selected_leagues("tier1_current"),
         valid_map_threshold=product.training.new_valid_maps_trigger,
         major_map_threshold=product.training.new_major_maps_trigger,
     )
@@ -1046,51 +1325,25 @@ def _train_triggered_candidate(
             f"{state.new_valid_maps} new valid maps, "
             f"{state.new_major_maps} new major maps"
         )
-    code_version = str(os.getenv("ORACLE_BETS_CODE_VERSION") or "").strip()
-    if not code_version:
-        raise ValueError(
-            "ORACLE_BETS_CODE_VERSION is required to register a triggered candidate"
-        )
-
-    def _train() -> None:
-        train_fn(
-            targets=cfg.targets,
-            force_retune=False,
-            feature_set=cfg.feature_set,
-            max_features=cfg.max_features,
-        )
-
-    def _register(model_id: str) -> None:
-        register_current_candidate(
-            registry=registry,
-            model_id=model_id,
-            target="map_win",
-            code_version=code_version,
-            metrics=_latest_outcome_metrics(),
-            created_at=evaluated_at,
-        )
-
-    result = orchestrate_candidate_training(
-        evaluation,
-        train_candidate=_train,
-        register_candidate=_register,
+    report_root = train_fn(
+        targets=cfg.targets,
+        force_retune=False,
+        feature_set=cfg.feature_set,
+        max_features=cfg.max_features,
     )
+    if report_root is None:
+        raise ValueError("training did not return its immutable run report")
+    manifest = json.loads((Path(report_root) / "manifest.json").read_text())
+    candidate_id = manifest.get("candidate_id")
+    if not candidate_id or not registry.verify_bundle(candidate_id):
+        raise ValueError("training did not register a complete immutable candidate")
     reasons = ", ".join(evaluation.reasons)
-    return f"registered immutable {result.registered_model_id}; triggers: {reasons}"
-
-
-def _latest_outcome_metrics() -> dict[str, float]:
-    root = INSIGHTS_DIR / "OutcomePrediction_LightGBM"
-    candidates = sorted(root.glob("*/metrics.json"))
-    if not candidates:
-        raise ValueError("outcome evaluation metrics are unavailable")
-    try:
-        payload = json.loads(candidates[-1].read_text())
-        return {
-            key: float(payload[key]) for key in ("log_loss", "brier", "calibration_ece")
-        }
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError("latest outcome metrics are invalid") from exc
+    promotion = str(manifest.get("promotion_status") or "review_unavailable")
+    failures = ", ".join(manifest.get("promotion_reasons") or [])
+    suffix = f"; promotion={promotion}"
+    if failures:
+        suffix += f" ({failures})"
+    return f"registered immutable {candidate_id}; triggers: {reasons}{suffix}"
 
 
 def _format_unmatched_teams_message(
@@ -1103,17 +1356,23 @@ def _format_unmatched_teams_message(
     for name, suggestions in sorted(unmatched.items()):
         hint = f" (closest: {', '.join(suggestions)})" if suggestions else ""
         lines.append(f"- {name}{hint}")
-    return "\n".join(lines)[: MESSAGE_LIMIT - 1]
+    return "\n".join(lines)
 
 
-def _build_prediction_messages(
+def _build_prediction_messages(  # noqa: PLR0912, PLR0915
     schedule: pd.DataFrame,
     *,
     cfg: DailyWorkflowConfig,
     predictor_factory: Callable[[], Predictor] | None,
     market_search_factory: Callable[[], MarketAdapter],
     snapshot_sink: list[dict[str, Any]] | None = None,
+    market_review_sink: list[dict[str, Any]] | None = None,
+    market_action_sink: list[dict[str, Any]] | None = None,
+    clob_client_factory: Callable[[], Any] = PolymarketClobClient,
+    market_sleeper: Callable[[float], None] = time.sleep,
+    market_run_key: str | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
+    schedule = _actionable_schedule(schedule)
     if schedule.empty:
         return [], []
     predictor = predictor_factory() if predictor_factory is not None else None
@@ -1136,26 +1395,42 @@ def _build_prediction_messages(
             raise
 
     market_search = None if cfg.skip_market_search else market_search_factory()
+    typed_markets: dict[str, tuple[PolymarketMarket, ...]] = {}
+    typed_market_failures: dict[str, str] = {}
+    typed_search = getattr(market_search, "search_markets", None)
+    if callable(typed_search):
+        discovery = _discover_typed_markets(schedule, market_search)
+        typed_markets = discovery.markets
+        typed_market_failures = discovery.failures
+        market_search = None
     messages: list[str] = []
     details: list[dict[str, Any]] = []
     unmatched: dict[str, tuple[str, ...]] = {}
     insufficient_history: list[dict[str, str]] = []
     failures: list[dict[str, str]] = []
+    actionable = set(actionable_leagues())
     for _, row in schedule.iterrows():
         try:
+            resolutions: list[dict[str, str]] = []
             message = build_match_prediction_message(
                 row,
                 predictor=predictor,
                 market_search=market_search,
                 snapshot_sink=snapshot_sink,
+                resolution_sink=resolutions,
             )
-            messages.append(message)
+            league = str(row.get("league") or "")
+            if league in actionable:
+                messages.append(message)
             details.append(
                 {
                     "status": "predicted",
+                    "league": league,
+                    "actionable_league": league in actionable,
                     "match_key": row.get("match_key"),
                     "match": row.get("discord_label"),
                     "report": message,
+                    "resolved_aliases": resolutions,
                 }
             )
         except TeamResolutionError as exc:
@@ -1204,7 +1479,137 @@ def _build_prediction_messages(
         messages.append(
             f"Prediction unavailable for {len(failures)} fixture(s); see the daily report artifact."
         )
+    if typed_markets and snapshot_sink is not None:
+        try:
+            market_evaluation = evaluate_daily_market_actions(
+                schedule=schedule,
+                snapshot_rows=snapshot_sink,
+                markets=typed_markets,
+                clob_client=clob_client_factory(),
+                model_healthy=True,
+                run_key=market_run_key,
+                sleeper=market_sleeper,
+            )
+            reviews = tuple(
+                (
+                    review
+                    | {
+                        "state": "blocked",
+                        "reason": "market_read_failed",
+                        "detail": typed_market_failures[review["fixture_key"]],
+                    }
+                )
+                if review["fixture_key"] in typed_market_failures
+                else review
+                for review in market_evaluation.reviews
+            )
+            if market_review_sink is not None:
+                market_review_sink.extend(reviews)
+            if market_action_sink is not None:
+                market_action_sink.extend(market_evaluation.actions)
+            messages.extend(_format_market_quote_messages(market_evaluation.actions))
+            if typed_market_failures:
+                messages.append(
+                    "Polymarket discovery unavailable for "
+                    f"{len(typed_market_failures)} fixture(s); see the daily report."
+                )
+        except Exception as exc:
+            logger.warning("Executable Polymarket comparison unavailable: %s", exc)
+            if market_action_sink is not None:
+                market_action_sink.append(
+                    {
+                        "state": "blocked",
+                        "reason": "market_read_failed",
+                        "detail": str(exc),
+                    }
+                )
     return messages, details
+
+
+def _format_market_quote_messages(
+    actions: Sequence[dict[str, Any]],
+) -> list[str]:
+    """Show every matched outcome quote, including blocked and no-edge rows."""
+    by_fixture: dict[str, list[dict[str, Any]]] = {}
+    for action in actions:
+        by_fixture.setdefault(str(action.get("fixture_key") or "unknown"), []).append(
+            action
+        )
+    messages: list[str] = []
+    for fixture_actions in by_fixture.values():
+        first = fixture_actions[0]
+        lines = [
+            f"**Polymarket · {first.get('team_a')} vs {first.get('team_b')} (read-only)**"
+        ]
+        for action in fixture_actions:
+            target = str(action.get("target") or "market")
+            if action.get("game_number"):
+                target += f" game {action['game_number']}"
+            if action.get("total_line") is not None:
+                target += f" {action['total_line']}"
+            odds = action.get("decimal_odds")
+            if odds is None:
+                lines.append(
+                    f"- {action.get('selection')} · {target}: unavailable "
+                    f"({action.get('reason') or 'invalid_quote'})"
+                )
+                continue
+            edge = action.get("conservative_edge")
+            edge_text = (
+                f", {float(edge) * 100:.1f}% conservative edge"
+                if edge is not None
+                else ""
+            )
+            lines.append(
+                f"- {action.get('selection')} · {target}: {float(odds):.3f} odds"
+                f"{edge_text} · {action.get('state')}"
+            )
+        messages.append("\n".join(lines))
+    return messages
+
+
+def _discover_typed_markets(
+    schedule: pd.DataFrame,
+    market_search: Any,
+) -> TypedMarketDiscovery:
+    """Find only open supported markets using one exact query per fixture."""
+    typed_search = getattr(market_search, "search_markets", None)
+    if schedule.empty or not callable(typed_search):
+        return TypedMarketDiscovery({}, {})
+    supported_types = {"child_moneyline", "moneyline", "totals"}
+    discovered: dict[str, tuple[PolymarketMarket, ...]] = {}
+    failures: dict[str, str] = {}
+    for _, row in schedule.iterrows():
+        team_a = str(row.get("team_a") or "").strip()
+        team_b = str(row.get("team_b") or "").strip()
+        fixture_key = str(row.get("match_key") or f"{team_a}:{team_b}").strip()
+        if not team_a or not team_b:
+            discovered[fixture_key] = ()
+            continue
+        try:
+            markets = typed_search(
+                f"{canonical_team_name(team_a)} {canonical_team_name(team_b)}",
+                limit=100,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Typed Polymarket discovery unavailable for %s vs %s: %s",
+                team_a,
+                team_b,
+                exc,
+            )
+            discovered[fixture_key] = ()
+            failures[fixture_key] = type(exc).__name__
+            continue
+        discovered[fixture_key] = tuple(
+            market
+            for market in markets
+            if market.active
+            and not market.closed
+            and market.accepting_orders
+            and market.sports_market_type in supported_types
+        )
+    return TypedMarketDiscovery(discovered, failures)
 
 
 def write_daily_report(
@@ -1215,16 +1620,29 @@ def write_daily_report(
     excluded_fixtures: Sequence[dict[str, Any]],
     prediction_details: Sequence[dict[str, Any]],
     messages: Sequence[str],
+    advisory_review: dict[str, Any] | None = None,
+    market_reviews: Sequence[dict[str, Any]] = (),
+    market_actions: Sequence[dict[str, Any]] = (),
+    prediction_snapshots: Sequence[dict[str, Any]] = (),
+    cadence_reminders: Sequence[dict[str, Any]] = (),
+    open_positions: dict[str, Any] | None = None,
+    source_freshness: dict[str, Any] | None = None,
+    drift_review: dict[str, Any] | None = None,
+    report_paths: tuple[Path, Path] | None = None,
 ) -> tuple[Path, Path]:
     """Persist machine-readable and human-readable reviews for every daily run."""
     report_dir = REPORTS_DIR / "daily"
     report_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S_%fZ")
-    json_path = report_dir / f"{timestamp}.json"
-    markdown_path = report_dir / f"{timestamp}.md"
+    if report_paths is None:
+        timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S_%fZ")
+        json_path = report_dir / f"{timestamp}.json"
+        markdown_path = report_dir / f"{timestamp}.md"
+    else:
+        json_path, markdown_path = report_paths
     payload = {
-        "schema_version": 1,
+        "schema_version": 4,
         "generated_at": dt.datetime.now(dt.UTC).isoformat(),
+        "evidence_run_id": _evidence_run_id(steps),
         "config": {
             key: value for key, value in vars(cfg).items() if key != "webhook_url"
         },
@@ -1232,7 +1650,37 @@ def write_daily_report(
         "schedule": schedule.to_dict(orient="records"),
         "excluded_fixtures": list(excluded_fixtures),
         "predictions": list(prediction_details),
+        "prediction_snapshots": list(prediction_snapshots),
+        "roster_evidence": [
+            {
+                "match_key": snapshot.get("match_key"),
+                "team_a": snapshot.get("team_a"),
+                "team_b": snapshot.get("team_b"),
+                "team_a_evidence": snapshot.get("team_a_roster_evidence"),
+                "team_b_evidence": snapshot.get("team_b_roster_evidence"),
+            }
+            for snapshot in prediction_snapshots
+            if snapshot.get("team_a_roster_evidence")
+            or snapshot.get("team_b_roster_evidence")
+        ],
+        "resolved_aliases": [
+            alias
+            for detail in prediction_details
+            for alias in detail.get("resolved_aliases", [])
+        ],
+        "unsupported_teams": [
+            detail
+            for detail in prediction_details
+            if detail.get("status") == "unsupported_team"
+        ],
         "messages": list(messages),
+        "advisory_review": advisory_review,
+        "market_reviews": list(market_reviews),
+        "market_actions": list(market_actions),
+        "cadence_reminders": list(cadence_reminders),
+        "open_positions": open_positions or {"available": False, "count": None},
+        "source_freshness": source_freshness,
+        "drift_review": drift_review,
     }
     _atomic_write_report(
         json_path,
@@ -1248,6 +1696,40 @@ def write_daily_report(
         markdown += "\n\n## Excluded fixtures\n" + "\n".join(excluded_lines)
     _atomic_write_report(markdown_path, markdown + "\n")
     return json_path, markdown_path
+
+
+def _evidence_run_id(steps: Sequence[DailyStepResult]) -> str | None:
+    prefix = "canonical run recorded: "
+    return next(
+        (
+            step.detail.removeprefix(prefix)
+            for step in steps
+            if step.name == "evidence" and step.ok and step.detail.startswith(prefix)
+        ),
+        None,
+    )
+
+
+def _daily_source_readiness():
+    return inspect_oracle_source(
+        require_symlink=True,
+    )
+
+
+def _latest_model_drift_review() -> dict[str, Any] | None:
+    try:
+        champion = json.loads(
+            (MODEL_REGISTRY_DIR / "champion.json").read_text(encoding="utf-8")
+        )["model_id"]
+        review = json.loads(
+            (MODEL_REGISTRY_DIR / "reviews" / f"{champion}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        drift = review.get("evidence", {}).get("drift_review")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return drift if isinstance(drift, dict) else None
 
 
 def _atomic_write_report(path: Path, content: str) -> None:
@@ -1310,7 +1792,34 @@ def _persist_prediction_snapshots(
         return DailyStepResult("snapshot", False, str(exc))
 
 
-def run_daily_lol_workflow(
+def _fetch_daily_schedule(
+    *,
+    cfg: DailyWorkflowConfig,
+    run_now: dt.datetime,
+    fetch_window_days: int,
+    schedule_fetcher: Callable[..., pd.DataFrame],
+) -> tuple[pd.DataFrame, str]:
+    try:
+        schedule = schedule_fetcher(
+            start_datetime=run_now,
+            window_days=fetch_window_days,
+            leagues=cfg.leagues,
+            save_path=None if cfg.dry_run else SCHEDULE,
+        )
+        detail = "fetched"
+    except Exception as exc:
+        try:
+            schedule = pd.read_parquet(SCHEDULE)
+        except Exception:
+            raise exc from None
+        detail = f"fetch failed ({exc}); using stored schedule"
+    if cfg.leagues is None:
+        raise ValueError("daily league filter was not resolved")
+    filtered = PandaScoreSchedule.filter_by_league(schedule, cfg.leagues)
+    return filtered.reset_index(drop=True), detail
+
+
+def run_daily_lol_workflow(  # noqa: PLR0912, PLR0915
     config: DailyWorkflowConfig | None = None,
     *,
     schedule_fetcher: Callable[..., pd.DataFrame] = fetch_and_store_schedule,
@@ -1320,18 +1829,40 @@ def run_daily_lol_workflow(
     predictor_factory: Callable[[], Predictor] | None = None,
     lineup_refresher_factory: (Callable[[], PandaScoreLineupRefresher] | None) = None,
     market_search_factory: Callable[[], MarketAdapter] = PolymarketGammaAdapter,
+    clob_client_factory: Callable[[], Any] = PolymarketClobClient,
+    market_sleeper: Callable[[float], None] = time.sleep,
     webhook_sender: Callable[
         [str, Sequence[str]], None
     ] = send_discord_webhook_messages,
 ) -> DailyWorkflowResult:
     """Run the daily LoL workflow and optionally send Discord webhook messages."""
-    cfg = config or DailyWorkflowConfig()
-    webhook_url = cfg.webhook_url or os.getenv("DISCORD_WEBHOOK_URL")
+    cfg = _resolve_daily_config(config)
+    delivery_mode = DiscordDeliveryMode(str(cfg.delivery_mode))
+    webhook_url = (
+        cfg.webhook_url or os.getenv("DISCORD_WEBHOOK_URL")
+        if delivery_mode is DiscordDeliveryMode.WEBHOOK
+        else None
+    )
     steps: list[DailyStepResult] = []
     run_now, scheduled_for, fetch_window_days = _daily_time_window(cfg.horizon_hours)
+    source_readiness = _daily_source_readiness()
     effective_config = {
         key: value for key, value in vars(cfg).items() if key != "webhook_url"
     }
+
+    if not cfg.dry_run:
+        steps.extend(
+            _run_mutating_steps(
+                cfg,
+                data_generator_factory=data_generator_factory,
+                train_fn=train_fn,
+                module_factory=module_factory,
+                store=EvidenceStore(EVIDENCE_DB),
+                scheduled_for=scheduled_for,
+                effective_config=effective_config,
+                source_check_fn=lambda: source_readiness,
+            )
+        )
 
     # The schedule fetch is an external dependency and must degrade like every
     # other step: a PandaScore outage should produce a FAILED step and a
@@ -1340,21 +1871,14 @@ def run_daily_lol_workflow(
     fetch_state: dict[str, pd.DataFrame] = {}
 
     def _fetch_schedule() -> str:
-        try:
-            fetch_state["schedule"] = schedule_fetcher(
-                start_datetime=run_now,
-                window_days=fetch_window_days,
-                leagues=cfg.leagues,
-                save_path=None if cfg.dry_run else SCHEDULE,
-            )
-        except Exception as exc:
-            try:
-                stored = pd.read_parquet(SCHEDULE)
-            except Exception:
-                raise exc from None
-            fetch_state["schedule"] = stored
-            return f"fetch failed ({exc}); using stored schedule"
-        return "fetched"
+        schedule, detail = _fetch_daily_schedule(
+            cfg=cfg,
+            run_now=run_now,
+            fetch_window_days=fetch_window_days,
+            schedule_fetcher=schedule_fetcher,
+        )
+        fetch_state["schedule"] = schedule
+        return detail
 
     schedule_step = _step("schedule", _fetch_schedule)
     schedule = fetch_state.get("schedule", pd.DataFrame())
@@ -1364,11 +1888,13 @@ def run_daily_lol_workflow(
         observed_at=run_now,
         refresher_factory=lineup_refresher_factory,
     )
-    daily_schedule = filter_daily_schedule(
-        schedule,
-        now=run_now,
-        horizon_hours=cfg.horizon_hours,
-    )
+    daily_schedule = _actionable_schedule(
+        filter_daily_schedule(
+            schedule,
+            now=run_now,
+            horizon_hours=cfg.horizon_hours,
+        )
+    ).reset_index(drop=True)
     reportable_schedule, excluded_fixtures = split_reportable_schedule(daily_schedule)
     if schedule_step.ok:
         suffix = (
@@ -1386,27 +1912,16 @@ def run_daily_lol_workflow(
     steps.extend([schedule_step, lineup_step])
     messages = [
         format_step_summary(steps),
-        *format_schedule_messages(reportable_schedule),
+        *format_schedule_messages(_actionable_schedule(reportable_schedule)),
     ]
-
-    if not cfg.dry_run and schedule_step.ok:
-        steps.extend(
-            _run_mutating_steps(
-                cfg,
-                data_generator_factory=data_generator_factory,
-                train_fn=train_fn,
-                module_factory=module_factory,
-                store=EvidenceStore(EVIDENCE_DB),
-                scheduled_for=scheduled_for,
-                effective_config=effective_config,
-            )
-        )
 
     should_predict = all(step.ok for step in steps) or (
         cfg.dry_run and not reportable_schedule.empty
     )
     snapshot_rows: list[dict[str, Any]] = []
     prediction_details: list[dict[str, Any]] = []
+    market_reviews: list[dict[str, Any]] = []
+    market_actions: list[dict[str, Any]] = []
     if should_predict:
         prediction_messages, prediction_details = _build_prediction_messages(
             reportable_schedule,
@@ -1414,6 +1929,15 @@ def run_daily_lol_workflow(
             predictor_factory=predictor_factory,
             market_search_factory=market_search_factory,
             snapshot_sink=snapshot_rows,
+            market_review_sink=market_reviews,
+            market_action_sink=market_actions,
+            clob_client_factory=clob_client_factory,
+            market_sleeper=market_sleeper,
+            market_run_key=daily_run_key(
+                "lol",
+                scheduled_for=scheduled_for,
+                config=effective_config,
+            ),
         )
         messages.extend(prediction_messages)
 
@@ -1431,6 +1955,7 @@ def run_daily_lol_workflow(
                 schedule=daily_schedule,
                 snapshot_rows=snapshot_rows,
                 steps=steps,
+                market_actions=market_actions,
             )
             steps.append(
                 DailyStepResult("evidence", True, f"canonical run recorded: {run_id}")
@@ -1441,6 +1966,33 @@ def run_daily_lol_workflow(
 
     messages[0] = format_step_summary(steps)
 
+    from lol_bets.operations.review import format_advisory_review, review_proposals
+
+    advisory = review_proposals(
+        market_actions,
+        enabled=cfg.ai_review and bool(os.getenv("OPENAI_API_KEY")),
+        model=cfg.openai_model,
+    )
+    advisory_message = format_advisory_review(advisory)
+    if advisory_message:
+        messages.append(advisory_message)
+    reminders = cadence_reminders(run_now)
+    reminder_message = format_cadence_reminders(reminders)
+    if reminder_message:
+        messages.append(reminder_message)
+    open_positions = _open_position_summary(EvidenceStore(EVIDENCE_DB))
+    source_freshness = source_readiness.to_dict()
+    drift_review = _latest_model_drift_review()
+    messages.append(_format_open_position_summary(open_positions))
+    if not cfg.dry_run and delivery_mode is DiscordDeliveryMode.GATEWAY:
+        steps.append(
+            DailyStepResult(
+                "discord",
+                True,
+                "Gateway publication enabled; owner controls poll canonical evidence",
+            )
+        )
+        messages[0] = format_step_summary(steps)
     report_paths = write_daily_report(
         cfg=cfg,
         steps=steps,
@@ -1448,14 +2000,51 @@ def run_daily_lol_workflow(
         excluded_fixtures=excluded_fixtures,
         prediction_details=prediction_details,
         messages=messages,
+        advisory_review=advisory.to_dict(),
+        market_reviews=market_reviews,
+        market_actions=market_actions,
+        prediction_snapshots=snapshot_rows,
+        cadence_reminders=reminders,
+        open_positions=open_positions,
+        source_freshness=source_freshness,
+        drift_review=drift_review,
     )
-    if webhook_url and not cfg.dry_run:
-        webhook_sender(webhook_url, messages)
+    if delivery_mode is DiscordDeliveryMode.WEBHOOK and not cfg.dry_run:
+        if webhook_url:
+            steps.append(_deliver_daily_webhook(webhook_sender, webhook_url, messages))
+        else:
+            steps.append(
+                DailyStepResult(
+                    "discord", False, "DISCORD_WEBHOOK_URL is required in webhook mode"
+                )
+            )
+        messages[0] = format_step_summary(steps)
+        write_daily_report(
+            cfg=cfg,
+            steps=steps,
+            schedule=reportable_schedule,
+            excluded_fixtures=excluded_fixtures,
+            prediction_details=prediction_details,
+            messages=messages,
+            advisory_review=advisory.to_dict(),
+            market_reviews=market_reviews,
+            market_actions=market_actions,
+            prediction_snapshots=snapshot_rows,
+            cadence_reminders=reminders,
+            open_positions=open_positions,
+            source_freshness=source_freshness,
+            drift_review=drift_review,
+            report_paths=report_paths,
+        )
     return DailyWorkflowResult(
         schedule=reportable_schedule,
         messages=messages,
         steps=steps,
         excluded_fixtures=excluded_fixtures,
         prediction_details=prediction_details,
+        market_reviews=market_reviews,
+        market_actions=market_actions,
+        cadence_reminders=reminders,
+        open_positions=open_positions,
         report_paths=report_paths,
     )

@@ -2,6 +2,7 @@
 
 import datetime as dt
 
+import pytest
 from lol_bets.daily import (
     DailyStepResult,
     DailyWorkflowConfig,
@@ -20,6 +21,14 @@ from oracle_bets_core.pd import pd
 EXPECTED_WIN_PROBABILITY = 0.6
 EXPECTED_MARKET_PRICE = 0.55
 EXPECTED_TOTAL_KILLS = 27.5
+
+
+@pytest.fixture(autouse=True)
+def _isolate_daily_reports(tmp_path, monkeypatch):
+    import lol_bets.daily as daily_module
+
+    monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(daily_module, "EVIDENCE_DB", tmp_path / "evidence.db")
 
 
 def _future_schedule() -> pd.DataFrame:
@@ -82,6 +91,28 @@ def test_insufficient_roster_history_is_reported_separately(monkeypatch):
     assert "no prediction was fabricated" in messages[-1]
 
 
+def test_excluded_league_is_not_predicted_or_reported(monkeypatch):
+    import lol_bets.daily as daily_module
+
+    monkeypatch.setattr(
+        daily_module,
+        "build_match_prediction_message",
+        lambda *_args, **_kwargs: "excluded prediction detail",
+    )
+    schedule = _future_schedule()
+    schedule["league"] = "LCP"
+
+    messages, details = _build_prediction_messages(
+        schedule,
+        cfg=DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        predictor_factory=_FakePredictor,
+        market_search_factory=_FakeMarketSearch,
+    )
+
+    assert messages == []
+    assert details == []
+
+
 # ── schedule fetch failure handling ─────────────────────────────────────── #
 
 
@@ -110,10 +141,21 @@ def test_schedule_fetch_failure_yields_failed_step_not_crash(tmp_path, monkeypat
     assert result.schedule.empty
 
 
-def test_schedule_fetch_failure_does_not_run_mutating_steps(tmp_path, monkeypatch):
+def test_reconcile_and_ingest_precede_schedule_fetch(tmp_path, monkeypatch):
     import lol_bets.daily as daily_module
 
     monkeypatch.setattr(daily_module, "SCHEDULE", tmp_path / "missing.parquet")
+
+    class ReadySource:
+        current_year_max_match_at = dt.datetime(2026, 8, 9, tzinfo=dt.UTC)
+
+        def raise_if_unready(self):
+            pass
+
+        def to_dict(self):
+            return {"ready": True}
+
+    monkeypatch.setattr(daily_module, "_daily_source_readiness", ReadySource)
     called = {"ingest": False}
 
     def broken_fetcher(**_kwargs):
@@ -122,7 +164,7 @@ def test_schedule_fetch_failure_does_not_run_mutating_steps(tmp_path, monkeypatc
 
     def data_generator_factory():
         called["ingest"] = True
-        msg = "must not ingest after schedule failure"
+        msg = "stop after proving ingest precedes schedule"
         raise AssertionError(msg)
 
     result = run_daily_lol_workflow(
@@ -135,7 +177,7 @@ def test_schedule_fetch_failure_does_not_run_mutating_steps(tmp_path, monkeypatc
     )
 
     assert not result.ok
-    assert not called["ingest"]
+    assert called["ingest"]
 
 
 # ── step summary honesty ────────────────────────────────────────────────── #
