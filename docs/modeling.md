@@ -42,7 +42,11 @@ Routine retraining:
 - loads reviewed JSON hyperparameters;
 - refits weights on refreshed data;
 - refits calibrators;
-- generates a new report;
+- generates a report and immutable complete candidate;
+- replays champion and candidate on the candidate's exact sealed test rows;
+- auto-promotes only a routine candidate that passes log-loss non-inferiority,
+  Brier, ECE, actionable/per-cohort, prop-MAE, status, symmetry, leakage, and
+  artifact gates;
 - never invokes Optuna.
 
 Explicit retuning:
@@ -51,13 +55,18 @@ Explicit retuning:
 - writes candidate JSON inside the run report;
 - does not mutate production parameters or models;
 - requires review and all-four-target promotion;
-- is followed by one routine full retraining.
+- marks reviewed parameter files with their Optuna run provenance;
+- is followed by one full training whose model candidate still requires manual
+  champion promotion.
 
 ## Attribution
 
 Every training run stores LightGBM gain and split counts, held-out permutation
 importance, mean absolute SHAP, local SHAP reasons, model cards, calibration,
-cohorts, and split metadata. Importance is diagnostic, not proof of causality.
+cohorts, split metadata, feature availability/missingness, league coverage,
+prediction-distribution shift, and top feature/family stability. Drift findings
+are warning-only review evidence; they do not create or bypass promotion gates.
+Importance is diagnostic, not proof of causality.
 
 The production default is the tracked `compact` feature contract. The
 `selected` mode is research-only and requires a prior temporal recommendation

@@ -4,9 +4,26 @@
 
 ```bash
 cd /Users/yureeh/dev/oracle_bets
-uv sync --extra dev
+uv sync --extra dev --extra discord-bot --extra ai-review
 source .venv/bin/activate
 ```
+
+Create an ignored `.env`, then run `chmod 600 .env`:
+
+```dotenv
+PANDASCORE_API_KEY=
+DISCORD_WEBHOOK_URL=
+DISCORD_TOKEN=
+DISCORD_CHANNEL_ID=
+DISCORD_OWNER_USER_ID=
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.6-luna
+```
+
+Only PandaScore is required for the complete daily workflow. The webhook is
+for one-way reports; the three Discord bot values are needed for interactive
+paper controls; OpenAI is optional and failure-safe. Polymarket public reads
+need no key or VPN.
 
 Google Drive Desktop must expose the Oracle's Elixir folder locally and keep
 the 2024, 2025, and 2026 CSV files available offline. The default symlink is
@@ -45,13 +62,21 @@ probability-sum checks, cohorts, and feature attribution. Then:
 ```bash
 uv run oracle-bets lol promote-tuning <run-id>
 uv run oracle-bets lol train --targets all --feature-set compact
+uv run oracle-bets model list
+uv run oracle-bets model review <candidate-id> --format json
+uv run oracle-bets model promote <candidate-id> \
+  --reason "reviewed bootstrap champion"
+uv run oracle-bets evidence init
 uv run pytest tests/lol tests/core
 uv run ruff check packages tests
 uv run mkdocs build --strict
 uv run oracle-bets lol health
 uv run oracle-bets evidence health
+uv run oracle-bets lol market-check
 uv run oracle-bets lol schedule --days 2
 uv run oracle-bets daily lol --dry-run --skip-market-search
+uv run oracle-bets daily lol --dry-run
+uv run oracle-bets discord doctor --live
 ```
 
 This explicit first pass retunes because the canonical symmetric feature schema
@@ -60,3 +85,34 @@ changed. Future scheduled runs retrain without retuning.
 If existing evidence and the model registry are valuable, back them up first
 and omit the `data/state` cleanup line. Removing it intentionally resets paper
 history and champion/candidate state; it is not part of a normal retrain.
+
+## Start paper testing
+
+Run the normal workflow once, inspect the one JSON/Markdown pair it prints,
+then review only deterministic proposals:
+
+```bash
+uv run oracle-bets daily lol
+uv run oracle-bets paper list --state pending
+uv run oracle-bets paper show <proposal-id> --format json
+uv run oracle-bets paper decide \
+  --proposal-id <proposal-id> --decision accept --reason "owner paper review"
+uv run oracle-bets paper list --state open
+uv run oracle-bets paper capture-closing --dry-run --format json
+uv run oracle-bets paper settle \
+  --position-id <position-id> --result win \
+  --source-reference <result-url-or-id>
+uv run oracle-bets paper performance --format json
+```
+
+For a manual scalar prop line:
+
+```bash
+uv run oracle-bets paper quote-prop \
+  --forecast-id <forecast-id> --line 26.5 \
+  --over-odds 1.91 --under-odds 1.91 --source bookmaker
+```
+
+Use `uv run oracle-bets discord run` for persistent owner-only buttons and the
+`/paper_prop` Line/Odds modal. The launchd examples are documented under
+`ops/README.md`. A webhook alone is simpler and does not need an always-on bot.

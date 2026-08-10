@@ -8,7 +8,7 @@ It ingests 2024–2026 Oracle's Elixir files from Google Drive Desktop, generate
 chronological team/player features and ratings, trains four LightGBM targets,
 calibrates them on temporal holdouts, predicts upcoming PandaScore fixtures,
 compares read-only with Polymarket, writes JSON/Markdown reports, and optionally
-sends a one-way Discord webhook.
+sends a one-way webhook or runs owner-only interactive Discord paper controls.
 
 There is no automated betting, wallet, signing, private-key, order-submission,
 or fund-movement code.
@@ -17,7 +17,7 @@ or fund-movement code.
 
 ```bash
 cd /Users/yureeh/dev/oracle_bets
-uv sync --extra dev
+uv sync --extra dev --extra discord-bot --extra ai-review
 source .venv/bin/activate
 ```
 
@@ -27,6 +27,11 @@ outside Git:
 ```bash
 export PANDASCORE_API_KEY="..."
 export DISCORD_WEBHOOK_URL="..."
+# Optional interactive/advisory services:
+export DISCORD_TOKEN="..."
+export DISCORD_CHANNEL_ID="..."
+export DISCORD_OWNER_USER_ID="..."
+export OPENAI_API_KEY="..."
 ```
 
 ## Normal workflow
@@ -57,14 +62,14 @@ and requires the complete four-target bundle.
 
 - `packages/oracle-bets-core`: CLI, evidence, health, market, settlement, and lifecycle support.
 - `packages/lol-bets`: LoL ingestion, features, ratings, training, calibration, inference, and daily workflow.
-- `packages/oracle-bets-discord`: one-way LoL report formatting.
+- `packages/oracle-bets-discord`: safe report delivery and owner-only paper controls.
 - `config`: source, league, identity, feature, and reviewed parameter contracts.
 - `data/lol`: generated datasets.
 - `data/state`: canonical evidence and immutable model registry.
-- `models/lol`: mutable full training workspace.
+- `models/lol`: bootstrap serving artifacts and temporary training staging.
 - `reports/lol`: ingestion, training, and daily review artifacts.
 - `notebooks/lol`: thin read-only analysis notebooks.
-- `ops/launchd`: daily and monthly scheduler examples.
+- `ops/launchd`: daily, monthly, closing-line, and optional Gateway-bot examples.
 
 Generated data, databases, models, logs, and reports are ignored. Reviewed
 configuration, docs, cleared notebooks, and migration manifests are tracked.
@@ -78,7 +83,10 @@ uv run ruff check packages tests
 uv run mkdocs build --strict
 uv run oracle-bets lol health
 uv run oracle-bets lol validate-data
+uv run oracle-bets lol market-check
+uv run oracle-bets evidence health
 uv run oracle-bets daily lol --dry-run --skip-market-search
+uv run oracle-bets discord doctor
 ```
 
 Read the [documentation](docs/index.md) and [command reference](docs/commands.md).

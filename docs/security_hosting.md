@@ -6,8 +6,9 @@ signing, private keys, or fund movement.
 
 Secrets belong outside the repository in environment variables or a `0600`
 user-owned file. Reports exclude webhook URLs. Discord payloads disable all
-mentions. The removed dashboard/API/bot surfaces are not network attack
-surfaces anymore.
+mentions. The Gateway bot exposes only owner-checked paper accept/reject
+controls and a prop Line/Odds modal; duplicate decisions are idempotent. It has
+no shell, arbitrary prompt, trading, signing, or wallet capability.
 
 ## Hosting recommendation
 
@@ -19,10 +20,12 @@ scheduled runner:
   persistence are handled carefully;
 - a low-cost scheduled VM job.
 
-This does not require an always-on bot.
+This does not require an always-on bot. Public Gamma discovery and public CLOB
+books require no credentials or VPN from the current Italian connection.
 
-An interactive always-on Discord bot would require a continuously running PC,
+The optional interactive Discord bot requires a continuously running PC,
 VPS, or free VM such as Oracle Cloud Always Free. Free VM capacity, account
 verification, idle-resource reclamation, regional availability, maintenance,
-and outbound-network limits are real caveats. The repository intentionally
-ships only the simpler one-way webhook path.
+and outbound-network limits are real caveats. Italy's Polymarket order geoblock
+does not affect read-only research and reinforces the permanent no-order
+boundary.
