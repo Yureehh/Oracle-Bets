@@ -176,7 +176,7 @@ def run_workflow(
                 StepOutcome(step.name, "skipped_after_failure", "blocked", 0)
             )
             continue
-        if step.name in completed:
+        if step.name in completed and step.writes:
             outcomes.append(
                 StepOutcome(
                     step.name,

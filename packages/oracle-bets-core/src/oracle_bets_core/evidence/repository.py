@@ -43,6 +43,7 @@ class EvidenceTable(StrEnum):
     FIXTURES = "fixtures"
     MODEL_VERSIONS = "model_versions"
     PREDICTIONS = "predictions"
+    FORECASTS = "forecasts"
     MARKET_CANDIDATES = "market_candidates"
     MARKET_SNAPSHOTS = "market_snapshots"
     PROPOSALS = "proposals"
@@ -153,6 +154,21 @@ TABLE_COLUMNS: dict[EvidenceTable, frozenset[str]] = {
             "payload_json",
         }
     ),
+    EvidenceTable.FORECASTS: frozenset(
+        {
+            "id",
+            "run_id",
+            "fixture_id",
+            "model_version_id",
+            "target",
+            "created_at",
+            "point_value",
+            "uncertainty_json",
+            "evidence_status",
+            "idempotency_key",
+            "payload_json",
+        }
+    ),
     EvidenceTable.MARKET_CANDIDATES: frozenset(
         {
             "id",
@@ -248,7 +264,7 @@ TABLE_COLUMNS: dict[EvidenceTable, frozenset[str]] = {
     ),
 }
 
-JSON_COLUMNS = {"payload_json", "warnings_json", "book_json"}
+JSON_COLUMNS = {"payload_json", "warnings_json", "book_json", "uncertainty_json"}
 
 
 def _json_default(value: Any) -> str:
@@ -343,6 +359,11 @@ class EvidenceStore:
                     "VALUES (?, ?)",
                     (SCHEMA_VERSION, _utc_text(datetime.now(UTC))),
                 )
+            elif len(rows) == 1 and int(rows[0]["version"]) in {1, 2}:
+                conn.execute(
+                    "UPDATE evidence_schema_version SET version = ?, installed_at = ?",
+                    (SCHEMA_VERSION, _utc_text(datetime.now(UTC))),
+                )
             elif len(rows) != 1 or int(rows[0]["version"]) != SCHEMA_VERSION:
                 versions = [int(row["version"]) for row in rows]
                 msg = (
@@ -373,6 +394,20 @@ class EvidenceStore:
         with self.connection() as conn:
             for prepared_table, normalized in prepared:
                 ids.append(self._insert_record(conn, prepared_table, normalized))
+        return ids
+
+    def append_transaction(
+        self,
+        records: Sequence[tuple[EvidenceTable, Mapping[str, Any]]],
+    ) -> Sequence[str]:
+        """Append a dependency-ordered cross-table evidence chain atomically."""
+        prepared = [self._prepare_record(table, values) for table, values in records]
+        if not prepared:
+            return []
+        ids: list[str] = []
+        with self.connection() as conn:
+            for table, normalized in prepared:
+                ids.append(self._insert_record(conn, table, normalized))
         return ids
 
     def _prepare_record(

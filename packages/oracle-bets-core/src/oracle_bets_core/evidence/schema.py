@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 EVIDENCE_TABLES = (
     "runs",
@@ -13,6 +13,7 @@ EVIDENCE_TABLES = (
     "fixtures",
     "model_versions",
     "predictions",
+    "forecasts",
     "market_candidates",
     "market_snapshots",
     "proposals",
@@ -137,6 +138,21 @@ CREATE TABLE IF NOT EXISTS predictions (
     )
 );
 
+CREATE TABLE IF NOT EXISTS forecasts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    fixture_id TEXT NOT NULL REFERENCES fixtures(id),
+    model_version_id TEXT NOT NULL REFERENCES model_versions(id),
+    target TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    point_value TEXT NOT NULL,
+    uncertainty_json TEXT NOT NULL CHECK (json_valid(uncertainty_json)),
+    evidence_status TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    content_hash TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS market_candidates (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id),
@@ -231,7 +247,7 @@ CREATE TABLE IF NOT EXISTS corrections (
     content_hash TEXT NOT NULL,
     CHECK (target_table IN (
         'runs', 'run_events', 'source_snapshots', 'identities', 'provider_links',
-        'fixtures', 'model_versions', 'predictions', 'market_candidates',
+        'fixtures', 'model_versions', 'predictions', 'forecasts', 'market_candidates',
         'market_snapshots', 'proposals', 'approvals', 'paper_positions',
         'settlements', 'corrections'
     ))
@@ -242,11 +258,12 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_run_id ON source_snapshots(run_id);
 CREATE INDEX IF NOT EXISTS idx_provider_links_identity ON provider_links(identity_id);
 CREATE INDEX IF NOT EXISTS idx_fixtures_start_time ON fixtures(start_time);
 CREATE INDEX IF NOT EXISTS idx_predictions_fixture ON predictions(fixture_id);
+CREATE INDEX IF NOT EXISTS idx_forecasts_fixture ON forecasts(fixture_id);
 CREATE INDEX IF NOT EXISTS idx_market_candidates_fixture ON market_candidates(fixture_id);
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_candidate ON market_snapshots(market_candidate_id);
 CREATE INDEX IF NOT EXISTS idx_proposals_prediction ON proposals(prediction_id);
 CREATE INDEX IF NOT EXISTS idx_positions_proposal ON paper_positions(proposal_id);
-CREATE INDEX IF NOT EXISTS idx_settlements_position ON settlements(paper_position_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_settlements_position ON settlements(paper_position_id);
 CREATE INDEX IF NOT EXISTS idx_corrections_target ON corrections(target_table, target_id);
 """
 

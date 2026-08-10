@@ -24,6 +24,7 @@ class SettlementResult(StrEnum):
 class SettlementSource(StrEnum):
     PROVIDER = "provider"
     VERIFIED_INTERNAL = "verified_internal"
+    OWNER_VERIFIED = "owner_verified"
 
 
 @dataclass(frozen=True)
@@ -70,17 +71,18 @@ def reconcile_settlement(
     internal_result: SettlementResult | None = None,
     internal_reference: str | None = None,
     internal_verified: bool = False,
+    owner_result: SettlementResult | None = None,
+    owner_reference: str | None = None,
 ) -> SettlementRecord:
-    """Prefer provider settlement but stop when verified sources conflict."""
+    """Build one settlement and stop when verified sources conflict."""
     _require_utc(settled_at, field="settled_at")
-    if (
-        provider_result is not None
-        and internal_result is not None
-        and provider_result is not internal_result
-    ):
-        raise SettlementError(
-            "provider and verified internal settlement results conflict"
-        )
+    supplied = [
+        result
+        for result in (provider_result, internal_result, owner_result)
+        if result is not None
+    ]
+    if len(set(supplied)) > 1:
+        raise SettlementError("verified settlement results conflict")
 
     warnings: list[str] = []
     if provider_result is not None:
@@ -92,9 +94,13 @@ def reconcile_settlement(
         source = SettlementSource.VERIFIED_INTERNAL
         reference = internal_reference
         warnings.append("internal_settlement")
+    elif owner_result is not None:
+        result = owner_result
+        source = SettlementSource.OWNER_VERIFIED
+        reference = owner_reference
     else:
         raise SettlementError(
-            "settlement requires a provider result or verified internal result"
+            "settlement requires a provider, verified internal, or owner result"
         )
     if not reference or not reference.strip():
         raise SettlementError("settlement source reference cannot be empty")

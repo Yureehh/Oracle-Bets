@@ -14,6 +14,7 @@ from oracle_bets_core.evidence import (
 
 NOW = datetime(2026, 7, 26, 8, 15, tzinfo=UTC)
 BATCH_SIZE = 3
+EVIDENCE_SCHEMA_VERSION = 3
 
 
 @pytest.fixture
@@ -46,6 +47,7 @@ def test_schema_has_separate_append_only_record_tables(evidence_store):
         "fixtures",
         "model_versions",
         "predictions",
+        "forecasts",
         "market_candidates",
         "market_snapshots",
         "proposals",
@@ -56,7 +58,7 @@ def test_schema_has_separate_append_only_record_tables(evidence_store):
     }
 
     assert expected <= evidence_store.table_names()
-    assert evidence_store.schema_version() == 1
+    assert evidence_store.schema_version() == EVIDENCE_SCHEMA_VERSION
     assert evidence_store.integrity_check() == "ok"
 
     with evidence_store.connection(read_only=True) as conn:
@@ -244,6 +246,29 @@ def test_append_many_is_atomic_and_idempotent(evidence_store):
     with pytest.raises(EvidenceConflictError):
         evidence_store.append_many(EvidenceTable.RUNS, conflicting)
     assert evidence_store.count(EvidenceTable.RUNS) == BATCH_SIZE
+
+
+def test_cross_table_append_is_atomic(evidence_store):
+    records = [
+        (EvidenceTable.RUNS, _run_record()),
+        (
+            EvidenceTable.RUN_EVENTS,
+            {
+                "id": "event-broken",
+                "run_id": "missing-run",
+                "event_at": NOW,
+                "event_type": "test",
+                "status": "failed",
+                "idempotency_key": "event-broken",
+                "payload_json": {},
+            },
+        ),
+    ]
+
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        evidence_store.append_transaction(records)
+
+    assert evidence_store.count(EvidenceTable.RUNS) == 0
 
 
 def test_dry_run_rolls_back_all_writes(evidence_store):

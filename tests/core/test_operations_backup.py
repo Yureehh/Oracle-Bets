@@ -29,7 +29,7 @@ def _journal(tmp_path):
     return store, journal
 
 
-def test_retry_recovery_is_recorded_and_resume_skips_completed_steps(tmp_path):
+def test_retry_recovery_reruns_guards_and_skips_completed_writes(tmp_path):
     store, journal = _journal(tmp_path)
     attempts = {"read": 0, "write": 0}
 
@@ -65,13 +65,14 @@ def test_retry_recovery_is_recorded_and_resume_skips_completed_steps(tmp_path):
     assert first.ok
     assert first.steps[0].attempts == EXPECTED_RETRY_ATTEMPTS
     assert [step.status for step in resumed.steps] == [
-        "skipped_completed",
+        "completed",
         "skipped_completed",
     ]
-    assert attempts == {"read": 2, "write": 1}
+    assert attempts == {"read": 3, "write": 1}
     events = store.list(EvidenceTable.RUN_EVENTS)
     assert [event["status"] for event in events] == [
         "failed",
+        "completed",
         "completed",
         "completed",
     ]

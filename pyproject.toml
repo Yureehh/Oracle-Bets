@@ -31,6 +31,8 @@ dependencies = [
 oracle-bets = "oracle_bets_core.cli:main"
 
 [project.optional-dependencies]
+ai-review = ["openai>=2.0,<3.0"]
+discord-bot = ["discord.py>=2.5,<3.0"]
 dev = [
   "black[jupyter] >=24.4.2,<25.0.0",
   "commitizen >=3.27.0,<4.0.0",
@@ -155,6 +157,11 @@ ignore = [
   "BLE001",
   "PLC0415",
   "D417",
+  "CPY001",
+  "FURB192",
+  "ISC004",
+  "PLR0917",
+  "PLW0108",
 ]
 dummy-variable-rgx = "^(_+|_[a-zA-Z0-9]+)$"
 
@@ -173,4 +180,11 @@ docstring-code-line-length = "dynamic"
 testpaths = ["tests"]
 filterwarnings = [
   "ignore:The set_(bad|over|under) function will be deprecated:PendingDeprecationWarning:shap\\.plots\\.colors\\._colors",
+]
+
+[tool.ty.environment]
+extra-paths = [
+  "packages/oracle-bets-core/src",
+  "packages/lol-bets/src",
+  "packages/oracle-bets-discord/src",
 ]

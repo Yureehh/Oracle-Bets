@@ -332,10 +332,12 @@ def _accepted_risks(config: ProductConfig) -> tuple[str, ...]:
         risks.append(
             "Market comparison is read-only; no wallet, signer, order, or fund-movement path exists."
         )
-    if not config.promotion.automatic:
+    if config.promotion.routine_automatic:
         risks.append(
-            "Model promotion requires an explicit owner review after temporal calibration and profit evidence."
+            "Routine candidates may auto-promote only through the configured non-inferiority gates."
         )
+    if not config.promotion.optuna_automatic:
+        risks.append("Optuna-derived candidates always require explicit owner review.")
     return tuple(risks)
 
 
