@@ -94,6 +94,7 @@ target/
 !/data/state/archives/legacy-ledger/README.md
 !/data/state/archives/legacy-ledger/manifest.json
 /data/state/backups/
+/data/state/model-registry/
 
 /data/lol/raw/oracles_elixir
 /data/lol/raw/oracles_elixir_cache/
