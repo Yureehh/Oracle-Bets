@@ -95,6 +95,7 @@ target/
 !/data/state/archives/legacy-ledger/manifest.json
 /data/state/backups/
 /data/state/model-registry/
+/data/state/discord-bot.lock
 
 /data/lol/raw/oracles_elixir
 /data/lol/raw/oracles_elixir_cache/
