@@ -1,18 +1,24 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "timezone": "Europe/Rome",
   "fixture_window_hours": 36,
   "market": {
     "read_only": true
   },
   "leagues": {
-    "profile": "tier1_plus_erls"
+    "training_profile": "research_all_supported",
+    "prediction_profile": "tier1_plus_erls",
+    "actionable_exclusions": [
+      "CBLOL",
+      "LCP"
+    ]
   },
   "training": {
     "new_valid_maps_trigger": 50,
     "new_major_maps_trigger": 20
   },
   "promotion": {
-    "automatic": false
+    "routine_automatic": true,
+    "optuna_automatic": false
   }
 }

@@ -372,7 +372,6 @@ class PandaScoreSchedule:
         start_datetime: str | dt.datetime,
         end_datetime: str | dt.datetime | None = None,
         max_day_range: int = 14,
-        time_format: str | None = "%Y-%m-%dT%H:%M:%S%z",
         leagues: str | None = None,
     ) -> pd.DataFrame:
         """Return a DataFrame of upcoming matches within the given time window."""
@@ -385,9 +384,7 @@ class PandaScoreSchedule:
 
         schedule_df = pd.DataFrame()
         for matches in self._fetch_all_matches():
-            parsed = self._parse_and_filter_matches(
-                matches, start_dt, end_dt, time_format=time_format
-            )
+            parsed = self._parse_and_filter_matches(matches, start_dt, end_dt)
             if parsed.empty:
                 continue
             schedule_df = self._append_to_schedule(schedule_df, parsed)
@@ -550,16 +547,11 @@ class PandaScoreSchedule:
         matches: list[dict[str, Any]],
         start_dt: dt.datetime,
         end_dt: dt.datetime,
-        time_format: str | None,
     ) -> pd.DataFrame:
-        del time_format  # Retained as a compatibility parameter.
         games_df = self._parse_matches_response(matches)
         if games_df.empty:
             return games_df
         # normalize_schedule_frame already parsed start_utc to UTC datetimes;
-        # Public `time_format` is retained for API compatibility but no re-parse with
-        # a strftime pattern is needed (it always fell through to the generic
-        # parser on datetime input).
         games_df["start_utc"] = pd.to_datetime(
             games_df["start_utc"], errors="coerce", utc=True
         )

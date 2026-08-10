@@ -25,3 +25,27 @@ def selected_leagues(profile: str | None = None) -> list[str]:
     except KeyError as exc:
         msg = "League selection config must define active_profile and profiles."
         raise KeyError(msg) from exc
+
+
+def training_leagues() -> list[str]:
+    """Return the full historical research universe used by ingestion/training."""
+    from oracle_bets_core.config import load_product_config
+
+    return selected_leagues(load_product_config().leagues.training_profile)
+
+
+def prediction_leagues() -> list[str]:
+    """Return the configured prediction profile before actionability exclusions."""
+    from oracle_bets_core.config import load_product_config
+
+    return selected_leagues(load_product_config().leagues.prediction_profile)
+
+
+def actionable_leagues() -> list[str]:
+    """Return leagues allowed to produce paper proposals."""
+    from oracle_bets_core.config import load_product_config
+
+    product = load_product_config()
+    excluded = set(product.leagues.actionable_exclusions)
+    prediction = selected_leagues(product.leagues.prediction_profile)
+    return [league for league in prediction if league not in excluded]

@@ -63,6 +63,8 @@ target/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.rdb
 
 # Pycharm
@@ -91,6 +93,7 @@ target/
 !/data/state/archives/legacy-ledger/
 !/data/state/archives/legacy-ledger/README.md
 !/data/state/archives/legacy-ledger/manifest.json
+/data/state/backups/
 
 /data/lol/raw/oracles_elixir
 

@@ -13,8 +13,10 @@ from oracle_bets_core.paths import PRODUCT_CONFIG
 FIXTURE_WINDOW_HOURS = 36
 NEW_MAJOR_MAPS_TRIGGER = 20
 NEW_VALID_MAPS_TRIGGER = 50
-OPERATIONAL_LEAGUE_PROFILE = "tier1_plus_erls"
-SCHEMA_VERSION = 2
+ACTIONABLE_LEAGUE_EXCLUSIONS = ("CBLOL", "LCP")
+PREDICTION_LEAGUE_PROFILE = "tier1_plus_erls"
+RESEARCH_LEAGUE_PROFILE = "research_all_supported"
+SCHEMA_VERSION = 3
 
 
 class ProductConfigError(ValueError):
@@ -56,16 +58,37 @@ class MarketConfig:
 
 @dataclass(frozen=True)
 class LeagueConfig:
-    profile: str
+    training_profile: str
+    prediction_profile: str
+    actionable_exclusions: tuple[str, ...]
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> LeagueConfig:
-        _expect_keys(value, {"profile"}, "leagues")
-        if value["profile"] != OPERATIONAL_LEAGUE_PROFILE:
+        _expect_keys(
+            value,
+            {"training_profile", "prediction_profile", "actionable_exclusions"},
+            "leagues",
+        )
+        if value["training_profile"] != RESEARCH_LEAGUE_PROFILE:
             raise ProductConfigError(
-                f"leagues.profile must remain {OPERATIONAL_LEAGUE_PROFILE}."
+                f"leagues.training_profile must remain {RESEARCH_LEAGUE_PROFILE}."
             )
-        return cls(profile=value["profile"])
+        if value["prediction_profile"] != PREDICTION_LEAGUE_PROFILE:
+            raise ProductConfigError(
+                f"leagues.prediction_profile must remain {PREDICTION_LEAGUE_PROFILE}."
+            )
+        exclusions = value["actionable_exclusions"]
+        if not isinstance(exclusions, list) or tuple(sorted(exclusions)) != (
+            ACTIONABLE_LEAGUE_EXCLUSIONS
+        ):
+            raise ProductConfigError(
+                "leagues.actionable_exclusions must contain exactly CBLOL and LCP."
+            )
+        return cls(
+            training_profile=value["training_profile"],
+            prediction_profile=value["prediction_profile"],
+            actionable_exclusions=tuple(sorted(exclusions)),
+        )
 
 
 @dataclass(frozen=True)
@@ -95,14 +118,21 @@ class TrainingConfig:
 
 @dataclass(frozen=True)
 class PromotionConfig:
-    automatic: bool
+    routine_automatic: bool
+    optuna_automatic: bool
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> PromotionConfig:
-        _expect_keys(value, {"automatic"}, "promotion")
-        if value["automatic"] is not False:
-            raise ProductConfigError("automatic model promotion must remain disabled.")
-        return cls(automatic=False)
+        _expect_keys(value, {"routine_automatic", "optuna_automatic"}, "promotion")
+        if value["routine_automatic"] is not True:
+            raise ProductConfigError(
+                "routine automatic model promotion must remain enabled."
+            )
+        if value["optuna_automatic"] is not False:
+            raise ProductConfigError(
+                "Optuna candidates must never promote automatically."
+            )
+        return cls(routine_automatic=True, optuna_automatic=False)
 
 
 @dataclass(frozen=True)
@@ -155,7 +185,11 @@ class ProductConfig:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["leagues"]["actionable_exclusions"] = list(
+            self.leagues.actionable_exclusions
+        )
+        return payload
 
 
 def load_product_config(path: str | Path = PRODUCT_CONFIG) -> ProductConfig:

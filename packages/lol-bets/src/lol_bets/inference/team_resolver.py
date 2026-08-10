@@ -78,6 +78,31 @@ def clear_alias_cache() -> None:
     _load_alias_config.cache_clear()
 
 
+def team_name_variants(name: str) -> tuple[str, ...]:
+    """Return a provider name, its canonical target, and curated reverse aliases."""
+    query = str(name).strip()
+    if not query:
+        return ()
+    aliases, _ = _load_alias_config()
+    target = aliases.get(query.casefold(), query)
+    variants = [query]
+    if target.casefold() != query.casefold():
+        variants.append(target)
+    variants.extend(
+        alias
+        for alias, canonical in aliases.items()
+        if canonical.casefold() == target.casefold()
+    )
+    return tuple(dict.fromkeys(variants))
+
+
+def canonical_team_name(name: str) -> str:
+    """Return the curated canonical provider name, or the stripped input."""
+    query = str(name).strip()
+    aliases, _ = _load_alias_config()
+    return aliases.get(query.casefold(), query)
+
+
 def _normalize(name: str, suffixes: tuple[str, ...]) -> str:
     """Lowercase, strip punctuation, drop org-suffix tokens."""
     tokens = [t for t in _NON_ALNUM.split(name.casefold()) if t]

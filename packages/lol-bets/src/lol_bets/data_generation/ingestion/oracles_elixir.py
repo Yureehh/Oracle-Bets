@@ -25,7 +25,7 @@ from lol_bets.data_generation.ingestion.quality import (
     quarantine_oracles_elixir_data,
 )
 from oracle_bets_core.io_utils import FileLoadError, get_sorting_keys, json_loader
-from oracle_bets_core.league_selection import selected_leagues
+from oracle_bets_core.league_selection import training_leagues
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import IMPORT_COLUMNS, RAW_DATA, TEAM_ALIASES
 from oracle_bets_core.pd import pd
@@ -113,10 +113,8 @@ class OraclesElixir:
                     raise
 
         if local_years:
-            logger.info("Read local Oracle Elixir files for years: %s", local_years)
-            data_pipeline_logger.info(
-                "Read local Oracle Elixir files for years: %s", local_years
-            )
+            logger.info("Reading local Oracle Elixir files")
+            data_pipeline_logger.info("Reading local Oracle Elixir files")
         if not results:
             msg = (
                 "No local Oracle Elixir files found for years "
@@ -642,7 +640,7 @@ class OraclesElixir:
         logger.info("Filtering data for relevant leagues...")
         data_pipeline_logger.info("Filtering data for relevant leagues...")
         try:
-            considered = selected_leagues()
+            considered = training_leagues()
         except (FileNotFoundError, KeyError):
             logger.error("League configuration invalid or missing.")
             data_pipeline_logger.exception("League configuration invalid or missing.")

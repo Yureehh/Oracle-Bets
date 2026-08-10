@@ -7,7 +7,9 @@ from lol_bets.inference import team_resolver
 from lol_bets.inference.team_resolver import (
     ResolvedTeam,
     TeamResolutionError,
+    canonical_team_name,
     resolve_team_name,
+    team_name_variants,
 )
 
 KNOWN = [
@@ -96,6 +98,19 @@ def test_production_alias_resolves_ag_al_to_anyones_legend():
 
     assert out.ok
     assert out.resolved_name == "Anyone's Legend"
+    assert out.method == "alias"
+
+
+def test_alias_variants_include_provider_and_canonical_names():
+    assert set(team_name_variants("AG.AL")) >= {"AG.AL", "Anyone's Legend"}
+    assert canonical_team_name("AG.AL") == "Anyone's Legend"
+
+
+def test_production_alias_resolves_nongshim_provider_name():
+    out = resolve_team_name("Nongshim Red Force", ["Nongshim RedForce"])
+
+    assert out.ok
+    assert out.resolved_name == "Nongshim RedForce"
     assert out.method == "alias"
 
 

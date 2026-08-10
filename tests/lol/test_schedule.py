@@ -72,7 +72,6 @@ def test_schedule_filtering_and_deduping_use_stable_match_key():
         [_pandascore_match(), _pandascore_match()],
         start,
         end,
-        time_format=None,
     )
     out = schedule._append_to_schedule(pd.DataFrame(), df)
 

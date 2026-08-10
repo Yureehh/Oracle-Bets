@@ -9,12 +9,13 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 
 import requests
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 _DEFAULT_MATCH_TOLERANCE = timedelta(hours=6)
 _MIN_OBSERVATION_SECONDS = 30
@@ -29,6 +30,14 @@ class MarketDataError(ValueError):
 
 class MarketReadError(RuntimeError):
     """Raised when a sanitized read-only provider request fails."""
+
+
+class SupportedMarketType(StrEnum):
+    """Prematch contract meanings the LoL model can price without guessing."""
+
+    MAP_WINNER = "map_winner"
+    SERIES_WINNER = "series_winner"
+    SERIES_TOTAL_MAPS = "series_total_maps"
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,10 @@ class PolymarketMarket:
     outcomes: tuple[MarketOutcome, ...]
     event_start_time: datetime | None
     best_of: int | None
+    sports_market_type: str
+    group_item_title: str
+    game_number: int | None
+    total_line: Decimal | None
     active: bool
     closed: bool
     accepting_orders: bool
@@ -236,6 +249,7 @@ class PolymarketGammaAdapter:
             market.get("bestOf"),
             f"{title} {question} {market.get('groupItemTitle') or ''}",
         )
+        group_item_title = str(market.get("groupItemTitle") or "").strip()
         return PolymarketMarket(
             event_id=event_id,
             market_id=market_id,
@@ -248,6 +262,15 @@ class PolymarketGammaAdapter:
             outcomes=normalized_outcomes,
             event_start_time=_optional_utc(start_value),
             best_of=best_of,
+            sports_market_type=str(market.get("sportsMarketType") or "")
+            .strip()
+            .casefold(),
+            group_item_title=group_item_title,
+            game_number=_parse_game_number(f"{group_item_title} {question}"),
+            total_line=_parse_total_line(
+                market.get("line"),
+                f"{group_item_title} {question}",
+            ),
             active=market.get("active") is True,
             closed=market.get("closed") is True,
             accepting_orders=market.get("acceptingOrders") is True,
@@ -336,6 +359,9 @@ class MarketFixture:
     team_b_names: tuple[str, ...]
     start_time: datetime
     best_of: int
+    market_type: SupportedMarketType = SupportedMarketType.SERIES_WINNER
+    game_number: int | None = None
+    total_line: Decimal | None = None
     resolution_rule_terms: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -353,6 +379,19 @@ class MarketFixture:
             raise ValueError("market fixture start_time must be UTC")
         if self.best_of not in {1, 2, 3, 5}:
             raise ValueError("market fixture best_of must be 1, 2, 3, or 5")
+        object.__setattr__(self, "market_type", SupportedMarketType(self.market_type))
+        if self.market_type is SupportedMarketType.MAP_WINNER:
+            if self.game_number is None or not 1 <= self.game_number <= self.best_of:
+                raise ValueError("map winner requests require a playable game_number")
+        elif self.game_number is not None:
+            raise ValueError("game_number is valid only for map winner requests")
+        if self.market_type is SupportedMarketType.SERIES_TOTAL_MAPS:
+            line = _required_decimal(self.total_line, field="total maps line")
+            if line <= 0:
+                raise ValueError("total maps line must be positive")
+            object.__setattr__(self, "total_line", line)
+        elif self.total_line is not None:
+            raise ValueError("total_line is valid only for total maps requests")
 
 
 @dataclass(frozen=True)
@@ -427,8 +466,23 @@ def _market_contract_reasons(
     reasons: list[str] = []
     if not market.active or market.closed or not market.accepting_orders:
         reasons.append("market_not_open")
-    if not _is_winner_market(market.question):
-        reasons.append("market_meaning_mismatch")
+    expected_sports_type = {
+        SupportedMarketType.MAP_WINNER: "child_moneyline",
+        SupportedMarketType.SERIES_WINNER: "moneyline",
+        SupportedMarketType.SERIES_TOTAL_MAPS: "totals",
+    }[fixture.market_type]
+    if market.sports_market_type != expected_sports_type:
+        reasons.append("sports_market_type_mismatch")
+    if fixture.market_type is SupportedMarketType.MAP_WINNER:
+        if market.game_number != fixture.game_number:
+            reasons.append("game_number_mismatch")
+    elif fixture.market_type is SupportedMarketType.SERIES_WINNER:
+        if market.game_number is not None:
+            reasons.append("game_number_mismatch")
+        if "total" in _text_tokens(market.question):
+            reasons.append("market_meaning_mismatch")
+    elif market.total_line != fixture.total_line:
+        reasons.append("totals_line_mismatch")
     if (
         market.resolution_source
         and fixture.resolution_rule_terms
@@ -472,6 +526,11 @@ def _selection_orientation(
     fixture: MarketFixture,
     market: PolymarketMarket,
 ) -> tuple[tuple[str, str], ...]:
+    if fixture.market_type is SupportedMarketType.SERIES_TOTAL_MAPS:
+        totals = {
+            outcome.name.casefold(): outcome.token_id for outcome in market.outcomes
+        }
+        return tuple(sorted(totals.items())) if set(totals) == {"over", "under"} else ()
     selected: dict[str, str] = {}
     for outcome in market.outcomes:
         matches_a = _aliases_match_text(fixture.team_a_names, outcome.name)
@@ -508,11 +567,6 @@ def _selection_orientation(
                     )
                 )
     return ()
-
-
-def _is_winner_market(question: str) -> bool:
-    tokens = set(_text_tokens(question))
-    return bool({"win", "winner", "beat", "defeat"} & tokens)
 
 
 @dataclass(frozen=True)
@@ -602,7 +656,7 @@ class OrderBook:
                 "CLOB condition id",
             ),
             token_id=token_id,
-            timestamp=_optional_epoch_milliseconds(payload.get("timestamp")),
+            timestamp=_optional_clob_timestamp(payload.get("timestamp")),
             book_hash=_required_text(payload.get("hash"), "CLOB book hash"),
             bids=bids,
             asks=asks,
@@ -629,6 +683,9 @@ class ExpectedFill:
     worst_price: Decimal | None
     complete: bool
     decimal_odds: float | None
+    requested_risk: Decimal | None = None
+    filled_risk: Decimal | None = None
+    unfilled_risk: Decimal | None = None
 
 
 def walk_buy_book(
@@ -667,6 +724,45 @@ def walk_buy_book(
     )
 
 
+def walk_buy_book_by_risk(
+    book: OrderBook,
+    intended_risk_amount: Decimal | str | float,
+) -> ExpectedFill:
+    """Walk asks until the intended currency risk is completely executable."""
+    intended = _required_decimal(intended_risk_amount, field="intended risk amount")
+    if intended <= 0:
+        raise ValueError("intended risk amount must be positive")
+    remaining_risk = intended
+    filled_shares = Decimal(0)
+    cost = Decimal(0)
+    worst_price: Decimal | None = None
+    for level in book.asks:
+        if remaining_risk <= 0:
+            break
+        level_cost = level.size * level.price
+        level_spend = min(remaining_risk, level_cost)
+        filled_shares += level_spend / level.price
+        cost += level_spend
+        remaining_risk -= level_spend
+        worst_price = level.price
+    average = cost / filled_shares if filled_shares else None
+    complete = remaining_risk == 0 and filled_shares >= book.minimum_order_size
+    return ExpectedFill(
+        token_id=book.token_id,
+        requested_shares=filled_shares,
+        filled_shares=filled_shares,
+        unfilled_shares=Decimal(0),
+        total_cost=cost,
+        average_price=average,
+        worst_price=worst_price,
+        complete=complete,
+        decimal_odds=float(filled_shares / cost) if cost else None,
+        requested_risk=intended,
+        filled_risk=cost,
+        unfilled_risk=remaining_risk,
+    )
+
+
 class OrderBookClient(Protocol):
     """Read-only order-book provider surface used by observation capture."""
 
@@ -684,35 +780,240 @@ class BookObservation:
     fill: ExpectedFill
 
 
+@dataclass(frozen=True)
+class BookCaptureFailure:
+    """One outcome-token quote failure that does not invalidate peer tokens."""
+
+    token_id: str
+    reason: str
+    detail: str
+    sequence_number: int | None = None
+
+
+@dataclass(frozen=True)
+class MinimumOrderBookBatch:
+    """Two-observation minimum-share quotes and isolated token failures."""
+
+    observations: dict[str, tuple[BookObservation, BookObservation]]
+    failures: dict[str, BookCaptureFailure]
+
+
 def capture_order_book_pair(
     client: OrderBookClient,
     *,
     token_id: str,
-    requested_shares: Decimal | str | float,
+    requested_shares: Decimal | str | float | None = None,
+    intended_risk_amount: Decimal | str | float | None = None,
     interval_seconds: int = 45,
     sleeper: Callable[[float], None] = time.sleep,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    maximum_book_age_seconds: int = 120,
 ) -> tuple[BookObservation, BookObservation]:
     """Capture the two confirmed 30–60 second-spaced executable books."""
+    captured = capture_order_book_batch(
+        client,
+        token_ids=(token_id,),
+        requested_shares=requested_shares,
+        intended_risk_amount=intended_risk_amount,
+        interval_seconds=interval_seconds,
+        sleeper=sleeper,
+        clock=clock,
+        maximum_book_age_seconds=maximum_book_age_seconds,
+    )
+    return captured[token_id]
+
+
+def capture_order_book_batch(
+    client: OrderBookClient,
+    *,
+    token_ids: Sequence[str],
+    requested_shares: Decimal | str | float | None = None,
+    intended_risk_amount: Decimal | str | float | None = None,
+    interval_seconds: int = 45,
+    sleeper: Callable[[float], None] = time.sleep,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    maximum_book_age_seconds: int = 120,
+) -> dict[str, tuple[BookObservation, BookObservation]]:
+    """Capture every first book, wait once, then capture every second book."""
     if not _MIN_OBSERVATION_SECONDS <= interval_seconds <= _MAX_OBSERVATION_SECONDS:
         raise ValueError("book observation interval must be between 30 and 60 seconds")
-    observations: list[BookObservation] = []
-    for sequence in (1, 2):
-        book = client.get_order_book(token_id)
-        observed_at = clock()
-        if observed_at.tzinfo is None or observed_at.utcoffset() != timedelta(0):
-            raise ValueError("book observation clock must return UTC")
-        observations.append(
-            BookObservation(
-                sequence_number=sequence,
-                observed_at=observed_at,
-                book=book,
-                fill=walk_buy_book(book, requested_shares),
-            )
+    if (requested_shares is None) == (intended_risk_amount is None):
+        raise ValueError(
+            "provide exactly one of requested_shares or intended_risk_amount"
         )
+    if maximum_book_age_seconds <= 0:
+        raise ValueError("maximum_book_age_seconds must be positive")
+    unique_tokens = tuple(
+        dict.fromkeys(_required_text(item, "CLOB token id") for item in token_ids)
+    )
+    if not unique_tokens:
+        return {}
+    observations: dict[str, list[BookObservation]] = {
+        token: [] for token in unique_tokens
+    }
+    for sequence in (1, 2):
+        for token_id in unique_tokens:
+            book = client.get_order_book(token_id)
+            observed_at = clock()
+            _validate_book_observation(
+                book,
+                observed_at=observed_at,
+                maximum_book_age_seconds=maximum_book_age_seconds,
+            )
+            if intended_risk_amount is not None:
+                fill = walk_buy_book_by_risk(book, intended_risk_amount)
+            else:
+                assert requested_shares is not None
+                fill = walk_buy_book(book, requested_shares)
+            observations[token_id].append(
+                BookObservation(
+                    sequence_number=sequence,
+                    observed_at=observed_at,
+                    book=book,
+                    fill=fill,
+                )
+            )
         if sequence == 1:
             sleeper(interval_seconds)
-    return observations[0], observations[1]
+    return {token: (items[0], items[1]) for token, items in observations.items()}
+
+
+def capture_minimum_order_book_batch(
+    client: OrderBookClient,
+    *,
+    token_ids: Sequence[str],
+    interval_seconds: int = 45,
+    sleeper: Callable[[float], None] = time.sleep,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    maximum_book_age_seconds: int = 120,
+) -> MinimumOrderBookBatch:
+    """Quote each token at the larger minimum share size across two books."""
+    if not _MIN_OBSERVATION_SECONDS <= interval_seconds <= _MAX_OBSERVATION_SECONDS:
+        raise ValueError("book observation interval must be between 30 and 60 seconds")
+    if maximum_book_age_seconds <= 0:
+        raise ValueError("maximum_book_age_seconds must be positive")
+    unique_tokens = tuple(
+        dict.fromkeys(_required_text(item, "CLOB token id") for item in token_ids)
+    )
+    if not unique_tokens:
+        return MinimumOrderBookBatch(observations={}, failures={})
+
+    captured: dict[str, list[tuple[datetime, OrderBook]]] = {
+        token: [] for token in unique_tokens
+    }
+    failures: dict[str, BookCaptureFailure] = {}
+    for sequence in (1, 2):
+        active_tokens = (
+            unique_tokens
+            if sequence == 1
+            else tuple(token for token in unique_tokens if token not in failures)
+        )
+        for token_id in active_tokens:
+            try:
+                book = client.get_order_book(token_id)
+                observed_at = clock()
+                _validate_book_observation(
+                    book,
+                    observed_at=observed_at,
+                    maximum_book_age_seconds=maximum_book_age_seconds,
+                )
+                captured[token_id].append((observed_at, book))
+            except Exception as error:  # provider failures must remain token-local
+                failures[token_id] = _book_capture_failure(
+                    token_id,
+                    error,
+                    sequence_number=sequence,
+                )
+        if sequence == 1 and any(captured.values()):
+            sleeper(interval_seconds)
+
+    observations: dict[str, tuple[BookObservation, BookObservation]] = {}
+    for token_id, items in captured.items():
+        if token_id in failures or len(items) != _EXPECTED_BINARY_OUTCOMES:
+            continue
+        requested_shares = max(book.minimum_order_size for _, book in items)
+        first, second = items
+        pair = (
+            BookObservation(
+                1, first[0], first[1], walk_buy_book(first[1], requested_shares)
+            ),
+            BookObservation(
+                2, second[0], second[1], walk_buy_book(second[1], requested_shares)
+            ),
+        )
+        observations[token_id] = pair
+        if not all(observation.fill.complete for observation in pair):
+            reason = (
+                "empty_order_book"
+                if any(not observation.book.asks for observation in pair)
+                else "insufficient_depth"
+            )
+            failures[token_id] = BookCaptureFailure(
+                token_id=token_id,
+                reason=reason,
+                detail=(
+                    f"minimum executable size {requested_shares} shares was not "
+                    "available in both observations"
+                ),
+            )
+    return MinimumOrderBookBatch(observations=observations, failures=failures)
+
+
+def _validate_book_observation(
+    book: OrderBook,
+    *,
+    observed_at: datetime,
+    maximum_book_age_seconds: int,
+) -> None:
+    if observed_at.tzinfo is None or observed_at.utcoffset() != timedelta(0):
+        raise ValueError("book observation clock must return UTC")
+    if book.timestamp is None:
+        raise MarketDataError("CLOB order book timestamp is missing")
+    if abs((observed_at - book.timestamp).total_seconds()) > maximum_book_age_seconds:
+        raise MarketDataError("CLOB order book is stale")
+
+
+def _book_capture_failure(
+    token_id: str,
+    error: Exception,
+    *,
+    sequence_number: int,
+) -> BookCaptureFailure:
+    detail = f"{type(error).__name__}: {error}"
+    normalized = str(error).casefold()
+    if isinstance(error, MarketDataError):
+        if "timestamp is missing" in normalized:
+            reason = "missing_book_timestamp"
+        elif "stale" in normalized:
+            reason = "stale_book"
+        elif "crossed" in normalized:
+            reason = "crossed_book"
+        else:
+            reason = "malformed_book"
+    elif isinstance(error, ValueError) and "clock" in normalized:
+        reason = "invalid_observation_clock"
+    else:
+        reason = "book_unavailable"
+    return BookCaptureFailure(
+        token_id=token_id,
+        reason=reason,
+        detail=detail,
+        sequence_number=sequence_number,
+    )
+
+
+def confirmed_executable_fill(
+    observations: tuple[BookObservation, BookObservation],
+) -> ExpectedFill:
+    """Return the worse average price only when both observations fully fill."""
+    if len(observations) != _EXPECTED_BINARY_OUTCOMES or not all(
+        item.fill.complete for item in observations
+    ):
+        raise MarketDataError("both order-book observations require complete depth")
+    return max(
+        (item.fill for item in observations),
+        key=lambda fill: fill.average_price or Decimal(1),
+    )
 
 
 class PolymarketClobClient:
@@ -757,8 +1058,15 @@ class PolymarketClobClient:
                 )
                 response.raise_for_status()
                 payload = response.json()
-            except (requests.RequestException, ValueError) as error:
+                book = OrderBook.from_payload(
+                    payload,
+                    expected_token_id=token_id,
+                )
+                _require_book_timestamp(book)
+            except (requests.RequestException, ValueError, MarketDataError) as error:
                 if attempt == self.attempts:
+                    if isinstance(error, MarketDataError):
+                        raise
                     raise MarketReadError(
                         "Polymarket CLOB order-book request failed after "
                         f"{self.attempts} attempts."
@@ -766,10 +1074,6 @@ class PolymarketClobClient:
                 self.retry_sleep(min(2 ** (attempt - 1), 4))
                 continue
 
-            book = OrderBook.from_payload(
-                payload,
-                expected_token_id=token_id,
-            )
             self._cache[token_id] = (now, book)
             return book
         raise AssertionError("unreachable CLOB retry state")
@@ -779,6 +1083,11 @@ def _required_text(value: Any, field: str) -> str:
     if not isinstance(value, (str, int)) or not str(value).strip():
         raise MarketDataError(f"{field} must be a non-empty value")
     return str(value).strip()
+
+
+def _require_book_timestamp(book: OrderBook) -> None:
+    if book.timestamp is None:
+        raise MarketDataError("CLOB order book timestamp is missing")
 
 
 def _required_decimal(value: Any, *, field: str) -> Decimal:
@@ -812,13 +1121,23 @@ def _optional_utc(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _optional_epoch_milliseconds(value: Any) -> datetime | None:
+def _optional_clob_timestamp(value: Any) -> datetime | None:
     if value is None or value == "":
         return None
     try:
         milliseconds = float(value)
-    except (TypeError, ValueError) as error:
-        raise MarketDataError("CLOB timestamp must be epoch milliseconds") from error
+    except (TypeError, ValueError):
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError as error:
+            raise MarketDataError(
+                "CLOB timestamp must be epoch milliseconds or ISO-8601"
+            ) from error
+        if parsed.tzinfo is None:
+            raise MarketDataError(
+                "CLOB ISO-8601 timestamp must include a timezone"
+            ) from None
+        return parsed.astimezone(UTC)
     if not math.isfinite(milliseconds):
         raise MarketDataError("CLOB timestamp must be finite")
     return datetime.fromtimestamp(milliseconds / 1000, tz=UTC)
@@ -833,6 +1152,18 @@ def _parse_best_of(explicit: Any, text: str) -> int | None:
         return value if value in {1, 2, 3, 5} else None
     match = re.search(r"\b(?:bo|best\s+of\s+)([1235])\b", text, re.IGNORECASE)
     return int(match.group(1)) if match else None
+
+
+def _parse_game_number(text: str) -> int | None:
+    match = re.search(r"\b(?:game|map)\s*([1-5])\b", text, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _parse_total_line(explicit: Any, text: str) -> Decimal | None:
+    if explicit not in (None, ""):
+        return _optional_decimal(explicit, field="totals line")
+    match = re.search(r"\b([1-5]\.5)\b", text)
+    return Decimal(match.group(1)) if match else None
 
 
 def _text_tokens(value: str) -> tuple[str, ...]:

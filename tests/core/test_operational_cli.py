@@ -1,14 +1,25 @@
+import argparse
+import json
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 
+import pytest
 from lol_bets.operations.models import CandidateManifest, ModelRegistry
-from oracle_bets_core.cli import build_parser, main
+from oracle_bets_core.cli import _market_check_fixture_rows, build_parser, main
 
 NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
+BEST_OF_THREE = 3
+BLOCKED_EXIT = 2
 
 
 def test_parser_exposes_required_operational_commands():
     commands = (
+        ["lol", "source-check"],
+        ["lol", "source-check", "--format", "json"],
         ["lol", "retune"],
+        ["lol", "market-check"],
+        ["lol", "market-check", "--match-key", "pandascore:123"],
         ["model", "status"],
         ["model", "promote", "candidate-1", "--reason", "gate passed"],
         ["model", "rollback", "candidate-1", "--reason", "owner review"],
@@ -33,10 +44,6 @@ def test_parser_exposes_required_operational_commands():
             "settle",
             "--position-id",
             "position-1",
-            "--stake",
-            "1",
-            "--odds",
-            "2",
             "--result",
             "win",
             "--source-reference",
@@ -45,6 +52,99 @@ def test_parser_exposes_required_operational_commands():
     )
 
     assert all(build_parser().parse_args(command) for command in commands)
+
+
+def test_removed_automatic_reconciliation_command_is_rejected():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["paper", "reconcile"])
+
+
+@pytest.mark.parametrize("action", ["reconcile-history", "train"])
+def test_source_failure_blocks_history_and_training_commands(
+    action,
+    monkeypatch,
+    capsys,
+):
+    from lol_bets.data_generation.ingestion.source import OracleSourceReadinessError
+
+    def blocked():
+        raise OracleSourceReadinessError("source stale")
+
+    monkeypatch.setattr(
+        "lol_bets.data_generation.ingestion.source.require_oracle_source_ready",
+        blocked,
+    )
+
+    assert main(["lol", action]) == BLOCKED_EXIT
+    assert "source stale" in capsys.readouterr().err
+
+
+def test_fixture_market_check_falls_back_to_newest_daily_report(tmp_path):
+    reports = tmp_path / "daily"
+    reports.mkdir()
+    (reports / "20260802.json").write_text(
+        json.dumps(
+            {
+                "schedule": [
+                    {
+                        "match_key": "pandascore:1",
+                        "team_a": "T1",
+                        "team_b": "Gen.G",
+                        "league": "LCK",
+                        "start_utc": "2026-08-02T10:00:00+00:00",
+                        "best_of": 3,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = _market_check_fixture_rows(
+        "pandascore:1",
+        schedule_path=tmp_path / "missing.parquet",
+        report_dir=reports,
+    )
+
+    assert rows.iloc[0]["team_a"] == "T1"
+    assert rows.iloc[0]["team_b"] == "Gen.G"
+    assert rows.iloc[0]["best_of"] == BEST_OF_THREE
+
+
+def test_command_runbook_mentions_every_public_leaf_command():
+    def leaf_commands(
+        parser: argparse.ArgumentParser,
+        prefix: tuple[str, ...] = (),
+    ) -> list[tuple[str, ...]]:
+        subparsers = next(
+            (
+                action
+                for action in parser._actions
+                if isinstance(action, argparse._SubParsersAction)
+            ),
+            None,
+        )
+        if subparsers is None:
+            return [prefix]
+        return [
+            command
+            for name, child in subparsers.choices.items()
+            for command in leaf_commands(child, (*prefix, name))
+        ]
+
+    docs = (Path(__file__).parents[2] / "docs" / "commands.md").read_text(
+        encoding="utf-8"
+    )
+    missing = [
+        " ".join(command)
+        for command in leaf_commands(build_parser())
+        if not re.search(
+            rf"`{re.escape(' '.join(command))}(?:`|\s)",
+            docs,
+        )
+    ]
+
+    assert missing == []
 
 
 def test_evidence_cli_init_health_backup_verify_and_export(tmp_path, capsys):
@@ -166,17 +266,23 @@ def test_model_cli_promotes_checks_and_rolls_back_verified_bundles(
     assert "healthy" in capsys.readouterr().out
 
 
-def test_paper_settlement_dry_run_does_not_require_database(capsys):
+def test_paper_settlement_dry_run_uses_recorded_position_terms(
+    capsys,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.paper_evidence.paper_show",
+        lambda *_args: {
+            "stake_units": "1",
+            "decimal_odds": "1.90",
+        },
+    )
     code = main(
         [
             "paper",
             "settle",
             "--position-id",
             "position-1",
-            "--stake",
-            "1",
-            "--odds",
-            "1.90",
             "--result",
             "win",
             "--source-reference",
@@ -189,6 +295,24 @@ def test_paper_settlement_dry_run_does_not_require_database(capsys):
 
     assert code == 0
     assert "PnL 0.90 units (dry run)" in capsys.readouterr().out
+
+
+def test_paper_settlement_rejects_legacy_stake_and_odds_flags():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "paper",
+                "settle",
+                "--position-id",
+                "position-1",
+                "--result",
+                "win",
+                "--source-reference",
+                "provider-1",
+                "--stake",
+                "1",
+            ]
+        )
 
 
 def test_system_health_and_monthly_audit_cli_record_reports(tmp_path, capsys):
