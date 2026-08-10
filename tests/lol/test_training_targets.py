@@ -46,6 +46,12 @@ def test_training_parser_supports_feature_set_and_max_features():
     assert args.max_features == SELECTED_FEATURE_COUNT
 
 
+def test_routine_training_defaults_to_reviewed_compact_contract():
+    args = build_parser().parse_args(["lol", "train"])
+
+    assert args.feature_set == "compact"
+
+
 def test_training_parser_supports_validate_data_action():
     args = build_parser().parse_args(["lol", "validate-data"])
 

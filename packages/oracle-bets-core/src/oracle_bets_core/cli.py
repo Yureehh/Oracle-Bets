@@ -87,7 +87,7 @@ def _add_train_arguments(train) -> None:
     train.add_argument(
         "--feature-set",
         choices=["full", "compact", "selected"],
-        default="full",
+        default="compact",
     )
     train.add_argument("--max-features", type=int, default=120)
     train.add_argument("--calibration", choices=["auto", "none"], default="auto")
