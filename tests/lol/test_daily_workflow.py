@@ -600,6 +600,7 @@ def test_daily_core_steps_use_the_resumable_evidence_journal(
 
     assert captured["run_key"].endswith(":core")
     assert captured["names"] == [
+        "source-refresh",
         "source-check",
         "ingest",
         "identity-graph",
@@ -617,6 +618,9 @@ def test_daily_source_failure_blocks_ingest_and_training(tmp_path):
     def fail_source():
         raise RuntimeError("current_year_file_stale")
 
+    class RefreshResult:
+        files = (1, 2, 3)
+
     def data_generator_factory():
         called["ingest"] = True
         raise AssertionError("stale source must block ingestion")
@@ -633,12 +637,15 @@ def test_daily_source_failure_blocks_ingest_and_training(tmp_path):
         store=EvidenceStore(tmp_path / "daily-journal.db"),
         scheduled_for=dt.datetime(2026, 8, 10, tzinfo=dt.UTC),
         effective_config={"horizon_hours": 36},
+        source_refresh_fn=RefreshResult,
         source_check_fn=fail_source,
     )
 
     assert not called["ingest"]
     assert not called["train"]
-    assert result[0].name == "source-check"
-    assert not result[0].ok
-    assert result[0].detail.endswith("current_year_file_stale")
-    assert all(step.detail == "skipped after failure" for step in result[1:])
+    assert result[0].name == "source-refresh"
+    assert result[0].ok
+    assert result[1].name == "source-check"
+    assert not result[1].ok
+    assert result[1].detail.endswith("current_year_file_stale")
+    assert all(step.detail == "skipped after failure" for step in result[2:])

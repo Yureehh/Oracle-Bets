@@ -25,21 +25,21 @@ for one-way reports; the three Discord bot values are needed for interactive
 paper controls; OpenAI is optional and failure-safe. Polymarket public reads
 need no key or VPN.
 
-Google Drive Desktop must expose the Oracle's Elixir folder locally and keep
-the 2024, 2025, and 2026 CSV files available offline. The default symlink is
-`data/lol/raw/oracles_elixir`; alternatively set
-`ORACLES_ELIXIR_LOCAL_DIR=/absolute/path/to/OE Public Match Data`.
+Oracle's Elixir is fetched from the reviewed public Google Drive file IDs into
+the generated local cache `data/lol/raw/oracles_elixir_cache`. Google Drive
+Desktop is not required. `ORACLES_ELIXIR_LOCAL_DIR` may point to another
+owner-managed local cache, but `source-refresh` refuses cloud-backed symlinks
+so it cannot accidentally modify the public source.
 
-The pipeline does not use AWS and does not scrape Google Drive HTTP pages.
+The pipeline does not use AWS and never modifies Google Drive files.
 
 ## First clean research rebuild
 
-For a completely new assessment workspace, preserve only tracked documentation
-and the `raw/oracles_elixir` Google Drive symlink:
+For a completely new assessment workspace, preserve only tracked documentation:
 
 ```bash
 find data/lol/raw -mindepth 1 -maxdepth 1 \
-  ! -name oracles_elixir -delete
+  ! -name README.md -delete
 find data/lol/interim -mindepth 1 -depth -delete
 find data/lol/processed -mindepth 1 -depth -delete
 find data/state -mindepth 1 -depth ! -name README.md -delete
@@ -51,6 +51,8 @@ find logs -type f ! -name README.md ! -name .gitkeep -delete
 Then:
 
 ```bash
+uv run oracle-bets lol source-refresh
+uv run oracle-bets lol source-check
 uv run oracle-bets lol reconcile-history
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol retune --targets all --feature-set compact

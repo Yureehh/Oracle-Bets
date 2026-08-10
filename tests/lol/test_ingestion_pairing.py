@@ -116,7 +116,7 @@ def test_local_drive_read_errors_include_recovery_guidance(monkeypatch, tmp_path
 
     with pytest.raises(
         OraclesElixirError,
-        match="available offline",
+        match="source-refresh",
     ):
         OraclesElixir._read_local_csv(path)
 

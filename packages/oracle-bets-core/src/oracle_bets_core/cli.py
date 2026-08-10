@@ -22,9 +22,14 @@ def _add_lol_commands(sub) -> None:
     lol_sub.add_parser("health", help="Check LoL training and inference artifacts")
     source_check = lol_sub.add_parser(
         "source-check",
-        help="Validate the local Oracle's Elixir source before rebuilding",
+        help="Validate the managed Oracle's Elixir cache before rebuilding",
     )
     source_check.add_argument("--format", choices=["table", "json"], default="table")
+    source_refresh = lol_sub.add_parser(
+        "source-refresh",
+        help="Atomically refresh public Oracle's Elixir files from Google Drive",
+    )
+    source_refresh.add_argument("--format", choices=["table", "json"], default="table")
     lol_sub.add_parser("ingest", help="Run the LoL ingestion/feature pipeline")
     lol_sub.add_parser(
         "reconcile-history",
@@ -281,17 +286,22 @@ def _add_monitoring_commands(sub) -> None:
 def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911
     if args.action == "source-check":
         return _print_lol_source_check(args.format)
+    if args.action == "source-refresh":
+        return _refresh_lol_source(args.format)
     if args.action in {"ingest", "reconcile-history"}:
         from lol_bets.data_generation.ingestion.history import HistoryRefreshMode
         from lol_bets.data_generation.ingestion.source import (
             OracleSourceReadinessError,
+            OracleSourceRefreshError,
+            refresh_oracle_source,
             require_oracle_source_ready,
         )
         from lol_bets.pipeline import DataGenerator
 
         try:
+            refresh_oracle_source()
             require_oracle_source_ready()
-        except OracleSourceReadinessError as error:
+        except (OracleSourceReadinessError, OracleSourceRefreshError) as error:
             sys.stderr.write(f"{error}\n")
             return 2
         mode = (
@@ -358,7 +368,7 @@ def _print_lol_source_check(output_format: str) -> int:
 
     from lol_bets.data_generation.ingestion.source import inspect_oracle_source
 
-    report = inspect_oracle_source(require_symlink=True)
+    report = inspect_oracle_source()
     payload = report.to_dict()
     if output_format == "json":
         sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -378,6 +388,32 @@ def _print_lol_source_check(output_format: str) -> int:
         for issue in report.issues:
             sys.stdout.write(f"- BLOCKED: {issue}\n")
     return 0 if report.ready else 2
+
+
+def _refresh_lol_source(output_format: str) -> int:
+    import json
+
+    from lol_bets.data_generation.ingestion.source import (
+        OracleSourceRefreshError,
+        refresh_oracle_source,
+    )
+
+    try:
+        result = refresh_oracle_source()
+    except OracleSourceRefreshError as error:
+        sys.stderr.write(f"{error}\n")
+        return 2
+    payload = result.to_dict()
+    if output_format == "json":
+        sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    else:
+        sys.stdout.write("Oracle's Elixir source refreshed:\n")
+        for item in result.files:
+            sys.stdout.write(
+                f"- {item['year']}: {item['size_bytes']:,} bytes, "
+                f"modified {item['remote_modified_at']}\n"
+            )
+    return 0
 
 
 def _check_lol_markets(match_key: str | None) -> int:  # noqa: PLR0915

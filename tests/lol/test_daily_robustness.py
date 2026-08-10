@@ -156,6 +156,11 @@ def test_reconcile_and_ingest_precede_schedule_fetch(tmp_path, monkeypatch):
             return {"ready": True}
 
     monkeypatch.setattr(daily_module, "_daily_source_readiness", ReadySource)
+    monkeypatch.setattr(
+        daily_module,
+        "refresh_oracle_source",
+        lambda: type("RefreshResult", (), {"files": (1, 2, 3)})(),
+    )
     called = {"ingest": False}
 
     def broken_fetcher(**_kwargs):

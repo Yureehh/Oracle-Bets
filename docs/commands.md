@@ -44,8 +44,9 @@ uses wallets, or moves funds.
 | Command | When and effects | Important options |
 | --- | --- | --- |
 | `lol health` | Read-only check of training and serving artifacts. No network. | None. |
-| `lol source-check` | Read-only preflight for the local 2024–2026 Oracle's Elixir snapshot. Blocks stale, missing, placeholder, or actively changing files before rebuilding. | `--format table|json`. |
-| `lol ingest` | Routine local Google Drive Oracle's Elixir refresh for `research_all_supported`; writes raw/interim/processed data and manifests. Does not train or tune. | None. |
+| `lol source-refresh` | Download the reviewed 2024–2026 public Google Drive files into an atomic local cache. Network + cache/manifest writes; never uses AWS or modifies Drive. | `--format table|json`. |
+| `lol source-check` | Read-only preflight for the managed 2024–2026 Oracle's Elixir cache. Blocks stale, missing, placeholder, or actively changing files before rebuilding. | `--format table|json`. |
+| `lol ingest` | Refresh the public source, then run routine `research_all_supported` ingestion; writes raw/interim/processed data and manifests. Does not train or tune. | None. |
 | `lol reconcile-history` | Destructive full reconciliation of retained source history after source/schema changes; writes data artifacts. Does not train or tune. | None. |
 | `lol sync-identities` | Rebuild canonical player/team/league/series/map identity evidence from retained raw data. Writes evidence. | None. |
 | `lol schedule` | Fetch and print PandaScore fixtures only; does not write the schedule or train. | `--days N`, `--leagues LCK,LEC`. |
@@ -58,6 +59,8 @@ uses wallets, or moves funds.
 Examples:
 
 ```bash
+uv run oracle-bets lol source-refresh
+uv run oracle-bets lol source-check
 uv run oracle-bets lol ingest
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol schedule --days 2
@@ -72,7 +75,8 @@ uv run oracle-bets lol promote-tuning <run-id>
 uv run oracle-bets lol train --targets all --feature-set compact
 ```
 
-Ingestion, retraining, and retuning are separate operations. Retraining updates
+Source refresh, ingestion, retraining, and retuning are separate operations.
+The daily workflow refreshes the public cache before ingestion. Retraining updates
 model weights/calibrators on newer data using fixed reviewed hyperparameters.
 Retuning searches hyperparameters and carries greater overfitting risk.
 

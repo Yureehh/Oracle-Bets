@@ -1,15 +1,50 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from lol_bets.data_generation.ingestion.source import (
     OracleSourceReadinessError,
+    OracleSourceRefreshError,
     inspect_oracle_source,
+    refresh_oracle_source,
 )
 
 NOW = datetime(2026, 8, 10, 10, tzinfo=UTC)
+
+
+@dataclass
+class _Response:
+    content: bytes
+    filename: str
+    modified_at: str = "Mon, 10 Aug 2026 07:04:22 GMT"
+
+    @property
+    def headers(self):
+        return {
+            "Content-Disposition": f'attachment; filename="{self.filename}"',
+            "Last-Modified": self.modified_at,
+        }
+
+    def raise_for_status(self):
+        return None
+
+    def iter_content(self, chunk_size):
+        del chunk_size
+        yield self.content
+
+    def close(self):
+        return None
+
+
+class _Session:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+
+    def get(self, *_args, **_kwargs):
+        return next(self.responses)
 
 
 def _write_year(root, year: int, *, modified_at: datetime = NOW) -> None:
@@ -98,3 +133,63 @@ def test_source_readiness_can_require_a_drive_symlink(tmp_path):
 
     assert not report.ready
     assert "source_directory_not_symlink" in report.issues
+
+
+def test_source_refresh_downloads_and_atomically_promotes_required_files(tmp_path):
+    header = b"gameid,date,league\n"
+    session = _Session(
+        [
+            _Response(
+                header + f"game-{year},{year}-08-09T12:00:00Z,LCK\n".encode() * 40,
+                f"{year}_LoL_esports_match_data_from_OraclesElixir.csv",
+            )
+            for year in (2024, 2025, 2026)
+        ]
+    )
+
+    result = refresh_oracle_source(tmp_path, session=session, now=NOW)
+    readiness = inspect_oracle_source(
+        tmp_path,
+        now=NOW,
+        stability_seconds=0,
+        minimum_bytes=1,
+    )
+
+    assert readiness.ready
+    assert {item["year"] for item in result.files} == {2024, 2025, 2026}
+    assert (tmp_path / "source_manifest.json").is_file()
+    assert not list(tmp_path.glob(".*.part"))
+
+
+def test_source_refresh_rejects_non_csv_without_replacing_cache(tmp_path):
+    destination = tmp_path / "2024_LoL_esports_match_data_from_OraclesElixir.csv"
+    destination.write_text("original", encoding="utf-8")
+    session = _Session(
+        [
+            _Response(
+                b"<html>quota page</html>" * 100,
+                "2024_LoL_esports_match_data_from_OraclesElixir.csv",
+            )
+        ]
+    )
+
+    with pytest.raises(OracleSourceRefreshError, match="not an Oracle's Elixir CSV"):
+        refresh_oracle_source(
+            tmp_path,
+            required_years=(2024,),
+            session=session,
+            now=NOW,
+        )
+
+    assert destination.read_text(encoding="utf-8") == "original"
+    assert not list(tmp_path.glob(".*.part"))
+
+
+def test_source_refresh_refuses_to_write_through_symlink(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "source"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(OracleSourceRefreshError, match="Refusing to update"):
+        refresh_oracle_source(link, required_years=(2026,), session=_Session([]))

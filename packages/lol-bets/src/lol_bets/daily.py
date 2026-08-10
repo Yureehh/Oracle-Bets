@@ -64,7 +64,10 @@ from lol_bets.data_generation.ingestion.schedule import (
     PandaScoreSchedule,
     fetch_and_store_schedule,
 )
-from lol_bets.data_generation.ingestion.source import inspect_oracle_source
+from lol_bets.data_generation.ingestion.source import (
+    inspect_oracle_source,
+    refresh_oracle_source,
+)
 from lol_bets.inference.roster import (
     EXPECTED_STARTERS,
     HistoricalRosterEvidence,
@@ -1202,8 +1205,13 @@ def _run_mutating_steps(
     store: EvidenceStore,
     scheduled_for: dt.datetime,
     effective_config: dict[str, Any],
+    source_refresh_fn: Callable[[], Any] | None = None,
     source_check_fn: Callable[[], Any] | None = None,
 ) -> list[DailyStepResult]:
+    def _source_refresh() -> str:
+        result = (source_refresh_fn or refresh_oracle_source)()
+        return f"{len(result.files)} public files refreshed"
+
     def _source_check() -> str:
         report = (source_check_fn or _daily_source_readiness)()
         report.raise_if_unready()
@@ -1258,6 +1266,12 @@ def _run_mutating_steps(
     outcome = run_workflow(
         workflow_key,
         (
+            WorkflowStep(
+                "source-refresh",
+                _source_refresh,
+                writes=True,
+                retryable=True,
+            ),
             WorkflowStep("source-check", _source_check, writes=False),
             WorkflowStep(
                 "ingest",
@@ -1711,9 +1725,7 @@ def _evidence_run_id(steps: Sequence[DailyStepResult]) -> str | None:
 
 
 def _daily_source_readiness():
-    return inspect_oracle_source(
-        require_symlink=True,
-    )
+    return inspect_oracle_source()
 
 
 def _latest_model_drift_review() -> dict[str, Any] | None:
@@ -1860,9 +1872,9 @@ def run_daily_lol_workflow(  # noqa: PLR0912, PLR0915
                 store=EvidenceStore(EVIDENCE_DB),
                 scheduled_for=scheduled_for,
                 effective_config=effective_config,
-                source_check_fn=lambda: source_readiness,
             )
         )
+        source_readiness = _daily_source_readiness()
 
     # The schedule fetch is an external dependency and must degrade like every
     # other step: a PandaScore outage should produce a FAILED step and a

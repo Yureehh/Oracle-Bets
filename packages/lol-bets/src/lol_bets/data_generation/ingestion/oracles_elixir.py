@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from dotenv import load_dotenv
@@ -24,10 +24,11 @@ from lol_bets.data_generation.ingestion.quality import (
     normalize_result,
     quarantine_oracles_elixir_data,
 )
+from lol_bets.data_generation.ingestion.source import oracle_source_directory
 from oracle_bets_core.io_utils import FileLoadError, get_sorting_keys, json_loader
 from oracle_bets_core.league_selection import training_leagues
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
-from oracle_bets_core.paths import IMPORT_COLUMNS, RAW_DATA, TEAM_ALIASES
+from oracle_bets_core.paths import IMPORT_COLUMNS, TEAM_ALIASES
 from oracle_bets_core.pd import pd
 
 if TYPE_CHECKING:
@@ -69,7 +70,7 @@ class OraclesElixirError(RuntimeError):
 class OraclesElixir:
     """Ingest, clean, and format public Oracle Elixir CSV dumps."""
 
-    local_data_dir: Path = RAW_DATA.parent / "oracles_elixir"
+    local_data_dir: Path = field(default_factory=oracle_source_directory)
 
     # --------------------------------------------------------------------- #
     # Ingestion
@@ -79,7 +80,7 @@ class OraclesElixir:
         years: Sequence[int | str] | int | str | None = None,
     ) -> pd.DataFrame:
         """
-        Read year-specific CSVs from the locally synced Google Drive folder.
+        Read year-specific CSVs from the validated local source cache.
         """
         # Normalise *years* into a list[int]
         if years is None:
@@ -118,8 +119,8 @@ class OraclesElixir:
         if not results:
             msg = (
                 "No local Oracle Elixir files found for years "
-                f"{year_list} in {self.local_data_dir}. Ensure Google Drive for "
-                "Desktop is running and the files are available offline."
+                f"{year_list} in {self.local_data_dir}. Run "
+                "`oracle-bets lol source-refresh` first."
             )
             logger.error(msg)
             data_pipeline_logger.error(msg)
@@ -139,7 +140,7 @@ class OraclesElixir:
         if missing:
             msg = (
                 f"Missing required local Oracle Elixir years: {missing}. "
-                "Refresh Google Drive and make the files available offline."
+                "Run `oracle-bets lol source-refresh` and retry."
             )
             raise OraclesElixirError(msg)
         return df
@@ -155,7 +156,7 @@ class OraclesElixir:
         if before.st_size == 0:
             msg = (
                 f"Local Oracle Elixir file is empty: {path}. "
-                "Wait for Google Drive to finish syncing and make it available offline."
+                "Run `oracle-bets lol source-refresh` and retry."
             )
             raise OraclesElixirError(msg)
         try:
@@ -163,14 +164,14 @@ class OraclesElixir:
         except OSError as exc:
             msg = (
                 f"Cannot read local Oracle Elixir file {path}: {exc}. "
-                "Ensure Google Drive is running and the file is available offline."
+                "Run `oracle-bets lol source-refresh` and retry."
             )
             raise OraclesElixirError(msg) from exc
         after = path.stat()
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             msg = (
                 f"Local Oracle Elixir file changed while it was being read: {path}. "
-                "Wait for Google Drive to finish syncing and retry."
+                "Wait for the source refresh to finish and retry."
             )
             raise OraclesElixirError(msg)
         if frame.empty:

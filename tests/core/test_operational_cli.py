@@ -17,6 +17,8 @@ def test_parser_exposes_required_operational_commands():
     commands = (
         ["lol", "source-check"],
         ["lol", "source-check", "--format", "json"],
+        ["lol", "source-refresh"],
+        ["lol", "source-refresh", "--format", "json"],
         ["lol", "retune"],
         ["lol", "market-check"],
         ["lol", "market-check", "--match-key", "pandascore:123"],
@@ -73,6 +75,10 @@ def test_source_failure_blocks_history_and_training_commands(
     monkeypatch.setattr(
         "lol_bets.data_generation.ingestion.source.require_oracle_source_ready",
         blocked,
+    )
+    monkeypatch.setattr(
+        "lol_bets.data_generation.ingestion.source.refresh_oracle_source",
+        lambda: None,
     )
 
     assert main(["lol", action]) == BLOCKED_EXIT

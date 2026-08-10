@@ -65,6 +65,6 @@ Use environment variables or a user-owned `0600` file outside the repository:
 
 - `PANDASCORE_API_KEY`
 - `DISCORD_WEBHOOK_URL`
-- `ORACLES_ELIXIR_LOCAL_DIR` when the default Drive location is unsuitable
+- `ORACLES_ELIXIR_LOCAL_DIR` when the generated local source cache location is unsuitable
 
 Never commit secrets, webhook URLs, private keys, or wallet material.

@@ -15,7 +15,8 @@ it cannot place orders or invoke arbitrary commands.
 ## End-to-end flow
 
 ```text
-Google Drive Desktop (Oracle's Elixir 2024–2026)
+Public Google Drive files (Oracle's Elixir 2024–2026)
+  -> atomic validated local source cache
   -> history reconciliation and quarantine
   -> team/player feature and rating tables
   -> validated supervised tables

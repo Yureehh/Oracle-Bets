@@ -4,7 +4,7 @@ Oracle Bets is a local-first League of Legends betting-research system focused
 on calibrated probability accuracy, leakage prevention, conservative market
 matching, and real paper-profit evidence.
 
-It ingests 2024–2026 Oracle's Elixir files from Google Drive Desktop, generates
+It downloads the public 2024–2026 Oracle's Elixir files into a validated local cache, generates
 chronological team/player features and ratings, trains four LightGBM targets,
 calibrates them on temporal holdouts, predicts upcoming PandaScore fixtures,
 compares read-only with Polymarket, writes JSON/Markdown reports, and optionally
@@ -21,8 +21,8 @@ uv sync --extra dev --extra discord-bot --extra ai-review
 source .venv/bin/activate
 ```
 
-Keep the Oracle's Elixir Drive folder available offline. Set provider secrets
-outside Git:
+Refresh the public source with `uv run oracle-bets lol source-refresh`. Set
+provider secrets outside Git:
 
 ```bash
 export PANDASCORE_API_KEY="..."
@@ -37,6 +37,8 @@ export OPENAI_API_KEY="..."
 ## Normal workflow
 
 ```bash
+uv run oracle-bets lol source-refresh
+uv run oracle-bets lol source-check
 uv run oracle-bets lol ingest
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol train --targets all --feature-set compact
