@@ -44,7 +44,7 @@ uses wallets, or moves funds.
 | Command | When and effects | Important options |
 | --- | --- | --- |
 | `lol health` | Read-only check of training and serving artifacts. No network. | None. |
-| `lol source-refresh` | Download the reviewed 2024–2026 public Google Drive files into an atomic local cache. Network + cache/manifest writes; never uses AWS or modifies Drive. | `--format table|json`. |
+| `lol source-refresh` | Request a temporary anonymous ZIP for the reviewed 2024–2026 public Google Drive files and promote validated CSVs into an atomic local cache. Network + cache/manifest writes; never uses AWS, credentials, or Drive mutations. | `--format table|json`. |
 | `lol source-check` | Read-only preflight for the managed 2024–2026 Oracle's Elixir cache. Blocks stale, missing, placeholder, or actively changing files before rebuilding. | `--format table|json`. |
 | `lol ingest` | Refresh the public source, then run routine `research_all_supported` ingestion; writes raw/interim/processed data and manifests. Does not train or tune. | None. |
 | `lol reconcile-history` | Destructive full reconciliation of retained source history after source/schema changes; writes data artifacts. Does not train or tune. | None. |
@@ -79,6 +79,12 @@ Source refresh, ingestion, retraining, and retuning are separate operations.
 The daily workflow refreshes the public cache before ingestion. Retraining updates
 model weights/calibrators on newer data using fixed reviewed hyperparameters.
 Retuning searches hyperparameters and carries greater overfitting risk.
+
+The source adapter mirrors Drive's public **Download all** behavior through its
+anonymous bulk-export endpoint. That endpoint is undocumented and may change;
+the adapter therefore trusts only Google Storage archive URLs, extracts only
+the three reviewed filenames, validates ZIP/CSV structure and sizes, and fails
+closed without replacing the previous cache.
 
 ## Candidate registry
 

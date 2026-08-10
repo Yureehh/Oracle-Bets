@@ -2,9 +2,10 @@
 
 Oracle's Elixir ingestion and schedule fetching.
 
-- `source.py`: atomic public Google Drive downloads into
-  `data/lol/raw/oracles_elixir_cache/`, plus fail-closed freshness and schema
-  validation. It never modifies Drive and rejects cloud-backed cache symlinks.
+- `source.py`: anonymous public Google Drive bulk export into
+  `data/lol/raw/oracles_elixir_cache/`, plus fail-closed archive, filename,
+  freshness, size, and schema validation. It never modifies Drive, accepts no
+  Google credential, and rejects cloud-backed cache symlinks.
 - `oracles_elixir.py`: local Oracle's Elixir CSV ingestion, cleaning, league
   filtering, and opponent pairing. Every requested year must exist in the
   validated cache. There is no AWS dependency. Source spellings such as `earned gpm` are

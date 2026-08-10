@@ -31,6 +31,11 @@ Desktop is not required. `ORACLES_ELIXIR_LOCAL_DIR` may point to another
 owner-managed local cache, but `source-refresh` refuses cloud-backed symlinks
 so it cannot accidentally modify the public source.
 
+The download uses Drive's anonymous bulk-export path—the same temporary ZIP
+workflow as **Download all**. It needs no Google credential but is an
+undocumented upstream interface, so every archive and CSV is validated before
+the existing cache is replaced.
+
 The pipeline does not use AWS and never modifies Google Drive files.
 
 ## First clean research rebuild

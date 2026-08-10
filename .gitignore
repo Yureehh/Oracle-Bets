@@ -96,6 +96,7 @@ target/
 /data/state/backups/
 
 /data/lol/raw/oracles_elixir
+/data/lol/raw/oracles_elixir_cache/
 
 # Production rating hyperparameters are reviewed, tracked inputs.
 /artifacts/

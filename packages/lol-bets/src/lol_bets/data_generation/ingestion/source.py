@@ -6,15 +6,19 @@ import csv
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
+import uuid
+import zipfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from email.utils import parsedate_to_datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import requests
+from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import RAW_DATA
 
 if TYPE_CHECKING:
@@ -28,7 +32,18 @@ PUBLIC_DRIVE_FILE_IDS = {
     2025: "1v6LRphp2kYciU4SXp0PCjEMuev1bDejc",  # pragma: allowlist secret
     2026: "1hnpbrUpBMS1TZI7IovfpKeZfWJH1Aptm",  # pragma: allowlist secret
 }
-PUBLIC_DOWNLOAD_URL = "https://drive.usercontent.google.com/download"
+PUBLIC_DRIVE_FOLDER_ID = (  # pragma: allowlist secret
+    "1gLSw0RLjBbtaNy0dgnGQDAZOHIgCe-HH"  # pragma: allowlist secret
+)
+PUBLIC_DRIVE_FOLDER_URL = (
+    f"https://drive.google.com/drive/folders/{PUBLIC_DRIVE_FOLDER_ID}"
+)
+TAKEOUT_EXPORTS_URL = "https://takeout-pa.clients6.google.com/v1/exports"
+ARCHIVE_HOST = "storage.googleapis.com"
+ARCHIVE_PATH_PREFIX = "/drive-bulk-export-anonymous/"
+DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+EXPORT_POLL_SECONDS = 5.0
+EXPORT_MAX_POLLS = 60
 DEFAULT_MAX_AGE = timedelta(hours=48)
 DEFAULT_MINIMUM_BYTES = 1_024
 
@@ -118,8 +133,9 @@ def refresh_oracle_source(
     required_years: Sequence[int] | None = None,
     session: requests.Session | None = None,
     now: datetime | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> OracleSourceRefresh:
-    """Atomically refresh required public Drive files into the managed cache."""
+    """Refresh required files through Drive's anonymous bulk-export service."""
     root = Path(source_directory) if source_directory else oracle_source_directory()
     cloud_storage = Path.home() / "Library" / "CloudStorage"
     if root.is_symlink() or root.resolve().is_relative_to(cloud_storage):
@@ -139,102 +155,271 @@ def refresh_oracle_source(
         )
 
     client = session or requests.Session()
+    owns_session = session is None
     staged: list[tuple[Path, Path, dict[str, object], datetime]] = []
+    archives: list[Path] = []
     try:
-        staged.extend(
-            _download_source_file(
-                client,
-                root,
-                year,
-                PUBLIC_DRIVE_FILE_IDS[year],
-                downloaded_at,
-            )
-            for year in years
+        export_key = _public_export_key(client)
+        export_job_id = _start_public_export(client, export_key, years)
+        archive_urls = _wait_for_public_export(
+            client,
+            export_key,
+            export_job_id,
+            sleeper=sleeper,
         )
+        archives = _download_export_archives(client, root, archive_urls)
+        staged = _stage_source_files(root, archives, years)
         for temporary, destination, _metadata, remote_modified_at in staged:
             temporary.replace(destination)
             timestamp = remote_modified_at.timestamp()
             os.utime(destination, (timestamp, timestamp))
         files = tuple(metadata for _, _, metadata, _ in staged)
-        _write_source_manifest(root / SOURCE_MANIFEST, downloaded_at, files)
-    except (OSError, requests.RequestException, ValueError) as exc:
+        _write_source_manifest(
+            root / SOURCE_MANIFEST,
+            downloaded_at,
+            export_job_id,
+            files,
+        )
+    except (
+        KeyError,
+        OSError,
+        requests.RequestException,
+        TypeError,
+        ValueError,
+        zipfile.BadZipFile,
+    ) as exc:
         raise OracleSourceRefreshError(
             f"Oracle's Elixir refresh failed: {exc}"
         ) from exc
     finally:
         for temporary, *_ in staged:
             temporary.unlink(missing_ok=True)
+        for archive in archives:
+            archive.unlink(missing_ok=True)
+        if owns_session:
+            client.close()
 
     return OracleSourceRefresh(str(root), downloaded_at, files)
 
 
-def _download_source_file(
-    session: requests.Session,
-    root: Path,
-    year: int,
-    file_id: str,
-    downloaded_at: datetime,
-) -> tuple[Path, Path, dict[str, object], datetime]:
-    filename = f"{year}{SOURCE_FILE_SUFFIX}"
-    response = session.get(
-        PUBLIC_DOWNLOAD_URL,
-        params={"id": file_id, "export": "download", "confirm": "t"},
-        stream=True,
-        timeout=(10, 180),
-    )
+def _public_export_key(session: requests.Session) -> str:
+    response = session.get(PUBLIC_DRIVE_FOLDER_URL, timeout=(10, 30))
     try:
         response.raise_for_status()
-        disposition = response.headers.get("Content-Disposition", "")
-        if filename not in disposition:
-            raise ValueError(f"unexpected download response for {year}")
-        remote_modified_at = _remote_modified_at(response, downloaded_at)
-        digest = hashlib.sha256()
-        byte_count = 0
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            prefix=f".{year}-",
-            suffix=".part",
-            dir=root,
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            try:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    byte_count += len(chunk)
-                handle.flush()
-                os.fsync(handle.fileno())
-                _validate_complete_download(temporary, year, byte_count)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                raise
-        metadata = {
-            "year": year,
-            "drive_file_id": file_id,
-            "filename": filename,
-            "size_bytes": byte_count,
-            "sha256": digest.hexdigest(),
-            "remote_modified_at": remote_modified_at.isoformat(),
-        }
-        return temporary, root / filename, metadata, remote_modified_at
+        match = re.search(r'"yLTeS":"([^"]+)"', response.text)
+        if match is None:
+            raise ValueError("public Drive export key is unavailable")
+        return match.group(1)
     finally:
         response.close()
 
 
-def _remote_modified_at(response: requests.Response, fallback: datetime) -> datetime:
-    value = response.headers.get("Last-Modified")
-    if not value:
-        return fallback
-    parsed = parsedate_to_datetime(value)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+def _start_public_export(
+    session: requests.Session,
+    export_key: str,
+    years: Sequence[int],
+) -> str:
+    response = session.post(
+        TAKEOUT_EXPORTS_URL,
+        params={"key": export_key},
+        json={
+            "archivePrefix": "OracleElixir",
+            "items": [{"id": PUBLIC_DRIVE_FILE_IDS[year]} for year in years],
+        },
+        timeout=(10, 30),
+    )
+    try:
+        response.raise_for_status()
+        return str(response.json()["exportJob"]["id"])
+    finally:
+        response.close()
 
 
-def _validate_complete_download(path: Path, year: int, byte_count: int) -> None:
+def _wait_for_public_export(
+    session: requests.Session,
+    export_key: str,
+    export_job_id: str,
+    *,
+    sleeper: Callable[[float], None],
+) -> tuple[str, ...]:
+    for poll in range(EXPORT_MAX_POLLS):
+        response = session.get(
+            f"{TAKEOUT_EXPORTS_URL}/{export_job_id}",
+            params={"key": export_key},
+            headers={"PbiToken": str(uuid.uuid4())},
+            timeout=(10, 30),
+        )
+        try:
+            response.raise_for_status()
+            job = response.json()["exportJob"]
+        finally:
+            response.close()
+        status = str(job.get("status", ""))
+        if status == "SUCCEEDED":
+            paths = tuple(
+                str(archive["storagePath"]) for archive in job.get("archives", ())
+            )
+            if not paths:
+                raise ValueError("public Drive export completed without archives")
+            return paths
+        if status not in {"QUEUED", "RUNNING"}:
+            raise ValueError(
+                f"public Drive export ended with status {status or 'unknown'}"
+            )
+        if poll + 1 < EXPORT_MAX_POLLS:
+            sleeper(EXPORT_POLL_SECONDS)
+    raise ValueError("public Drive export timed out")
+
+
+def _download_export_archives(
+    session: requests.Session,
+    root: Path,
+    archive_urls: Sequence[str],
+) -> list[Path]:
+    archives: list[Path] = []
+    try:
+        for index, archive_url in enumerate(archive_urls, start=1):
+            _validate_archive_url(archive_url)
+            logger.info("Downloading Oracle's Elixir source archive %s.", index)
+            response = session.get(archive_url, stream=True, timeout=(10, 180))
+            try:
+                response.raise_for_status()
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=f".oracle-export-{index}-",
+                    suffix=".zip.part",
+                    dir=root,
+                    delete=False,
+                ) as handle:
+                    archive = Path(handle.name)
+                    for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+                        if chunk:
+                            handle.write(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            finally:
+                response.close()
+            _require_zip_archive(archive)
+            archives.append(archive)
+    except Exception:
+        for archive in archives:
+            archive.unlink(missing_ok=True)
+        raise
+    return archives
+
+
+def _require_zip_archive(path: Path) -> None:
+    if zipfile.is_zipfile(path):
+        return
+    path.unlink(missing_ok=True)
+    raise ValueError("public Drive export is not a valid ZIP archive")
+
+
+def _validate_archive_url(value: str) -> None:
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != ARCHIVE_HOST
+        or not parsed.path.startswith(ARCHIVE_PATH_PREFIX)
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("public Drive export returned an untrusted archive URL")
+
+
+def _stage_source_files(
+    root: Path,
+    archives: Sequence[Path],
+    years: Sequence[int],
+) -> list[tuple[Path, Path, dict[str, object], datetime]]:
+    expected = {f"{year}{SOURCE_FILE_SUFFIX}": year for year in years}
+    entries: dict[str, tuple[Path, zipfile.ZipInfo]] = {}
+    for archive_path in archives:
+        with zipfile.ZipFile(archive_path) as archive:
+            for info in archive.infolist():
+                name = PurePosixPath(info.filename).name
+                if name not in expected:
+                    continue
+                if name in entries:
+                    raise ValueError(f"duplicate source file in public export: {name}")
+                entries[name] = (archive_path, info)
+    missing = sorted(set(expected) - set(entries))
+    if missing:
+        raise ValueError(f"public Drive export is missing required files: {missing}")
+
+    staged: list[tuple[Path, Path, dict[str, object], datetime]] = []
+    try:
+        for filename, year in expected.items():
+            archive_path, info = entries[filename]
+            temporary, size_bytes, digest = _stage_zip_entry(
+                root,
+                archive_path,
+                info,
+                year,
+            )
+            modified_at = datetime(*info.date_time, tzinfo=UTC)
+            metadata = {
+                "year": year,
+                "drive_file_id": PUBLIC_DRIVE_FILE_IDS[year],
+                "filename": filename,
+                "size_bytes": size_bytes,
+                "sha256": digest,
+                "remote_modified_at": modified_at.isoformat(),
+                "status": "downloaded",
+            }
+            staged.append((temporary, root / filename, metadata, modified_at))
+    except Exception:
+        for temporary, *_ in staged:
+            temporary.unlink(missing_ok=True)
+        raise
+    return staged
+
+
+def _stage_zip_entry(
+    root: Path,
+    archive_path: Path,
+    info: zipfile.ZipInfo,
+    year: int,
+) -> tuple[Path, int, str]:
+    digest = hashlib.sha256()
+    byte_count = 0
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix=f".{year}-",
+        suffix=".part",
+        dir=root,
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        try:
+            with zipfile.ZipFile(archive_path) as archive, archive.open(info) as source:
+                while chunk := source.read(DOWNLOAD_CHUNK_BYTES):
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    byte_count += len(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+            _validate_complete_download(
+                temporary,
+                year,
+                byte_count,
+                expected_bytes=info.file_size,
+            )
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+    return temporary, byte_count, digest.hexdigest()
+
+
+def _validate_complete_download(
+    path: Path,
+    year: int,
+    byte_count: int,
+    *,
+    expected_bytes: int | None = None,
+) -> None:
+    if expected_bytes is not None and byte_count != expected_bytes:
+        raise ValueError(f"public export size mismatch for {year}")
     if byte_count < DEFAULT_MINIMUM_BYTES:
         raise ValueError(f"downloaded file for {year} is incomplete")
     with path.open(encoding="utf-8-sig", newline="") as source:
@@ -246,12 +431,14 @@ def _validate_complete_download(path: Path, year: int, byte_count: int) -> None:
 def _write_source_manifest(
     path: Path,
     downloaded_at: datetime,
+    export_job_id: str,
     files: tuple[dict[str, object], ...],
 ) -> None:
     payload = {
-        "schema_version": 1,
-        "provider": "oracle_elixir_public_google_drive",
+        "schema_version": 2,
+        "provider": "oracle_elixir_public_google_drive_bulk_export",
         "downloaded_at": downloaded_at.isoformat(),
+        "export_job_id": export_job_id,
         "files": list(files),
     }
     temporary = path.with_suffix(".tmp")
