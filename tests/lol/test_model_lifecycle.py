@@ -298,11 +298,11 @@ def test_untriggered_evidence_neither_trains_nor_registers(tmp_path):
     assert result.registered_model_id is None
 
 
-def _manifest(model_id="candidate-1"):
+def _manifest(model_id="candidate-1", *, target="map_win"):
     return CandidateManifest(
         model_id=model_id,
         sport="lol",
-        target="map_win",
+        target=target,
         created_at=NOW,
         code_version="tree-abc",
         data_manifest="data-abc",
@@ -328,6 +328,31 @@ def test_candidate_bundle_is_immutable_and_checksum_verified(tmp_path):
         registry.register_candidate(_manifest(), {"model.pkl": artifact})
 
     (bundle / "model.pkl").write_bytes(b"tampered")
+    assert not registry.verify_bundle("candidate-1")
+
+
+def test_complete_lol_bundle_rejects_missing_serving_artifacts(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry")
+    artifact = tmp_path / "model.pkl"
+    artifact.write_bytes(b"model bytes")
+
+    with pytest.raises(ModelRegistryError, match="missing required artifacts"):
+        registry.register_candidate(
+            _manifest(target="complete_lol_bundle"),
+            {"model.pkl": artifact},
+        )
+
+
+def test_complete_lol_bundle_verification_checks_semantic_completeness(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry")
+    artifact = tmp_path / "model.pkl"
+    artifact.write_bytes(b"model bytes")
+    bundle = registry.register_candidate(_manifest(), {"model.pkl": artifact})
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["target"] = "complete_lol_bundle"
+    manifest_path.write_text(json.dumps(manifest))
+
     assert not registry.verify_bundle("candidate-1")
 
 

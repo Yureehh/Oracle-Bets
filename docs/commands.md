@@ -93,7 +93,7 @@ closed without replacing the previous cache.
 | `model status [--registry PATH]` | Read champion and registry health. |
 | `model list [--format table|json] [--registry PATH]` | List immutable candidates. |
 | `model review <model-id> [--format table|json]` | Show manifest, evidence, gates, and artifacts. |
-| `model register-run <run-id|latest>` | Confirm an automatically registered training run. |
+| `model register-run <run-id|latest>` | Confirm an automatically registered training run. A complete LoL bundle includes all four models/calibrators and the team-league and league-Elo lookup tables required by inference. |
 | `model register-current <id> --code-version <sha> --metric name=value [...]` | Freeze the current complete inference tree as a manual candidate; optional `--target`, `--random-seed`, `--registry`. |
 | `model promote <id> --reason <text>` | Explicitly move the champion pointer after owner review. |
 | `model rollback <id> --reason <text>` | Explicitly restore a prior healthy bundle. |

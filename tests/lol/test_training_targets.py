@@ -131,6 +131,23 @@ def test_validate_training_tables_rejects_incomplete_player_roles():
         validate_training_tables(team_df, player_df)
 
 
+def test_training_stages_shared_rating_artifacts(tmp_path, monkeypatch):
+    mapping = tmp_path / "source" / "team_league_mapping.parquet"
+    league_elo = tmp_path / "source" / "league_elo.parquet"
+    mapping.parent.mkdir()
+    mapping.write_bytes(b"mapping")
+    league_elo.write_bytes(b"elo")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(training, "TEAM_LEAGUES_MAPPING", mapping)
+    monkeypatch.setattr(training, "LEAGUE_ELO", league_elo)
+
+    training._stage_shared_inference_artifacts(staging)
+
+    assert (staging / mapping.name).read_bytes() == b"mapping"
+    assert (staging / league_elo.name).read_bytes() == b"elo"
+
+
 def _tuning_candidate(model_name: str) -> dict:
     return {
         "metadata": {

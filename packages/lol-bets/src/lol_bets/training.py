@@ -30,9 +30,11 @@ if TYPE_CHECKING:
 from oracle_bets_core.io_utils import load_training_data, store_model
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import (
+    LEAGUE_ELO,
     MODELS_DIR,
     RAW_DATA,
     REPORTS_DIR,
+    TEAM_LEAGUES_MAPPING,
     TRAINING_PLAYER_DATA,
     TRAINING_TEAM_DATA,
     TUNED_LIGHTGBM_HYPERPARAMETERS,
@@ -757,6 +759,7 @@ def _register_training_candidate(
         )
     code_version = "+".join(sorted(code_versions))
     candidate_id = f"lol-{run_id}"
+    _stage_shared_inference_artifacts(staging_root)
     evaluation_root = staging_root / "_evaluation"
     evaluation_root.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(report_root / "summary.json", evaluation_root / "summary.json")
@@ -778,6 +781,14 @@ def _register_training_candidate(
     )
     shutil.rmtree(staging_root)
     return candidate_id
+
+
+def _stage_shared_inference_artifacts(staging_root: Path) -> None:
+    """Include rating lookup tables required by registry-based inference."""
+    for source in (TEAM_LEAGUES_MAPPING, LEAGUE_ELO):
+        if not source.is_file():
+            raise RuntimeError(f"Required inference artifact is missing: {source}")
+        shutil.copyfile(source, staging_root / source.name)
 
 
 def _parameter_provenance() -> tuple[str, str | None]:

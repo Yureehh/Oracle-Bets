@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 from lol_bets.daily import DailyStepResult
+from lol_bets.operations import evidence as evidence_module
 from lol_bets.operations.evidence import record_daily_evidence
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.evidence.settlement import SettlementResult
@@ -25,6 +26,15 @@ NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
 TWO_VERSIONS = 2
 EXPECTED_RERUN_SNAPSHOTS = 4
 INITIAL_ODDS = 2.0
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_registry(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        evidence_module,
+        "MODEL_REGISTRY_DIR",
+        tmp_path / "model-registry",
+    )
 
 
 def test_daily_bridge_records_complete_chain_and_honest_no_bet(tmp_path):

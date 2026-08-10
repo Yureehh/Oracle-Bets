@@ -45,6 +45,39 @@ _DRIFT_MISSINGNESS_WARNING = 0.25
 _DRIFT_TOP_FEATURE_MINIMUM_OVERLAP = 5
 _DRIFT_PREDICTION_MEAN_WARNING = 0.05
 
+_COMPLETE_LOL_BUNDLE_REQUIRED_ARTIFACTS = frozenset(
+    {
+        "team_league_mapping.parquet",
+        "league_elo.parquet",
+        "OutcomePrediction_LightGBM/OutcomePrediction_LightGBM.pkl",
+        "OutcomePrediction_LightGBM/OutcomePrediction_LightGBM_feature_pipeline.pkl",
+        "OutcomePrediction_LightGBM/OutcomePrediction_LightGBM_outcome_matchup_schema.pkl",
+        "OutcomePrediction_LightGBM/OutcomePrediction_LightGBM_probability_calibrator.pkl",
+        "OutcomePrediction_LightGBM/OutcomePrediction_LightGBM_probability_uncertainty.pkl",
+        "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM.pkl",
+        "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM_feature_pipeline.pkl",
+        "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM_residual_summary.pkl",
+        "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM_prop_calibrator.pkl",
+        "TotalKillsPrediction_LightGBM/TotalKillsPrediction_LightGBM.pkl",
+        "TotalKillsPrediction_LightGBM/TotalKillsPrediction_LightGBM_feature_pipeline.pkl",
+        "TotalKillsPrediction_LightGBM/TotalKillsPrediction_LightGBM_residual_summary.pkl",
+        "TotalKillsPrediction_LightGBM/TotalKillsPrediction_LightGBM_prop_calibrator.pkl",
+        "TotalTowersPrediction_LightGBM/TotalTowersPrediction_LightGBM.pkl",
+        "TotalTowersPrediction_LightGBM/TotalTowersPrediction_LightGBM_feature_pipeline.pkl",
+        "TotalTowersPrediction_LightGBM/TotalTowersPrediction_LightGBM_residual_summary.pkl",
+        "TotalTowersPrediction_LightGBM/TotalTowersPrediction_LightGBM_prop_calibrator.pkl",
+    }
+)
+
+
+def _missing_required_bundle_artifacts(
+    target: object,
+    artifact_names: Collection[str],
+) -> set[str]:
+    if target != "complete_lol_bundle":
+        return set()
+    return set(_COMPLETE_LOL_BUNDLE_REQUIRED_ARTIFACTS) - set(artifact_names)
+
 
 class ModelRegistryError(ValueError):
     """Raised when a model registry operation would violate its audit rules."""
@@ -630,6 +663,12 @@ class ModelRegistry:
         missing = [str(path) for path in normalized.values() if not path.is_file()]
         if missing:
             raise ModelRegistryError(f"candidate artifacts do not exist: {missing}")
+        incomplete = _missing_required_bundle_artifacts(manifest.target, normalized)
+        if incomplete:
+            raise ModelRegistryError(
+                "complete LoL bundle is missing required artifacts: "
+                f"{sorted(incomplete)}"
+            )
 
         with tempfile.TemporaryDirectory(
             prefix=f".{manifest.model_id}-",
@@ -669,7 +708,11 @@ class ModelRegistry:
             files = manifest["files"]
         except (json.JSONDecodeError, KeyError, TypeError):
             return False
-        if not isinstance(files, dict) or not files:
+        if (
+            not isinstance(files, dict)
+            or not files
+            or _missing_required_bundle_artifacts(manifest.get("target"), files)
+        ):
             return False
 
         for name, facts in files.items():
