@@ -1,31 +1,21 @@
 # Security and hosting
 
-Oracle Bets reads public esports data, PandaScore schedules, Discord webhooks,
-and public Polymarket market data. It never automates betting, wallet access,
-signing, private keys, or fund movement.
+Oracle Bets reads public esports data, PandaScore schedules, Discord Gateway
+events, and public Polymarket data. It never automates betting, wallet access,
+signing, private keys, order placement, or fund movement.
 
-Secrets belong outside the repository in environment variables or a `0600`
-user-owned file. Reports exclude webhook URLs. Discord payloads disable all
-mentions. The Gateway bot exposes only owner-checked paper accept/reject
-controls and a prop Line/Odds modal; duplicate decisions are idempotent. It has
-no shell, arbitrary prompt, trading, signing, or wallet capability.
+Secrets belong in the ignored `0600` `.env`. PandaScore uses a bearer header;
+provider errors are sanitized. Discord cards disable mentions and accept owner
+interactions only. Accept requires a fresh read-only quote and separate
+120-second confirmation. Durable send intent and bounded history recovery avoid
+duplicate cards. Webhook delivery is disabled.
 
-## Hosting recommendation
+The Gateway bot must stay online. The simplest first host is this Mac with
+`launchd`. A VPS or Oracle Cloud Always Free VM is possible, with capacity,
+verification, reclamation, regional, maintenance, and outbound-network caveats.
+Public Gamma/CLOB reads require no VPN or trading credentials from the current
+Italian connection; the order geoblock reinforces the read-only boundary.
 
-For one-way midnight Discord webhook reports, prefer a free or near-free
-scheduled runner:
-
-- the current Mac with `launchd`;
-- GitHub Actions/another cron runner if private secrets and generated-state
-  persistence are handled carefully;
-- a low-cost scheduled VM job.
-
-This does not require an always-on bot. Public Gamma discovery and public CLOB
-books require no credentials or VPN from the current Italian connection.
-
-The optional interactive Discord bot requires a continuously running PC,
-VPS, or free VM such as Oracle Cloud Always Free. Free VM capacity, account
-verification, idle-resource reclamation, regional availability, maintenance,
-and outbound-network limits are real caveats. Italy's Polymarket order geoblock
-does not affect read-only research and reinforces the permanent no-order
-boundary.
+Rotate any PandaScore, Discord, AWS, or OpenAI credential exposed in a chat,
+screenshot, paste, or commit. Remove obsolete AWS variables because ingestion
+uses the public Drive cache.

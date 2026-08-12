@@ -1,8 +1,8 @@
 # oracle-bets-discord
 
-Discord presentation and owner-only paper-review package. The free/near-free
-one-way webhook remains the simplest midnight report deployment. The optional
-Gateway bot needs an always-on Mac, VPS, or VM (Oracle Cloud free-tier capacity
+Discord presentation and owner-only paper-review package. Production uses one
+Gateway bot so report delivery and interactive controls cannot duplicate each
+other. It needs an always-on Mac, VPS, or VM (Oracle Cloud free-tier capacity
 and reclamation are not guaranteed).
 
 Install with `uv sync --extra discord-bot`, set `DISCORD_TOKEN`,

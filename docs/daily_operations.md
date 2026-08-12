@@ -1,81 +1,55 @@
 # Daily operations
 
-## Ownership and cadence
+## Cadence
 
-| Cadence | Owner | Command/artifact | Why |
+| Cadence | Owner | Command | Purpose |
 | --- | --- | --- | --- |
-| Daily, 00:15 | `launchd` | `oracle-bets daily lol` | Fixtures, incremental history, conditional retraining, health gates, predictions, read-only market comparison, reports, Discord |
-| Every 5 minutes before fixtures | Gateway bot or `launchd` | `paper capture-closing` | Record a fresh, fully fillable public close for later CLV; no request is made when no open position is near start |
-| Every training event | training code | `reports/lol/training/runs/<run-id>/` | Metrics, calibration, attribution, manifest, model cards; no separate report job |
-| Weekly | none required | Review the latest compact daily/training reports only | Do not retrain or retune just because a week elapsed |
-| Monthly, day 1 | `launchd` | `oracle-bets audit monthly` | Settled evidence, calibration/profit sample health, drawdown and owner review |
-| On demand | owner | retune, promotion, rollback, settlement, notebooks, scratch rebuild | These actions need evidence or an explicit research decision |
-
-The production operator is normal Python plus `launchd`. An optional OpenAI
-Responses API review can summarize only already-actionable proposals in one
-bounded call. It is advisory, recorded in the report, and cannot alter gates,
-stakes, promotion, evidence, or settlement. Failure or a missing key never
-blocks deterministic output. It must never place a bet, sign anything, access
-a wallet, or move funds. The owner remains the only decision-maker.
+| Hourly | `launchd` | `oracle-bets lol market-watch` | Read-only timing and CLV observations; never proposals |
+| Daily, 00:15 Rome | `launchd` | `oracle-bets daily lol` | History, conditional fixed-parameter retrain, fixtures, Winner V2, quotes, evidence, report |
+| Continuous | Gateway bot | `oracle-bets discord run` | Publish each live card once, re-quote/confirm, manual settlement controls, closing observations |
+| Every training event | training code | `reports/lol/training/runs/<run-id>/` | Sealed metrics, calibration, attribution, lineage, model cards, provenance |
+| Monthly, day 1 | owner/`launchd` | `oracle-bets audit monthly` | Paper calibration, CLV, ROI, drawdown, and cohort review |
+| On demand | owner | retune, promotion, rollback, settlement, notebooks | Judgment-heavy research or recovery |
 
 ## Daily workflow
 
-The midnight job performs:
+The normal run:
 
-1. report open paper positions for owner settlement without closing anything;
-2. refresh all `research_all_supported` 2024–2026 history;
-3. validate data and evaluate the fixed-parameter retraining trigger;
-4. register and compare any new candidate against the champion on the
-   candidate's exact sealed rows;
-5. fetch the next 36 hours of `tier1_plus_erls` PandaScore fixtures;
-6. refresh expected lineups and exclude blank/TBD and Equal eSports Cup;
-7. validate serving health and produce symmetric map, derived series/totals,
-   and scalar prop forecasts;
-8. strictly match public Polymarket contracts and observe every CLOB book
-   twice with one shared 45-second wait;
-9. apply league, model, roster, uncertainty, edge, correlation, and exposure
-   gates;
-10. append evidence and optionally make one bounded AI advisory call;
-11. write exactly one atomic JSON/Markdown pair;
-12. send deterministic Discord output with mentions disabled, then atomically
-    update that same pair with the delivery result.
+1. reports open paper positions without settling them;
+2. refreshes and validates 2024–2026 `research_all_supported` history;
+3. rebuilds deterministic complete-series datasets when history changes;
+4. conditionally refits fixed reviewed parameters—never Optuna;
+5. registers a clean, checksummed candidate and compares V2 on sealed rows;
+6. fetches `tier1_plus_erls` fixtures while omitting LCP/CBLOL and invalid rows;
+7. validates the actionable direct-series champion and expected roster evidence;
+8. produces direct series probabilities and retains prop/next-map artifacts for
+   separate shadow research;
+9. strictly matches series-moneyline contracts and captures two executable books;
+10. applies favorite, 52.5%, 5% bound-edge, 48–24h, anomaly, roster, and market gates;
+11. appends evidence and writes exactly one JSON/Markdown report pair;
+12. leaves delivery to the single persistent Gateway bot.
 
-The daily report also emits advisory Monday, Thursday, and first-of-month
-review reminders using `Europe/Rome`. Overlapping reminders are combined. They
-do not perform the review, change workflow health, or settle a position.
+Before the first manually promoted Winner V2 champion exists, step 4 is
+deliberately skipped. Midnight automation cannot bootstrap or retune the new
+model family; the one-time Optuna study, parameter review, fixed-parameter
+rebuild, and first promotion remain explicit owner actions.
 
-The model is trained and rated on `research_all_supported`. Daily schedules,
-predictions, reports, and Discord output use `tier1_plus_erls` after removing
-the configured actionability exclusions. LCP and CBLOL therefore contribute to
-training but are not fetched, predicted, or displayed by the daily workflow.
+The model is trained on every supported imported league. Promotion evidence is
+reported separately for the actionable `tier1_plus_erls - {LCP, CBLOL}` cohort,
+so minor-league gains cannot hide a betting-universe regression.
 
-Every run, including `--dry-run`, writes
-`reports/lol/daily/<UTC timestamp>.json` and `.md`. Unsupported teams and
-excluded fixtures appear compactly in the report rather than as noisy repeated
-terminal errors. Webhook URLs are never serialized, and Discord mentions are
-disabled. Schema version 4 also records source freshness, exact historical
-roster evidence when used, and the latest warning-only model drift review.
+PandaScore match-detail enrichment never requests a missing ID. Authentication
+uses a bearer header so credentials are absent from URLs and errors. A 401/403
+stops further detail calls for that run and retains embedded schedule lineups.
+Only a completely absent provider lineup may fall back to the exact role-mapped
+five repeated across the latest three completed consecutive historical series.
+Partial or conflicting provider lineups remain blocked.
 
-If schedule refresh fails, a stored schedule may be used with an explicit
-warning. A failed required mutation suppresses predictions. Report persistence
-failure prevents webhook delivery.
+Monday, Thursday, and first-of-month reminders use `Europe/Rome` and are
+advisory only. The daily command never automatically settles a position. An
+optional bounded LLM summary cannot alter probabilities, gates, stakes,
+promotion, acceptance, or settlement.
 
-### PandaScore lineup enrichment
-
-Schedule discovery and match-detail enrichment are separate. The workflow uses
-PandaScore's generic `/matches/{id}` detail endpoint and never requests a
-missing provider ID. A 401/403 disables further detail requests for that run,
-keeps any lineups embedded in the schedule response, and records a single
-compact enrichment warning. It does not turn a valid schedule into a pipeline
-failure. Predictions without a complete expected lineup remain shadow-only.
-When PandaScore supplies no lineup at all, the workflow may use the exact
-role-mapped five only if that same roster appears in each map of the latest
-three completed consecutive series before fixture start. Partial, conflicting,
-or malformed provider lineups never fall back to history.
-
-Use the examples under `ops/launchd/` for the supported recurring jobs.
-Application logging is bounded; launchd stdout/stderr point to `/dev/null`.
-The optional `com.oracle-bets.discord-bot` launchd example keeps owner-only
-buttons and the prop Line/Odds modal available across restarts, and captures
-closing lines itself. Webhook-only deployments use the separate closing-line
-job; do not run both closing capture mechanisms together.
+`--dry-run` skips ingestion, training, evidence writes, promotion, and Discord,
+while still writing one report pair. A quarantined or structurally invalid
+champion may produce diagnostics but never a proposal.

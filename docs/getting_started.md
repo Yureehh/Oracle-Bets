@@ -12,17 +12,16 @@ Create an ignored `.env`, then run `chmod 600 .env`:
 
 ```dotenv
 PANDASCORE_API_KEY=
-DISCORD_WEBHOOK_URL=
 DISCORD_TOKEN=
 DISCORD_CHANNEL_ID=
 DISCORD_OWNER_USER_ID=
+DISCORD_DELIVERY_MODE=gateway
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.6-luna
 ```
 
-Only PandaScore is required for the complete daily workflow. The webhook is
-for one-way reports; the three Discord bot values are needed for interactive
-paper controls; OpenAI is optional and failure-safe. Polymarket public reads
+PandaScore plus the three Discord bot values are needed for the complete
+interactive workflow; OpenAI is optional and failure-safe. Polymarket public reads
 need no key or VPN.
 
 Oracle's Elixir is fetched from the reviewed public Google Drive file IDs into
@@ -60,7 +59,9 @@ uv run oracle-bets lol source-refresh
 uv run oracle-bets lol source-check
 uv run oracle-bets lol reconcile-history
 uv run oracle-bets lol validate-data
-uv run oracle-bets lol retune --targets all --feature-set compact
+uv run oracle-bets lol build-series
+uv run oracle-bets lol retune \
+  --targets series_winner,next_map_winner --feature-set compact
 ```
 
 Review the printed run directory, especially temporal metrics, calibration,
@@ -76,8 +77,10 @@ uv run oracle-bets model promote <candidate-id> \
 uv run oracle-bets evidence init
 uv run pytest tests/lol tests/core
 uv run ruff check packages tests
+uv run ty check packages
 uv run mkdocs build --strict
 uv run oracle-bets lol health
+uv run oracle-bets lol validate-winner-model
 uv run oracle-bets evidence health
 uv run oracle-bets lol market-check
 uv run oracle-bets lol schedule --days 2
@@ -102,8 +105,10 @@ then review only deterministic proposals:
 uv run oracle-bets daily lol
 uv run oracle-bets paper list --state pending
 uv run oracle-bets paper show <proposal-id> --format json
+uv run oracle-bets paper requote <proposal-id> --format json
 uv run oracle-bets paper decide \
-  --proposal-id <proposal-id> --decision accept --reason "owner paper review"
+  --proposal-id <proposal-id> --decision accept \
+  --requote-token <120-second-token> --reason "owner confirmed fresh quote"
 uv run oracle-bets paper list --state open
 uv run oracle-bets paper capture-closing --dry-run --format json
 uv run oracle-bets paper settle \
@@ -120,6 +125,6 @@ uv run oracle-bets paper quote-prop \
   --over-odds 1.91 --under-odds 1.91 --source bookmaker
 ```
 
-Use `uv run oracle-bets discord run` for persistent owner-only buttons and the
-`/paper_prop` Line/Odds modal. The launchd examples are documented under
-`ops/README.md`. A webhook alone is simpler and does not need an always-on bot.
+Use `uv run oracle-bets discord run` for persistent owner-only buttons,
+two-phase confirmation, settlement modals, and closing observations. The
+launchd examples are documented under `ops/README.md`.

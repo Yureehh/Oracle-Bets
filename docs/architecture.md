@@ -6,7 +6,7 @@ Oracle Bets has three small Python packages:
   settlement, performance, backups, and read-only market adapters;
 - `lol_bets`: LoL ingestion, features, ratings, training, calibration,
   inference, lifecycle, and daily orchestration;
-- `oracle_bets_discord`: bounded one-way delivery and owner-only paper controls.
+- `oracle_bets_discord`: crash-safe Gateway delivery and owner-only paper controls.
 
 There is no dashboard package, API server, live execution package, TabNet path,
 or WHR experiment. The optional Discord Gateway bot can record paper decisions;
@@ -20,18 +20,19 @@ Public Google Drive files (Oracle's Elixir 2024–2026)
   -> history reconciliation and quarantine
   -> team/player feature and rating tables
   -> validated supervised tables
+  -> deterministic series reconstruction + rejection manifest
   -> explicit retune candidates OR routine refit
-  -> temporal calibration and model reports
+  -> direct-series rating baseline + 10-member ensemble + calibrated blend
   -> mutable models/lol workspace
   -> optional immutable model registry/champion
 
 PandaScore schedule + expected lineups
   -> conservative team resolution
   -> canonical matchup features
-  -> winner/series/prop predictions
-  -> read-only Polymarket candidate comparison
+  -> direct series-winner prediction + shadow next-map/props
+  -> external read-only Polymarket comparison
   -> JSON + Markdown report
-  -> optional one-way webhook or persistent owner-only Discord controls
+  -> persistent owner-only Gateway controls and two-phase re-quote confirmation
   -> pre-start public CLOB closing snapshots
   -> append-only evidence and later settlement/performance review
 ```

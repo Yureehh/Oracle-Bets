@@ -30,11 +30,10 @@ uv run oracle-bets --help
 
 Required network credentials are `PANDASCORE_API_KEY` for schedules and
 `DISCORD_TOKEN`, `DISCORD_CHANNEL_ID`, and `DISCORD_OWNER_USER_ID` for the
-interactive bot. `DISCORD_WEBHOOK_URL` enables one-way reports.
+interactive bot.
 `OPENAI_API_KEY` is optional: without it, deterministic output is unchanged.
-Set exactly one `DISCORD_DELIVERY_MODE=gateway|webhook|off`. Gateway is the
-interactive bot and is the intended mode for this installation; webhook sends
-one-way reports only. The workflow never uses both transports in one run.
+Set `DISCORD_DELIVERY_MODE=gateway` (or `off` for local diagnostics). Gateway is
+the sole delivery path, so a legacy webhook cannot duplicate messages.
 Keep `.env` ignored and run `chmod 600 .env`. Public Polymarket discovery and
 books need no trading credentials. No command places orders, signs payloads,
 uses wallets, or moves funds.
@@ -51,10 +50,13 @@ uses wallets, or moves funds.
 | `lol sync-identities` | Rebuild canonical player/team/league/series/map identity evidence from retained raw data. Writes evidence. | None. |
 | `lol schedule` | Fetch and print PandaScore fixtures only; does not write the schedule or train. | `--days N`, `--leagues LCK,LEC`. |
 | `lol validate-data` | Read-only validation of generated supervised tables and feature contracts. | None. |
+| `lol build-series` | Reconstruct deterministic complete BO1/BO3/BO5 series, write one frozen prematch row per accepted series plus the next-map shadow dataset, and write an explicit rejection manifest. Run after ingestion and before Winner V2 training. | None. |
+| `lol validate-winner-model` | Fail-closed validation of the promoted direct-series bundle: actionability, ten-member ensemble, direct rating families, train/serve parity, canonical swap contract, and forbidden-feature absence. | `--format table|json`. |
 | `lol market-check` | Public, read-only Gamma/CLOB check. Reports typed match, token orientation, minimum shares, hypothetical cost, executable odds, and isolated token failures. Two observations use one shared 45-second wait. | `--match-key <pandascore-key>` checks that fixture's supported typed market. |
-| `lol train` | Routine refit with reviewed parameters; retrains weights and calibrators, registers an immutable candidate, and may auto-promote only a healthy non-inferior non-Optuna bundle. It does not run Optuna. | Defaults to the reviewed `compact` contract. Advanced: `--targets all|outcome|props|<names>`, `--feature-set full|compact|selected`, `--max-features N`, `--feature-selection none|importance|cumulative|report`, calibration/split options. |
+| `lol market-watch` | Write one JSON/Markdown pair and append read-only series-winner price/book observations for timing/CLV research. Intended for an hourly scheduler; never creates a proposal. | `--format table|json`. |
+| `lol train` | Routine refit with reviewed parameters; retrains weights and calibrators, registers an immutable candidate, and may auto-promote only a healthy non-inferior non-Optuna V2 bundle. It does not run Optuna. | `--targets all|series_winner|next_map_winner|props|<names>`, `--feature-set full|compact|selected`, `--max-features N`, report-only feature selection, and calibration/split options. |
 | `lol retune` | Explicit Optuna research search. Writes isolated tuning reports and artifacts; never updates reviewed parameters or champion automatically. | `--targets`, `--feature-set`, `--max-features`. |
-| `lol promote-tuning <run-id>` | Owner promotion of one reviewed, complete tuned-parameter bundle. Writes production parameter files, not model weights. Run `lol train` afterward. | Complete run ID. |
+| `lol promote-tuning <run-id>` | Owner promotion of the complete target set requested by one reviewed tuning run. Writes only those production parameter files, not model weights. Run a complete `lol train` afterward. | Complete run ID. |
 
 Examples:
 
@@ -63,14 +65,17 @@ uv run oracle-bets lol source-refresh
 uv run oracle-bets lol source-check
 uv run oracle-bets lol ingest
 uv run oracle-bets lol validate-data
+uv run oracle-bets lol build-series
+uv run oracle-bets lol validate-winner-model
 uv run oracle-bets lol schedule --days 2
 uv run oracle-bets lol market-check --match-key <pandascore-key>
+uv run oracle-bets lol market-watch
 
 # Routine retraining: no Optuna
 uv run oracle-bets lol train --targets all --feature-set compact
 
-# Rare research retuning, manual parameter promotion, then compatible retrain
-uv run oracle-bets lol retune --targets all --feature-set compact
+# One required Winner V2 research retune, manual parameter promotion, then retrain
+uv run oracle-bets lol retune --targets series_winner,next_map_winner --feature-set compact
 uv run oracle-bets lol promote-tuning <run-id>
 uv run oracle-bets lol train --targets all --feature-set compact
 ```
@@ -93,9 +98,10 @@ closed without replacing the previous cache.
 | `model status [--registry PATH]` | Read champion and registry health. |
 | `model list [--format table|json] [--registry PATH]` | List immutable candidates. |
 | `model review <model-id> [--format table|json]` | Show manifest, evidence, gates, and artifacts. |
-| `model register-run <run-id|latest>` | Confirm an automatically registered training run. A complete LoL bundle includes all four models/calibrators and the team-league and league-Elo lookup tables required by inference. |
+| `model register-run <run-id|latest>` | Confirm an automatically registered training run. A complete LoL bundle includes direct series, experimental next-map, legacy map diagnostic, three shadow props, their calibrators/uncertainty, and shared rating lookups. |
 | `model register-current <id> --code-version <sha> --metric name=value [...]` | Freeze the current complete inference tree as a manual candidate; optional `--target`, `--random-seed`, `--registry`. |
 | `model promote <id> --reason <text>` | Explicitly move the champion pointer after owner review. |
+| `model quarantine <id> --reason <text>` | Immediately make a model research-only; diagnostic predictions remain available but it cannot create paper proposals. |
 | `model rollback <id> --reason <text>` | Explicitly restore a prior healthy bundle. |
 
 The first champion is manual. Later routine candidates may auto-promote only
@@ -120,7 +126,7 @@ uv run oracle-bets daily lol --dry-run --skip-market-search
 uv run oracle-bets daily lol --skip-retrain
 ```
 
-Useful options are `--horizon-hours`, `--leagues`, `--webhook-url`,
+Useful options are `--horizon-hours`, `--leagues`, `--discord-delivery-mode`,
 `--targets`, `--feature-set`, `--max-features`, `--skip-market-search`,
 `--ai-review`/`--no-ai-review`, and `--openai-model`. The product default is a
 36-hour `tier1_plus_erls` prediction universe excluding configured non-actionable
@@ -157,8 +163,10 @@ uv run oracle-bets evidence export --format json
 ```bash
 uv run oracle-bets paper list --state pending --format table
 uv run oracle-bets paper show <proposal-or-position-id> --format json
+uv run oracle-bets paper requote <proposal-id> --format json
 uv run oracle-bets paper decide \
-  --proposal-id <id> --decision accept --reason "owner paper review"
+  --proposal-id <id> --decision accept --requote-token <120-second-token> \
+  --reason "owner confirmed fresh quote"
 uv run oracle-bets paper list --state open
 
 uv run oracle-bets paper settle \
@@ -183,6 +191,9 @@ Other paper commands:
 | `paper show <id>` | Read one proposal or position. |
 | `paper quote-prop --forecast-id ... --line ... --over-odds ... --under-odds ... --source ...` | Write a research-only scalar prop proposal using the forecast's exact calibrator. |
 | `paper decide --proposal-id ... --decision accept|reject` | Append an owner decision; acceptance opens one paper position. Options: `--reason`, `--actor-id`, `--database`. |
+| `paper requote <proposal-id>` | Capture two fresh executable books, rerun every Winner V2 gate, and issue a confirmation token valid for 120 seconds. Read-only market access; no position is opened. |
+| `paper record-map-state --series-id ... --map-number ... --winner ... --source-reference ...` | Append owner-verified completed-map state for the separate reactive shadow experiment. Maps must be sequential and conflicting evidence is rejected. It never creates an actionable position. |
+| `paper expire --strategy-version <version|all> --reason <text>` | Append invalidation corrections to matching undecided proposals without deleting evidence. |
 | `paper settle ...` | Append one manual settlement. Options: `--note`, `--actor-id`, `--settled-at`, `--database`; `--dry-run` writes nothing. |
 | `paper capture-closing [--window-minutes 15] [--dry-run] [--format table|json]` | Read public books and write fully fillable pre-start closing observations for open Polymarket positions. Never settles or trades. |
 | `paper performance [--since ISO] [--target X] [--league X] [--format table|json]` | Read ROI, CLV, drawdown, calibration, uncertainty, and cohorts. |
@@ -202,12 +213,13 @@ uv run oracle-bets paper quote-prop \
 | `discord doctor` | Validate local configuration without network calls. |
 | `discord doctor --live` | Read the bot/channel identity and verify channel-history access for crash recovery; sends no message. |
 | `discord run` | Run the always-on Gateway bot for owner-only proposal and settlement controls and closing captures. |
-| `discord publish --run-id latest|<id>` | Send one saved report through the configured one-way webhook. |
 
-The Gateway bot provides Accept/Reject and Win/Loss/Push/Void controls.
+The Gateway bot provides Accept/Reject and Win/Loss/Push/Void controls. Accept
+first fetches a fresh two-observation quote; only a separate Confirm within 120
+seconds opens the flat one-unit paper position.
 Settlement buttons open a required source-reference modal. Controls persist
 across restarts and disable after settlement. The LLM never sees or influences
-settlement. A webhook cannot host controls; webhook-only users settle by CLI.
+settlement. Webhook delivery is disabled.
 Do not run the separate closing-line launchd job when the Gateway bot is doing
 the same capture.
 Before each new card is sent, the bot records a durable intent and embeds a
@@ -233,9 +245,11 @@ models, settles positions, or changes market state.
 ```bash
 uv run pytest tests/core tests/lol
 uv run ruff check packages tests
+uv run ty check packages
 uv run mkdocs build --strict
 uv run oracle-bets lol health
 uv run oracle-bets lol validate-data
+uv run oracle-bets lol validate-winner-model
 uv run oracle-bets lol market-check
 uv run oracle-bets evidence health
 uv run oracle-bets discord doctor
@@ -249,8 +263,8 @@ requires regenerating those artifacts.
 ## launchd and recovery
 
 Supported macOS templates and installation commands are in `ops/README.md`.
-Use the Gateway-bot template for interactive
-controls or the closing-line template for webhook-only operation, never both.
+Use the Gateway-bot template for interactive controls. Do not install a second
+message-delivery job.
 
 The clean research rebuild sequence is in
 [Getting started](getting_started.md#first-clean-research-rebuild). It deletes

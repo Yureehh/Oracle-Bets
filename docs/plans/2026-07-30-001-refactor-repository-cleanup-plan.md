@@ -10,6 +10,11 @@ product_contract_source: ce-plan-bootstrap
 
 # Oracle Bets Repository Cleanup and Production Hardening - Plan
 
+> Historical plan, superseded by the direct-series Winner V2 architecture in
+> [Predictions and markets](../predictions_markets.md) and the current
+> [roadmap](../roadmap.md). Webhook-only and map-derived winner decisions in
+> this file are not current operating instructions.
+
 ## Goal Capsule
 
 - **Objective:** Reduce Oracle Bets to one understandable, production-focused LoL research system while improving calibration safety, reproducibility, artifact provenance, and profit evidence.

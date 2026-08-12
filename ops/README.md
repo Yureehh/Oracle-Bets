@@ -1,70 +1,31 @@
 # Operations
 
-This folder is deployment configuration, not a planner or application package.
-It contains the daily/monthly jobs plus two alternatives for continuous paper
-operations:
+This folder contains deployment examples, not application code or planning.
 
-- `launchd/com.oracle-bets.daily-lol.plist.example` — deterministic 00:15 LoL
-  workflow and optional Discord report;
-- `launchd/com.oracle-bets.monthly-audit.plist.example` — evidence review on the
-  first day of each month.
-- `launchd/com.oracle-bets.discord-bot.plist.example` — persistent owner-only
-  paper decision buttons, manual settlement confirmation, prop-line modal, and
-  pre-start closing-line capture;
-  install only for interactive use.
-- `launchd/com.oracle-bets.closing-lines.plist.example` — five-minute read-only
-  closing-line capture for webhook-only deployments. Do not install it when the
-  Gateway bot is running because the bot already performs this check.
+- `com.oracle-bets.daily-lol.plist.example`: daily 00:15 Rome workflow;
+- `com.oracle-bets.market-watch.plist.example`: hourly read-only market timing observations;
+- `com.oracle-bets.monthly-audit.plist.example`: first-day evidence review;
+- `com.oracle-bets.discord-bot.plist.example`: the sole persistent Discord
+  delivery path, owner decisions, confirmation, settlement, and closing reads.
 
-There is deliberately no weekly pipeline. Training-event reports are produced
-by training itself, and a weekly model rebuild without enough new data would
-only add churn. The current work board lives in `docs/roadmap.md`.
+There is no scheduled weekly retune and no webhook/second closing daemon.
+Training reports are created by training itself. The work board is
+`docs/roadmap.md`.
 
-## Install on macOS
-
-Replace the `uv` and repository placeholders in copies of the examples, then:
+Copy the examples, replace absolute `uv` and repository paths, then run:
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
-cp ops/launchd/com.oracle-bets.daily-lol.plist.example \
-  ~/Library/LaunchAgents/com.oracle-bets.daily-lol.plist
-cp ops/launchd/com.oracle-bets.monthly-audit.plist.example \
-  ~/Library/LaunchAgents/com.oracle-bets.monthly-audit.plist
-# Webhook-only paper tracking (omit when installing the Gateway bot):
-cp ops/launchd/com.oracle-bets.closing-lines.plist.example \
-  ~/Library/LaunchAgents/com.oracle-bets.closing-lines.plist
-# Optional, after `uv sync --extra discord-bot`:
-cp ops/launchd/com.oracle-bets.discord-bot.plist.example \
-  ~/Library/LaunchAgents/com.oracle-bets.discord-bot.plist
-
-plutil -lint ~/Library/LaunchAgents/com.oracle-bets.*.plist
-launchctl bootstrap gui/$(id -u) \
-  ~/Library/LaunchAgents/com.oracle-bets.daily-lol.plist
-launchctl bootstrap gui/$(id -u) \
-  ~/Library/LaunchAgents/com.oracle-bets.monthly-audit.plist
-launchctl bootstrap gui/$(id -u) \
-  ~/Library/LaunchAgents/com.oracle-bets.closing-lines.plist
-# Optional:
-launchctl bootstrap gui/$(id -u) \
-  ~/Library/LaunchAgents/com.oracle-bets.discord-bot.plist
+for job in daily-lol market-watch monthly-audit discord-bot; do
+  cp "ops/launchd/com.oracle-bets.${job}.plist.example" \
+    "$HOME/Library/LaunchAgents/com.oracle-bets.${job}.plist"
+  plutil -lint "$HOME/Library/LaunchAgents/com.oracle-bets.${job}.plist"
+  launchctl bootstrap "gui/$(id -u)" \
+    "$HOME/Library/LaunchAgents/com.oracle-bets.${job}.plist"
+done
 ```
 
-Inspect or trigger an installed job with:
-
-```bash
-launchctl print gui/$(id -u)/com.oracle-bets.daily-lol
-launchctl kickstart -k gui/$(id -u)/com.oracle-bets.daily-lol
-```
-
-Unload before replacing an installed file:
-
-```bash
-launchctl bootout gui/$(id -u)/com.oracle-bets.daily-lol
-```
-
-Keep `PANDASCORE_API_KEY`, Discord values, and the optional OpenAI key in the
-ignored repository `.env`, never in a plist or commit, and restrict it with
-`chmod 600 .env`.
-Application logs rotate at 10 MiB with five backups by default (about 60 MiB
-maximum). The plist sends launchd stdout/stderr to `/dev/null` because the
-application already owns its bounded log.
+Inspect or trigger a job with `launchctl print` and `launchctl kickstart -k`.
+Unload with `launchctl bootout` before replacing a plist. Keep credentials only
+in the ignored `chmod 600 .env`, never in a plist. Application logs rotate at
+10 MiB with five backups; launchd stdout/stderr therefore point to `/dev/null`.
