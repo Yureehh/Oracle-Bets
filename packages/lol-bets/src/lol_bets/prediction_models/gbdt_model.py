@@ -85,6 +85,11 @@ HIGH_CORR_THRESHOLD = 0.95  # Pearson correlation threshold (keep more features)
 MAX_MISSING_FRAC = 0.40  # drop features missing >40% on TRAIN
 RANDOM_STATE = 42
 MIN_SHAPE_FOR_CORR = 2  # min numeric cols to run high-corr pruning
+MIN_TEMPORAL_SPLITS = 3
+MIN_CALIBRATION_SPLITS = 6
+WINNER_V2_MODEL_NAMES = frozenset(
+    {"SeriesWinnerPrediction_LightGBM", "NextMapWinnerPrediction_LightGBM"}
+)
 BINARY_CLASS_UNIQUE_VALUES = 2
 ROWS_PER_GAME = 2
 POSITIVE_RESULT_SUM_PER_GAME = 1
@@ -143,6 +148,40 @@ DERIVED_STRENGTH_FEATURES = (
     "rating_consensus",
     "rating_disagreement",
 )
+
+
+def _model_feature_lineage(feature: str) -> dict[str, Any]:
+    """Describe one final matchup feature without claiming post-start availability."""
+    source = feature
+    swap_behavior = "canonical_team_a_minus_team_b"
+    for prefix, behavior in (
+        ("delta_", "canonical_team_a_minus_team_b"),
+        ("context_", "invariant_context"),
+        ("pair_", "ordered_pair_invariant"),
+    ):
+        if source.startswith(prefix):
+            source = source.removeprefix(prefix)
+            swap_behavior = behavior
+            break
+    lowered = source.casefold()
+    if any(token in lowered for token in ("elo", "glicko", "pl_", "trueskill")):
+        family = "ratings"
+    elif "roster" in lowered or any(
+        lowered.startswith(f"{role}_") for role in COMPACT_ROLE_PREFIXES
+    ):
+        family = "roster_and_players"
+    elif any(token in lowered for token in ("ema_", "win_rate", "h2h", "season")):
+        family = "historical_form"
+    else:
+        family = "prematch_context"
+    return {
+        "feature": feature,
+        "source": source,
+        "availability_timestamp": "strictly_before_fixture_start",
+        "family": family,
+        "swap_behavior": swap_behavior,
+        "model_eligible": True,
+    }
 
 
 @dataclass
@@ -516,21 +555,17 @@ def _bo_format_from_row(row: pd.Series) -> str:
     for token in ("bo1", "bo3", "bo5"):
         if token in match_type:
             return token
-    if (
-        pd.to_numeric(pd.Series([row.get("is_bo1")]), errors="coerce").fillna(0).iloc[0]
-        == 1
-    ):
-        return "bo1"
-    if (
-        pd.to_numeric(pd.Series([row.get("is_bo3")]), errors="coerce").fillna(0).iloc[0]
-        == 1
-    ):
-        return "bo3"
-    if (
-        pd.to_numeric(pd.Series([row.get("is_bo5")]), errors="coerce").fillna(0).iloc[0]
-        == 1
-    ):
-        return "bo5"
+    best_of = pd.to_numeric(pd.Series([row.get("best_of")]), errors="coerce").iloc[0]
+    if pd.notna(best_of) and int(best_of) in {1, 3, 5}:
+        return f"bo{int(best_of)}"
+    for value in (1, 3, 5):
+        flag = (
+            pd.to_numeric(pd.Series([row.get(f"is_bo{value}")]), errors="coerce")
+            .fillna(0)
+            .iloc[0]
+        )
+        if flag == 1:
+            return f"bo{value}"
     return "unknown"
 
 
@@ -695,6 +730,9 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     prop_calibrator: PropDistributionCalibrator | None = field(
         default=None, init=False, repr=False
     )
+    fit_partition_metadata: dict[str, pd.DataFrame] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         self.training_data = pd.DataFrame()
@@ -807,6 +845,9 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         """Columns that must never be used as features."""
         return [
             "gameid",
+            "series_id",
+            "source_gameid",
+            "target_gameid",
             "teamid",
             "teamname",
             "side",
@@ -864,7 +905,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def add_explicit_ema_diffs(
         df: pd.DataFrame, *, drop_opponents: bool = False
     ) -> pd.DataFrame:
-        """Add diff_ema columns without overwriting own EMA state."""
+        """Recompute current-opponent EMA deltas without overwriting own state."""
         X = df.copy()
 
         for col in [c for c in X.columns if c.startswith("opp_ema_")]:
@@ -874,7 +915,6 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 base in X.columns
                 and is_numeric_dtype(X[base])
                 and is_numeric_dtype(X[col])
-                and diff not in X.columns
             ):
                 X[diff] = X[base] - X[col]
             if drop_opponents:
@@ -891,7 +931,6 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     base in X.columns
                     and is_numeric_dtype(X[base])
                     and is_numeric_dtype(X[col])
-                    and diff not in X.columns
                 ):
                     X[diff] = X[base] - X[col]
                 if drop_opponents:
@@ -992,20 +1031,25 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     def drop_low_std_columns(
         self, df: pd.DataFrame, threshold: float = LOW_STD_THRESHOLD
     ) -> tuple[pd.DataFrame, list[str]]:
-        """Remove near-constant numeric columns using coefficient of variation (train only)."""
+        """
+        Remove exact numeric constants on train data.
+
+        Matchup deltas are signed, so coefficient-of-variation pruning is invalid:
+        every useful feature with a negative mean can otherwise look "low variance".
+        ``threshold`` remains in the signature so older call sites and artifacts can
+        be read, but production pruning intentionally ignores it.
+        """
+        del threshold
         df = df.copy()
         num = df.select_dtypes("number")
         if num.empty:
             return df, []
-        std = num.std()
-        mean = num.mean().replace(0, np.finfo(float).eps)
-        cov = std / mean
-        drop = cov[cov < threshold].index.tolist()
+        drop = [
+            col for col in num.columns if num[col].dropna().drop_duplicates().size <= 1
+        ]
         df = df.drop(columns=drop, errors="ignore")
         if drop:
-            logger.info(
-                "Dropped low-variance columns (<%.3f): %d", threshold, len(drop)
-            )
+            logger.info("Dropped exact-constant numeric columns: %d", len(drop))
         return df, drop
 
     def drop_highly_correlated_features(
@@ -1143,14 +1187,22 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         if g.empty:
             raise ValueError("No valid dates for temporal split.")
 
-        n = len(g)
+        timestamps = pd.Index(g[date_col].drop_duplicates().sort_values())
+        n = len(timestamps)
+        if n < MIN_TEMPORAL_SPLITS:
+            raise ValueError("At least three unique timestamps are required.")
         n_test = max(1, int(round(n * test_size)))
         n_val = max(1, int(round((n - n_test) * val_size)))
-        n_train = max(1, n - n_val - n_test)
+        n_train = n - n_val - n_test
+        if n_train < 1:
+            raise ValueError("Not enough timestamps for train/validation/test split.")
 
-        gids_train = set(g.iloc[:n_train][group_col])
-        gids_val = set(g.iloc[n_train : n_train + n_val][group_col])
-        gids_test = set(g.iloc[n_train + n_val :][group_col])
+        train_dates = set(timestamps[:n_train])
+        val_dates = set(timestamps[n_train : n_train + n_val])
+        test_dates = set(timestamps[n_train + n_val :])
+        gids_train = set(g.loc[g[date_col].isin(train_dates), group_col])
+        gids_val = set(g.loc[g[date_col].isin(val_dates), group_col])
+        gids_test = set(g.loc[g[date_col].isin(test_dates), group_col])
 
         def _sel(gids: set[Any]) -> tuple[pd.DataFrame, pd.Series]:
             Xp = X_with_meta[X_with_meta[group_col].isin(gids)]
@@ -1170,7 +1222,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         return X_train, X_val, X_test, y_train, y_val, y_test
 
     @staticmethod
-    def temporal_train_tune_cal_test_split(
+    def temporal_train_tune_cal_test_split(  # noqa: PLR0915
         X_with_meta: pd.DataFrame,
         y: pd.Series,
         date_col: str = "date",
@@ -1207,7 +1259,12 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         if g.empty:
             raise ValueError("No valid dates for temporal split.")
 
-        n = len(g)
+        timestamps = pd.Index(g[date_col].drop_duplicates().sort_values())
+        n = len(timestamps)
+        if n < MIN_CALIBRATION_SPLITS:
+            raise ValueError(
+                "At least six unique timestamps are required for calibration splits."
+            )
         n_test = max(1, int(round(n * test_size)))
         n_cal = max(3, int(round(n * calibration_size)))
         n_tune = max(1, int(round(n * tune_size)))
@@ -1222,20 +1279,30 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             n_uncertainty = 1
             n_cal_fit = max(1, n_cal_fit - 1)
 
-        train = g.iloc[:n_train]
-        tune = g.iloc[n_train : n_train + n_tune]
-        cal_fit = g.iloc[n_train + n_tune : n_train + n_tune + n_cal_fit]
-        cal_select = g.iloc[
+        train_dates = timestamps[:n_train]
+        tune_dates = timestamps[n_train : n_train + n_tune]
+        cal_fit_dates = timestamps[n_train + n_tune : n_train + n_tune + n_cal_fit]
+        cal_select_dates = timestamps[
             n_train + n_tune + n_cal_fit : n_train + n_tune + n_cal_fit + n_cal_select
         ]
-        uncertainty = g.iloc[
+        uncertainty_dates = timestamps[
             n_train + n_tune + n_cal_fit + n_cal_select : n_train
             + n_tune
             + n_cal_fit
             + n_cal_select
             + n_uncertainty
         ]
-        test = g.iloc[n_train + n_tune + n_cal :]
+        test_dates = timestamps[n_train + n_tune + n_cal :]
+
+        def _groups_for_dates(values: pd.Index) -> pd.DataFrame:
+            return g.loc[g[date_col].isin(set(values))]
+
+        train = _groups_for_dates(train_dates)
+        tune = _groups_for_dates(tune_dates)
+        cal_fit = _groups_for_dates(cal_fit_dates)
+        cal_select = _groups_for_dates(cal_select_dates)
+        uncertainty = _groups_for_dates(uncertainty_dates)
+        test = _groups_for_dates(test_dates)
 
         def _sel(group_frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
             gids = set(group_frame[group_col])
@@ -1272,6 +1339,73 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             y_cal_select,
             y_uncertainty,
             y_test,
+        )
+
+    @staticmethod
+    def temporal_winner_v2_split(
+        X_with_meta: pd.DataFrame,
+        y: pd.Series,
+        *,
+        date_col: str = "date",
+        group_col: str = "gameid",
+    ) -> tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+        pd.Series,
+    ]:
+        """Create timestamp-atomic 55/5/10/10/5/15 Winner V2 partitions."""
+        required = {group_col, date_col}
+        if not required.issubset(X_with_meta.columns):
+            raise ValueError(f"Missing required columns {sorted(required)}")
+        groups = X_with_meta[[group_col, date_col]].drop_duplicates(group_col).copy()
+        groups[date_col] = pd.to_datetime(groups[date_col], errors="coerce")
+        groups = groups.dropna(subset=[date_col]).sort_values(date_col)
+        timestamps = pd.Index(groups[date_col].drop_duplicates())
+        if len(timestamps) < MIN_CALIBRATION_SPLITS:
+            raise ValueError("Winner V2 requires at least six unique timestamps.")
+        fractions = (0.55, 0.05, 0.10, 0.10, 0.05)
+        boundaries = [0]
+        cumulative = 0.0
+        for fraction in fractions:
+            cumulative += fraction
+            boundary = max(boundaries[-1] + 1, int(round(len(timestamps) * cumulative)))
+            boundaries.append(boundary)
+        boundaries[-1] = min(boundaries[-1], len(timestamps) - 1)
+        date_partitions = [
+            timestamps[start:stop]
+            for start, stop in pairwise([*boundaries, len(timestamps)])
+        ]
+        if any(len(values) == 0 for values in date_partitions):
+            raise ValueError("Winner V2 temporal partitions must all be non-empty.")
+
+        def _select(values: pd.Index) -> tuple[pd.DataFrame, pd.Series]:
+            group_ids = set(groups.loc[groups[date_col].isin(set(values)), group_col])
+            frame = X_with_meta.loc[X_with_meta[group_col].isin(group_ids)]
+            return frame, y.loc[frame.index]
+
+        selected = [_select(values) for values in date_partitions]
+        return (
+            selected[0][0],
+            selected[1][0],
+            selected[2][0],
+            selected[3][0],
+            selected[4][0],
+            selected[5][0],
+            selected[0][1],
+            selected[1][1],
+            selected[2][1],
+            selected[3][1],
+            selected[4][1],
+            selected[5][1],
         )
 
     # ─────────────────────── Categorical / imputation ─────────────────────── #
@@ -1368,9 +1502,10 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
         Xp, drop_high_miss = self._drop_high_missing(Xp, drop_missing_threshold)
         Xp, drop_low_var = self.drop_low_std_columns(Xp, drop_low_std_threshold)
-        Xp, drop_corr = self.drop_highly_correlated_features(
-            Xp, drop_high_corr_threshold
-        )
+        # Correlation is useful research evidence, but is not a production drop
+        # rule. Redundant predictors are handled by regularisation/tree fitting.
+        del drop_high_corr_threshold
+        drop_corr: list[str] = []
 
         Xp, categorical_features = self.preprocess_categorical_features(Xp)
 
@@ -1624,10 +1759,10 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 "min": current_min.isoformat(),
                 "max": current_max.isoformat(),
             }
-            if previous_max is not None and previous_max > current_min:
+            if previous_max is not None and previous_max >= current_min:
                 msg = (
                     "Temporal split order is invalid; "
-                    f"{previous_name} max date {previous_max.date()} is after "
+                    f"{previous_name} max date {previous_max.date()} is not before "
                     f"{split_name} min date {current_min.date()}."
                 )
                 raise ValueError(msg)
@@ -1655,6 +1790,15 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         self._store_pickle(
             f"{self.model_name}_final_features.pkl", all_features.tolist()
         )
+
+    def store_feature_lineage(self, all_features: pd.Index) -> None:
+        """Persist the train/serve availability contract for every final feature."""
+        lineage = [_model_feature_lineage(str(feature)) for feature in all_features]
+        payload = json.dumps(lineage, indent=2, sort_keys=True) + "\n"
+        artifact = self.artifact_root / self.model_name
+        artifact.mkdir(parents=True, exist_ok=True)
+        (artifact / f"{self.model_name}_feature_lineage.json").write_text(payload)
+        self.insight_path("feature_lineage.json").write_text(payload)
 
     def store_categorical_features(self, categorical_features: list[str]) -> None:
         self._store_pickle(
@@ -2617,14 +2761,18 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 y_cal_select,
                 y_uncertainty,
                 y_test,
-            ) = self.temporal_train_tune_cal_test_split(
-                X_for_split,
-                y,
-                date_col="date",
-                group_col="gameid",
-                tune_size=self.tune_size,
-                calibration_size=self.calibration_size,
-                test_size=self.test_size,
+            ) = (
+                self.temporal_winner_v2_split(X_for_split, y)
+                if self.model_name in WINNER_V2_MODEL_NAMES
+                else self.temporal_train_tune_cal_test_split(
+                    X_for_split,
+                    y,
+                    date_col="date",
+                    group_col="gameid",
+                    tune_size=self.tune_size,
+                    calibration_size=self.calibration_size,
+                    test_size=self.test_size,
+                )
             )
             X_cal_full = pd.concat([X_cal_fit, X_cal_select], axis=0)
             y_cal_full = pd.concat([y_cal_fit, y_cal_select], axis=0)
@@ -2709,6 +2857,18 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         meta_cal_full_for_cal = X_cal_full[calibration_meta_cols].copy()
         meta_uncertainty_for_cal = X_uncertainty[calibration_meta_cols].copy()
         meta_test_for_cal = X_test[calibration_meta_cols].copy()
+
+        self.fit_partition_metadata = {
+            name: frame[[col for col in ("gameid", "date") if col in frame]].copy()
+            for name, frame in {
+                "train": X_train,
+                "tune": X_val,
+                "calibration_fit": X_cal_fit,
+                "calibration_select": X_cal_select,
+                "uncertainty_fit": X_uncertainty,
+                "test": X_test,
+            }.items()
+        }
 
         # ── CRITICAL: drop meta (incl. 'date') from the actual feature matrices, with logs ── #
         X_train = self._strip_meta_from_features(X_train, "train")
@@ -2809,6 +2969,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
         # Persist features metadata
         self.store_model_features(pd.Index(train_cols))
+        self.store_feature_lineage(pd.Index(train_cols))
         self.store_categorical_features(categorical_features)
         self.store_feature_pipeline(feature_pipeline)
 

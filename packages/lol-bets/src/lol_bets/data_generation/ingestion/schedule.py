@@ -408,13 +408,13 @@ class PandaScoreSchedule:
             "sort": "",
             "page": page,
             "per_page": self.per_page,
-            "token": self.api_key,
         }
+        headers = self.headers | {"Authorization": f"Bearer {self.api_key}"}
         for attempt in range(1, self.max_retries + 1):
             try:
                 resp = self.session.get(
                     self.base_url,
-                    headers=self.headers,
+                    headers=headers,
                     params=params,
                     timeout=10,
                 )
@@ -422,8 +422,15 @@ class PandaScoreSchedule:
                 self.logger.debug("Page %s OK – %s bytes", page, len(resp.content))
                 return resp.json()
             except requests.RequestException as exc:
+                status = getattr(exc.response, "status_code", None)
+                safe_error = (
+                    f"HTTP {status}" if status is not None else type(exc).__name__
+                )
                 self.logger.warning(
-                    "API error (attempt %s/%s) – %s", attempt, self.max_retries, exc
+                    "PandaScore API error (attempt %s/%s): %s",
+                    attempt,
+                    self.max_retries,
+                    safe_error,
                 )
                 if attempt == self.max_retries:
                     msg = "Max retries exceeded"
@@ -655,7 +662,7 @@ class PandaScoreLineupRefresher:
                         status,
                     )
                     continue
-                error = f"HTTPError: {' '.join(str(exc).split())[:200]}"
+                error = f"match_detail_http_{status or 'error'}"
                 refreshed.at[index, "lineup_refresh_error"] = error
                 self.logger.warning(
                     "Expected-lineup refresh failed for match %s: %s",

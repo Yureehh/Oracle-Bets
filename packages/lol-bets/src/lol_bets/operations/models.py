@@ -44,6 +44,9 @@ _MAX_BOOTSTRAP_INDEX_CELLS = 1_000_000
 _DRIFT_MISSINGNESS_WARNING = 0.25
 _DRIFT_TOP_FEATURE_MINIMUM_OVERLAP = 5
 _DRIFT_PREDICTION_MEAN_WARNING = 0.05
+_MIN_CALIBRATION_SLOPE = 0.8
+_MAX_CALIBRATION_SLOPE = 1.2
+_MAX_ABSOLUTE_CALIBRATION_INTERCEPT = 0.10
 
 _COMPLETE_LOL_BUNDLE_REQUIRED_ARTIFACTS = frozenset(
     {
@@ -54,6 +57,16 @@ _COMPLETE_LOL_BUNDLE_REQUIRED_ARTIFACTS = frozenset(
         "OutcomePrediction_LightGBM/OutcomePrediction_LightGBM_outcome_matchup_schema.pkl",
         "OutcomePrediction_LightGBM/OutcomePrediction_LightGBM_probability_calibrator.pkl",
         "OutcomePrediction_LightGBM/OutcomePrediction_LightGBM_probability_uncertainty.pkl",
+        "SeriesWinnerPrediction_LightGBM/SeriesWinnerPrediction_LightGBM.pkl",
+        "SeriesWinnerPrediction_LightGBM/SeriesWinnerPrediction_LightGBM_feature_pipeline.pkl",
+        "SeriesWinnerPrediction_LightGBM/SeriesWinnerPrediction_LightGBM_outcome_matchup_schema.pkl",
+        "SeriesWinnerPrediction_LightGBM/SeriesWinnerPrediction_LightGBM_probability_calibrator.pkl",
+        "SeriesWinnerPrediction_LightGBM/SeriesWinnerPrediction_LightGBM_probability_uncertainty.pkl",
+        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM.pkl",
+        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM_feature_pipeline.pkl",
+        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM_outcome_matchup_schema.pkl",
+        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM_probability_calibrator.pkl",
+        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM_probability_uncertainty.pkl",
         "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM.pkl",
         "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM_feature_pipeline.pkl",
         "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM_residual_summary.pkl",
@@ -473,6 +486,21 @@ def review_candidate_on_sealed_rows(
     if not registry.verify_bundle(candidate_id):
         raise ModelRegistryError(f"candidate bundle is unhealthy: {candidate_id}")
     if champion_id is None:
+        candidate_series = (
+            registry.candidates
+            / candidate_id
+            / _EVALUATION_MODELS["series_winner"]
+            / f"{_EVALUATION_MODELS['series_winner']}.pkl"
+        )
+        if candidate_series.is_file():
+            return _review_first_winner_v2_candidate(
+                registry,
+                candidate_id=candidate_id,
+                champion_id=None,
+                policy=policy,
+                reviewed_at=reviewed_at,
+                bootstrap_samples=bootstrap_samples,
+            )
         return _write_candidate_review(
             registry,
             CandidateReview(
@@ -490,6 +518,22 @@ def review_candidate_on_sealed_rows(
                 },
             ),
             reviewed_at=reviewed_at,
+        )
+    direct_series_name = _EVALUATION_MODELS["series_winner"]
+    champion_series = (
+        registry.candidates
+        / champion_id
+        / direct_series_name
+        / f"{direct_series_name}.pkl"
+    )
+    if not champion_series.is_file():
+        return _review_first_winner_v2_candidate(
+            registry,
+            candidate_id=candidate_id,
+            champion_id=champion_id,
+            policy=policy,
+            reviewed_at=reviewed_at,
+            bootstrap_samples=bootstrap_samples,
         )
     try:
         evidence, fingerprints, report = _replay_promotion_evidence(
@@ -579,6 +623,122 @@ def review_candidate_on_sealed_rows(
     )
 
 
+def _review_first_winner_v2_candidate(
+    registry: ModelRegistry,
+    *,
+    candidate_id: str,
+    champion_id: str | None,
+    policy: PromotionPolicy,
+    reviewed_at: datetime,
+    bootstrap_samples: int,
+) -> CandidateReview:
+    """Compare the first direct-series candidate with its predeclared baseline."""
+    root = registry.candidates / candidate_id
+    model_name = _EVALUATION_MODELS["series_winner"]
+    evaluation = root / "_evaluation" / model_name
+    reasons: list[str] = []
+    evidence_report: dict[str, Any] = {}
+    fingerprints: dict[str, str] = {}
+    try:
+        raw = pd.read_parquet(evaluation / "features.parquet")
+        labels = pd.read_parquet(evaluation / "labels.parquet")
+        actual = pd.to_numeric(labels["actual"], errors="raise").to_numpy(dtype=float)
+        metadata = labels.drop(columns=["actual"])
+        pipeline = load_model(root / model_name / f"{model_name}_feature_pipeline.pkl")
+        model = load_model(root / model_name / f"{model_name}.pkl")
+        calibrator = load_model(
+            root / model_name / f"{model_name}_probability_calibrator.pkl"
+        )
+        transformed = pipeline.transform(raw.copy())
+        if callable(getattr(model, "rating_baseline_probability", None)):
+            baseline = model.rating_baseline_probability(transformed)
+        else:
+            baseline, _full = model.component_probabilities(transformed)
+        candidate_raw = model.predict_proba(transformed)[:, 1]
+        candidate = np.asarray(
+            calibrator.predict(candidate_raw, metadata=metadata), dtype=float
+        )
+        baseline = np.asarray(baseline, dtype=float)
+        baseline_quality = prediction_quality(
+            actual.astype(int).tolist(), baseline.tolist()
+        )
+        candidate_quality = prediction_quality(
+            actual.astype(int).tolist(), candidate.tolist()
+        )
+        promotion_evidence = PromotionEvidence(
+            champion_log_losses=tuple(_binary_log_losses(actual, baseline)),
+            candidate_log_losses=tuple(_binary_log_losses(actual, candidate)),
+            champion_brier=baseline_quality.brier,
+            candidate_brier=candidate_quality.brier,
+            champion_ece=baseline_quality.calibration_error,
+            candidate_ece=candidate_quality.calibration_error,
+            cohort_log_loss=_cohort_replay_losses(labels, actual, baseline, candidate),
+            operational_failures=tuple(_candidate_operational_failures(root)),
+        )
+        decision = evaluate_promotion(
+            promotion_evidence,
+            policy=PromotionPolicy.ROUTINE,
+            bootstrap_samples=bootstrap_samples,
+        )
+        from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+
+        calibration = GradientBoostingModel.compute_probability_calibration_metrics(
+            pd.Series(actual), candidate
+        )
+        slope = calibration.get("calibration_slope")
+        intercept = calibration.get("calibration_intercept")
+        if slope is None or not (
+            _MIN_CALIBRATION_SLOPE <= float(slope) <= _MAX_CALIBRATION_SLOPE
+        ):
+            reasons.append("calibration_slope_outside_0.8_1.2")
+        if (
+            intercept is None
+            or abs(float(intercept)) > _MAX_ABSOLUTE_CALIBRATION_INTERCEPT
+        ):
+            reasons.append("calibration_intercept_above_0.10")
+        reasons.extend(decision.reasons)
+        fingerprints["series_winner"] = _frame_fingerprint(labels)
+        evidence_report = {
+            "first_winner_v2": True,
+            "comparator": "predeclared_rating_logistic_baseline",
+            "sealed_rows": len(labels),
+            "rating_baseline": asdict(baseline_quality),
+            "candidate": asdict(candidate_quality),
+            "calibration": calibration,
+            "relative_improvement": decision.relative_improvement,
+            "confidence_lower_bound": decision.confidence_lower_bound,
+            "confidence_degradation_upper_bound": (
+                decision.confidence_degradation_upper_bound
+            ),
+            "cohorts": {
+                name: {
+                    "rating_baseline_log_loss": values[0],
+                    "candidate_log_loss": values[1],
+                    "count": values[2],
+                }
+                for name, values in promotion_evidence.cohort_log_loss.items()
+            },
+            "operational_failures": list(promotion_evidence.operational_failures),
+            "manual_promotion_required": True,
+        }
+    except Exception as error:
+        reasons.append(
+            f"winner_v2_baseline_review_failed:{type(error).__name__}:{error}"
+        )
+
+    review = CandidateReview(
+        candidate_id=candidate_id,
+        champion_id=champion_id,
+        status="manual_review_required" if not reasons else "blocked",
+        policy=policy,
+        promoted=False,
+        reasons=tuple(dict.fromkeys(reasons)),
+        row_fingerprints=fingerprints,
+        evidence=evidence_report,
+    )
+    return _write_candidate_review(registry, review, reviewed_at=reviewed_at)
+
+
 def load_candidate_review(
     registry: ModelRegistry,
     candidate_id: str,
@@ -639,6 +799,10 @@ class ModelRegistry:
         self.champion_pointer = self.root / "champion.json"
         self.history_path = self.root / "champion_history.jsonl"
         self.transition_path = self.root / "champion_transition.json"
+        self.actionability_path = self.root / "model_actionability.json"
+        self.actionability_history_path = (
+            self.root / "model_actionability_history.jsonl"
+        )
         self.candidates.mkdir(parents=True, exist_ok=True)
         self._recover_champion_transition()
 
@@ -744,6 +908,67 @@ class ModelRegistry:
             raise ModelRegistryError("champion pointer model_id is invalid")
         return model_id
 
+    def actionability(self, model_id: str) -> dict[str, Any]:
+        """Return the serving actionability state for one registered model."""
+        if not self.actionability_path.is_file():
+            return {"status": "actionable", "reason": None, "changed_at": None}
+        try:
+            states = json.loads(self.actionability_path.read_text(encoding="utf-8"))
+            state = states.get(model_id)
+        except (OSError, json.JSONDecodeError, AttributeError) as error:
+            raise ModelRegistryError(
+                "model actionability registry is malformed"
+            ) from error
+        if not isinstance(state, dict):
+            return {"status": "actionable", "reason": None, "changed_at": None}
+        return state
+
+    def is_actionable(self, model_id: str) -> bool:
+        """Return whether a healthy model may create owner-actionable proposals."""
+        return (
+            self.verify_bundle(model_id)
+            and self.actionability(model_id).get("status") == "actionable"
+        )
+
+    def quarantine(
+        self,
+        model_id: str,
+        *,
+        quarantined_at: datetime,
+        reason: str,
+    ) -> None:
+        """Fail closed for proposal creation while preserving diagnostic serving."""
+        _require_utc(quarantined_at, field="quarantined_at")
+        reason = reason.strip()
+        if not reason:
+            raise ModelRegistryError("model quarantine reason cannot be empty")
+        if not self.verify_bundle(model_id):
+            raise ModelRegistryError(
+                f"candidate bundle failed checksum verification: {model_id}"
+            )
+        states: dict[str, Any] = {}
+        if self.actionability_path.is_file():
+            try:
+                loaded = json.loads(self.actionability_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    states = loaded
+            except (OSError, json.JSONDecodeError) as error:
+                raise ModelRegistryError(
+                    "model actionability registry is malformed"
+                ) from error
+        state = {
+            "status": "research_only",
+            "reason": reason,
+            "changed_at": quarantined_at.isoformat(),
+        }
+        if states.get(model_id) == state:
+            return
+        states[model_id] = state
+        _atomic_write_json(self.actionability_path, states)
+        history = {"model_id": model_id, **state}
+        with self.actionability_history_path.open("a", encoding="utf-8") as handle:
+            handle.write(_stable_json(history) + "\n")
+
     def artifact_path(
         self,
         name: str,
@@ -816,6 +1041,30 @@ class ModelRegistry:
             raise ModelRegistryError(
                 f"candidate bundle failed checksum verification: {model_id}"
             )
+        if self.actionability(model_id).get("status") != "actionable":
+            raise ModelRegistryError(
+                f"quarantined model cannot be promoted: {model_id}"
+            )
+        direct_model = (
+            self.candidates
+            / model_id
+            / "SeriesWinnerPrediction_LightGBM"
+            / "SeriesWinnerPrediction_LightGBM.pkl"
+        )
+        manifest = json.loads(
+            (self.candidates / model_id / "manifest.json").read_text(encoding="utf-8")
+        )
+        if direct_model.is_file() and manifest.get("target") == "complete_lol_bundle":
+            review = load_candidate_review(self, model_id)
+            accepted_statuses = {"manual_review_required", "promotion_approved"}
+            if (
+                not review
+                or review.get("status") not in accepted_statuses
+                or review.get("reasons")
+            ):
+                raise ModelRegistryError(
+                    "Winner V2 promotion requires a passing sealed-row review"
+                )
 
         previous = self.champion_id()
         pointer = {
@@ -953,7 +1202,7 @@ def register_current_candidate(
 
 
 _EVALUATION_MODELS = {
-    "result": "OutcomePrediction_LightGBM",
+    "series_winner": "SeriesWinnerPrediction_LightGBM",
     "gamelength": "GamelengthPrediction_LightGBM",
     "total_kills": "TotalKillsPrediction_LightGBM",
     "total_towers": "TotalTowersPrediction_LightGBM",
@@ -991,14 +1240,14 @@ def _replay_promotion_evidence(
             model_name=model_name,
             raw_features=raw,
             metadata=labels.drop(columns=["actual"]),
-            classification=target == "result",
+            classification=target == "series_winner",
         )
         candidate_prediction = _replay_bundle_target(
             candidate_root,
             model_name=model_name,
             raw_features=raw,
             metadata=labels.drop(columns=["actual"]),
-            classification=target == "result",
+            classification=target == "series_winner",
         )
         try:
             drift_targets[target] = _target_drift_review(
@@ -1015,7 +1264,7 @@ def _replay_promotion_evidence(
                 "status": "unavailable",
                 "warnings": [f"drift_review_unavailable:{type(error).__name__}"],
             }
-        if target == "result":
+        if target == "series_winner":
             champion_quality = prediction_quality(
                 actual.astype(int).tolist(), champion_prediction.tolist()
             )
@@ -1289,7 +1538,7 @@ def _bundle_evidence_status(root: Path) -> dict[str, str]:
     }
 
 
-def _candidate_operational_failures(root: Path) -> list[str]:
+def _candidate_operational_failures(root: Path) -> list[str]:  # noqa: PLR0912
     failures: list[str] = []
     for model_name in _EVALUATION_MODELS.values():
         report_path = root / "_evaluation" / model_name / "split_report.json"
@@ -1302,7 +1551,7 @@ def _candidate_operational_failures(root: Path) -> list[str]:
             failures.append(f"split_overlap:{model_name}")
         if checks.get("temporal_ordered") is not True:
             failures.append(f"temporal_order_failed:{model_name}")
-    outcome = _EVALUATION_MODELS["result"]
+    outcome = _EVALUATION_MODELS["series_winner"]
     schema_path = root / outcome / f"{outcome}_outcome_matchup_schema.pkl"
     try:
         schema = load_model(schema_path)
@@ -1312,6 +1561,48 @@ def _candidate_operational_failures(root: Path) -> list[str]:
         excluded = set(schema.get("excluded_features") or [])
         if not {"first_pick", "side_win_likelihood"}.issubset(excluded):
             failures.append("prematch_side_feature_contract_failed")
+    try:
+        pipeline = load_model(root / outcome / f"{outcome}_feature_pipeline.pkl")
+        model = load_model(root / outcome / f"{outcome}.pkl")
+        columns = tuple(str(value) for value in pipeline.train_columns)
+        rating_columns = tuple(str(value) for value in model.rating_columns)
+        lineage = json.loads(
+            (root / outcome / f"{outcome}_feature_lineage.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception:
+        failures.append("winner_train_serve_contract_unreadable")
+    else:
+        from lol_bets.operations.winner_validation import (
+            FORBIDDEN_WINNER_FEATURE_FRAGMENTS,
+        )
+        from lol_bets.prediction_models.winner_model import (
+            has_complete_direct_rating_contract,
+        )
+
+        if not set(rating_columns).issubset(columns):
+            failures.append("rating_train_serve_parity_failed")
+        if not callable(getattr(model, "rating_baseline_probability", None)):
+            failures.append("calibrated_rating_baseline_missing")
+        if not has_complete_direct_rating_contract(rating_columns):
+            failures.append("direct_rating_family_missing")
+        if any(
+            fragment in column.casefold()
+            for column in columns
+            for fragment in FORBIDDEN_WINNER_FEATURE_FRAGMENTS
+        ):
+            failures.append("forbidden_winner_feature")
+        lineage_columns = {
+            str(item.get("feature")) for item in lineage if isinstance(item, dict)
+        }
+        if lineage_columns != set(columns) or any(
+            item.get("availability_timestamp") != "strictly_before_fixture_start"
+            or item.get("model_eligible") is not True
+            for item in lineage
+            if isinstance(item, dict)
+        ):
+            failures.append("winner_feature_lineage_failed")
     return failures
 
 

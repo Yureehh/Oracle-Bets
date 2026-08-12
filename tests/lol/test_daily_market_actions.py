@@ -12,7 +12,8 @@ from oracle_bets_core.operations.paper import ActionState
 from oracle_bets_core.pd import pd
 
 START = datetime(2026, 8, 2, 12, tzinfo=UTC)
-EXPECTED_FIRST_BOOKS = 6
+FIXTURE_START = START + timedelta(hours=36)
+EXPECTED_FIRST_BOOKS = 2
 MARKET_SEARCH_LIMIT = 100
 
 
@@ -27,11 +28,11 @@ def _market(adapter, market_id, market_type, title, outcomes, tokens, *, line=No
         "active": True,
         "closed": False,
         "acceptingOrders": True,
-        "eventStartTime": START.isoformat(),
+        "eventStartTime": FIXTURE_START.isoformat(),
         "bestOf": 3,
         "sportsMarketType": market_type,
         "groupItemTitle": title,
-        "resolutionSource": "Official LCK match result",
+        "resolutionSource": "https://liquipedia.net/leagueoflegends/Main_Page",
         "liquidity": "1000",
         "line": line,
     }
@@ -71,7 +72,7 @@ def test_daily_typed_markets_batch_quotes_and_cap_correlated_fixture():
                 "league": "LCK",
                 "team_a": "T1",
                 "team_b": "Gen.G",
-                "start_utc": START,
+                "start_utc": FIXTURE_START,
                 "best_of": 3,
             }
         ]
@@ -91,6 +92,9 @@ def test_daily_typed_markets_batch_quotes_and_cap_correlated_fixture():
         uncertainty_method="held_out",
         uncertainty_confidence=0.90,
         uncertainty_sample_count=100,
+        drivers=["Team rating strength pushed the model toward T1"],
+        rating_baseline_team_a=0.60,
+        full_model_team_a=0.72,
         prop_values={},
         lineup_ready=True,
         roster_ready=True,
@@ -152,7 +156,7 @@ def test_daily_typed_markets_batch_quotes_and_cap_correlated_fixture():
     assert books.calls == len({row["token_id"] for row in quoted}) * 2
     assert result.reviews
     assert sum(row["state"] == ActionState.PAPER_ACTIONABLE for row in quoted) == 1
-    assert any(row["reason"] == "correlated_fixture_exposure" for row in quoted)
+    assert any(row["reason"] == "selection_not_model_favorite" for row in quoted)
     assert all(Decimal(str(row["decimal_odds"])) > 1 for row in quoted)
     assert all(row["requested_shares"] == "5" for row in quoted)
     assert all(row["hypothetical_cost"] == "2.50" for row in quoted)

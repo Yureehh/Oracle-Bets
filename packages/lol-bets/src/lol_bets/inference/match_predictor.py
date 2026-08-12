@@ -28,6 +28,11 @@ from oracle_bets_core.paths import (
     LEAGUE_ELO,
     MODEL_REGISTRY_DIR,
     MODELS_DIR,
+    NEXT_MAP_WINNER_FEATURE_PIPELINE,
+    NEXT_MAP_WINNER_MATCHUP_SCHEMA,
+    NEXT_MAP_WINNER_MODEL_PATH,
+    NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR,
+    NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY,
     OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
     OUTCOME_PREDICTION_FEATURE_PIPELINE,
     OUTCOME_PREDICTION_FINAL_FEATURES,
@@ -35,6 +40,11 @@ from oracle_bets_core.paths import (
     OUTCOME_PREDICTION_MODEL_PATH,
     OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR,
     OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY,
+    SERIES_WINNER_FEATURE_PIPELINE,
+    SERIES_WINNER_MATCHUP_SCHEMA,
+    SERIES_WINNER_MODEL_PATH,
+    SERIES_WINNER_PROBABILITY_CALIBRATOR,
+    SERIES_WINNER_PROBABILITY_UNCERTAINTY,
     TEAM_LEAGUES_MAPPING,
     TOTAL_KILLS_PREDICTION_CATEGORICAL_FEATURES,
     TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE,
@@ -256,6 +266,24 @@ class MatchPredictor:
     outcome_model: Any = field(default=None, init=False, repr=False)
     outcome_calibrator: Any = field(default=None, init=False, repr=False)
     outcome_uncertainty: Any = field(default=None, init=False, repr=False)
+    series_winner_model: Any = field(default=None, init=False, repr=False)
+    series_winner_calibrator: Any = field(default=None, init=False, repr=False)
+    series_winner_uncertainty: Any = field(default=None, init=False, repr=False)
+    series_winner_pipeline: FeaturePipeline | None = field(
+        default=None, init=False, repr=False
+    )
+    series_winner_matchup_schema: dict[str, Any] | None = field(
+        default=None, init=False, repr=False
+    )
+    next_map_winner_model: Any = field(default=None, init=False, repr=False)
+    next_map_winner_calibrator: Any = field(default=None, init=False, repr=False)
+    next_map_winner_uncertainty: Any = field(default=None, init=False, repr=False)
+    next_map_winner_pipeline: FeaturePipeline | None = field(
+        default=None, init=False, repr=False
+    )
+    next_map_winner_matchup_schema: dict[str, Any] | None = field(
+        default=None, init=False, repr=False
+    )
     gamelength_model: Any = field(default=None, init=False, repr=False)
     total_kills_model: Any = field(default=None, init=False, repr=False)
     total_towers_model: Any = field(default=None, init=False, repr=False)
@@ -296,7 +324,7 @@ class MatchPredictor:
 
     # ── artifacts ───────────────────────────────────────────────────────── #
 
-    def _load_artifacts(self) -> None:  # noqa: PLR0912
+    def _load_artifacts(self) -> None:  # noqa: PLR0912, PLR0915
         # sourcery skip: remove-redundant-exception, simplify-single-exception-tuple
         try:
             self.outcome_model = load_model(
@@ -319,6 +347,61 @@ class MatchPredictor:
             )
         except Exception:
             self.outcome_uncertainty = None
+
+        try:
+            self.series_winner_model = load_model(
+                _serving_path(SERIES_WINNER_MODEL_PATH)
+            )
+            self.series_winner_pipeline = load_model(
+                _serving_path(SERIES_WINNER_FEATURE_PIPELINE)
+            )
+            self.series_winner_matchup_schema = load_model(
+                _serving_path(SERIES_WINNER_MATCHUP_SCHEMA)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Direct series-winner artifacts are unavailable; the quarantined "
+                "legacy map-derived series model cannot serve proposals."
+            ) from error
+        try:
+            self.series_winner_calibrator = load_model(
+                _serving_path(SERIES_WINNER_PROBABILITY_CALIBRATOR)
+            )
+        except Exception:
+            self.series_winner_calibrator = None
+        try:
+            self.series_winner_uncertainty = load_model(
+                _serving_path(SERIES_WINNER_PROBABILITY_UNCERTAINTY)
+            )
+        except Exception:
+            self.series_winner_uncertainty = None
+
+        try:
+            self.next_map_winner_model = load_model(
+                _serving_path(NEXT_MAP_WINNER_MODEL_PATH)
+            )
+            self.next_map_winner_pipeline = load_model(
+                _serving_path(NEXT_MAP_WINNER_FEATURE_PIPELINE)
+            )
+            self.next_map_winner_matchup_schema = load_model(
+                _serving_path(NEXT_MAP_WINNER_MATCHUP_SCHEMA)
+            )
+        except Exception:
+            self.next_map_winner_model = None
+            self.next_map_winner_pipeline = None
+            self.next_map_winner_matchup_schema = None
+        try:
+            self.next_map_winner_calibrator = load_model(
+                _serving_path(NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR)
+            )
+        except Exception:
+            self.next_map_winner_calibrator = None
+        try:
+            self.next_map_winner_uncertainty = load_model(
+                _serving_path(NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY)
+            )
+        except Exception:
+            self.next_map_winner_uncertainty = None
 
         for model_name, path in (
             ("gamelength", GAMELENGTH_PREDICTION_MODEL_PATH),
@@ -474,9 +557,8 @@ class MatchPredictor:
         - league_elo_win_likelihood (inter-league calibration)
         - season_win_likelihood (season-specific)
 
-        Note: elo_win_likelihood, glicko2_win_likelihood, pl_win_likelihood,
-        trueskill_win_likelihood were removed as they are redundant
-        (deterministic transforms of base ratings).
+        Direct rating families are retained because the Winner V2 rating-only
+        baseline is an explicit promotion comparator and serving component.
         """
         t1 = team1_stats.copy()
         t2 = team2_stats.copy()
@@ -496,6 +578,32 @@ class MatchPredictor:
         t1["strength_pool_win_likelihood"] = self.strength_pool_prediction(
             t1["teamid"], t2["teamid"]
         )
+        rating_columns = {
+            "elo",
+            "glicko2_mu",
+            "glicko2_phi",
+            "pl_mu",
+            "pl_sigma",
+            "trueskill_mu",
+            "trueskill_sigma",
+        }
+        if rating_columns.issubset(t1.index) and rating_columns.issubset(t2.index):
+            t1["elo_win_likelihood"] = float(_elo_prob(t1["elo"], t2["elo"]))
+            t1["glicko2_win_likelihood"] = _glicko2_prob(
+                t1["glicko2_mu"],
+                t1["glicko2_phi"],
+                t2["glicko2_mu"],
+                t2["glicko2_phi"],
+            )
+            t1["pl_win_likelihood"] = _pl_prob(
+                t1["pl_mu"], t1["pl_sigma"], t2["pl_mu"], t2["pl_sigma"]
+            )
+            t1["trueskill_win_likelihood"] = _ts_prob(
+                t1["trueskill_mu"],
+                t1["trueskill_sigma"],
+                t2["trueskill_mu"],
+                t2["trueskill_sigma"],
+            )
 
         # Side and First Selection are retained as source context, not model
         # signals, until separately timestamped data earns promotion.
@@ -513,17 +621,11 @@ class MatchPredictor:
         for key, value in series.items():
             t1[key] = value
 
-        # Drop raw ratings/ids from features (keep meta like gameid/teamname/side for merges)
+        # Keep direct team ratings for the explicit rating baseline. Only
+        # league lookup helpers and side-only state are removed.
         base_drop = [
             "league_elo",
             "strength_pool_elo",
-            "elo",
-            "glicko2_mu",
-            "glicko2_phi",
-            "pl_mu",
-            "pl_sigma",
-            "trueskill_mu",
-            "trueskill_sigma",
             "ema_red_side",
             "ema_blue_side",
             # leave teamid, gameid, teamname, side on t1; on t2 we drop id/name/date below
@@ -888,11 +990,11 @@ class MatchPredictor:
             }
 
         """
-        del account_for_side, match_type
+        del account_for_side
         X_team = pd.concat(
             [
-                self._outcome_team_features(team1, team2),
-                self._outcome_team_features(team2, team1),
+                self._outcome_team_features(team1, team2, match_type=match_type),
+                self._outcome_team_features(team2, team1, match_type=match_type),
             ],
             ignore_index=True,
         )
@@ -917,26 +1019,38 @@ class MatchPredictor:
             }
         )
         X_matchup, _, matchup_meta = build_game_level_outcome_features(X_team, metadata)
-        if self.outcome_pipeline is None:
-            msg = "Outcome matchup feature pipeline is missing. Retrain the outcome model."
+        if self.series_winner_pipeline is None:
+            msg = "Direct series-winner feature pipeline is missing."
             raise RuntimeError(msg)
-        X_matchup = self.outcome_pipeline.transform(X_matchup)
-        proba = self.outcome_model.predict_proba(X_matchup)[:, 1]
-        if self.outcome_calibrator is not None:
-            proba = self.outcome_calibrator.predict(proba, metadata=matchup_meta)
+        train_columns = getattr(
+            self.series_winner_pipeline, "train_columns", list(X_matchup.columns)
+        )
+        unavailable_features = set(train_columns) - set(X_matchup.columns)
+        unavailable_features.update(
+            str(column)
+            for column in X_matchup.columns
+            if X_matchup[column].isna().all()
+        )
+        X_matchup = self.series_winner_pipeline.transform(X_matchup)
+        proba = self.series_winner_model.predict_proba(X_matchup)[:, 1]
+        _, full = self.series_winner_model.component_probabilities(X_matchup)
+        baseline = self.series_winner_model.rating_baseline_probability(X_matchup)
+        if self.series_winner_calibrator is not None:
+            proba = self.series_winner_calibrator.predict(proba, metadata=matchup_meta)
         canonical_teamid = str(matchup_meta.loc[0, "canonical_teamid"])
         team1_is_canonical = (
             str(team1.team_stats.get("teamid", team1.name)) == canonical_teamid
         )
         canonical_probability = float(proba[0])
         complement = 1.0 - canonical_probability
-        canonical_lower = canonical_probability
-        canonical_upper = canonical_probability
-        outcome_uncertainty = getattr(self, "outcome_uncertainty", None)
-        if outcome_uncertainty is not None:
-            lower, upper = outcome_uncertainty.interval(proba)
-            canonical_lower = float(lower[0])
-            canonical_upper = float(upper[0])
+        canonical_lower, canonical_upper = (
+            value[0]
+            for value in self.series_winner_model.conservative_interval(
+                X_matchup,
+                calibrator=self.series_winner_calibrator,
+                metadata=matchup_meta,
+            )
+        )
         team1_probability, team2_probability = (
             (canonical_probability, complement)
             if team1_is_canonical
@@ -957,11 +1071,15 @@ class MatchPredictor:
                 canonical_upper,
             )
         )
-        drivers = self._outcome_prediction_drivers(
+        drivers, attribution = self._outcome_prediction_drivers(
             X_matchup,
             team1_name=team1.name,
             team2_name=team2.name,
             team1_is_canonical=team1_is_canonical,
+            unavailable_features=unavailable_features,
+        )
+        attribution_stable = bool(drivers) and not any(
+            item["unavailable"] for item in attribution
         )
         return {
             "team1_win_probability": team1_probability,
@@ -970,12 +1088,112 @@ class MatchPredictor:
             "team1_probability_upper": team1_upper,
             "team2_probability_lower": team2_lower,
             "team2_probability_upper": team2_upper,
-            "uncertainty_method": getattr(outcome_uncertainty, "method", None),
-            "uncertainty_confidence": getattr(outcome_uncertainty, "confidence", None),
+            "rating_baseline_probability": float(
+                baseline[0] if team1_is_canonical else 1.0 - baseline[0]
+            ),
+            "full_model_probability": float(
+                full[0] if team1_is_canonical else 1.0 - full[0]
+            ),
+            "blend_weight": float(self.series_winner_model.blend_weight),
+            "strategy_version": "independent-winner-v2",
+            "model_target": "series_winner",
+            "uncertainty_method": "week_block_member_quantile_with_bias_bound",
+            "uncertainty_confidence": getattr(
+                self.series_winner_uncertainty, "confidence", None
+            ),
             "uncertainty_sample_count": getattr(
-                outcome_uncertainty, "sample_count", None
+                self.series_winner_uncertainty, "sample_count", None
             ),
             "drivers": drivers,
+            "driver_attribution": attribution,
+            "attribution_stable": attribution_stable,
+        }
+
+    def predict_next_map(
+        self,
+        team1: Team,
+        team2: Team,
+        *,
+        best_of: int,
+        team1_maps: int,
+        team2_maps: int,
+    ) -> dict[str, Any]:
+        """Price the next map for shadow research from verified score state."""
+        if self.next_map_winner_model is None or self.next_map_winner_pipeline is None:
+            raise RuntimeError("Experimental next-map artifacts are unavailable.")
+        maps_completed = team1_maps + team2_maps
+        target_wins = best_of // 2 + 1
+        if best_of not in {3, 5}:
+            raise ValueError("next-map prediction requires BO3 or BO5")
+        if (
+            min(team1_maps, team2_maps) < 0
+            or max(team1_maps, team2_maps) >= target_wins
+        ):
+            raise ValueError("series score is invalid or already complete")
+        if maps_completed >= best_of:
+            raise ValueError("series has no remaining map")
+
+        match_type = f"bo{best_of}"
+        rows = [
+            self._outcome_team_features(team1, team2, match_type=match_type),
+            self._outcome_team_features(team2, team1, match_type=match_type),
+        ]
+        for row, wins, losses in zip(
+            rows, (team1_maps, team2_maps), (team2_maps, team1_maps), strict=True
+        ):
+            row["next_map_number"] = maps_completed + 1
+            row["maps_completed"] = maps_completed
+            row["series_wins_before"] = wins
+            row["series_losses_before"] = losses
+            row["series_score_delta"] = wins - losses
+        X_team = pd.concat(rows, ignore_index=True)
+        metadata = pd.DataFrame(
+            {
+                "gameid": ["live-next-map", "live-next-map"],
+                "teamid": [
+                    str(team1.team_stats.get("teamid", team1.name)),
+                    str(team2.team_stats.get("teamid", team2.name)),
+                ],
+                "teamname": [team1.name, team2.name],
+                "date": [team1.team_stats.get("date"), team2.team_stats.get("date")],
+                "league": [
+                    team1.team_stats.get("league"),
+                    team2.team_stats.get("league"),
+                ],
+                "season": [
+                    team1.team_stats.get("season"),
+                    team2.team_stats.get("season"),
+                ],
+                "patch": [team1.team_stats.get("patch"), team2.team_stats.get("patch")],
+            }
+        )
+        X_matchup, _, matchup_meta = build_game_level_outcome_features(X_team, metadata)
+        X_matchup = self.next_map_winner_pipeline.transform(X_matchup)
+        probability = self.next_map_winner_model.predict_proba(X_matchup)[:, 1]
+        if self.next_map_winner_calibrator is not None:
+            probability = self.next_map_winner_calibrator.predict(
+                probability, metadata=matchup_meta
+            )
+        canonical_teamid = str(matchup_meta.loc[0, "canonical_teamid"])
+        team1_is_canonical = (
+            str(team1.team_stats.get("teamid", team1.name)) == canonical_teamid
+        )
+        canonical_probability = float(probability[0])
+        complement = 1.0 - canonical_probability
+        team1_probability, team2_probability = (
+            (canonical_probability, complement)
+            if team1_is_canonical
+            else (complement, canonical_probability)
+        )
+        return {
+            "team1_win_probability": team1_probability,
+            "team2_win_probability": team2_probability,
+            "next_map_number": maps_completed + 1,
+            "team1_maps": team1_maps,
+            "team2_maps": team2_maps,
+            "best_of": best_of,
+            "model_target": "next_map_winner",
+            "research_mode": "shadow_only",
         }
 
     def _outcome_prediction_drivers(
@@ -985,31 +1203,35 @@ class MatchPredictor:
         team1_name: str,
         team2_name: str,
         team1_is_canonical: bool,
-    ) -> list[str]:
+        unavailable_features: set[str] | None = None,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
         """Return local model contributions with an explicit non-causal label."""
-        raw_model = getattr(self.outcome_model, "raw_model", self.outcome_model)
+        raw_model = getattr(
+            self.series_winner_model, "raw_model", self.series_winner_model
+        )
         predict = getattr(raw_model, "predict", None)
         if not callable(predict):
-            return []
+            return [], []
         try:
             raw_contributions = np.asarray(
                 predict(X_matchup, pred_contrib=True), dtype=float
             )
         except (TypeError, ValueError, AttributeError):
-            return []
+            return [], []
         if (
             raw_contributions.ndim != CONTRIBUTION_ARRAY_DIMENSIONS
             or raw_contributions.shape[0] != 1
         ):
-            return []
+            return [], []
 
         contributions = raw_contributions[0]
         if len(contributions) == len(X_matchup.columns) + 1:
             contributions = contributions[:-1]
         if len(contributions) != len(X_matchup.columns):
-            return []
+            return [], []
 
         drivers: list[str] = []
+        attribution: list[dict[str, Any]] = []
         seen_labels: set[str] = set()
         order = np.argsort(np.abs(contributions))[::-1]
         for position in order:
@@ -1029,9 +1251,37 @@ class MatchPredictor:
                 f"{label} pushed the model toward {favored_team} "
                 "(local model contribution; not causal proof)"
             )
+            feature = str(X_matchup.columns[position])
+            attribution.append(
+                {
+                    "feature": feature,
+                    "family": self._feature_family(feature),
+                    "contribution": contribution,
+                    "unavailable": feature in (unavailable_features or set()),
+                }
+            )
             if len(drivers) == MAX_PREDICTION_DRIVERS:
                 break
-        return drivers
+        return drivers, attribution
+
+    @staticmethod
+    def _feature_family(feature: str) -> str:
+        lowered = feature.casefold()
+        for family in (
+            "elo",
+            "glicko2",
+            "trueskill",
+            "pl",
+            "roster",
+            "player",
+            "form",
+            "inactivity",
+            "league",
+            "patch",
+        ):
+            if family in lowered:
+                return family
+        return "other"
 
     @staticmethod
     def _human_feature_label(feature: str) -> str:
@@ -1055,10 +1305,23 @@ class MatchPredictor:
                 return label
         return feature.replace("_", " ").strip().capitalize()
 
-    def _outcome_team_features(self, team1: Team, team2: Team) -> pd.DataFrame:
+    def _outcome_team_features(
+        self, team1: Team, team2: Team, *, match_type: str | None = None
+    ) -> pd.DataFrame:
         """Prepare one team view using the same pre-match transforms as training."""
         X = self.calculate_team_and_player_stats(
-            team1, team2, account_for_side=False, match_type=None
+            team1, team2, account_for_side=False, match_type=match_type
+        )
+        normalized = (match_type or "").strip().casefold()
+        X["best_of"] = (
+            int(normalized.removeprefix("bo"))
+            if normalized
+            in {
+                "bo1",
+                "bo3",
+                "bo5",
+            }
+            else 1
         )
         X = GradientBoostingModel.fuse_opposing_team_features(X)
         X = GradientBoostingModel.process_players_likelihood_columns(X)

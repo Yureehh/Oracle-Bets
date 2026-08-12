@@ -175,6 +175,13 @@ def test_lol_inference_health_rejects_duplicate_flattened_team_snapshots(
             "gameid": ["g1", "g2"],
             "date": ["2026-01-01", "2026-02-01"],
             "league": ["LCK", "LCK"],
+            "elo": [1500, 1510],
+            "glicko2_mu": [1500, 1510],
+            "glicko2_phi": [60, 59],
+            "pl_mu": [25, 26],
+            "pl_sigma": [1, 1],
+            "trueskill_mu": [25, 26],
+            "trueskill_sigma": [1, 1],
         }
     ).to_parquet(teams)
     _valid_flattened_players().to_parquet(players)

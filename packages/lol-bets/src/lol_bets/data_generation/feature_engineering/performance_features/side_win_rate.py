@@ -8,12 +8,13 @@ using an Exponentially Weighted Mean (EWM) model.
 from __future__ import annotations
 
 import numpy as np
-from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
-    add_opponent_columns,
-)
 from oracle_bets_core.io_utils import get_identity, get_sorting_keys, json_loader
 from oracle_bets_core.paths import DEFAULT_MODELS_PARAMETERS
 from oracle_bets_core.pd import pd
+
+from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
+    add_opponent_columns,
+)
 
 # Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)
@@ -74,16 +75,18 @@ def _compute_side_ema_all(df: pd.DataFrame, identity: str) -> pd.DataFrame:
 
     # EMA "games" (trust) per group
     games_after_all = g.transform(
-        lambda s: pd.Series(1.0, index=s.index)
-        .ewm(halflife=HALF_LIFE, adjust=True)
-        .sum()
+        lambda s: (
+            pd.Series(1.0, index=s.index).ewm(halflife=HALF_LIFE, adjust=True).sum()
+        )
     )
     # IMPORTANT: shift per-group (not globally)
     games_before_all = g.transform(
-        lambda s: pd.Series(1.0, index=s.index)
-        .ewm(halflife=HALF_LIFE, adjust=True)
-        .sum()
-        .shift()
+        lambda s: (
+            pd.Series(1.0, index=s.index)
+            .ewm(halflife=HALF_LIFE, adjust=True)
+            .sum()
+            .shift()
+        )
     )
 
     # Allocate side-specific columns, then assign by mask

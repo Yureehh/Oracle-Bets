@@ -12,14 +12,15 @@ from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import numpy as np
-from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
-    add_opponent_columns,
-)
-from lol_bets.data_generation.ingestion.quality import normalize_result
 from oracle_bets_core.io_utils import get_sorting_keys
 from oracle_bets_core.league_taxonomy import add_league_taxonomy_columns
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.pd import pd
+
+from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
+    add_opponent_columns,
+)
+from lol_bets.data_generation.ingestion.quality import normalize_result
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -728,9 +729,11 @@ class FeatureGenerator:
 
         # Create matchup key (sorted team pair for consistency)
         out["_matchup"] = out.apply(
-            lambda r: tuple(sorted([r["teamid"], r["_opponent_id"]]))
-            if pd.notna(r["_opponent_id"])
-            else None,
+            lambda r: (
+                tuple(sorted([r["teamid"], r["_opponent_id"]]))
+                if pd.notna(r["_opponent_id"])
+                else None
+            ),
             axis=1,
         )
 

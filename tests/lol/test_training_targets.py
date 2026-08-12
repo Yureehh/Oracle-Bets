@@ -13,12 +13,23 @@ EXPECTED_BRIER = 0.19
 
 
 def _targets(selector: str) -> list[str]:
-    return [cfg.target_column for cfg in parse_training_targets(selector)]
+    return [cfg.target_name for cfg in parse_training_targets(selector)]
 
 
 def test_training_target_parser_supports_all_outcome_props_and_commas():
-    assert _targets("all") == ["result", "gamelength", "total_kills", "total_towers"]
-    assert _targets("outcome") == ["result"]
+    assert _targets("all") == [
+        "map_winner",
+        "series_winner",
+        "next_map_winner",
+        "gamelength",
+        "total_kills",
+        "total_towers",
+    ]
+    assert _targets("outcome") == ["map_winner"]
+    assert _targets("series_winner,next_map_winner") == [
+        "series_winner",
+        "next_map_winner",
+    ]
     assert _targets("props") == ["gamelength", "total_kills", "total_towers"]
     assert _targets("total_kills,total_towers") == ["total_kills", "total_towers"]
 
@@ -216,8 +227,42 @@ def test_promote_tuning_run_rejects_incomplete_manifest(tmp_path, monkeypatch):
         '{"status":"interrupted","retune":true,"targets_trained":[]}'
     )
 
-    with pytest.raises(ValueError, match="not a complete retune"):
+    with pytest.raises(ValueError, match="not complete for its requested targets"):
         training.promote_tuning_run("interrupted")
+
+
+def test_promote_tuning_run_publishes_only_requested_targets(tmp_path, monkeypatch):
+    reports = tmp_path / "reports"
+    tuned = tmp_path / "tuned"
+    monkeypatch.setattr(training, "REPORTS_DIR", reports)
+    monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tuned)
+    run_root = reports / "training" / "runs" / "winner-v2"
+    selected = training.parse_training_targets("series_winner,next_map_winner")
+    run_root.mkdir(parents=True)
+    run_root.joinpath("manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "retune": True,
+                "targets_requested": [config.target_name for config in selected],
+                "targets_trained": [config.model_name for config in selected],
+                "targets_failed": [],
+            }
+        )
+    )
+    for index, config in enumerate(selected):
+        name = training._lightgbm_model_name(config.model_name)
+        candidate = run_root / name / "tuned_hyperparameters.json"
+        candidate.parent.mkdir(parents=True)
+        payload = _tuning_candidate(name)
+        payload["metadata"]["feature_schema_fingerprint"] = f"schema-{index}"
+        candidate.write_text(json.dumps(payload))
+
+    promoted = training.promote_tuning_run("winner-v2")
+
+    assert [path.stem for path in promoted] == [
+        training._lightgbm_model_name(config.model_name) for config in selected
+    ]
 
 
 def test_promote_tuning_run_atomically_publishes_complete_bundle(tmp_path, monkeypatch):

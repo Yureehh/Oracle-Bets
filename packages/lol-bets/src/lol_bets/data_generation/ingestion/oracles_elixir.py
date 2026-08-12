@@ -19,17 +19,18 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from dotenv import load_dotenv
+from oracle_bets_core.io_utils import FileLoadError, get_sorting_keys, json_loader
+from oracle_bets_core.league_selection import training_leagues
+from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
+from oracle_bets_core.paths import IMPORT_COLUMNS, TEAM_ALIASES
+from oracle_bets_core.pd import pd
+
 from lol_bets.data_generation.ingestion.quality import (
     SOURCE_COLUMN_RENAMES,
     normalize_result,
     quarantine_oracles_elixir_data,
 )
 from lol_bets.data_generation.ingestion.source import oracle_source_directory
-from oracle_bets_core.io_utils import FileLoadError, get_sorting_keys, json_loader
-from oracle_bets_core.league_selection import training_leagues
-from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
-from oracle_bets_core.paths import IMPORT_COLUMNS, TEAM_ALIASES
-from oracle_bets_core.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

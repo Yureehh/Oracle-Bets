@@ -1,5 +1,7 @@
+import sqlite3
 from datetime import UTC, datetime
 
+import pytest
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.operations import (
     EvidenceWorkflowJournal,
@@ -16,6 +18,7 @@ from oracle_bets_core.operations.backup import (
 NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
 EXPECTED_EXPORTED_FILES = len(EvidenceTable) + 1
 EXPECTED_RETRY_ATTEMPTS = 2
+LEGACY_SCHEMA_VERSION = 3
 
 
 def _journal(tmp_path):
@@ -205,3 +208,27 @@ def test_backup_restore_verification_and_complete_export(tmp_path):
     assert len(exports) == EXPECTED_EXPORTED_FILES
     assert (tmp_path / "exports/runs.json").is_file()
     assert (tmp_path / "exports/manifest.json").is_file()
+
+
+def test_backup_verification_accepts_migratable_older_schema(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    store.initialize_schema()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE evidence_schema_version SET version = ?", (LEGACY_SCHEMA_VERSION,)
+        )
+
+    backup = create_evidence_backup(store.path, tmp_path / "backups", created_at=NOW)
+
+    assert backup.integrity == "ok"
+    assert backup.schema_version == LEGACY_SCHEMA_VERSION
+
+
+def test_backup_verification_rejects_unknown_future_schema(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    store.initialize_schema()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE evidence_schema_version SET version = 999")
+
+    with pytest.raises(ValueError, match="outside supported range"):
+        create_evidence_backup(store.path, tmp_path / "backups", created_at=NOW)

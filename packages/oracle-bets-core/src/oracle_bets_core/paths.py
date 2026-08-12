@@ -98,6 +98,7 @@ QUARANTINE_DIR: Final = INTERIM_DIR / "quarantine"
 PROCESSED_DIR: Final = DATA_DIR / "processed"
 PROCESSED_TEAMS_DIR: Final = PROCESSED_DIR / "teams"
 PROCESSED_PLAYERS_DIR: Final = PROCESSED_DIR / "players"
+PROCESSED_SERIES_DIR: Final = PROCESSED_DIR / "series"
 
 # --------------------------------------------------------------------------- #
 # Configuration files
@@ -129,6 +130,14 @@ FLATTENED_PLAYERS: Final = PROCESSED_PLAYERS_DIR / "flattened_players.parquet"
 
 TRAINING_TEAM_DATA: Final = PROCESSED_TEAMS_DIR / "training_teams.parquet"
 TRAINING_PLAYER_DATA: Final = PROCESSED_PLAYERS_DIR / "training_players.parquet"
+SERIES_MANIFEST: Final = PROCESSED_SERIES_DIR / "series_manifest.parquet"
+SERIES_REJECTIONS: Final = PROCESSED_SERIES_DIR / "series_rejections.parquet"
+SERIES_WINNER_TEAM_DATA: Final = PROCESSED_SERIES_DIR / "series_winner_teams.parquet"
+SERIES_WINNER_PLAYER_DATA: Final = (
+    PROCESSED_SERIES_DIR / "series_winner_players.parquet"
+)
+NEXT_MAP_TEAM_DATA: Final = PROCESSED_SERIES_DIR / "next_map_teams.parquet"
+NEXT_MAP_PLAYER_DATA: Final = PROCESSED_SERIES_DIR / "next_map_players.parquet"
 
 TRAINING_TEAM_CONFIG: Final = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
 TRAINING_COMPACT_TEAM_CONFIG: Final = (
@@ -194,6 +203,40 @@ OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY: Path = _model_artifact(
 )
 OUTCOME_PREDICTION_MATCHUP_SCHEMA: Path = _model_artifact(
     "OutcomePrediction", "outcome_matchup_schema"
+)
+
+# --------------------------------------------------------------------------- #
+# Direct Winner V2 model paths
+# --------------------------------------------------------------------------- #
+SERIES_WINNER_MODEL_PATH: Path = _model_path("SeriesWinnerPrediction")
+SERIES_WINNER_FEATURE_PIPELINE: Path = _model_artifact(
+    "SeriesWinnerPrediction", "feature_pipeline"
+)
+SERIES_WINNER_PROBABILITY_CALIBRATOR: Path = _model_artifact(
+    "SeriesWinnerPrediction", "probability_calibrator"
+)
+SERIES_WINNER_PROBABILITY_UNCERTAINTY: Path = _model_artifact(
+    "SeriesWinnerPrediction", "probability_uncertainty"
+)
+SERIES_WINNER_MATCHUP_SCHEMA: Path = _model_artifact(
+    "SeriesWinnerPrediction", "outcome_matchup_schema"
+)
+SERIES_WINNER_FEATURE_LINEAGE: Path = (
+    SERIES_WINNER_MODEL_PATH.parent
+    / "SeriesWinnerPrediction_LightGBM_feature_lineage.json"
+)
+NEXT_MAP_WINNER_MODEL_PATH: Path = _model_path("NextMapWinnerPrediction")
+NEXT_MAP_WINNER_FEATURE_PIPELINE: Path = _model_artifact(
+    "NextMapWinnerPrediction", "feature_pipeline"
+)
+NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR: Path = _model_artifact(
+    "NextMapWinnerPrediction", "probability_calibrator"
+)
+NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY: Path = _model_artifact(
+    "NextMapWinnerPrediction", "probability_uncertainty"
+)
+NEXT_MAP_WINNER_MATCHUP_SCHEMA: Path = _model_artifact(
+    "NextMapWinnerPrediction", "outcome_matchup_schema"
 )
 
 # --------------------------------------------------------------------------- #

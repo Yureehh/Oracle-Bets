@@ -9,6 +9,7 @@ import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TextIO
 
+from lol_bets.operations.models import ModelRegistry
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.evidence.settlement import SettlementResult
 from oracle_bets_core.logger import logger
@@ -20,9 +21,10 @@ from oracle_bets_core.operations.paper_evidence import (
     paper_rows,
     paper_show,
     quote_prop,
+    requote_paper,
     settle_paper,
 )
-from oracle_bets_core.paths import PRODUCT_STATE_DIR, REPORTS_DIR
+from oracle_bets_core.paths import MODEL_REGISTRY_DIR, PRODUCT_STATE_DIR, REPORTS_DIR
 
 from oracle_bets_discord.formatting import DELIVERY_TARGET
 
@@ -43,6 +45,7 @@ def run_bot() -> None:  # noqa: PLR0915
     store = EvidenceStore()
     store.initialize_schema()
     clob = PolymarketClobClient()
+    registry = ModelRegistry(MODEL_REGISTRY_DIR)
     client = discord.Client(intents=discord.Intents.none())
     tree = discord.app_commands.CommandTree(client)
 
@@ -146,6 +149,39 @@ def run_bot() -> None:  # noqa: PLR0915
 
         def _callback(self, decision: str):
             async def callback(interaction: discord.Interaction) -> None:
+                if decision == "accept":
+                    await interaction.response.defer(ephemeral=True, thinking=True)
+                    try:
+                        champion = registry.champion_id()
+                        quote = await asyncio.to_thread(
+                            requote_paper,
+                            store,
+                            proposal_id=self.proposal_id,
+                            client=clob,
+                            model_healthy=bool(
+                                champion and registry.is_actionable(champion)
+                            ),
+                        )
+                    except PaperEvidenceError as error:
+                        await interaction.followup.send(str(error), ephemeral=True)
+                        return
+                    await interaction.followup.send(
+                        "Fresh executable quote: "
+                        f"{quote['decimal_odds']:.3f} decimal; "
+                        f"conservative edge {quote['conservative_edge']:.1%}. "
+                        "Confirm within 120 seconds.",
+                        view=PaperConfirmView(
+                            self.proposal_id,
+                            str(quote["requote_token"]),
+                            (
+                                int(interaction.message.id)
+                                if interaction.message is not None
+                                else None
+                            ),
+                        ),
+                        ephemeral=True,
+                    )
+                    return
                 try:
                     position = decide_paper(
                         store,
@@ -192,6 +228,85 @@ def run_bot() -> None:  # noqa: PLR0915
 
             return callback
 
+    class PaperConfirmView(OwnerView):
+        def __init__(
+            self,
+            proposal_id: str,
+            requote_token: str,
+            proposal_message_id: int | None,
+        ) -> None:
+            super().__init__(timeout=120)
+            self.proposal_id = proposal_id
+            self.requote_token = requote_token
+            self.proposal_message_id = proposal_message_id
+
+        @discord.ui.button(label="Confirm Paper", style=discord.ButtonStyle.success)
+        async def confirm(
+            self,
+            interaction: discord.Interaction,
+            _button: discord.ui.Button,
+        ) -> None:
+            try:
+                position = decide_paper(
+                    store,
+                    proposal_id=self.proposal_id,
+                    decision="accept",
+                    reason="discord_owner_confirmed_requote",
+                    actor_id=str(owner_id),
+                    requote_token=self.requote_token,
+                )
+            except PaperEvidenceError as error:
+                await interaction.response.send_message(str(error), ephemeral=True)
+                return
+            for child in self.children:
+                if isinstance(child, discord.ui.Button):
+                    child.disabled = True
+            if position and self.proposal_message_id is not None:
+                row = paper_show(store, position)
+                intent = _publication_intent(store, row, kind="position")
+                channel = client.get_channel(channel_id)
+                fetch_message = getattr(channel, "fetch_message", None)
+                if callable(fetch_message):
+                    try:
+                        message = await fetch_message(self.proposal_message_id)
+                        await message.edit(
+                            content=_settlement_message(
+                                row,
+                                marker=str(intent["marker"]),
+                            ),
+                            view=PaperSettlementView(position),
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                        _record_position_publication(
+                            store,
+                            row,
+                            self.proposal_message_id,
+                        )
+                        published_positions[position] = self.proposal_message_id
+                        published.pop(self.proposal_id, None)
+                    except discord.HTTPException:
+                        logger.exception(
+                            "Could not transition proposal card after confirmation"
+                        )
+            await interaction.response.edit_message(
+                content=f"Paper position opened: `{position}`.",
+                view=self,
+            )
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel(
+            self,
+            interaction: discord.Interaction,
+            _button: discord.ui.Button,
+        ) -> None:
+            for child in self.children:
+                if isinstance(child, discord.ui.Button):
+                    child.disabled = True
+            await interaction.response.edit_message(
+                content="Fresh quote cancelled; proposal remains pending.",
+                view=self,
+            )
+
     class PropQuoteModal(discord.ui.Modal, title="Record bookmaker prop line"):
         line = discord.ui.TextInput(label="Line", max_length=20)
         over_odds = discord.ui.TextInput(label="Over decimal odds", max_length=20)
@@ -237,6 +352,33 @@ def run_bot() -> None:  # noqa: PLR0915
         if not _is_owner(interaction.user.id, owner_id):
             await interaction.response.send_message(
                 "Owner-only control.", ephemeral=True
+            )
+            return
+        if decision == "accept":
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                champion = registry.champion_id()
+                quote = await asyncio.to_thread(
+                    requote_paper,
+                    store,
+                    proposal_id=proposal_id,
+                    client=clob,
+                    model_healthy=bool(champion and registry.is_actionable(champion)),
+                )
+            except PaperEvidenceError as error:
+                await interaction.followup.send(str(error), ephemeral=True)
+                return
+            await interaction.followup.send(
+                "Fresh executable quote: "
+                f"{quote['decimal_odds']:.3f} decimal; "
+                f"conservative edge {quote['conservative_edge']:.1%}. "
+                "Confirm within 120 seconds.",
+                view=PaperConfirmView(
+                    proposal_id,
+                    str(quote["requote_token"]),
+                    published.get(proposal_id),
+                ),
+                ephemeral=True,
             )
             return
         try:
@@ -332,6 +474,9 @@ def run_bot() -> None:  # noqa: PLR0915
                 )
 
     async def publish_pending_once() -> None:
+        bot_user = client.user
+        if bot_user is None:
+            raise RuntimeError("Discord client identity is unavailable")
         await asyncio.to_thread(capture_closing_snapshots, store, client=clob)
         channel = client.get_channel(channel_id) or await client.fetch_channel(
             channel_id
@@ -372,7 +517,7 @@ def run_bot() -> None:  # noqa: PLR0915
                 channel,
                 marker=str(intent["marker"]),
                 after=str(intent["intent_at"]),
-                author_id=int(client.user.id),
+                author_id=int(bot_user.id),
                 send=send_proposal,
             )
             published[proposal_id] = message_id
@@ -398,7 +543,7 @@ def run_bot() -> None:  # noqa: PLR0915
                 channel,
                 marker=str(intent["marker"]),
                 after=str(intent["intent_at"]),
-                author_id=int(client.user.id),
+                author_id=int(bot_user.id),
                 send=send_position,
             )
             published_positions[position_id] = message_id

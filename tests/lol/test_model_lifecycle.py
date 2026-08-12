@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pickle
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -33,8 +34,27 @@ SEALED_ROWS = 80
 
 
 class _IdentityPipeline:
+    train_columns: ClassVar[list[str]] = [
+        "signal",
+        "delta_elo",
+        "delta_glicko2_mu",
+        "delta_glicko2_phi",
+        "delta_pl_mu",
+        "delta_pl_sigma",
+        "delta_trueskill_mu",
+        "delta_trueskill_sigma",
+        "delta_elo_win_likelihood",
+        "delta_glicko2_win_likelihood",
+        "delta_pl_win_likelihood",
+        "delta_trueskill_win_likelihood",
+    ]
+
     def transform(self, frame):
-        return frame
+        output = frame.copy()
+        for column in self.train_columns:
+            if column not in output:
+                output[column] = 0.5
+        return output.loc[:, self.train_columns]
 
 
 class _IdentityCalibrator:
@@ -44,6 +64,8 @@ class _IdentityCalibrator:
 
 
 class _ProbabilityModel:
+    rating_columns = tuple(_IdentityPipeline.train_columns[1:])
+
     def __init__(self, confidence):
         self.confidence = confidence
 
@@ -54,6 +76,9 @@ class _ProbabilityModel:
             frame["signal"].to_numpy() == 1, self.confidence, 1 - self.confidence
         )
         return np.column_stack([1 - point, point])
+
+    def rating_baseline_probability(self, frame):
+        return self.predict_proba(frame)[:, 1]
 
 
 class _RegressionModel:
@@ -394,6 +419,25 @@ def test_promotion_and_rollback_change_pointer_and_append_history(tmp_path):
     assert history[-1]["action"] == "rollback"
 
 
+def test_quarantined_model_is_research_only_and_cannot_be_promoted(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry")
+    artifact = tmp_path / "model.pkl"
+    artifact.write_bytes(b"model")
+    registry.register_candidate(_manifest(), {"model.pkl": artifact})
+
+    registry.quarantine(
+        "candidate-1",
+        quarantined_at=NOW,
+        reason="winner v2 rebuild required",
+    )
+
+    assert registry.verify_bundle("candidate-1")
+    assert not registry.is_actionable("candidate-1")
+    assert registry.actionability("candidate-1")["status"] == "research_only"
+    with pytest.raises(ModelRegistryError, match="quarantined model"):
+        registry.promote("candidate-1", promoted_at=NOW, reason="unsafe")
+
+
 def test_incomplete_champion_transition_recovers_history_without_duplication(
     tmp_path,
     monkeypatch,
@@ -454,16 +498,16 @@ def test_routine_review_replays_both_bundles_on_candidate_sealed_rows(tmp_path):
     assert review.promoted
     assert registry.champion_id() == "candidate"
     assert set(review.row_fingerprints) == {
-        "result",
+        "series_winner",
         "gamelength",
         "total_kills",
         "total_towers",
     }
-    assert review.evidence["sealed_rows"]["result"]["rows"] == SEALED_ROWS
+    assert review.evidence["sealed_rows"]["series_winner"]["rows"] == SEALED_ROWS
     drift = review.evidence["drift_review"]
     assert drift["status"] == "warning_only"
     assert drift["promotion_gate_effect"] == "none"
-    assert drift["targets"]["result"]["feature_availability"]["columns"] == 1
+    assert drift["targets"]["series_winner"]["feature_availability"]["columns"] == 1
 
 
 def test_routine_promotion_writes_recoverable_approval_before_pointer_change(
@@ -546,7 +590,7 @@ def test_drift_diagnostic_failure_never_blocks_predictive_promotion(
     )
 
     assert review.status == "auto_promoted"
-    assert review.evidence["drift_review"]["targets"]["result"] == {
+    assert review.evidence["drift_review"]["targets"]["series_winner"] == {
         "status": "unavailable",
         "warnings": ["drift_review_unavailable:ValueError"],
     }
@@ -628,6 +672,29 @@ def test_optuna_derived_review_never_auto_promotes(tmp_path):
     assert registry.champion_id() == "champion"
 
 
+def test_first_v2_without_legacy_champion_runs_internal_baseline_review(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry")
+    _register_replay_bundle(
+        registry,
+        tmp_path / "candidate",
+        "candidate",
+        confidence=0.70,
+        regression_error=0.5,
+        include_evaluation=True,
+    )
+
+    review = review_candidate_on_sealed_rows(
+        registry,
+        "candidate",
+        reviewed_at=NOW,
+        bootstrap_samples=500,
+    )
+
+    assert review.evidence["first_winner_v2"] is True
+    assert review.evidence["comparator"] == "predeclared_rating_logistic_baseline"
+    assert "no_champion_comparator" not in review.reasons
+
+
 def _register_replay_bundle(
     registry,
     root,
@@ -640,7 +707,7 @@ def _register_replay_bundle(
     import numpy as np
 
     model_names = {
-        "result": "OutcomePrediction_LightGBM",
+        "series_winner": "SeriesWinnerPrediction_LightGBM",
         "gamelength": "GamelengthPrediction_LightGBM",
         "total_kills": "TotalKillsPrediction_LightGBM",
         "total_towers": "TotalTowersPrediction_LightGBM",
@@ -650,8 +717,23 @@ def _register_replay_bundle(
         model_root = root / name
         model_root.mkdir(parents=True, exist_ok=True)
         _pickle(model_root / f"{name}_feature_pipeline.pkl", _IdentityPipeline())
-        if target == "result":
+        if target == "series_winner":
             _pickle(model_root / f"{name}.pkl", _ProbabilityModel(confidence))
+            (model_root / f"{name}_feature_lineage.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "feature": column,
+                            "source": column,
+                            "availability_timestamp": ("strictly_before_fixture_start"),
+                            "family": "prematch",
+                            "swap_behavior": "canonical_team_a_minus_team_b",
+                            "model_eligible": True,
+                        }
+                        for column in _IdentityPipeline.train_columns
+                    ]
+                )
+            )
             _pickle(
                 model_root / f"{name}_probability_calibrator.pkl", _IdentityCalibrator()
             )
@@ -659,6 +741,7 @@ def _register_replay_bundle(
                 model_root / f"{name}_outcome_matchup_schema.pkl",
                 {
                     "version": 1,
+                    "canonical_key": "teamid_then_teamname",
                     "excluded_features": ["first_pick", "side_win_likelihood"],
                 },
             )
@@ -668,14 +751,14 @@ def _register_replay_bundle(
             {
                 "target": target,
                 "evidence_status": (
-                    "meets_basic_sanity" if target == "result" else "weak_signal"
+                    "meets_basic_sanity" if target == "series_winner" else "weak_signal"
                 ),
             }
         )
         if include_evaluation:
             evaluation = root / "_evaluation" / name
             evaluation.mkdir(parents=True, exist_ok=True)
-            if target == "result":
+            if target == "series_winner":
                 actual = np.tile([1, 0], 40)
             else:
                 actual = np.linspace(10, 20, 80)

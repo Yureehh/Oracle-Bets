@@ -32,8 +32,12 @@ from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import (
     LEAGUE_ELO,
     MODELS_DIR,
+    NEXT_MAP_PLAYER_DATA,
+    NEXT_MAP_TEAM_DATA,
     RAW_DATA,
     REPORTS_DIR,
+    SERIES_WINNER_PLAYER_DATA,
+    SERIES_WINNER_TEAM_DATA,
     TEAM_LEAGUES_MAPPING,
     TRAINING_PLAYER_DATA,
     TRAINING_TEAM_DATA,
@@ -50,6 +54,7 @@ from lol_bets.operations.provenance import (
 from lol_bets.prediction_models.gbdt_model import DEFAULT_SELECTED_MAX_FEATURES
 from lol_bets.prediction_models.lightgbm_model import LightGBMModel
 from lol_bets.prediction_models.prop_features import PROP_TARGETS
+from lol_bets.prediction_models.winner_model import WinnerLightGBMModel
 
 # ───────────────────────────────  types / config  ─────────────────────────────
 
@@ -64,27 +69,47 @@ MODEL_FILE_EXTENSION = "pkl"
 @dataclass(frozen=True)
 class ModelConfig:
     model_name: str
+    target_name: str
     target_column: str
     problem_type: ProblemType
+    dataset: Literal["map", "series", "next_map"] = "map"
     validate: bool = True
 
 
 ALL_MODEL_CONFIGS: tuple[ModelConfig, ...] = (
     ModelConfig(
         model_name="OutcomePrediction",
+        target_name="map_winner",
         target_column="result",
         problem_type="classification",
     ),
-    ModelConfig("GamelengthPrediction", "gamelength", "regression"),
-    ModelConfig("TotalKillsPrediction", "total_kills", "regression"),
-    ModelConfig("TotalTowersPrediction", "total_towers", "regression"),
+    ModelConfig(
+        "SeriesWinnerPrediction",
+        "series_winner",
+        "result",
+        "classification",
+        "series",
+    ),
+    ModelConfig(
+        "NextMapWinnerPrediction",
+        "next_map_winner",
+        "result",
+        "classification",
+        "next_map",
+    ),
+    ModelConfig("GamelengthPrediction", "gamelength", "gamelength", "regression"),
+    ModelConfig("TotalKillsPrediction", "total_kills", "total_kills", "regression"),
+    ModelConfig("TotalTowersPrediction", "total_towers", "total_towers", "regression"),
 )
 
 TARGET_ALIASES = {
-    "outcome": "result",
-    "winner": "result",
-    "match_winner": "result",
-    "result": "result",
+    "outcome": "map_winner",
+    "map_winner": "map_winner",
+    "result": "map_winner",
+    "winner": "series_winner",
+    "match_winner": "series_winner",
+    "series_winner": "series_winner",
+    "next_map_winner": "next_map_winner",
     "gamelength": "gamelength",
     "game_length": "gamelength",
     "length": "gamelength",
@@ -247,7 +272,7 @@ def validate_training_tables(team_df: pd.DataFrame, player_df: pd.DataFrame) -> 
 def parse_training_targets(targets: str) -> tuple[ModelConfig, ...]:
     """Resolve CLI target selectors to concrete model configs."""
     raw = targets.strip().casefold()
-    by_target = {cfg.target_column: cfg for cfg in ALL_MODEL_CONFIGS}
+    by_target = {cfg.target_name: cfg for cfg in ALL_MODEL_CONFIGS}
     if not raw or raw == "all":
         return ALL_MODEL_CONFIGS
     if raw == "props":
@@ -319,7 +344,8 @@ def initialize_and_train_model(
 
     if cfg.problem_type not in {"classification", "regression"}:
         raise ValueError(f"Unsupported problem type: {cfg.problem_type}")
-    model = LightGBMModel(
+    model_class = WinnerLightGBMModel if cfg.dataset != "map" else LightGBMModel
+    model = model_class(
         model_name=full_model_name,
         problem_type=cfg.problem_type,
         team_data=training_team_data,
@@ -363,7 +389,28 @@ def initialize_and_train_model(
     return path
 
 
-def train_models(
+def _training_frames_for_config(
+    cfg: ModelConfig,
+    map_teams: pd.DataFrame,
+    map_players: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if cfg.dataset == "map":
+        return map_teams, map_players
+    paths = (
+        (SERIES_WINNER_TEAM_DATA, SERIES_WINNER_PLAYER_DATA)
+        if cfg.dataset == "series"
+        else (NEXT_MAP_TEAM_DATA, NEXT_MAP_PLAYER_DATA)
+    )
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Winner V2 datasets are missing; run `oracle-bets lol build-series`: "
+            f"{missing}"
+        )
+    return pd.read_parquet(paths[0]), pd.read_parquet(paths[1])
+
+
+def train_models(  # noqa: PLR0915
     feature_selection: FeatureSelectionMethod = "none",
     targets: str = "all",
     force_retune: bool = False,
@@ -403,7 +450,7 @@ def train_models(
         "schema_version": 1,
         "run_id": run_id,
         "created_at_utc": dt.datetime.now(dt.UTC).isoformat(),
-        "targets_requested": [cfg.target_column for cfg in selected_models],
+        "targets_requested": [cfg.target_name for cfg in selected_models],
         "retune": force_retune,
         "optuna_allowed": force_retune,
         "promotable_full_bundle": promotable,
@@ -411,21 +458,24 @@ def train_models(
         "artifact_root": str(artifact_root),
         "parameter_source": parameter_source,
         "tuning_run_id": tuning_run_id,
+        "parameter_provenance": _parameter_provenance_by_target(),
         "code_version": repository.revision,
         "worktree_clean": repository.clean,
     }
 
     logger.info(
         "Selected training targets: %s",
-        ", ".join(cfg.target_column for cfg in selected_models),
+        ", ".join(cfg.target_name for cfg in selected_models),
     )
 
     for cfg in selected_models:
         try:
+            cfg_team, cfg_player = _training_frames_for_config(cfg, team_df, player_df)
+            validate_training_tables(cfg_team, cfg_player)
             initialize_and_train_model(
                 cfg=cfg,
-                training_team_data=team_df,
-                training_player_data=player_df,
+                training_team_data=cfg_team,
+                training_player_data=cfg_player,
                 feature_selection=feature_selection,
                 force_retune=force_retune,
                 feature_set=feature_set,
@@ -500,28 +550,51 @@ def _sha256_file(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912
-    """Promote a complete reviewed LightGBM tuning run."""
+def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR0915
+    """Promote every target completed by one reviewed tuning run."""
     run_root = REPORTS_DIR / "training" / "runs" / run_id
     manifest_path = run_root / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Tuning manifest is missing: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected_trained = [config.model_name for config in ALL_MODEL_CONFIGS]
+    by_target = {config.target_name: config for config in ALL_MODEL_CONFIGS}
+    requested = manifest.get("targets_requested")
+    if requested is None:
+        selected = ALL_MODEL_CONFIGS
+    elif not isinstance(requested, list) or not requested:
+        raise ValueError(f"Tuning run has no requested targets: {manifest_path}")
+    else:
+        requested_targets = [str(target) for target in requested]
+        unknown = sorted(set(requested_targets) - set(by_target))
+        if unknown:
+            raise ValueError(
+                f"Tuning run has unknown requested targets {unknown}: {manifest_path}"
+            )
+        selected = tuple(by_target[target] for target in requested_targets)
+    expected_trained = [config.model_name for config in selected]
     if (
         manifest.get("status") != "completed"
         or manifest.get("retune") is not True
         or manifest.get("targets_trained") != expected_trained
         or manifest.get("targets_failed")
     ):
-        raise ValueError(f"Tuning run is not a complete retune: {manifest_path}")
+        raise ValueError(
+            f"Tuning run is not complete for its requested targets: {manifest_path}"
+        )
 
-    names = tuple(_lightgbm_model_name(cfg.model_name) for cfg in ALL_MODEL_CONFIGS)
+    names = tuple(_lightgbm_model_name(cfg.model_name) for cfg in selected)
     payloads: dict[str, dict] = {}
-    provenance_fields = (
+    required_provenance_fields = (
         "feature_set",
         "max_features",
         "feature_schema_fingerprint",
+        "dataset_fingerprint",
+        "code_version",
+        "random_seed",
+    )
+    shared_provenance_fields = (
+        "feature_set",
+        "max_features",
         "dataset_fingerprint",
         "code_version",
         "random_seed",
@@ -542,9 +615,10 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912
             raise ValueError(f"Invalid tuning candidate: {candidate}")
         if metadata.get("validation_score") is None:
             raise ValueError(f"Tuning candidate has no validation score: {candidate}")
-        provenance = {field: metadata.get(field) for field in provenance_fields}
-        if any(value is None for value in provenance.values()):
+        required = {field: metadata.get(field) for field in required_provenance_fields}
+        if any(value is None for value in required.values()):
             raise ValueError(f"Tuning candidate has incomplete provenance: {candidate}")
+        provenance = {field: metadata.get(field) for field in shared_provenance_fields}
         if shared_provenance is None:
             shared_provenance = provenance
         elif provenance != shared_provenance:
@@ -643,7 +717,7 @@ def _write_training_summary(
         models.append(
             {
                 "model_name": name,
-                "target": config.target_column,
+                "target": config.target_name,
                 "problem_type": config.problem_type,
                 "metrics": metrics,
                 "model_card": card,
@@ -765,11 +839,16 @@ def _register_training_candidate(
     shutil.copyfile(report_root / "summary.json", evaluation_root / "summary.json")
     for model in summary["models"]:
         model_name = str(model["model_name"])
-        split_report = report_root / model_name / "split_report.json"
-        if split_report.is_file():
-            destination = evaluation_root / model_name / "split_report.json"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(split_report, destination)
+        for filename in (
+            "split_report.json",
+            "calibration_report.json",
+            "winner_model_report.json",
+        ):
+            source = report_root / model_name / filename
+            if source.is_file():
+                destination = evaluation_root / model_name / filename
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
     register_current_candidate(
         registry=ModelRegistry(MODEL_REGISTRY_DIR),
         model_id=candidate_id,
@@ -791,27 +870,44 @@ def _stage_shared_inference_artifacts(staging_root: Path) -> None:
         shutil.copyfile(source, staging_root / source.name)
 
 
-def _parameter_provenance() -> tuple[str, str | None]:
-    """Identify whether fixed parameters came from reviewed Optuna output."""
-    payloads = []
+def _parameter_provenance_by_target() -> dict[str, dict[str, str | None]]:
+    """Return the fixed-parameter origin used by each model target."""
+    provenance: dict[str, dict[str, str | None]] = {}
     for cfg in ALL_MODEL_CONFIGS:
         path = (
             TUNED_LIGHTGBM_HYPERPARAMETERS
             / f"{_lightgbm_model_name(cfg.model_name)}.json"
         )
         try:
-            payloads.append(json.loads(path.read_text(encoding="utf-8")))
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
-            return "defaults", None
-    metadata = [payload.get("metadata") or {} for payload in payloads]
-    run_ids = {item.get("promoted_tuning_run_id") for item in metadata}
-    if (
-        all(item.get("source") == "optuna_reviewed" for item in metadata)
-        and len(run_ids) == 1
-        and None not in run_ids
-    ):
-        return "optuna_reviewed", str(next(iter(run_ids)))
-    return "reviewed_tuned", None
+            provenance[cfg.target_name] = {"source": "defaults", "run_id": None}
+            continue
+        metadata = payload.get("metadata") or {}
+        source = str(metadata.get("source") or "reviewed_tuned")
+        run_id = metadata.get("promoted_tuning_run_id")
+        provenance[cfg.target_name] = {
+            "source": source,
+            "run_id": str(run_id) if run_id is not None else None,
+        }
+    return provenance
+
+
+def _parameter_provenance() -> tuple[str, str | None]:
+    """Identify whether any fixed parameters came from reviewed Optuna output."""
+    provenance = _parameter_provenance_by_target()
+    optuna_run_ids = sorted(
+        {
+            str(item["run_id"])
+            for item in provenance.values()
+            if item["source"] == "optuna_reviewed" and item["run_id"] is not None
+        }
+    )
+    if optuna_run_ids:
+        return "optuna_reviewed", ",".join(optuna_run_ids)
+    if any(item["source"] != "defaults" for item in provenance.values()):
+        return "reviewed_tuned", None
+    return "defaults", None
 
 
 def _review_training_candidate(candidate_id: str, parameter_source: str):

@@ -36,6 +36,19 @@ NEW_TEAM_FEATURES = {
     "roster_continuity",
     "roster_uncertainty",
     "rating_uncertainty",
+    "elo",
+    "elo_win_likelihood",
+    "glicko2_mu",
+    "glicko2_phi",
+    "glicko2_win_likelihood",
+    "pl_mu",
+    "pl_sigma",
+    "pl_win_likelihood",
+    "trueskill_mu",
+    "trueskill_sigma",
+    "trueskill_win_likelihood",
+    "game",
+    "split",
 }
 NEW_TEAM_FEATURE_PREFIXES = ("diff_ema_",)
 MODERATE_OPTUNA_TRIALS = 100
@@ -166,7 +179,6 @@ def test_winner_configs_exclude_unavailable_and_constant_matchup_features():
         (ROOT / "config/lol/training/training_player_config.json").read_text()
     )["player_features"]
     prohibited = {
-        "game",
         "game_in_series",
         "is_bo1",
         "is_bo3",

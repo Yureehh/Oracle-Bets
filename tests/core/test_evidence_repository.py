@@ -14,7 +14,7 @@ from oracle_bets_core.evidence import (
 
 NOW = datetime(2026, 7, 26, 8, 15, tzinfo=UTC)
 BATCH_SIZE = 3
-EVIDENCE_SCHEMA_VERSION = 3
+EVIDENCE_SCHEMA_VERSION = 4
 
 
 @pytest.fixture
@@ -64,6 +64,22 @@ def test_schema_has_separate_append_only_record_tables(evidence_store):
     with evidence_store.connection(read_only=True) as conn:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
+
+
+def test_schema_upgrade_records_auditable_transactional_migration(tmp_path):
+    store = EvidenceStore(tmp_path / "migration.db")
+    store.initialize_schema()
+    with store.connection() as conn:
+        conn.execute("UPDATE evidence_schema_version SET version = 3")
+
+    store.initialize_schema()
+
+    assert store.schema_version() == EVIDENCE_SCHEMA_VERSION
+    with store.connection(read_only=True) as conn:
+        row = conn.execute(
+            "SELECT from_version, to_version FROM evidence_schema_migrations"
+        ).fetchone()
+    assert tuple(row) == (3, 4)
 
 
 def test_append_is_idempotent_only_for_identical_content(evidence_store):

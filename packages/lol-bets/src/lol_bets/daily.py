@@ -45,9 +45,6 @@ from oracle_bets_discord.delivery import (
     DiscordDeliveryMode,
     resolve_delivery_mode,
 )
-from oracle_bets_discord.delivery import (
-    send_webhook_messages as send_discord_webhook_messages,
-)
 from oracle_bets_discord.predictions.lol import (
     confidence_label,
     context_line,
@@ -56,7 +53,6 @@ from oracle_bets_discord.predictions.lol import (
     format_winner_market_output,
     get_empty_roster,
     outcome_probability_source,
-    prop_probability_source,
 )
 
 from lol_bets.data_generation.ingestion.schedule import (
@@ -68,6 +64,7 @@ from lol_bets.data_generation.ingestion.source import (
     inspect_oracle_source,
     refresh_oracle_source,
 )
+from lol_bets.data_generation.series import build_series_artifacts
 from lol_bets.inference.roster import (
     EXPECTED_STARTERS,
     HistoricalRosterEvidence,
@@ -134,7 +131,6 @@ class DailyWorkflowConfig:
 
     horizon_hours: int = 36
     leagues: str | None = None
-    webhook_url: str | None = None
     delivery_mode: str | None = None
     dry_run: bool = False
     skip_retrain: bool = False
@@ -583,20 +579,6 @@ def match_type_from_best_of(best_of: Any) -> str:
     return "bo1"
 
 
-def _deliver_daily_webhook(
-    webhook_sender: Callable[[str, Sequence[str]], None],
-    webhook_url: str,
-    messages: Sequence[str],
-) -> DailyStepResult:
-    try:
-        webhook_sender(webhook_url, messages)
-    except Exception as exc:
-        error_type = type(exc).__name__
-        logger.error("Discord webhook delivery failed: %s", error_type)
-        return DailyStepResult("discord", False, f"delivery failed ({error_type})")
-    return DailyStepResult("discord", True, "webhook delivered")
-
-
 def _normalize_market_text(value: str) -> set[str]:
     return {
         part
@@ -786,7 +768,10 @@ def build_match_prediction_message(  # noqa: PLR0915
     uncertainty_method = prediction.get("uncertainty_method")
     uncertainty_confidence = prediction.get("uncertainty_confidence")
     uncertainty_sample_count = prediction.get("uncertainty_sample_count")
+    rating_baseline_a = prediction.get("rating_baseline_probability")
+    full_model_a = prediction.get("full_model_probability")
     drivers = [str(value) for value in prediction.get("drivers", [])]
+    attribution_stable = prediction.get("attribution_stable") is True
     warnings: list[str] = []
     if not lineup_ready:
         warnings.append(
@@ -832,8 +817,7 @@ def build_match_prediction_message(  # noqa: PLR0915
     )
 
     prop_values: dict[str, float] = {}
-    prop_lines: list[str] = []
-    for label, method_name, source_name in (
+    for _label, method_name, source_name in (
         ("Length", "predict_gamelength", "gamelength"),
         ("Kills", "predict_total_kills", "total_kills"),
         ("Towers", "predict_total_towers", "total_towers"),
@@ -843,15 +827,9 @@ def build_match_prediction_message(  # noqa: PLR0915
                 team_a, team_b, account_for_side=False
             )
         except Exception as exc:
-            prop_lines.append(f"- {label}: unavailable ({exc})")
+            logger.debug("Shadow prop %s unavailable: %s", source_name, exc)
             continue
         prop_values[source_name] = float(value)
-        suffix = "m" if label == "Length" else ""
-        prop_lines.append(
-            f"- {label}: {value:.1f}{suffix} ({prop_probability_source(predictor, source_name)})"
-        )
-    if prop_lines:
-        output += "\n\nProps snapshot:\n" + "\n".join(prop_lines)
 
     quotes: list[MarketQuote] = []
     if market_search is not None:
@@ -887,6 +865,14 @@ def build_match_prediction_message(  # noqa: PLR0915
                 uncertainty_confidence=uncertainty_confidence,
                 uncertainty_sample_count=uncertainty_sample_count,
                 drivers=drivers,
+                attribution_stable=attribution_stable,
+                driver_attribution=prediction.get("driver_attribution", []),
+                rating_baseline_team_a=(
+                    float(rating_baseline_a) if rating_baseline_a is not None else None
+                ),
+                full_model_team_a=(
+                    float(full_model_a) if full_model_a is not None else None
+                ),
                 team_a_roster_gate=team_a_roster_gate,
                 team_b_roster_gate=team_b_roster_gate,
                 prop_values=prop_values,
@@ -922,6 +908,10 @@ def build_prediction_snapshot_rows(
     uncertainty_confidence: float | None = None,
     uncertainty_sample_count: int | None = None,
     drivers: Sequence[str] = (),
+    attribution_stable: bool | None = None,
+    driver_attribution: Sequence[dict[str, Any]] = (),
+    rating_baseline_team_a: float | None = None,
+    full_model_team_a: float | None = None,
     team_a_roster_gate: RosterGateDecision | None = None,
     team_b_roster_gate: RosterGateDecision | None = None,
     lineup_ready: bool = False,
@@ -930,17 +920,22 @@ def build_prediction_snapshot_rows(
 ) -> list[dict[str, Any]]:
     """One snapshot row per (match, market, selection) for later CLV/backtests."""
     run_ts = dt.datetime.now(dt.UTC)
-    paired_distribution = _paired_map_series_distribution(
-        match_type=match_type,
-        team_a_name=team_a_name,
-        team_b_name=team_b_name,
-        team_a_point=team_a_win,
-        team_b_point=team_b_win,
-        team_a_lower=team_a_lower,
-        team_a_upper=team_a_upper,
-        team_b_lower=team_b_lower,
-        team_b_upper=team_b_upper,
-    )
+    paired_distribution = {
+        "method": "direct_series_winner_v2",
+        "best_of": int(match_type.removeprefix("bo")),
+        "series": {
+            team_a_name: {
+                "point": team_a_win,
+                "lower": team_a_lower,
+                "upper": team_a_upper,
+            },
+            team_b_name: {
+                "point": team_b_win,
+                "lower": team_b_lower,
+                "upper": team_b_upper,
+            },
+        },
+    }
     base = {
         "run_ts": run_ts,
         "run_date": run_ts.date().isoformat(),
@@ -1025,11 +1020,35 @@ def build_prediction_snapshot_rows(
         rows.append(
             {
                 **base,
-                "market": "winner",
+                "market": "series_winner",
                 "selection": selection,
                 "model_value": float(probability),
                 "probability_lower": probability_lower,
                 "probability_upper": probability_upper,
+                "rating_baseline_probability": (
+                    rating_baseline_team_a
+                    if selection == team_a_name
+                    else (
+                        1.0 - rating_baseline_team_a
+                        if rating_baseline_team_a is not None
+                        else None
+                    )
+                ),
+                "full_model_probability": (
+                    full_model_team_a
+                    if selection == team_a_name
+                    else (
+                        1.0 - full_model_team_a
+                        if full_model_team_a is not None
+                        else None
+                    )
+                ),
+                "strategy_version": "independent-winner-v2",
+                "model_target": "series_winner",
+                "attribution_stable": (
+                    bool(drivers) if attribution_stable is None else attribution_stable
+                ),
+                "driver_attribution": list(driver_attribution),
                 "poly_price": (
                     float(quote.implied_probability)
                     if quote is not None and quote.implied_probability is not None
@@ -1207,6 +1226,7 @@ def _run_mutating_steps(
     effective_config: dict[str, Any],
     source_refresh_fn: Callable[[], Any] | None = None,
     source_check_fn: Callable[[], Any] | None = None,
+    series_builder_fn: Callable[[], dict[str, Any]] = build_series_artifacts,
 ) -> list[DailyStepResult]:
     def _source_refresh() -> str:
         result = (source_refresh_fn or refresh_oracle_source)()
@@ -1238,6 +1258,13 @@ def _run_mutating_steps(
         )
         validate_training_tables(team_df, player_df)
         return f"{team_df['gameid'].nunique()} games"
+
+    def _build_series() -> str:
+        report = series_builder_fn()
+        return (
+            f"{report['accepted_series']} series accepted; "
+            f"{report['rejected_groups']} groups quarantined"
+        )
 
     def _health() -> str:
         module = module_factory()
@@ -1281,6 +1308,7 @@ def _run_mutating_steps(
             ),
             WorkflowStep("identity-graph", _sync_identities, writes=True),
             WorkflowStep("validate-data", _validate, writes=False),
+            WorkflowStep("build-series", _build_series, writes=True),
             WorkflowStep(
                 "train",
                 (
@@ -1320,6 +1348,12 @@ def _train_triggered_candidate(
     evaluated_at = dt.datetime.now(dt.UTC)
     product = load_product_config()
     registry = ModelRegistry(MODEL_REGISTRY_DIR)
+    champion_id = registry.champion_id()
+    if champion_id is None or not registry.is_actionable(champion_id):
+        return (
+            "skipped: no actionable Winner V2 champion; complete the explicit "
+            "retune, fixed-parameter rebuild, review, and manual first promotion"
+        )
     history = pd.read_parquet(
         RAW_DATA,
         columns=["gameid", "date", "league", "datacompleteness"],
@@ -1495,12 +1529,15 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
         )
     if typed_markets and snapshot_sink is not None:
         try:
+            registry = ModelRegistry(MODEL_REGISTRY_DIR)
+            champion_id = registry.champion_id()
+            model_actionable = bool(champion_id and registry.is_actionable(champion_id))
             market_evaluation = evaluate_daily_market_actions(
                 schedule=schedule,
                 snapshot_rows=snapshot_sink,
                 markets=typed_markets,
                 clob_client=clob_client_factory(),
-                model_healthy=True,
+                model_healthy=model_actionable,
                 run_key=market_run_key,
                 sleeper=market_sleeper,
             )
@@ -1654,12 +1691,10 @@ def write_daily_report(
     else:
         json_path, markdown_path = report_paths
     payload = {
-        "schema_version": 4,
+        "schema_version": 5,
         "generated_at": dt.datetime.now(dt.UTC).isoformat(),
         "evidence_run_id": _evidence_run_id(steps),
-        "config": {
-            key: value for key, value in vars(cfg).items() if key != "webhook_url"
-        },
+        "config": dict(vars(cfg)),
         "steps": [vars(step) for step in steps],
         "schedule": schedule.to_dict(orient="records"),
         "excluded_fixtures": list(excluded_fixtures),
@@ -1831,7 +1866,7 @@ def _fetch_daily_schedule(
     return filtered.reset_index(drop=True), detail
 
 
-def run_daily_lol_workflow(  # noqa: PLR0912, PLR0915
+def run_daily_lol_workflow(  # noqa: PLR0915
     config: DailyWorkflowConfig | None = None,
     *,
     schedule_fetcher: Callable[..., pd.DataFrame] = fetch_and_store_schedule,
@@ -1843,24 +1878,15 @@ def run_daily_lol_workflow(  # noqa: PLR0912, PLR0915
     market_search_factory: Callable[[], MarketAdapter] = PolymarketGammaAdapter,
     clob_client_factory: Callable[[], Any] = PolymarketClobClient,
     market_sleeper: Callable[[float], None] = time.sleep,
-    webhook_sender: Callable[
-        [str, Sequence[str]], None
-    ] = send_discord_webhook_messages,
+    series_builder_fn: Callable[[], dict[str, Any]] = build_series_artifacts,
 ) -> DailyWorkflowResult:
-    """Run the daily LoL workflow and optionally send Discord webhook messages."""
+    """Run the daily LoL workflow; the Gateway bot publishes saved evidence."""
     cfg = _resolve_daily_config(config)
     delivery_mode = DiscordDeliveryMode(str(cfg.delivery_mode))
-    webhook_url = (
-        cfg.webhook_url or os.getenv("DISCORD_WEBHOOK_URL")
-        if delivery_mode is DiscordDeliveryMode.WEBHOOK
-        else None
-    )
     steps: list[DailyStepResult] = []
     run_now, scheduled_for, fetch_window_days = _daily_time_window(cfg.horizon_hours)
     source_readiness = _daily_source_readiness()
-    effective_config = {
-        key: value for key, value in vars(cfg).items() if key != "webhook_url"
-    }
+    effective_config = dict(vars(cfg))
 
     if not cfg.dry_run:
         steps.extend(
@@ -1872,6 +1898,7 @@ def run_daily_lol_workflow(  # noqa: PLR0912, PLR0915
                 store=EvidenceStore(EVIDENCE_DB),
                 scheduled_for=scheduled_for,
                 effective_config=effective_config,
+                series_builder_fn=series_builder_fn,
             )
         )
         source_readiness = _daily_source_readiness()
@@ -2021,33 +2048,6 @@ def run_daily_lol_workflow(  # noqa: PLR0912, PLR0915
         source_freshness=source_freshness,
         drift_review=drift_review,
     )
-    if delivery_mode is DiscordDeliveryMode.WEBHOOK and not cfg.dry_run:
-        if webhook_url:
-            steps.append(_deliver_daily_webhook(webhook_sender, webhook_url, messages))
-        else:
-            steps.append(
-                DailyStepResult(
-                    "discord", False, "DISCORD_WEBHOOK_URL is required in webhook mode"
-                )
-            )
-        messages[0] = format_step_summary(steps)
-        write_daily_report(
-            cfg=cfg,
-            steps=steps,
-            schedule=reportable_schedule,
-            excluded_fixtures=excluded_fixtures,
-            prediction_details=prediction_details,
-            messages=messages,
-            advisory_review=advisory.to_dict(),
-            market_reviews=market_reviews,
-            market_actions=market_actions,
-            prediction_snapshots=snapshot_rows,
-            cadence_reminders=reminders,
-            open_positions=open_positions,
-            source_freshness=source_freshness,
-            drift_review=drift_review,
-            report_paths=report_paths,
-        )
     return DailyWorkflowResult(
         schedule=reportable_schedule,
         messages=messages,

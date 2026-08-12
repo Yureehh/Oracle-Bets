@@ -3,9 +3,7 @@ import json
 
 import pytest
 from lol_bets.daily import (
-    DailyStepResult,
     DailyWorkflowConfig,
-    _deliver_daily_webhook,
     _resolve_fixture_roster,
     _run_mutating_steps,
     cadence_reminders,
@@ -15,7 +13,6 @@ from lol_bets.daily import (
     match_type_from_best_of,
     run_daily_lol_workflow,
     select_market_candidates,
-    send_discord_webhook_messages,
     split_reportable_schedule,
 )
 from oracle_bets_core.cli import build_parser
@@ -28,7 +25,7 @@ from oracle_bets_discord.predictions.lol import format_schedule_messages
 MESSAGE_SPLIT_LIMIT = 420
 EXPECTED_MIN_SPLIT_MESSAGES = 2
 EXPECTED_HORIZON_HOURS = 36
-DAILY_REPORT_SCHEMA_VERSION = 4
+DAILY_REPORT_SCHEMA_VERSION = 5
 EXPECTED_STABLE_SERIES = 3
 
 
@@ -298,7 +295,7 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     import lol_bets.daily as daily_module
 
     monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
-    called = {"ingest": False, "train": False, "send": False}
+    called = {"ingest": False, "train": False}
 
     def schedule_fetcher(**kwargs):
         assert kwargs["save_path"] is None
@@ -314,18 +311,13 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
         called["train"] = True
         raise AssertionError("dry run must not train")
 
-    def webhook_sender(_url, _messages):
-        called["send"] = True
-        raise AssertionError("dry run must not send")
-
     result = run_daily_lol_workflow(
-        DailyWorkflowConfig(dry_run=True, webhook_url="https://discord.test"),
+        DailyWorkflowConfig(dry_run=True, delivery_mode="off"),
         schedule_fetcher=schedule_fetcher,
         data_generator_factory=data_generator_factory,
         train_fn=train_fn,
         predictor_factory=_FakePredictor,
         market_search_factory=_FakeMarketSearch,
-        webhook_sender=webhook_sender,
     )
 
     assert result.ok
@@ -337,7 +329,7 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     assert json_path.is_file()
     assert markdown_path.is_file()
     payload = json.loads(json_path.read_text())
-    assert "webhook_url" not in payload["config"]
+    assert payload["config"]["delivery_mode"] == "off"
     assert payload["evidence_run_id"] is None
     assert payload["schema_version"] == DAILY_REPORT_SCHEMA_VERSION
     assert payload["market_reviews"] == result.market_reviews
@@ -483,42 +475,6 @@ def test_daily_explicit_league_filter_overrides_operational_profile(
     assert result.schedule["league"].tolist() == ["LCK"]
 
 
-def test_discord_webhook_disables_all_mentions():
-    captured = {}
-
-    class _Response:
-        @staticmethod
-        def raise_for_status():
-            return None
-
-    class _Session:
-        @staticmethod
-        def post(url, *, json, timeout):
-            captured.update(url=url, json=json, timeout=timeout)
-            return _Response()
-
-    send_discord_webhook_messages(
-        "https://discord.test",
-        ["provider text @everyone"],
-        session=_Session(),
-    )
-
-    assert captured["json"]["allowed_mentions"] == {"parse": []}
-
-
-def test_discord_webhook_failure_redacts_secret_url(caplog):
-    webhook_url = "https://discord.com/api/webhooks/id/secret-token"
-
-    def fail(url, _messages):
-        raise RuntimeError(f"failed request to {url}")
-
-    result = _deliver_daily_webhook(fail, webhook_url, ["report"])
-
-    assert result == DailyStepResult("discord", False, "delivery failed (RuntimeError)")
-    assert webhook_url not in caplog.text
-    assert "secret-token" not in result.detail
-
-
 def test_daily_refreshes_match_detail_before_filtering(monkeypatch):
     import lol_bets.daily as daily_module
 
@@ -605,6 +561,7 @@ def test_daily_core_steps_use_the_resumable_evidence_journal(
         "ingest",
         "identity-graph",
         "validate-data",
+        "build-series",
         "train",
         "health",
     ]
@@ -649,3 +606,23 @@ def test_daily_source_failure_blocks_ingest_and_training(tmp_path):
     assert not result[1].ok
     assert result[1].detail.endswith("current_year_file_stale")
     assert all(step.detail == "skipped after failure" for step in result[2:])
+
+
+def test_daily_never_bootstraps_training_without_actionable_champion(
+    tmp_path, monkeypatch
+):
+    import lol_bets.daily as daily_module
+
+    called = False
+
+    def train_fn(**_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("daily must not bootstrap Winner V2")
+
+    monkeypatch.setattr(daily_module, "MODEL_REGISTRY_DIR", tmp_path / "registry")
+
+    detail = daily_module._train_triggered_candidate(DailyWorkflowConfig(), train_fn)
+
+    assert detail.startswith("skipped: no actionable Winner V2 champion")
+    assert not called

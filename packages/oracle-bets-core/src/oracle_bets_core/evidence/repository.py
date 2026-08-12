@@ -348,29 +348,78 @@ class EvidenceStore:
             msg = "Dry-run evidence store must already be initialized."
             raise EvidenceSchemaError(msg)
         with self.connection() as conn:
-            conn.executescript(SCHEMA_SQL)
-            conn.executescript(append_only_triggers_sql())
-            rows = conn.execute(
-                "SELECT version FROM evidence_schema_version"
-            ).fetchall()
-            if not rows:
+            version_table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'evidence_schema_version'"
+            ).fetchone()
+            if not version_table_exists:
+                conn.executescript(SCHEMA_SQL)
+                conn.executescript(append_only_triggers_sql())
                 conn.execute(
                     "INSERT INTO evidence_schema_version (version, installed_at) "
                     "VALUES (?, ?)",
                     (SCHEMA_VERSION, _utc_text(datetime.now(UTC))),
                 )
-            elif len(rows) == 1 and int(rows[0]["version"]) in {1, 2}:
-                conn.execute(
-                    "UPDATE evidence_schema_version SET version = ?, installed_at = ?",
-                    (SCHEMA_VERSION, _utc_text(datetime.now(UTC))),
-                )
-            elif len(rows) != 1 or int(rows[0]["version"]) != SCHEMA_VERSION:
+                return
+            rows = conn.execute(
+                "SELECT version FROM evidence_schema_version"
+            ).fetchall()
+            if len(rows) != 1:
                 versions = [int(row["version"]) for row in rows]
-                msg = (
+                raise EvidenceSchemaError(
                     f"Evidence schema is incompatible: found {versions}, "
                     f"expected {SCHEMA_VERSION}."
                 )
-                raise EvidenceSchemaError(msg)
+            current = int(rows[0]["version"])
+            if current > SCHEMA_VERSION or current < 1:
+                raise EvidenceSchemaError(
+                    f"Evidence schema version {current} is unsupported."
+                )
+            conn.executescript(append_only_triggers_sql())
+            if current < SCHEMA_VERSION:
+                self._migrate_schema(conn, current)
+
+    @staticmethod
+    def _migrate_schema(conn: sqlite3.Connection, current: int) -> None:
+        """Validate and record every version transition in one transaction."""
+        existing_tables = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        missing_tables = {table.value for table in EvidenceTable} - existing_tables
+        if missing_tables:
+            raise EvidenceSchemaError(
+                f"Evidence migration found missing tables: {sorted(missing_tables)}"
+            )
+        for table, required in TABLE_COLUMNS.items():
+            columns = {
+                str(row[1])
+                for row in conn.execute(f"PRAGMA table_info({table.value})").fetchall()
+            }
+            missing_columns = (set(required) | {"content_hash"}) - columns
+            if missing_columns:
+                raise EvidenceSchemaError(
+                    f"Evidence migration found missing {table.value} columns: "
+                    f"{sorted(missing_columns)}"
+                )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS evidence_schema_migrations ("
+            "from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, "
+            "applied_at TEXT NOT NULL, PRIMARY KEY (from_version, to_version))"
+        )
+        applied_at = _utc_text(datetime.now(UTC))
+        for from_version in range(current, SCHEMA_VERSION):
+            conn.execute(
+                "INSERT OR IGNORE INTO evidence_schema_migrations "
+                "(from_version, to_version, applied_at) VALUES (?, ?, ?)",
+                (from_version, from_version + 1, applied_at),
+            )
+        conn.execute(
+            "UPDATE evidence_schema_version SET version = ?, installed_at = ?",
+            (SCHEMA_VERSION, applied_at),
+        )
 
     def append(
         self,

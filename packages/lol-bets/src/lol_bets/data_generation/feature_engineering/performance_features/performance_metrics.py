@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from oracle_bets_core.pd import pd
+
 from lol_bets.data_generation.feature_engineering.performance_features.entity_stats import (
     enrich_entity_ema_statistics,
 )
@@ -23,7 +25,6 @@ from lol_bets.data_generation.feature_engineering.performance_features.season_wi
 from lol_bets.data_generation.feature_engineering.performance_features.side_win_rate import (
     side_win_rate_ewm_performance,
 )
-from oracle_bets_core.pd import pd
 
 Entity = Literal["player", "team"]
 

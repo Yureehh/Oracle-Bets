@@ -1,5 +1,4 @@
 import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +18,6 @@ from oracle_bets_discord.bot import (
 from oracle_bets_discord.delivery import (
     DiscordDeliveryMode,
     check_gateway_access,
-    publish_saved_report,
     resolve_delivery_mode,
 )
 from oracle_bets_discord.formatting import DELIVERY_TARGET, split_message
@@ -38,13 +36,14 @@ def test_delivery_mode_is_explicit_and_gateway_prevents_webhook_duplication():
     }
 
     assert resolve_delivery_mode("gateway", environment) is DiscordDeliveryMode.GATEWAY
-    assert resolve_delivery_mode("webhook", environment) is DiscordDeliveryMode.WEBHOOK
+    with pytest.raises(ValueError, match="gateway or off"):
+        resolve_delivery_mode("webhook", environment)
     assert resolve_delivery_mode("off", environment) is DiscordDeliveryMode.OFF
     assert resolve_delivery_mode(None, environment) is DiscordDeliveryMode.GATEWAY
 
 
 def test_delivery_mode_rejects_invalid_value():
-    with pytest.raises(ValueError, match="gateway, webhook, or off"):
+    with pytest.raises(ValueError, match="gateway or off"):
         resolve_delivery_mode("both", {})
 
 
@@ -287,25 +286,3 @@ def test_live_doctor_uses_read_only_discord_requests():
         "history_readable": "yes",
     }
     assert len(session.calls) == EXPECTED_READ_CALLS
-
-
-def test_publish_latest_reads_the_lol_scoped_report_directory(tmp_path, monkeypatch):
-    report_dir = tmp_path / "daily"
-    report_dir.mkdir()
-    (report_dir / "run.json").write_text(
-        json.dumps({"messages": ["review"]}),
-        encoding="utf-8",
-    )
-    sent = []
-
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.invalid/webhook")
-    monkeypatch.setenv("DISCORD_DELIVERY_MODE", "webhook")
-    monkeypatch.setattr("oracle_bets_discord.delivery.REPORTS_DIR", tmp_path)
-    monkeypatch.setattr(
-        "oracle_bets_discord.delivery.send_webhook_messages",
-        lambda webhook, messages: sent.append((webhook, messages)),
-    )
-
-    publish_saved_report("latest")
-
-    assert sent == [("https://discord.invalid/webhook", ["review"])]

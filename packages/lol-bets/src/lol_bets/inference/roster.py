@@ -208,7 +208,7 @@ def completed_series_with_roster(
     return consecutive
 
 
-def infer_historical_roster(  # noqa: PLR0911, PLR0915
+def infer_historical_roster(  # noqa: PLR0911, PLR0912, PLR0915
     history: pd.DataFrame,
     *,
     team_id: str,
@@ -319,7 +319,11 @@ def infer_historical_roster(  # noqa: PLR0911, PLR0915
         gameids = tuple(sorted(series["gameid"].astype(str)))
         identity = hashlib.sha256("|".join(gameids).encode()).hexdigest()[:16]
         series_ids.append(f"series-{identity}")
-        series_dates.append(pd.Timestamp(series["date"].max()).isoformat())
+        series_date = pd.Timestamp(series["date"].max())
+        isoformat = getattr(series_date, "isoformat", None)
+        if pd.isna(series_date) or not callable(isoformat):
+            return None
+        series_dates.append(str(isoformat()))
     if roster is None:
         return None
     payload = "|".join(

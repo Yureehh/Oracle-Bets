@@ -7,12 +7,13 @@ for a given entity, using an Exponentially Weighted Mean (EWM) model.
 
 from __future__ import annotations
 
-from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
-    add_opponent_columns,
-)
 from oracle_bets_core.io_utils import get_identity, get_sorting_keys, json_loader
 from oracle_bets_core.paths import DEFAULT_MODELS_PARAMETERS
 from oracle_bets_core.pd import pd
+
+from lol_bets.data_generation.feature_engineering.performance_features.opponent import (
+    add_opponent_columns,
+)
 
 # Constants
 config_params = json_loader(DEFAULT_MODELS_PARAMETERS)

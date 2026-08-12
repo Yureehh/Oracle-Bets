@@ -178,7 +178,6 @@ def test_reconcile_and_ingest_precede_schedule_fetch(tmp_path, monkeypatch):
         data_generator_factory=data_generator_factory,
         predictor_factory=_FakePredictor,
         market_search_factory=_FakeMarketSearch,
-        webhook_sender=lambda *_a, **_k: None,
     )
 
     assert not result.ok
@@ -242,7 +241,7 @@ def _snapshot_rows() -> list[dict]:
 def test_snapshot_rows_cover_both_selections_and_props():
     rows = _snapshot_rows()
 
-    winner_rows = [r for r in rows if r["market"] == "winner"]
+    winner_rows = [r for r in rows if r["market"] == "series_winner"]
     assert {r["selection"] for r in winner_rows} == {"T1", "Gen.G"}
     t1_row = next(r for r in winner_rows if r["selection"] == "T1")
     assert t1_row["model_value"] == EXPECTED_WIN_PROBABILITY

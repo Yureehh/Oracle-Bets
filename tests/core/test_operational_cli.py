@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -193,6 +194,15 @@ def test_evidence_cli_init_health_backup_verify_and_export(tmp_path, capsys):
     assert "integrity=ok" in output
     assert "Backup verified" in output
     assert (exports / "manifest.json").is_file()
+
+
+def test_evidence_health_fails_closed_on_stale_schema(tmp_path):
+    database = tmp_path / "evidence.db"
+    assert main(["evidence", "init", "--database", str(database)]) == 0
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE evidence_schema_version SET version = 3")
+
+    assert main(["evidence", "health", "--database", str(database)]) == BLOCKED_EXIT
 
 
 def _manifest(model_id):

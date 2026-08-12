@@ -106,6 +106,61 @@ def test_temporal_calibration_split_has_no_game_overlap() -> None:
             assert left.isdisjoint(right)
 
 
+def test_temporal_calibration_split_keeps_equal_timestamps_together() -> None:
+    timestamps = pd.to_datetime(
+        [
+            "2026-01-01",
+            "2026-01-01",
+            "2026-01-02",
+            "2026-01-02",
+            "2026-01-03",
+            "2026-01-03",
+            "2026-01-04",
+            "2026-01-04",
+            "2026-01-05",
+            "2026-01-05",
+            "2026-01-06",
+            "2026-01-06",
+        ]
+    )
+    X = pd.DataFrame(
+        {
+            "gameid": [f"g{i}" for i in range(len(timestamps))],
+            "date": timestamps,
+            "feature": np.arange(len(timestamps)),
+        }
+    )
+    y = pd.Series([i % 2 for i in range(len(X))], index=X.index)
+
+    splits = GradientBoostingModel.temporal_train_tune_cal_test_split(
+        X,
+        y,
+        tune_size=0.10,
+        calibration_size=0.30,
+        test_size=0.20,
+    )
+
+    timestamp_owners: dict[pd.Timestamp, int] = {}
+    for split_index, frame in enumerate(splits[:6]):
+        for raw_timestamp in pd.to_datetime(frame["date"]).unique():
+            timestamp = pd.Timestamp(raw_timestamp)
+            assert timestamp_owners.setdefault(timestamp, split_index) == split_index
+
+
+def test_winner_v2_uses_predeclared_temporal_partitions() -> None:
+    X = pd.DataFrame(
+        {
+            "gameid": [f"series-{index}" for index in range(100)],
+            "date": pd.date_range("2024-01-01", periods=100, freq="D"),
+        }
+    )
+    y = pd.Series([index % 2 for index in range(100)])
+
+    splits = GradientBoostingModel.temporal_winner_v2_split(X, y)
+
+    assert [len(frame) for frame in splits[:6]] == [55, 5, 10, 10, 5, 15]
+
+
 def test_split_integrity_rejects_overlapping_gameids() -> None:
     y = pd.Series([0, 1])
     train = pd.DataFrame({"gameid": ["g1"], "date": [pd.Timestamp("2026-01-01")]})

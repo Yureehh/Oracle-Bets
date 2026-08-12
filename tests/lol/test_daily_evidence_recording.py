@@ -18,6 +18,8 @@ from oracle_bets_core.operations.paper_evidence import (
     capture_closing_snapshots,
     decide_paper,
     performance_summary,
+    record_map_state,
+    requote_paper,
     settle_paper,
 )
 from oracle_bets_core.pd import pd
@@ -26,6 +28,7 @@ NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
 TWO_VERSIONS = 2
 EXPECTED_RERUN_SNAPSHOTS = 4
 INITIAL_ODDS = 2.0
+ENTRY_WINDOW_START = NOW + timedelta(hours=36)
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +40,64 @@ def _isolate_model_registry(tmp_path, monkeypatch):
     )
 
 
+def test_manual_map_state_is_append_only_shadow_evidence(tmp_path):
+    store = EvidenceStore(tmp_path / "map-state.db")
+    store.initialize_schema()
+
+    first = record_map_state(
+        store,
+        series_id="series-1",
+        map_number=1,
+        winner="T1",
+        source_reference="pandascore:match:1",
+        observed_at=NOW,
+    )
+    repeated = record_map_state(
+        store,
+        series_id="series-1",
+        map_number=1,
+        winner="T1",
+        source_reference="pandascore:match:1",
+        observed_at=NOW,
+    )
+
+    assert repeated == first
+    assert store.count(EvidenceTable.SOURCE_SNAPSHOTS) == 1
+    assert store.count(EvidenceTable.PROPOSALS) == 0
+
+
+def test_manual_map_state_rejects_conflicts_and_nonsequential_maps(tmp_path):
+    store = EvidenceStore(tmp_path / "map-state.db")
+    store.initialize_schema()
+    record_map_state(
+        store,
+        series_id="series-1",
+        map_number=1,
+        winner="T1",
+        source_reference="pandascore:match:1",
+        observed_at=NOW,
+    )
+
+    with pytest.raises(PaperEvidenceError, match="conflicting owner evidence"):
+        record_map_state(
+            store,
+            series_id="series-1",
+            map_number=1,
+            winner="Gen.G",
+            source_reference="pandascore:match:1-corrected",
+            observed_at=NOW,
+        )
+    with pytest.raises(PaperEvidenceError, match="expected map 2"):
+        record_map_state(
+            store,
+            series_id="series-1",
+            map_number=3,
+            winner="T1",
+            source_reference="pandascore:match:3",
+            observed_at=NOW,
+        )
+
+
 def test_daily_bridge_records_complete_chain_and_honest_no_bet(tmp_path):
     store = EvidenceStore(tmp_path / "evidence.db")
     schedule = pd.DataFrame(
@@ -45,7 +106,7 @@ def test_daily_bridge_records_complete_chain_and_honest_no_bet(tmp_path):
                 "league": "LCK",
                 "team_a": "T1",
                 "team_b": "Gen.G",
-                "start_utc": "2026-07-27T10:00:00Z",
+                "start_utc": ENTRY_WINDOW_START.isoformat(),
                 "best_of": 3,
                 "status": "scheduled",
                 "match_key": "pandascore-1",
@@ -58,7 +119,7 @@ def test_daily_bridge_records_complete_chain_and_honest_no_bet(tmp_path):
             "league": "LCK",
             "team_a": "T1",
             "team_b": "Gen.G",
-            "start_utc": "2026-07-27T10:00:00Z",
+            "start_utc": ENTRY_WINDOW_START.isoformat(),
             "market": "winner",
             "selection": "T1",
             "model_value": 0.61,
@@ -106,7 +167,7 @@ def test_daily_bridge_records_complete_chain_and_honest_no_bet(tmp_path):
     assert store.count(EvidenceTable.PAPER_POSITIONS) == 0
 
 
-def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):
+def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):  # noqa: PLR0915
     store = EvidenceStore(tmp_path / "evidence.db")
     schedule = pd.DataFrame(
         [
@@ -114,7 +175,7 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):
                 "league": "LCK",
                 "team_a": "T1",
                 "team_b": "Gen.G",
-                "start_utc": "2026-07-27T10:00:00Z",
+                "start_utc": ENTRY_WINDOW_START.isoformat(),
                 "best_of": 3,
                 "status": "scheduled",
                 "match_key": "pandascore:1",
@@ -126,7 +187,7 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):
         "league": "LCK",
         "team_a": "T1",
         "team_b": "Gen.G",
-        "start_utc": "2026-07-27T10:00:00Z",
+        "start_utc": ENTRY_WINDOW_START.isoformat(),
         "market": "winner",
         "selection": "T1",
         "model_value": 0.61,
@@ -136,6 +197,7 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):
         "uncertainty_method": "held_out",
         "lineup_ready": True,
         "roster_ready": True,
+        "uncertainty_available": True,
     }
     observations = [
         {
@@ -170,6 +232,12 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):
         "stake_units": 1.0,
         "decimal_odds": 2.0,
         "observations": observations,
+        "roster_ready": True,
+        "uncertainty_available": True,
+        "attribution_stable": True,
+        "is_model_favorite": True,
+        "rating_baseline_probability": 0.60,
+        "full_model_probability": 0.70,
     }
     failed_action = {
         **action,
@@ -200,10 +268,63 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):
     proposal = store.get(EvidenceTable.PROPOSALS, "proposal-typed-1")
     assert proposal["state"] == "paper_actionable"
     assert json.loads(proposal["payload_json"])["read_only"] is True
-    failed = store.get(EvidenceTable.PROPOSALS, "proposal-typed-failed")
-    assert failed["state"] == "blocked"
-    assert failed["market_snapshot_id"] is None
-    assert failed["rejection_reason"] == "book_unavailable"
+    assert store.get(EvidenceTable.PROPOSALS, "proposal-typed-failed") is None
+
+    with pytest.raises(PaperEvidenceError, match="fresh requote"):
+        decide_paper(
+            store,
+            proposal_id="proposal-typed-1",
+            decision="accept",
+            reason="unsafe one-click acceptance",
+            actor_id="owner",
+            created_at=NOW,
+        )
+
+    class RequoteClient:
+        calls = 0
+
+        def get_order_book(self, token_id):
+            self.calls += 1
+            return OrderBook(
+                condition_id="market-typed-1",
+                token_id=token_id,
+                timestamp=NOW,
+                book_hash=f"requote-{self.calls}",
+                bids=(OrderLevel(price=Decimal("0.54"), size=Decimal(10)),),
+                asks=(OrderLevel(price=Decimal("0.55"), size=Decimal(10)),),
+                minimum_order_size=Decimal(1),
+                tick_size=Decimal("0.01"),
+                negative_risk=False,
+                last_trade_price=Decimal("0.54"),
+            )
+
+    requote = requote_paper(
+        store,
+        proposal_id="proposal-typed-1",
+        client=RequoteClient(),
+        model_healthy=True,
+        now=NOW,
+        interval_seconds=30,
+        sleeper=lambda _seconds: None,
+    )
+
+    store.append(
+        EvidenceTable.RUN_EVENTS,
+        {
+            "id": "event-requote-test",
+            "run_id": proposal["run_id"],
+            "event_at": NOW,
+            "event_type": "paper_requote_confirmable",
+            "status": "pending_owner_confirmation",
+            "idempotency_key": "event-requote-test",
+            "payload_json": {
+                "proposal_id": "proposal-typed-1",
+                "requote_token": "unused-requote-test",
+                "decimal_odds": 2.0,
+                "expires_at": (NOW + timedelta(seconds=120)).isoformat(),
+            },
+        },
+    )
 
     position_id = decide_paper(
         store,
@@ -212,8 +333,12 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):
         reason="paper test",
         actor_id="owner",
         created_at=NOW,
+        requote_token=requote["requote_token"],
     )
-    close_time = datetime(2026, 7, 27, 9, 55, tzinfo=UTC)
+    assert float(
+        store.get(EvidenceTable.PAPER_POSITIONS, position_id)["decimal_odds"]
+    ) == pytest.approx(1 / 0.55)
+    close_time = ENTRY_WINDOW_START - timedelta(minutes=5)
 
     class ClosingClient:
         def get_order_book(self, token_id):
@@ -303,7 +428,7 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):
     assert summary["settled_count"] == 1
     assert summary["prediction_quality"]["count"] == 1
     assert summary["by_target"]["series_winner"]["wins"] == 1
-    assert summary["mean_probability_clv"] == pytest.approx(0.05)
+    assert summary["mean_probability_clv"] == pytest.approx(0.0)
 
 
 def test_same_day_market_rerun_appends_books_without_replacing_proposal(tmp_path):

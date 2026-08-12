@@ -60,6 +60,20 @@ def test_unknown_features_fail_instead_of_becoming_implicit_inputs():
         default_feature_registry().resolve("mystery_future_stat")
 
 
+def test_feature_lineage_declares_availability_swap_and_eligibility():
+    registry = default_feature_registry()
+
+    rating = registry.resolve("elo_win_likelihood")
+    context = registry.resolve("best_of")
+    target = registry.resolve("result")
+
+    assert rating.availability_timestamp == "strictly_before_fixture_start"
+    assert rating.swap_behavior == "negate_as_team_delta"
+    assert rating.model_eligible
+    assert context.swap_behavior == "invariant_context"
+    assert not target.model_eligible
+
+
 def test_feature_manifest_fingerprint_is_registration_order_independent():
     first = FeatureRegistry()
     first.register_exact(

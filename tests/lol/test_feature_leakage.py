@@ -457,3 +457,37 @@ def test_model_preprocessing_keeps_base_ema_when_creating_diff():
     assert out.loc[0, "top_diff_ema_kda"] == MODEL_TOP_KDA_DIFF
     assert "opp_ema_goldat15" not in out
     assert "top_opp_ema_kda" not in out
+
+
+def test_model_preprocessing_overwrites_stale_matchup_diffs():
+    df = pd.DataFrame(
+        {
+            "ema_goldat15": [MODEL_GOLD_EMA],
+            "opp_ema_goldat15": [MODEL_OPP_GOLD_EMA],
+            "diff_ema_goldat15": [999.0],
+            "top_ema_kda": [MODEL_TOP_KDA],
+            "top_opp_ema_kda": [MODEL_OPP_TOP_KDA],
+            "top_diff_ema_kda": [999.0],
+        }
+    )
+
+    out = GradientBoostingModel.add_explicit_ema_diffs(df, drop_opponents=True)
+
+    assert out.loc[0, "diff_ema_goldat15"] == GOLD_EMA_DIFF
+    assert out.loc[0, "top_diff_ema_kda"] == MODEL_TOP_KDA_DIFF
+
+
+def test_production_pruning_keeps_signed_features_and_drops_only_constants():
+    frame = pd.DataFrame(
+        {
+            "negative_mean_delta": [-5.0, -3.0, -7.0, -1.0],
+            "positive_mean_delta": [1.0, 3.0, 2.0, 4.0],
+            "constant": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+
+    retained, dropped = GradientBoostingModel.drop_low_std_columns(None, frame)
+
+    assert "negative_mean_delta" in retained
+    assert "positive_mean_delta" in retained
+    assert dropped == ["constant"]

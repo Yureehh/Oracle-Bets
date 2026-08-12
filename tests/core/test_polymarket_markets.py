@@ -293,7 +293,7 @@ def test_market_match_rejects_wrong_fixture_facts(overrides, reason):
     assert reason in assessment.reasons
 
 
-def test_missing_resolution_source_is_visible_warning_not_silent_rejection():
+def test_missing_resolution_source_is_rejected():
     payload = _market()
     payload["resolutionSource"] = ""
     market = PolymarketGammaAdapter()._market_from_payload(
@@ -314,8 +314,8 @@ def test_missing_resolution_source_is_visible_warning_not_silent_rejection():
 
     assessment = match_market(fixture, market)
 
-    assert assessment.matched
-    assert assessment.warnings == ("market_rules_uncertain",)
+    assert not assessment.matched
+    assert assessment.reasons == ("resolution_rules_missing",)
 
 
 @pytest.mark.parametrize(

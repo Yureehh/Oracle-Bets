@@ -52,7 +52,7 @@ def create_evidence_backup(
 
 
 def verify_evidence_backup(path: Path) -> BackupResult:
-    """Check SQLite integrity and the exact evidence schema version."""
+    """Check SQLite integrity and require a supported evidence schema version."""
     if not path.is_file():
         raise FileNotFoundError(f"backup does not exist: {path}")
     with sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True) as connection:
@@ -69,9 +69,10 @@ def verify_evidence_backup(path: Path) -> BackupResult:
             ) from error
     if integrity != "ok":
         raise ValueError(f"backup integrity check failed: {integrity}")
-    if version != SCHEMA_VERSION:
+    if not 1 <= version <= SCHEMA_VERSION:
         raise ValueError(
-            f"backup schema version {version} does not match {SCHEMA_VERSION}"
+            f"backup schema version {version} is outside supported range "
+            f"1..{SCHEMA_VERSION}"
         )
     return BackupResult(
         path=path,

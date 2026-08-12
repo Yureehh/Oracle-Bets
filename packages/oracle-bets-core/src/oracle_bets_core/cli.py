@@ -50,9 +50,25 @@ def _add_lol_commands(sub) -> None:
         help="Verify public read-only Polymarket discovery and CLOB data",
     )
     market_check.add_argument("--match-key", default=None)
+    market_watch = lol_sub.add_parser(
+        "market-watch",
+        help="Record one hourly read-only series-winner market observation",
+    )
+    market_watch.add_argument("--format", choices=["table", "json"], default="table")
     lol_sub.add_parser(
         "validate-data",
         help="Validate generated LoL training tables without model training",
+    )
+    lol_sub.add_parser(
+        "build-series",
+        help="Reconstruct complete historical series and frozen prematch datasets",
+    )
+    winner_validation = lol_sub.add_parser(
+        "validate-winner-model",
+        help="Validate the independent direct-series serving contract",
+    )
+    winner_validation.add_argument(
+        "--format", choices=["table", "json"], default="table"
     )
     train = lol_sub.add_parser("train", help="Train LoL prediction models")
     _add_train_arguments(train)
@@ -104,7 +120,7 @@ def _add_train_arguments(train) -> None:
 def _add_research_operation_commands(sub) -> None:  # noqa: PLR0915
     model = sub.add_parser("model", help="Immutable candidate registry controls")
     model_sub = model.add_subparsers(dest="action", required=True)
-    for action in ("status", "promote", "rollback"):
+    for action in ("status", "promote", "rollback", "quarantine"):
         command = model_sub.add_parser(action)
         command.add_argument("--registry", default=None)
         if action != "status":
@@ -183,6 +199,29 @@ def _add_research_operation_commands(sub) -> None:  # noqa: PLR0915
     decide.add_argument("--decision", required=True, choices=["accept", "reject"])
     decide.add_argument("--reason")
     decide.add_argument("--actor-id", default="owner-cli")
+    decide.add_argument("--requote-token")
+    requote = paper_sub.add_parser(
+        "requote", help="Refresh executable odds and issue a 120-second confirmation"
+    )
+    requote.add_argument("proposal_id")
+    requote.add_argument("--database", default=None)
+    requote.add_argument("--format", choices=["table", "json"], default="table")
+    map_state = paper_sub.add_parser(
+        "record-map-state",
+        help="Record one owner-verified completed map for shadow research",
+    )
+    map_state.add_argument("--series-id", required=True)
+    map_state.add_argument("--map-number", type=int, required=True)
+    map_state.add_argument("--winner", required=True)
+    map_state.add_argument("--source-reference", required=True)
+    map_state.add_argument("--database", default=None)
+    expire = paper_sub.add_parser(
+        "expire", help="Invalidate undecided proposals from a strategy version"
+    )
+    expire.add_argument("--database", default=None)
+    expire.add_argument("--strategy-version", required=True)
+    expire.add_argument("--reason", required=True)
+    expire.add_argument("--actor-id", default="owner-cli")
     settle = paper_sub.add_parser("settle", help="Record one owner-verified settlement")
     settle.add_argument("--database", default=None)
     settle.add_argument("--position-id", required=True)
@@ -226,10 +265,9 @@ def _add_delivery_commands(sub) -> None:
         default=product.fixture_window_hours,
     )
     daily_lol.add_argument("--leagues", default=None)
-    daily_lol.add_argument("--webhook-url", default=None)
     daily_lol.add_argument(
         "--discord-delivery-mode",
-        choices=["gateway", "webhook", "off"],
+        choices=["gateway", "off"],
         default=None,
     )
     daily_lol.add_argument("--skip-retrain", action="store_true")
@@ -253,8 +291,6 @@ def _add_delivery_commands(sub) -> None:
     doctor = discord_sub.add_parser("doctor", help="Validate Discord configuration")
     doctor.add_argument("--live", action="store_true")
     discord_sub.add_parser("run", help="Run the owner-only Gateway bot")
-    publish = discord_sub.add_parser("publish", help="Publish a saved daily report")
-    publish.add_argument("--run-id", default="latest")
 
 
 def _add_monitoring_commands(sub) -> None:
@@ -283,7 +319,7 @@ def _add_monitoring_commands(sub) -> None:
     monthly.add_argument("--output", default=None, help="Output directory")
 
 
-def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911
+def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915
     if args.action == "source-check":
         return _print_lol_source_check(args.format)
     if args.action == "source-refresh":
@@ -339,8 +375,53 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911
     if args.action == "validate-data":
         _validate_lol_data()
         return 0
+    if args.action == "build-series":
+        import json
+
+        from lol_bets.data_generation.series import build_series_artifacts
+
+        sys.stdout.write(
+            json.dumps(build_series_artifacts(), indent=2, sort_keys=True) + "\n"
+        )
+        return 0
+    if args.action == "validate-winner-model":
+        import json
+
+        from lol_bets.operations.winner_validation import validate_winner_model
+
+        report = validate_winner_model()
+        if args.format == "json":
+            sys.stdout.write(
+                json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n"
+            )
+        else:
+            sys.stdout.write(
+                f"Winner V2: {'READY' if report.ok else 'BLOCKED'} "
+                f"(champion={report.champion_id or 'none'}, "
+                f"features={report.feature_count})\n"
+            )
+            for failure in report.failures:
+                sys.stdout.write(f"- {failure}\n")
+        return 0 if report.ok else 2
     if args.action == "market-check":
         return _check_lol_markets(args.match_key)
+    if args.action == "market-watch":
+        import json
+
+        from lol_bets.operations.market_watch import observe_winner_markets
+
+        report = observe_winner_markets()
+        if args.format == "json":
+            sys.stdout.write(
+                json.dumps(report, indent=2, sort_keys=True, default=str) + "\n"
+            )
+        else:
+            sys.stdout.write(
+                f"Recorded {len(report['observations'])} winner market(s); "
+                f"{len(report['failures'])} failure(s).\n"
+                f"JSON: {report['json_report']}\nMarkdown: {report['markdown_report']}\n"
+            )
+        return 0
     if args.action == "promote-tuning":
         from lol_bets.training import promote_tuning_run
 
@@ -421,6 +502,7 @@ def _check_lol_markets(match_key: str | None) -> int:  # noqa: PLR0915
     import json
 
     import requests
+    from lol_bets.operations.market_actions import LOL_RESOLUTION_RULE_TERMS
 
     from oracle_bets_core.markets import (
         MarketFixture,
@@ -475,6 +557,7 @@ def _check_lol_markets(match_key: str | None) -> int:  # noqa: PLR0915
                 team_b_names=(team_b,),
                 start_time=start_time,
                 best_of=int(row.get("best_of") or 1),
+                resolution_rule_terms=LOL_RESOLUTION_RULE_TERMS,
             )
         else:
             query = "League of Legends"
@@ -719,7 +802,7 @@ def _train_lol(args: argparse.Namespace) -> None:
     sys.stdout.write(f"Training report: {report_root}\n")
 
 
-def _main_model(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912
+def _main_model(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915
     import json
     from datetime import UTC, datetime
     from pathlib import Path
@@ -803,11 +886,21 @@ def _main_model(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912
             sys.stdout.write("No champion selected.\n")
             return 2
         healthy = registry.verify_bundle(champion)
+        actionability = registry.actionability(champion)
         sys.stdout.write(
-            f"Champion: {champion} ({'healthy' if healthy else 'unhealthy'})\n"
+            f"Champion: {champion} ({'healthy' if healthy else 'unhealthy'}, "
+            f"{actionability['status']})\n"
         )
-        return 0 if healthy else 2
+        return 0 if healthy and registry.is_actionable(champion) else 2
     try:
+        if args.action == "quarantine":
+            registry.quarantine(
+                args.model_id,
+                quarantined_at=datetime.now(UTC),
+                reason=args.reason,
+            )
+            sys.stdout.write(f"Model {args.model_id} is research-only.\n")
+            return 0
         if args.action == "promote":
             registry.promote(
                 args.model_id,
@@ -845,6 +938,7 @@ def _main_evidence(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     from oracle_bets_core.evidence import EvidenceStore
+    from oracle_bets_core.evidence.schema import SCHEMA_VERSION
     from oracle_bets_core.operations.backup import (
         create_evidence_backup,
         export_all_evidence,
@@ -869,11 +963,13 @@ def _main_evidence(args: argparse.Namespace) -> int:
         if not database.is_file():
             sys.stderr.write(f"Evidence database missing: {database}\n")
             return 2
+        integrity = store.integrity_check()
+        version = store.schema_version()
         sys.stdout.write(
-            f"Evidence database: integrity={store.integrity_check()}, "
-            f"schema={store.schema_version()}\n"
+            f"Evidence database: integrity={integrity}, schema={version} "
+            f"(expected={SCHEMA_VERSION})\n"
         )
-        return 0
+        return 0 if integrity == "ok" and version == SCHEMA_VERSION else 2
     if args.action == "backup":
         result = create_evidence_backup(
             database,
@@ -890,7 +986,7 @@ def _main_evidence(args: argparse.Namespace) -> int:
     return 0
 
 
-def _main_paper(args: argparse.Namespace) -> int:  # noqa: PLR0912
+def _main_paper(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915
     import json
     from datetime import datetime
     from pathlib import Path
@@ -901,10 +997,13 @@ def _main_paper(args: argparse.Namespace) -> int:  # noqa: PLR0912
         PaperEvidenceError,
         capture_closing_snapshots,
         decide_paper,
+        expire_proposals,
         paper_rows,
         paper_show,
         performance_summary,
         quote_prop,
+        record_map_state,
+        requote_paper,
         settle_paper,
     )
     from oracle_bets_core.paths import EVIDENCE_DB
@@ -935,10 +1034,44 @@ def _main_paper(args: argparse.Namespace) -> int:  # noqa: PLR0912
                 decision=args.decision,
                 reason=args.reason,
                 actor_id=args.actor_id,
+                requote_token=args.requote_token,
             )
             sys.stdout.write(
                 f"Decision recorded{f'; opened {position}' if position else ''}.\n"
             )
+            return 0
+        elif args.action == "requote":
+            from lol_bets.operations.models import ModelRegistry
+
+            from oracle_bets_core.markets import PolymarketClobClient
+            from oracle_bets_core.paths import MODEL_REGISTRY_DIR
+
+            registry = ModelRegistry(MODEL_REGISTRY_DIR)
+            champion = registry.champion_id()
+            result = requote_paper(
+                store,
+                proposal_id=args.proposal_id,
+                client=PolymarketClobClient(),
+                model_healthy=bool(champion and registry.is_actionable(champion)),
+            )
+        elif args.action == "record-map-state":
+            snapshot_id = record_map_state(
+                store,
+                series_id=args.series_id,
+                map_number=args.map_number,
+                winner=args.winner,
+                source_reference=args.source_reference,
+            )
+            sys.stdout.write(f"Recorded shadow map state {snapshot_id}.\n")
+            return 0
+        elif args.action == "expire":
+            expired = expire_proposals(
+                store,
+                strategy_version=args.strategy_version,
+                reason=args.reason,
+                actor_id=args.actor_id,
+            )
+            sys.stdout.write(f"Expired {len(expired)} undecided proposal(s).\n")
             return 0
         elif args.action == "settle":
             if args.dry_run:
@@ -1015,7 +1148,6 @@ def _main_daily(args: argparse.Namespace) -> int:
         DailyWorkflowConfig(
             horizon_hours=args.horizon_hours,
             leagues=args.leagues,
-            webhook_url=args.webhook_url,
             delivery_mode=args.discord_delivery_mode,
             dry_run=args.dry_run,
             skip_retrain=args.skip_retrain,
@@ -1049,7 +1181,7 @@ def _main_daily(args: argparse.Namespace) -> int:
     return 0 if result.ok else 2
 
 
-def _main_discord(args: argparse.Namespace) -> int:  # noqa: PLR0911
+def _main_discord(args: argparse.Namespace) -> int:
     import os
 
     from oracle_bets_discord.delivery import (
@@ -1101,13 +1233,7 @@ def _main_discord(args: argparse.Namespace) -> int:  # noqa: PLR0911
 
         run_bot()
         return 0
-    if mode is not DiscordDeliveryMode.WEBHOOK:
-        sys.stderr.write("discord publish requires DISCORD_DELIVERY_MODE=webhook\n")
-        return 2
-    from oracle_bets_discord.delivery import publish_saved_report
-
-    publish_saved_report(args.run_id)
-    return 0
+    return 1
 
 
 def _main_health(args: argparse.Namespace) -> int:

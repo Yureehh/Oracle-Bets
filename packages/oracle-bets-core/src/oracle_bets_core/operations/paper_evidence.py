@@ -6,6 +6,7 @@ import hashlib
 import json
 import pickle
 import sqlite3
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -30,7 +31,12 @@ from oracle_bets_core.evidence.settlement import (
     select_fixed_close,
 )
 from oracle_bets_core.markets import walk_buy_book
-from oracle_bets_core.operations.paper import RESEARCH_PROP_UNITS, ActionState
+from oracle_bets_core.operations.paper import (
+    RESEARCH_PROP_UNITS,
+    ActionGateInput,
+    ActionState,
+    apply_action_gate,
+)
 
 if TYPE_CHECKING:
     from oracle_bets_core.markets import OrderBookClient
@@ -57,7 +63,8 @@ def paper_rows(
                    f.payload_json AS fixture_payload_json,
                    team_a.canonical_name AS team_a,
                    team_b.canonical_name AS team_b,
-                   pr.selection_id, pr.probability_point,
+                   pr.fixture_id, pr.selection_id, pr.probability_point,
+                   pr.probability_lower, pr.probability_upper,
                    pr.payload_json AS prediction_payload_json,
                    mv.target AS model_target, mv.id AS model_version_id,
                    mc.id AS market_candidate_id, mc.provider, mc.provider_market_id,
@@ -85,6 +92,11 @@ def paper_rows(
                     ? = 'pending'
                     AND pp.id IS NULL
                     AND (a.decision IS NULL OR a.decision != 'reject')
+                    AND p.state = 'paper_actionable'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM corrections c
+                        WHERE c.target_table = 'proposals' AND c.target_id = p.id
+                    )
                 )
             )
             AND (? IS NULL OR f.competition_id = ?)
@@ -110,8 +122,21 @@ def paper_rows(
         )
         if target and row["target"] != target:
             continue
+        if state == "pending" and _proposal_time_expired(row):
+            continue
         output.append(row)
     return output
+
+
+def _proposal_time_expired(row: dict[str, Any], *, at: datetime | None = None) -> bool:
+    now = at or datetime.now(UTC)
+    try:
+        if datetime.fromisoformat(str(row["start_time"])) <= now:
+            return True
+        expires_at = (row.get("payload") or {}).get("expires_at")
+        return bool(expires_at and datetime.fromisoformat(str(expires_at)) <= now)
+    except (TypeError, ValueError):
+        return True
 
 
 def paper_show(store: EvidenceStore, record_id: str) -> dict[str, Any]:
@@ -277,6 +302,7 @@ def decide_paper(
     reason: str | None,
     actor_id: str,
     created_at: datetime | None = None,
+    requote_token: str | None = None,
 ) -> str | None:
     """Append one idempotent owner decision and, on acceptance, one position."""
     if decision not in {"accept", "reject"}:
@@ -295,17 +321,31 @@ def decide_paper(
         )
         return str(position["id"]) if position else None
     payload = json.loads(proposal["payload_json"])
+    now = created_at or datetime.now(UTC)
     if decision == "accept":
-        if proposal["state"] not in {
-            ActionState.PAPER_ACTIONABLE,
-            ActionState.RESEARCH_ONLY,
-        }:
+        if proposal["state"] != ActionState.PAPER_ACTIONABLE:
             raise PaperEvidenceError(
                 f"Proposal state cannot be accepted: {proposal['state']}"
             )
+        if any(
+            row["target_table"] == EvidenceTable.PROPOSALS.value
+            and row["target_id"] == proposal_id
+            for row in store.list(EvidenceTable.CORRECTIONS)
+        ):
+            raise PaperEvidenceError("Proposal has expired or been corrected")
+        proposal_view = paper_show(store, proposal_id)
+        if _proposal_time_expired(proposal_view, at=now):
+            raise PaperEvidenceError("Proposal has expired or the fixture has started")
         if payload.get("odds") is None or proposal["stake_units"] is None:
             raise PaperEvidenceError("Proposal is missing immutable odds or stake")
-    now = created_at or datetime.now(UTC)
+        if proposal["ruleset_version"] == "independent-winner-v2":
+            confirmed = _confirmed_requote(
+                store, proposal_id=proposal_id, token=requote_token, now=now
+            )
+            payload = payload | {
+                "odds": confirmed["decimal_odds"],
+                "requote_token": requote_token,
+            }
     records: list[tuple[EvidenceTable, dict[str, Any]]] = [
         (
             EvidenceTable.APPROVALS,
@@ -337,12 +377,309 @@ def decide_paper(
                 "decimal_odds": str(odds),
                 "state": "open",
                 "idempotency_key": position_id,
-                "payload_json": {"approval_id": approval_id},
+                "payload_json": {
+                    "approval_id": approval_id,
+                    "requote_token": requote_token,
+                },
             },
         )
     )
     store.append_transaction(records)
     return position_id
+
+
+def requote_paper(
+    store: EvidenceStore,
+    *,
+    proposal_id: str,
+    client: OrderBookClient,
+    model_healthy: bool,
+    now: datetime | None = None,
+    interval_seconds: int = 45,
+    sleeper: Any = time.sleep,
+) -> dict[str, Any]:
+    """Fetch a fresh two-observation quote and rerun all deterministic gates."""
+    from oracle_bets_core.markets import (
+        capture_minimum_order_book_batch,
+        confirmed_executable_fill,
+    )
+
+    current = now or datetime.now(UTC)
+    row = paper_show(store, proposal_id)
+    proposal = store.get(EvidenceTable.PROPOSALS, proposal_id)
+    if proposal is None or proposal["state"] != ActionState.PAPER_ACTIONABLE:
+        state = proposal["state"] if proposal is not None else "missing"
+        raise PaperEvidenceError(f"Proposal state cannot be requoted: {state}")
+    if any(
+        correction["target_table"] == EvidenceTable.PROPOSALS.value
+        and correction["target_id"] == proposal_id
+        for correction in store.list(EvidenceTable.CORRECTIONS)
+    ):
+        raise PaperEvidenceError("Proposal has expired or been corrected")
+    if _proposal_time_expired(row, at=current):
+        raise PaperEvidenceError("Proposal has expired or the fixture has started")
+    token_id = str(row.get("provider_selection_id") or "")
+    if not token_id:
+        raise PaperEvidenceError("Proposal has no verified Polymarket token")
+    batch = capture_minimum_order_book_batch(
+        client,
+        token_ids=(token_id,),
+        interval_seconds=interval_seconds,
+        sleeper=sleeper,
+        clock=lambda: current,
+    )
+    failure = batch.failures.get(token_id)
+    observations = batch.observations.get(token_id)
+    if failure is not None or observations is None:
+        reason = failure.reason if failure is not None else "book_unavailable"
+        raise PaperEvidenceError(f"Fresh quote failed: {reason}")
+    fill = confirmed_executable_fill(observations)
+    odds = float(fill.decimal_odds or 0.0)
+    payload = row.get("payload") or {}
+    probability = float(row["probability_point"])
+    lower = float(row.get("probability_lower") or probability)
+    start = datetime.fromisoformat(str(row["start_time"]))
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    decision = apply_action_gate(
+        ActionGateInput(
+            proposal_id=proposal_id,
+            fixture_id=str(row.get("fixture_id") or proposal_id),
+            target=str(row["target"]),
+            league=str(row["league"]),
+            probability=probability,
+            probability_lower=lower,
+            decimal_odds=odds,
+            model_healthy=model_healthy,
+            roster_ready=payload.get("roster_ready") is True,
+            uncertainty_available=payload.get("uncertainty_available") is True,
+            market_supported=True,
+            quote_valid=fill.complete,
+            is_model_favorite=payload.get("is_model_favorite") is True,
+            hours_to_start=(start - current).total_seconds() / 3600,
+            market_probability=1.0 / odds if odds > 1.0 else None,
+            rating_baseline_probability=float(
+                payload.get("rating_baseline_probability") or 0.5
+            ),
+            attribution_stable=payload.get("attribution_stable") is True,
+        )
+    )
+    if decision.state is not ActionState.PAPER_ACTIONABLE:
+        raise PaperEvidenceError(f"Fresh quote blocked: {decision.reason}")
+    token = _id(
+        "requote",
+        f"{proposal_id}|{current.isoformat()}|{fill.total_cost}|{odds}",
+    )
+    event_id = _id("event", token)
+    store.append(
+        EvidenceTable.RUN_EVENTS,
+        {
+            "id": event_id,
+            "run_id": row["run_id"],
+            "event_at": current,
+            "event_type": "paper_requote_confirmable",
+            "status": "pending_owner_confirmation",
+            "idempotency_key": event_id,
+            "payload_json": {
+                "proposal_id": proposal_id,
+                "requote_token": token,
+                "decimal_odds": odds,
+                "conservative_edge": decision.conservative_edge,
+                "expires_at": (current + timedelta(seconds=120)).isoformat(),
+                "token_id": token_id,
+                "read_only": True,
+            },
+        },
+    )
+    return {
+        "requote_token": token,
+        "decimal_odds": odds,
+        "conservative_edge": decision.conservative_edge,
+        "expires_at": (current + timedelta(seconds=120)).isoformat(),
+    }
+
+
+def _confirmed_requote(
+    store: EvidenceStore,
+    *,
+    proposal_id: str,
+    token: str | None,
+    now: datetime,
+) -> dict[str, Any]:
+    if not token:
+        raise PaperEvidenceError("Accept requires a fresh requote confirmation token")
+    for event in store.list(EvidenceTable.RUN_EVENTS):
+        if event["event_type"] != "paper_requote_confirmable":
+            continue
+        payload = json.loads(event["payload_json"])
+        if payload.get("requote_token") != token:
+            continue
+        if payload.get("proposal_id") != proposal_id:
+            raise PaperEvidenceError("Requote token belongs to another proposal")
+        if datetime.fromisoformat(payload["expires_at"]) <= now:
+            raise PaperEvidenceError("Requote confirmation expired")
+        return payload
+    raise PaperEvidenceError("Unknown requote confirmation token")
+
+
+def record_map_state(
+    store: EvidenceStore,
+    *,
+    series_id: str,
+    map_number: int,
+    winner: str,
+    source_reference: str,
+    observed_at: datetime | None = None,
+) -> str:
+    """Append owner-sourced completed-map state for reactive shadow research."""
+    series_id = series_id.strip()
+    winner = winner.strip()
+    source_reference = source_reference.strip()
+    if not series_id or not winner or not source_reference:
+        raise PaperEvidenceError(
+            "series id, winner, and source reference must be non-empty"
+        )
+    if map_number <= 0:
+        raise PaperEvidenceError("map number must be positive")
+    now = observed_at or datetime.now(UTC)
+    prior_states: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for snapshot in store.list(EvidenceTable.SOURCE_SNAPSHOTS):
+        if snapshot["source_type"] != "completed_map_state":
+            continue
+        payload = json.loads(snapshot["payload_json"])
+        if payload.get("series_id") == series_id:
+            prior_states.append((snapshot, payload))
+    for snapshot, payload in prior_states:
+        if int(payload["map_number"]) != map_number:
+            continue
+        if (
+            payload.get("winner") == winner
+            and payload.get("source_reference") == source_reference
+        ):
+            return str(snapshot["id"])
+        raise PaperEvidenceError("completed map already has conflicting owner evidence")
+    expected_map = 1 + max(
+        (int(payload["map_number"]) for _, payload in prior_states), default=0
+    )
+    if map_number != expected_map:
+        raise PaperEvidenceError(
+            f"completed maps must be recorded sequentially; expected map {expected_map}"
+        )
+    winners = [
+        str(payload["winner"])
+        for _, payload in sorted(
+            prior_states, key=lambda item: int(item[1]["map_number"])
+        )
+    ]
+    winners.append(winner)
+    score = {team: winners.count(team) for team in sorted(set(winners))}
+    identity = f"{series_id}|{map_number}|{winner}|{source_reference}"
+    run_id = _id("map-state-run", identity)
+    snapshot_id = _id("map-state", identity)
+    store.append_transaction(
+        [
+            (
+                EvidenceTable.RUNS,
+                {
+                    "id": run_id,
+                    "run_type": "manual_map_state",
+                    "started_at": now,
+                    "status": "completed",
+                    "idempotency_key": run_id,
+                    "payload_json": {"reactive_mode": "shadow_only"},
+                },
+            ),
+            (
+                EvidenceTable.SOURCE_SNAPSHOTS,
+                {
+                    "id": snapshot_id,
+                    "run_id": run_id,
+                    "provider": "owner",
+                    "source_type": "completed_map_state",
+                    "observed_at": now,
+                    "source_uri": source_reference,
+                    "schema_fingerprint": "manual-map-state-v1",
+                    "idempotency_key": snapshot_id,
+                    "payload_json": {
+                        "series_id": series_id,
+                        "map_number": map_number,
+                        "winner": winner,
+                        "source_reference": source_reference,
+                        "score_after_map": score,
+                        "next_map_number": map_number + 1,
+                        "reactive_mode": "shadow_only",
+                    },
+                },
+            ),
+        ]
+    )
+    return snapshot_id
+
+
+def expire_proposals(
+    store: EvidenceStore,
+    *,
+    strategy_version: str,
+    reason: str,
+    actor_id: str = "owner-cli",
+    created_at: datetime | None = None,
+) -> list[str]:
+    """Append invalidation corrections for matching undecided proposals."""
+    strategy_version = strategy_version.strip()
+    reason = reason.strip()
+    actor_id = actor_id.strip()
+    if not strategy_version:
+        raise PaperEvidenceError("strategy version cannot be empty")
+    if not reason:
+        raise PaperEvidenceError("expiry reason cannot be empty")
+    if not actor_id:
+        raise PaperEvidenceError("expiry actor identity cannot be empty")
+    approved = {str(row["proposal_id"]) for row in store.list(EvidenceTable.APPROVALS)}
+    corrected = {
+        str(row["target_id"])
+        for row in store.list(EvidenceTable.CORRECTIONS)
+        if row["target_table"] == EvidenceTable.PROPOSALS.value
+    }
+    now = created_at or datetime.now(UTC)
+    records: list[tuple[EvidenceTable, dict[str, Any]]] = []
+    expired: list[str] = []
+    for proposal in store.list(EvidenceTable.PROPOSALS):
+        proposal_id = str(proposal["id"])
+        payload = json.loads(proposal["payload_json"])
+        candidate_version = str(
+            payload.get("strategy_version") or proposal.get("ruleset_version") or ""
+        )
+        if (
+            proposal_id in approved
+            or proposal_id in corrected
+            or strategy_version not in {"all", candidate_version}
+        ):
+            continue
+        correction_id = _id(
+            "correction", f"proposal|{proposal_id}|expired|{strategy_version}|{reason}"
+        )
+        records.append(
+            (
+                EvidenceTable.CORRECTIONS,
+                {
+                    "id": correction_id,
+                    "target_table": EvidenceTable.PROPOSALS.value,
+                    "target_id": proposal_id,
+                    "created_at": now,
+                    "reason": reason,
+                    "replacement_id": None,
+                    "idempotency_key": correction_id,
+                    "payload_json": {
+                        "actor_id": actor_id,
+                        "strategy_version": candidate_version,
+                    },
+                },
+            )
+        )
+        expired.append(proposal_id)
+    if records:
+        store.append_transaction(records)
+    return expired
 
 
 def settle_paper(

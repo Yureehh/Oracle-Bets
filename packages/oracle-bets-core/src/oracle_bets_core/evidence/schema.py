@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 EVIDENCE_TABLES = (
     "runs",
@@ -27,6 +27,13 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evidence_schema_version (
     version INTEGER NOT NULL,
     installed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evidence_schema_migrations (
+    from_version INTEGER NOT NULL,
+    to_version INTEGER NOT NULL,
+    applied_at TEXT NOT NULL,
+    PRIMARY KEY (from_version, to_version)
 );
 
 CREATE TABLE IF NOT EXISTS runs (

@@ -32,6 +32,10 @@ class FeatureSpec:
     role: FeatureRole
     availability: Availability
     missing_policy: str
+    source: str
+    availability_timestamp: str
+    swap_behavior: str
+    model_eligible: bool
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,10 @@ class FeatureRule:
     role: FeatureRole
     availability: Availability
     missing_policy: str
+    source: str
+    availability_timestamp: str
+    swap_behavior: str
+    model_eligible: bool
 
 
 class FeatureRegistry:
@@ -63,6 +71,14 @@ class FeatureRegistry:
             role=FeatureRole(role),
             availability=Availability(availability),
             missing_policy=missing_policy,
+            source=family,
+            availability_timestamp=(
+                "strictly_before_fixture_start"
+                if availability == Availability.PREMATCH
+                else "after_game_completion"
+            ),
+            swap_behavior=_swap_behavior(name, role),
+            model_eligible=role == FeatureRole.INPUT,
         )
         existing = self._exact.get(name)
         if existing is not None and existing != spec:
@@ -86,6 +102,18 @@ class FeatureRegistry:
                 role=FeatureRole(role),
                 availability=Availability(availability),
                 missing_policy=missing_policy,
+                source=family,
+                availability_timestamp=(
+                    "strictly_before_fixture_start"
+                    if availability == Availability.PREMATCH
+                    else "after_game_completion"
+                ),
+                swap_behavior=(
+                    "negate_as_team_delta"
+                    if role == FeatureRole.INPUT
+                    else "not_model_eligible"
+                ),
+                model_eligible=role == FeatureRole.INPUT,
             )
         )
 
@@ -103,6 +131,10 @@ class FeatureRegistry:
             role=rule.role,
             availability=rule.availability,
             missing_policy=rule.missing_policy,
+            source=rule.source,
+            availability_timestamp=rule.availability_timestamp,
+            swap_behavior=rule.swap_behavior,
+            model_eligible=rule.model_eligible,
         )
 
     def assert_model_inputs_available(
@@ -164,12 +196,16 @@ IDENTIFIERS = {
     "playername",
     "side",
     "position",
+    "series_id",
+    "source_gameid",
+    "target_gameid",
 }
 TARGETS = {"result", "gamelength", "total_kills", "total_towers"}
 PROHIBITED = {"first_pick", "side_win_likelihood"}
 PREMATCH_EXACT_INPUTS = {
     "league",
     "patch",
+    "split",
     "playoffs",
     "game",
     "season",
@@ -199,7 +235,48 @@ PREMATCH_EXACT_INPUTS = {
     "trueskill_win_likelihood",
     "season_avg_gamelength",
     "team_season_avg_gamelength",
+    "best_of",
+    "maps_completed",
+    "next_map_number",
+    "series_wins_before",
+    "series_losses_before",
+    "series_score_delta",
+    "elo",
+    "glicko2_mu",
+    "glicko2_phi",
+    "pl_mu",
+    "pl_sigma",
+    "trueskill_mu",
+    "trueskill_sigma",
 }
+
+INVARIANT_CONTEXT = {
+    "league",
+    "patch",
+    "split",
+    "playoffs",
+    "game",
+    "season",
+    "league_region",
+    "league_tier",
+    "strength_pool",
+    "game_in_series",
+    "is_bo1",
+    "is_bo3",
+    "is_bo5",
+    "is_deciding_game",
+    "best_of",
+    "maps_completed",
+    "next_map_number",
+}
+
+
+def _swap_behavior(name: str, role: FeatureRole) -> str:
+    if role != FeatureRole.INPUT:
+        return "not_model_eligible"
+    if name in INVARIANT_CONTEXT:
+        return "invariant_context"
+    return "negate_as_team_delta"
 
 
 def default_feature_registry() -> FeatureRegistry:

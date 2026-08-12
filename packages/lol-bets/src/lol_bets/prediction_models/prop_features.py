@@ -15,6 +15,7 @@ SIDE_PREFIX: dict[str, str] = {"Blue": "blue", "Red": "red"}
 TARGET_TOLERANCE = 1e-9
 TEAMS_PER_GAME = 2
 MATCHUP_EXCLUDED_FEATURES = frozenset({"first_pick", "side_win_likelihood"})
+MATCHUP_INVARIANT_NUMERIC = frozenset({"best_of", "maps_completed", "next_map_number"})
 
 
 def is_prop_target(target_col: str) -> bool:
@@ -66,7 +67,16 @@ def build_game_level_outcome_features(
         for column in feature_cols:
             left, right = first.get(column), second.get(column)
             if column in numeric_cols:
-                out[f"delta_{column}"] = _finite_or_nan(left) - _finite_or_nan(right)
+                if column in MATCHUP_INVARIANT_NUMERIC:
+                    if _finite_or_nan(left) != _finite_or_nan(right):
+                        raise ValueError(
+                            f"Game '{gameid}' has conflicting context '{column}'."
+                        )
+                    out[f"context_{column}"] = _finite_or_nan(left)
+                else:
+                    out[f"delta_{column}"] = _finite_or_nan(left) - _finite_or_nan(
+                        right
+                    )
             else:
                 values = sorted(
                     str(value) for value in (left, right) if pd.notna(value)
@@ -80,6 +90,15 @@ def build_game_level_outcome_features(
                 "league": first.get("league"),
                 "season": first.get("season"),
                 "patch": first.get("patch"),
+                "split": first.get("split"),
+                "playoffs": first.get("playoffs"),
+                "league_region": first.get("league_region"),
+                "league_tier": first.get("league_tier"),
+                "strength_pool": first.get("strength_pool"),
+                "best_of": first.get("best_of"),
+                "is_bo1": first.get("is_bo1"),
+                "is_bo3": first.get("is_bo3"),
+                "is_bo5": first.get("is_bo5"),
                 "canonical_teamid": first["teamid"],
                 "canonical_teamname": first["teamname"],
             }

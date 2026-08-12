@@ -9,8 +9,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from lol_bets.data_generation.ingestion.quality import schema_fingerprint
 from oracle_bets_core.pd import pd
+
+from lol_bets.data_generation.ingestion.quality import schema_fingerprint
 
 ROW_ID_COLUMNS = ("gameid", "side", "position")
 ENTITY_ID_COLUMNS = ("playerid", "teamid")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
@@ -17,6 +17,8 @@ from oracle_bets_core.paths import (
     MODEL_REGISTRY_DIR,
     MODELS_DIR,
     OUTCOME_PREDICTION_MODEL_PATH,
+    SERIES_WINNER_MODEL_PATH,
+    SERIES_WINNER_PROBABILITY_CALIBRATOR,
     TOTAL_KILLS_PREDICTION_MODEL_PATH,
     TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR,
     TOTAL_TOWERS_PREDICTION_MODEL_PATH,
@@ -88,10 +90,16 @@ def record_daily_evidence(
     )
     model_ids = {
         target: _record_model(store, scheduled_for, target=target)
-        for target in ("map_win", "gamelength", "total_kills", "total_towers")
+        for target in (
+            "map_win",
+            "series_winner",
+            "gamelength",
+            "total_kills",
+            "total_towers",
+        )
     }
     for row in snapshot_rows:
-        if row.get("market") != "winner":
+        if row.get("market") not in {"winner", "series_winner"}:
             _record_scalar_forecast(
                 store,
                 run_id=run_id,
@@ -125,7 +133,11 @@ def record_daily_evidence(
                 "id": prediction_id,
                 "run_id": run_id,
                 "fixture_id": fixture_id,
-                "model_version_id": model_ids["map_win"],
+                "model_version_id": model_ids[
+                    "series_winner"
+                    if row.get("market") == "series_winner"
+                    else "map_win"
+                ],
                 "selection_id": selection_id,
                 "mode": "prematch",
                 "created_at": _as_utc(row["run_ts"]),
@@ -204,7 +216,7 @@ def record_daily_evidence(
             run_id=run_id,
             fixtures=fixtures,
             schedule=schedule,
-            model_id=model_ids["map_win"],
+            model_id=model_ids["series_winner"],
             actions=market_actions,
             created_at=scheduled_for,
         )
@@ -228,6 +240,10 @@ def _record_typed_market_actions(
 ) -> None:
     fixture_ids = {
         _optional_text(row.get("match_key")): fixtures.get(_fixture_lookup_key(row))
+        for _, row in schedule.iterrows()
+    }
+    fixture_starts = {
+        _optional_text(row.get("match_key")): row.get("start_utc")
         for _, row in schedule.iterrows()
     }
     for action in actions:
@@ -264,7 +280,7 @@ def _record_typed_market_actions(
                         "game_number": action.get("game_number"),
                         "total_line": action.get("total_line"),
                         "selection": action["selection"],
-                        "source": "derived_from_symmetric_map_probability",
+                        "source": "direct_series_winner_v2",
                     },
                 },
             )
@@ -291,6 +307,7 @@ def _record_typed_market_actions(
                         "target": action["target"],
                         "selection": action["selection"],
                         "url": action.get("market_url"),
+                        "resolution_source": action.get("resolution_source"),
                     },
                 },
             )
@@ -335,31 +352,61 @@ def _record_typed_market_actions(
             min(snapshot_ids, key=lambda item: item[1])[0] if snapshot_ids else None
         )
         state = str(action["state"])
-        records.append(
-            (
-                EvidenceTable.PROPOSALS,
-                {
-                    "id": proposal_id,
-                    "run_id": run_id,
-                    "prediction_id": prediction_id,
-                    "market_snapshot_id": worse_snapshot_id,
-                    "created_at": created_at,
-                    "state": state,
-                    "rejection_reason": action.get("reason"),
-                    "ruleset_version": "paper-gates-v1",
-                    "strategy": "quarter_kelly"
-                    if state == "paper_actionable"
-                    else None,
-                    "stake_units": str(action.get("stake_units") or 0.0),
-                    "idempotency_key": proposal_id,
-                    "payload_json": {
-                        "odds": action.get("decimal_odds"),
-                        "conservative_edge": action.get("conservative_edge"),
-                        "read_only": True,
+        if state == "paper_actionable":
+            records.append(
+                (
+                    EvidenceTable.PROPOSALS,
+                    {
+                        "id": proposal_id,
+                        "run_id": run_id,
+                        "prediction_id": prediction_id,
+                        "market_snapshot_id": worse_snapshot_id,
+                        "created_at": created_at,
+                        "state": state,
+                        "rejection_reason": action.get("reason"),
+                        "ruleset_version": "independent-winner-v2",
+                        "strategy": "flat_one_unit_series_favorite",
+                        "stake_units": "1.0",
+                        "idempotency_key": proposal_id,
+                        "payload_json": {
+                            "odds": action.get("decimal_odds"),
+                            "conservative_edge": action.get("conservative_edge"),
+                            "strategy_version": "independent-winner-v2",
+                            "rating_baseline_probability": action.get(
+                                "rating_baseline_probability"
+                            ),
+                            "full_model_probability": action.get(
+                                "full_model_probability"
+                            ),
+                            "roster_ready": action.get("roster_ready") is True,
+                            "uncertainty_available": (
+                                action.get("uncertainty_available") is True
+                            ),
+                            "attribution_stable": (
+                                action.get("attribution_stable") is True
+                            ),
+                            "is_model_favorite": (
+                                action.get("is_model_favorite") is True
+                            ),
+                            "counterfactual_quarter_kelly_units": action.get(
+                                "counterfactual_quarter_kelly_units"
+                            ),
+                            "expires_at": (
+                                _as_utc(
+                                    action.get("start_time")
+                                    or fixture_starts.get(
+                                        _optional_text(action.get("fixture_key"))
+                                    )
+                                )
+                                - timedelta(hours=24)
+                            ).isoformat(),
+                            "read_only": True,
+                            "resolution_source": action.get("resolution_source"),
+                            "provider_selection_id": action.get("token_id"),
+                        },
                     },
-                },
+                )
             )
-        )
         # Predictions, candidates, and proposals are the canonical owner-decision
         # graph for this daily run. A same-day rerun may observe different books;
         # retain the original decision terms while appending its new snapshots.
@@ -862,6 +909,10 @@ def _record_model(
         checksum = _path_hash(OUTCOME_PREDICTION_MODEL_PATH)
     target_paths = {
         "map_win": (OUTCOME_PREDICTION_MODEL_PATH, None),
+        "series_winner": (
+            SERIES_WINNER_MODEL_PATH,
+            SERIES_WINNER_PROBABILITY_CALIBRATOR,
+        ),
         "gamelength": (
             GAMELENGTH_PREDICTION_MODEL_PATH,
             GAMELENGTH_PREDICTION_PROP_CALIBRATOR,

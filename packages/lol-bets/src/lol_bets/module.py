@@ -14,11 +14,21 @@ from oracle_bets_core.paths import (
     GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
     GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY,
     LEAGUE_ELO,
+    NEXT_MAP_WINNER_FEATURE_PIPELINE,
+    NEXT_MAP_WINNER_MATCHUP_SCHEMA,
+    NEXT_MAP_WINNER_MODEL_PATH,
+    NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR,
+    NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY,
     OUTCOME_PREDICTION_FEATURE_PIPELINE,
     OUTCOME_PREDICTION_MATCHUP_SCHEMA,
     OUTCOME_PREDICTION_MODEL_PATH,
     OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR,
     OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY,
+    SERIES_WINNER_FEATURE_PIPELINE,
+    SERIES_WINNER_MATCHUP_SCHEMA,
+    SERIES_WINNER_MODEL_PATH,
+    SERIES_WINNER_PROBABILITY_CALIBRATOR,
+    SERIES_WINNER_PROBABILITY_UNCERTAINTY,
     TEAM_LEAGUES_MAPPING,
     TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE,
     TOTAL_KILLS_PREDICTION_MODEL_PATH,
@@ -43,6 +53,15 @@ LEAGUE_ELO_COLUMNS = {
     "strength_pool_cross_games",
 }
 FLATTENED_TEAM_COLUMNS = {"teamname", "teamid", "gameid", "date", "league"}
+FLATTENED_TEAM_COLUMNS |= {
+    "elo",
+    "glicko2_mu",
+    "glicko2_phi",
+    "pl_mu",
+    "pl_sigma",
+    "trueskill_mu",
+    "trueskill_sigma",
+}
 FLATTENED_PLAYER_COLUMNS = {
     "teamname",
     "playername",
@@ -174,6 +193,18 @@ def _check_calibrator_schema(
     return file_check
 
 
+def _check_winner_contract() -> ArtifactCheck:
+    from lol_bets.operations.winner_validation import validate_winner_model
+
+    report = validate_winner_model()
+    return ArtifactCheck(
+        name="direct series winner contract",
+        path=str(SERIES_WINNER_MODEL_PATH),
+        ok=report.ok,
+        reason="" if report.ok else ", ".join(report.failures),
+    )
+
+
 @dataclass(frozen=True)
 class LoLBetsModule:
     """LoL prediction module metadata and health checks."""
@@ -207,6 +238,58 @@ class LoLBetsModule:
             _check_calibrator_schema(
                 "outcome probability uncertainty",
                 OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY,
+                required_attrs={
+                    "bins",
+                    "confidence",
+                    "fit_split",
+                    "interval",
+                    "sample_count",
+                    "version",
+                },
+                expected_version=1,
+            ),
+            _check_file("direct series winner model", SERIES_WINNER_MODEL_PATH),
+            _check_file(
+                "direct series winner feature pipeline", SERIES_WINNER_FEATURE_PIPELINE
+            ),
+            _check_file(
+                "direct series winner matchup schema", SERIES_WINNER_MATCHUP_SCHEMA
+            ),
+            _check_calibrator_schema(
+                "direct series winner calibrator",
+                SERIES_WINNER_PROBABILITY_CALIBRATOR,
+                required_attrs={"global_calibrator", "segments", "version"},
+            ),
+            _check_calibrator_schema(
+                "direct series winner uncertainty",
+                SERIES_WINNER_PROBABILITY_UNCERTAINTY,
+                required_attrs={
+                    "bins",
+                    "confidence",
+                    "fit_split",
+                    "interval",
+                    "sample_count",
+                    "version",
+                },
+                expected_version=1,
+            ),
+            _check_winner_contract(),
+            _check_file("experimental next-map model", NEXT_MAP_WINNER_MODEL_PATH),
+            _check_file(
+                "experimental next-map feature pipeline",
+                NEXT_MAP_WINNER_FEATURE_PIPELINE,
+            ),
+            _check_file(
+                "experimental next-map matchup schema", NEXT_MAP_WINNER_MATCHUP_SCHEMA
+            ),
+            _check_calibrator_schema(
+                "experimental next-map calibrator",
+                NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR,
+                required_attrs={"global_calibrator", "segments", "version"},
+            ),
+            _check_calibrator_schema(
+                "experimental next-map uncertainty",
+                NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY,
                 required_attrs={
                     "bins",
                     "confidence",

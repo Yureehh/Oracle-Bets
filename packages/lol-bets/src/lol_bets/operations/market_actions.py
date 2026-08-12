@@ -29,6 +29,7 @@ from oracle_bets_core.pd import pd
 from lol_bets.inference.team_resolver import team_name_variants
 
 _EXPECTED_WINNER_ROWS = 2
+LOL_RESOLUTION_RULE_TERMS = ("liquipedia leagueoflegends",)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -50,9 +51,15 @@ class PendingMarketAction:
     selection: str
     probability: float
     probability_lower: float
+    rating_baseline_probability: float
+    full_model_probability: float
+    is_model_favorite: bool
+    attribution_stable: bool
+    start_time: datetime
     market_id: str
     token_id: str
     market_url: str
+    resolution_source: str
     roster_ready: bool
     uncertainty_available: bool
     warnings: tuple[str, ...]
@@ -97,7 +104,7 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
     market_by_id = {market.market_id: market for market in all_markets}
     winner_rows_by_fixture: dict[str, list[dict[str, Any]]] = {}
     for row in snapshot_rows:
-        if row.get("market") != "winner":
+        if row.get("market") != "series_winner":
             continue
         source_key = str(row.get("source_match_key") or "").strip()
         winner_rows_by_fixture.setdefault(source_key, []).append(row)
@@ -111,6 +118,7 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
         if len(winner_rows) != _EXPECTED_WINNER_ROWS:
             continue
         requests = _market_requests(fixture_row, winner_rows, fixture_markets)
+        favorite_probability = max(float(row["model_value"]) for row in winner_rows)
         for fixture, probabilities in requests:
             selection = select_best_market(fixture, list(fixture_markets))
             review = {
@@ -128,6 +136,7 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
                 )
                 continue
             market = market_by_id[selection.selected_market_id]
+            review["resolution_source"] = market.resolution_source
             assessment = next(
                 item
                 for item in selection.assessments
@@ -159,9 +168,31 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
                         selection=selection_id,
                         probability=point,
                         probability_lower=lower,
+                        rating_baseline_probability=float(
+                            next(
+                                row.get("rating_baseline_probability", 0.5)
+                                for row in winner_rows
+                                if str(row["selection"]) == selection_id
+                            )
+                            or 0.5
+                        ),
+                        full_model_probability=float(
+                            next(
+                                row.get("full_model_probability", point)
+                                for row in winner_rows
+                                if str(row["selection"]) == selection_id
+                            )
+                            or point
+                        ),
+                        is_model_favorite=point == favorite_probability,
+                        attribution_stable=all(
+                            row.get("attribution_stable") is True for row in winner_rows
+                        ),
+                        start_time=fixture.start_time,
                         market_id=market.market_id,
                         token_id=token_id,
                         market_url=market.url,
+                        resolution_source=market.resolution_source,
                         roster_ready=all(
                             row.get("roster_ready") is True for row in winner_rows
                         ),
@@ -225,6 +256,11 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
                 uncertainty_available=item.uncertainty_available,
                 market_supported=True,
                 quote_valid=fill.complete,
+                is_model_favorite=item.is_model_favorite,
+                hours_to_start=(item.start_time - clock()).total_seconds() / 3600,
+                market_probability=(1.0 / odds if odds > 1.0 else None),
+                rating_baseline_probability=item.rating_baseline_probability,
+                attribution_stable=item.attribution_stable,
             )
         )
         decisions.append(decision)
@@ -235,6 +271,9 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
                 "reason": decision.reason,
                 "conservative_edge": decision.conservative_edge,
                 "stake_units": decision.stake_units,
+                "counterfactual_quarter_kelly_units": (
+                    decision.counterfactual_quarter_kelly_units
+                ),
                 "decimal_odds": odds,
                 "requested_shares": str(fill.requested_shares),
                 "hypothetical_cost": str(fill.total_cost),
@@ -264,6 +303,7 @@ def _market_requests(
     winner_rows: list[dict[str, Any]],
     markets: Sequence[PolymarketMarket],
 ) -> list[tuple[MarketFixture, dict[str, tuple[float, float]]]]:
+    del markets
     team_a = str(fixture_row.get("team_a") or "").strip()
     team_b = str(fixture_row.get("team_b") or "").strip()
     fixture_key = str(fixture_row.get("match_key") or f"{team_a}:{team_b}")
@@ -280,13 +320,6 @@ def _market_requests(
         )
         for row in winner_rows
     }
-    distribution = winner_rows[0].get("paired_distribution") or {}
-    series = distribution.get("series") or {}
-    series_probabilities = {
-        name: (float(values["point"]), float(values.get("lower", values["point"])))
-        for name, values in series.items()
-        if name in {team_a, team_b}
-    }
     common: dict[str, Any] = {
         "fixture_id": fixture_key,
         "competition_names": (str(fixture_row.get("league") or ""),),
@@ -296,52 +329,14 @@ def _market_requests(
         "team_b_names": team_name_variants(team_b),
         "start_time": start,
         "best_of": best_of,
+        "resolution_rule_terms": LOL_RESOLUTION_RULE_TERMS,
     }
-    requests: list[tuple[MarketFixture, dict[str, tuple[float, float]]]] = [
-        (
-            MarketFixture(
-                **common,
-                market_type=SupportedMarketType.MAP_WINNER,
-                game_number=game_number,
-            ),
-            team_probabilities,
-        )
-        for game_number in range(1, best_of + 1)
-    ]
-    requests.append(
+    return [
         (
             MarketFixture(**common, market_type=SupportedMarketType.SERIES_WINNER),
-            series_probabilities,
+            team_probabilities,
         )
-    )
-    totals = distribution.get("total_maps_probability_ranges") or {}
-    total_lines = sorted(
-        {
-            market.total_line
-            for market in markets
-            if market.sports_market_type == "totals" and market.total_line is not None
-        }
-    )
-    for line in total_lines:
-        included = [values for maps, values in totals.items() if int(maps) > line]
-        over = sum(float(values["point"]) for values in included)
-        over_lower = max(0.0, sum(float(values["lower"]) for values in included))
-        over_upper = min(1.0, sum(float(values["upper"]) for values in included))
-        probabilities = {
-            "over": (over, over_lower),
-            "under": (1.0 - over, 1.0 - over_upper),
-        }
-        requests.append(
-            (
-                MarketFixture(
-                    **common,
-                    market_type=SupportedMarketType.SERIES_TOTAL_MAPS,
-                    total_line=line,
-                ),
-                probabilities,
-            )
-        )
-    return requests
+    ]
 
 
 def _observation_payload(observation: Any) -> dict[str, Any]:

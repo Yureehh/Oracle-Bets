@@ -1,4 +1,4 @@
-"""Deterministic paper-action gates and correlated exposure selection."""
+"""Deterministic independent winner-only paper-action gates."""
 
 from __future__ import annotations
 
@@ -9,9 +9,13 @@ from oracle_bets_core.betting import expected_edge, kelly_fraction
 from oracle_bets_core.league_selection import actionable_leagues
 
 MINIMUM_CONSERVATIVE_EDGE = 0.05
+MINIMUM_FAVORITE_PROBABILITY = 0.525
+MINIMUM_ENTRY_HOURS = 24.0
+MAXIMUM_ENTRY_HOURS = 48.0
+MAXIMUM_MODEL_MARKET_DISAGREEMENT = 0.20
+RATING_BASELINE_CONTRADICTION = 0.45
 KELLY_MULTIPLIER = 0.25
 MAXIMUM_POSITION_UNITS = 1.0
-MAXIMUM_DAILY_UNITS = 3.0
 RESEARCH_PROP_UNITS = 0.25
 DEFAULT_BANKROLL_UNITS = 100.0
 RESEARCH_PROP_TARGETS = frozenset({"gamelength", "total_kills", "total_towers"})
@@ -42,6 +46,11 @@ class ActionGateInput:
     quote_valid: bool
     evidence_status: str = "meets_basic_sanity"
     bankroll_units: float = DEFAULT_BANKROLL_UNITS
+    is_model_favorite: bool = True
+    hours_to_start: float = 36.0
+    market_probability: float | None = None
+    rating_baseline_probability: float = 0.5
+    attribution_stable: bool = True
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,7 @@ class ActionGateDecision:
     reason: str | None
     conservative_edge: float | None
     stake_units: float
+    counterfactual_quarter_kelly_units: float = 0.0
 
 
 def apply_action_gate(value: ActionGateInput) -> ActionGateDecision:
@@ -64,14 +74,6 @@ def apply_action_gate(value: ActionGateInput) -> ActionGateDecision:
         expected_edge(value.decimal_odds, value.probability_lower),
         12,
     )
-    if value.target in RESEARCH_PROP_TARGETS:
-        return _decision(
-            value,
-            ActionState.RESEARCH_ONLY,
-            "weak_prop_evidence",
-            edge=conservative_edge,
-            stake=RESEARCH_PROP_UNITS,
-        )
     if conservative_edge < MINIMUM_CONSERVATIVE_EDGE:
         return _decision(
             value,
@@ -79,7 +81,7 @@ def apply_action_gate(value: ActionGateInput) -> ActionGateDecision:
             "insufficient_conservative_edge",
             edge=conservative_edge,
         )
-    stake = min(
+    counterfactual = min(
         MAXIMUM_POSITION_UNITS,
         value.bankroll_units
         * kelly_fraction(
@@ -93,18 +95,15 @@ def apply_action_gate(value: ActionGateInput) -> ActionGateDecision:
         ActionState.PAPER_ACTIONABLE,
         None,
         edge=conservative_edge,
-        stake=stake,
+        stake=1.0,
+        counterfactual=counterfactual,
     )
 
 
 def select_fixture_actions(
     decisions: list[ActionGateDecision] | tuple[ActionGateDecision, ...],
-    *,
-    maximum_daily_units: float = MAXIMUM_DAILY_UNITS,
 ) -> tuple[ActionGateDecision, ...]:
-    """Keep one highest-edge action per fixture under the daily exposure cap."""
-    if maximum_daily_units <= 0:
-        raise ValueError("maximum_daily_units must be positive")
+    """Keep at most one flat-unit winner action per fixture, without a portfolio claim."""
     best_by_fixture: dict[str, ActionGateDecision] = {}
     actionable = (
         decision
@@ -118,19 +117,14 @@ def select_fixture_actions(
     ):
         best_by_fixture.setdefault(decision.fixture_id, decision)
 
-    selected: list[ActionGateDecision] = []
-    exposure = 0.0
-    for decision in best_by_fixture.values():
-        if exposure + decision.stake_units > maximum_daily_units:
-            continue
-        selected.append(decision)
-        exposure += decision.stake_units
-    return tuple(selected)
+    return tuple(best_by_fixture.values())
 
 
-def _blocked_reason(value: ActionGateInput) -> str | None:  # noqa: PLR0911
+def _blocked_reason(value: ActionGateInput) -> str | None:  # noqa: PLR0911, PLR0912
     if not value.model_healthy:
         return "model_unhealthy"
+    if value.target != "series_winner":
+        return "winner_only_strategy"
     if value.league not in actionable_leagues():
         return "league_not_actionable"
     if not value.roster_ready:
@@ -143,6 +137,22 @@ def _blocked_reason(value: ActionGateInput) -> str | None:  # noqa: PLR0911
         return "invalid_quote"
     if not 0 <= value.probability_lower <= value.probability <= 1:
         return "invalid_probability"
+    if not value.is_model_favorite:
+        return "selection_not_model_favorite"
+    if value.probability < MINIMUM_FAVORITE_PROBABILITY:
+        return "favorite_probability_below_threshold"
+    if not MINIMUM_ENTRY_HOURS <= value.hours_to_start <= MAXIMUM_ENTRY_HOURS:
+        return "outside_48_to_24_hour_entry_window"
+    if (
+        value.market_probability is not None
+        and abs(value.probability - value.market_probability)
+        >= MAXIMUM_MODEL_MARKET_DISAGREEMENT
+    ):
+        return "model_market_disagreement_quarantine"
+    if value.rating_baseline_probability <= RATING_BASELINE_CONTRADICTION:
+        return "rating_baseline_contradiction"
+    if not value.attribution_stable:
+        return "unstable_feature_attribution"
     if value.bankroll_units <= 0:
         return "invalid_bankroll"
     if (
@@ -160,6 +170,7 @@ def _decision(
     *,
     edge: float | None = None,
     stake: float = 0.0,
+    counterfactual: float = 0.0,
 ) -> ActionGateDecision:
     return ActionGateDecision(
         proposal_id=value.proposal_id,
@@ -168,4 +179,5 @@ def _decision(
         reason=reason,
         conservative_edge=edge,
         stake_units=round(stake, 6),
+        counterfactual_quarter_kelly_units=round(counterfactual, 6),
     )

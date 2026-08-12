@@ -14,7 +14,7 @@ import zipfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import requests
@@ -156,7 +156,7 @@ def refresh_oracle_source(
 
     client = session or requests.Session()
     owns_session = session is None
-    staged: list[tuple[Path, Path, dict[str, object], datetime]] = []
+    staged: list[tuple[Path, Path, dict[str, Any], datetime]] = []
     archives: list[Path] = []
     try:
         export_key = _public_export_key(client)
@@ -331,7 +331,7 @@ def _stage_source_files(
     root: Path,
     archives: Sequence[Path],
     years: Sequence[int],
-) -> list[tuple[Path, Path, dict[str, object], datetime]]:
+) -> list[tuple[Path, Path, dict[str, Any], datetime]]:
     expected = {f"{year}{SOURCE_FILE_SUFFIX}": year for year in years}
     entries: dict[str, tuple[Path, zipfile.ZipInfo]] = {}
     for archive_path in archives:
@@ -347,7 +347,7 @@ def _stage_source_files(
     if missing:
         raise ValueError(f"public Drive export is missing required files: {missing}")
 
-    staged: list[tuple[Path, Path, dict[str, object], datetime]] = []
+    staged: list[tuple[Path, Path, dict[str, Any], datetime]] = []
     try:
         for filename, year in expected.items():
             archive_path, info = entries[filename]
@@ -517,7 +517,11 @@ def inspect_oracle_source(  # noqa: PLR0912
     maximum_match_at = _maximum_match_datetime(current_path) if current else None
     if current and maximum_match_at is None:
         issues.append("current_year_date_missing")
-    elif current and maximum_match_at.year != checked_at.year:
+    elif (
+        current
+        and maximum_match_at is not None
+        and maximum_match_at.year != checked_at.year
+    ):
         issues.append("current_season_rows_missing")
 
     return OracleSourceReadiness(

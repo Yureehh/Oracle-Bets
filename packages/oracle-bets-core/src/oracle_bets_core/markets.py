@@ -447,7 +447,9 @@ def match_market(
     if len(selection_tokens) != _EXPECTED_BINARY_OUTCOMES:
         reasons.append("selection_orientation_unresolved")
     if not market.resolution_source:
-        warnings.append("market_rules_uncertain")
+        reasons.append("resolution_rules_missing")
+    elif not _verified_resolution_source(market.resolution_source):
+        reasons.append("resolution_rules_malformed")
 
     return MarketMatchAssessment(
         fixture_id=fixture.fixture_id,
@@ -493,6 +495,16 @@ def _market_contract_reasons(
     ):
         reasons.append("resolution_rules_mismatch")
     return reasons
+
+
+def _verified_resolution_source(value: str) -> bool:
+    """Accept an explicit provider rule description or a public HTTP(S) source."""
+    normalized = value.strip()
+    if len(normalized) < 8:  # noqa: PLR2004
+        return False
+    if "://" not in normalized:
+        return True
+    return normalized.casefold().startswith(("https://", "http://"))
 
 
 def select_best_market(
