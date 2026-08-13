@@ -322,6 +322,7 @@ def _series_winner_training_tables(
                 f"{row['series_id']} ({first_map})."
             )
         for frame in (team_frame, player_frame):
+            team_ids = _team_ids_for_rows(frame, team_frame)
             # The series winner is priced before Map 1. These columns belong to
             # the separate next-map experiment and must not survive even when a
             # source table happens to contain them.
@@ -334,9 +335,7 @@ def _series_winner_training_tables(
             frame["series_id"] = row["series_id"]
             frame["gameid"] = row["series_id"]
             frame["best_of"] = int(row["best_of"])
-            frame["result"] = (
-                frame["teamid"].astype(str) == str(row["winner_teamid"])
-            ).astype(int)
+            frame["result"] = (team_ids == str(row["winner_teamid"])).astype(int)
         team_frames.append(team_frame)
         player_frames.append(player_frame)
     return _concat_like(team_frames, teams), _concat_like(player_frames, players)
@@ -375,7 +374,7 @@ def _next_map_training_tables(
                 (first_players, player_frames),
             ):
                 frame = base.copy()
-                team_ids = frame["teamid"].astype(str)
+                team_ids = _team_ids_for_rows(frame, first_teams)
                 frame["source_gameid"] = map_ids[0]
                 frame["target_gameid"] = map_ids[index]
                 frame["series_id"] = row["series_id"]
@@ -394,6 +393,24 @@ def _next_map_training_tables(
                 output.append(frame)
             score[target_winner] += 1
     return _concat_like(team_frames, teams), _concat_like(player_frames, players)
+
+
+def _team_ids_for_rows(
+    frame: pd.DataFrame,
+    map_team_rows: pd.DataFrame,
+) -> pd.Series:
+    if "teamid" in frame.columns:
+        return frame["teamid"].astype(str)
+    required = {"side", "teamid"}
+    if "side" not in frame.columns or not required.issubset(map_team_rows.columns):
+        raise RuntimeError("Series player rows cannot be mapped to a team identity.")
+    identities = map_team_rows[["side", "teamid"]].drop_duplicates()
+    if identities["side"].duplicated().any():
+        raise RuntimeError("Map team rows contain conflicting side identities.")
+    team_ids = frame["side"].map(identities.set_index("side")["teamid"])
+    if team_ids.isna().any():
+        raise RuntimeError("Series player rows contain an unmapped side identity.")
+    return team_ids.astype(str)
 
 
 def _concat_like(frames: list[pd.DataFrame], source: pd.DataFrame) -> pd.DataFrame:

@@ -179,6 +179,38 @@ def test_series_winner_tables_remove_all_live_series_state() -> None:
     assert set(winner_teams["best_of"]) == {3}
 
 
+def test_series_tables_label_players_without_exported_team_ids() -> None:
+    rows = _series_rows(
+        prefix="player-side-identity",
+        winners=["a", "b", "a"],
+        start=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    teams = pd.DataFrame(rows)
+    teams["side"] = ["Blue", "Red"] * 3
+    players = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    **{column: [row[column]] * 5 for column in teams.columns},
+                    "position": ["top", "jng", "mid", "bot", "sup"],
+                }
+            )
+            for row in teams.to_dict(orient="records")
+        ],
+        ignore_index=True,
+    ).drop(columns=["teamid", "teamname"])
+    manifest = reconstruct_series(teams).series
+
+    _, winner_players = _series_winner_training_tables(manifest, teams, players)
+    _, next_players = _next_map_training_tables(manifest, teams, players)
+
+    assert winner_players.groupby("side")["result"].first().to_dict() == {
+        "Blue": 1,
+        "Red": 0,
+    }
+    assert set(next_players["result"]) == {0, 1}
+
+
 def test_next_map_tables_retain_only_explicit_score_state() -> None:
     rows = _series_rows(
         prefix="reactive",
