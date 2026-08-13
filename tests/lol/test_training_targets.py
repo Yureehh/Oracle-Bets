@@ -167,8 +167,8 @@ def test_training_stages_shared_rating_artifacts(tmp_path, monkeypatch):
     league_elo.write_bytes(b"elo")
     staging = tmp_path / "staging"
     staging.mkdir()
-    monkeypatch.setattr(training, "TEAM_LEAGUES_MAPPING", mapping)
-    monkeypatch.setattr(training, "LEAGUE_ELO", league_elo)
+    monkeypatch.setattr(training, "RATING_TEAM_LEAGUES_MAPPING", mapping)
+    monkeypatch.setattr(training, "RATING_LEAGUE_ELO", league_elo)
 
     training._stage_shared_inference_artifacts(staging)
 

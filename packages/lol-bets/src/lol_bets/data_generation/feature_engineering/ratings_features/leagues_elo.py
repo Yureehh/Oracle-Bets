@@ -24,9 +24,9 @@ from oracle_bets_core.league_taxonomy import (
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
-    LEAGUE_ELO,
     LEAGUES_ELO_HYPERPARAMETERS,
-    TEAM_LEAGUES_MAPPING,
+    RATING_LEAGUE_ELO,
+    RATING_TEAM_LEAGUES_MAPPING,
 )
 from oracle_bets_core.pd import pd
 from sklearn.metrics import log_loss
@@ -876,7 +876,9 @@ def store_belonging_leagues(
         ),
     )
     safe_store_df_as_parquet(
-        belonging_league_df, TEAM_LEAGUES_MAPPING, [logger, data_pipeline_logger]
+        belonging_league_df,
+        RATING_TEAM_LEAGUES_MAPPING,
+        [logger, data_pipeline_logger],
     )
 
 
@@ -921,7 +923,9 @@ def store_leagues_elo(
         .sort_values(by="elo", ascending=False, kind="mergesort")
         .reset_index(drop=True)
     )
-    safe_store_df_as_parquet(league_elo_df, LEAGUE_ELO, [logger, data_pipeline_logger])
+    safe_store_df_as_parquet(
+        league_elo_df, RATING_LEAGUE_ELO, [logger, data_pipeline_logger]
+    )
     return league_elo_df
 
 

@@ -22,7 +22,7 @@ from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
     ENTITY_PL_HYPERPARAMETERS,
-    LEAGUE_ELO,
+    RATING_LEAGUE_ELO,
 )
 from oracle_bets_core.pd import pd
 from sklearn.metrics import log_loss
@@ -830,8 +830,8 @@ def calculate_plackett_luce(
     # 2. Load league Elo if not provided
     if league_elo_dict is None:
         league_elo_dict = {}
-        if LEAGUE_ELO.exists():
-            league_elo_df = pd.read_parquet(LEAGUE_ELO)
+        if RATING_LEAGUE_ELO.exists():
+            league_elo_df = pd.read_parquet(RATING_LEAGUE_ELO)
             league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 
     # 3. Attempt to find or tune hyperparameters

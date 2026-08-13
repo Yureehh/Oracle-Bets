@@ -138,6 +138,11 @@ SERIES_WINNER_PLAYER_DATA: Final = (
 )
 NEXT_MAP_TEAM_DATA: Final = PROCESSED_SERIES_DIR / "next_map_teams.parquet"
 NEXT_MAP_PLAYER_DATA: Final = PROCESSED_SERIES_DIR / "next_map_players.parquet"
+PROCESSED_RATINGS_DIR: Final = PROCESSED_DIR / "ratings"
+RATING_LEAGUE_ELO: Final = PROCESSED_RATINGS_DIR / "league_elo.parquet"
+RATING_TEAM_LEAGUES_MAPPING: Final = (
+    PROCESSED_RATINGS_DIR / "team_league_mapping.parquet"
+)
 
 TRAINING_TEAM_CONFIG: Final = TRAINING_AND_INPUT_COLS_DIR / "training_team_config.json"
 TRAINING_COMPACT_TEAM_CONFIG: Final = (
@@ -157,7 +162,7 @@ FLATTENED_PLAYER_CONFIG: Final = (
 )
 
 # --------------------------------------------------------------------------- #
-# Model outputs (scoped under models/lol by default)
+# Promoted serving artifacts (scoped under models/lol by default)
 # --------------------------------------------------------------------------- #
 LEAGUE_ELO: Final = MODELS_DIR / "league_elo.parquet"
 TEAM_LEAGUES_MAPPING: Final = MODELS_DIR / "team_league_mapping.parquet"

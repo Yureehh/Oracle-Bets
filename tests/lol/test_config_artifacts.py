@@ -239,8 +239,8 @@ def test_reviewed_rating_hyperparameters_are_tracked_inputs():
 
 
 def test_league_strength_artifacts_have_current_schema_when_present():
-    league_elo = ROOT / "models/lol/league_elo.parquet"
-    team_mapping = ROOT / "models/lol/team_league_mapping.parquet"
+    league_elo = ROOT / "data/lol/processed/ratings/league_elo.parquet"
+    team_mapping = ROOT / "data/lol/processed/ratings/team_league_mapping.parquet"
     if not league_elo.exists() or not team_mapping.exists():
         pytest.skip("league strength artifacts are not available")
 

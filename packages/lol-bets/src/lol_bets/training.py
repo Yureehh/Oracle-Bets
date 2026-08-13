@@ -33,18 +33,18 @@ from oracle_bets_core.io_utils import load_model, load_training_data, store_mode
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
-    LEAGUE_ELO,
     MODELS_DIR,
     NEXT_MAP_PLAYER_DATA,
     NEXT_MAP_TEAM_DATA,
     RATING_HYPERPARAMETER_PROVENANCE,
+    RATING_LEAGUE_ELO,
+    RATING_TEAM_LEAGUES_MAPPING,
     RAW_DATA,
     REPORTS_DIR,
     SERIES_MANIFEST,
     SERIES_REJECTIONS,
     SERIES_WINNER_PLAYER_DATA,
     SERIES_WINNER_TEAM_DATA,
-    TEAM_LEAGUES_MAPPING,
     TRAINING_PLAYER_DATA,
     TRAINING_TEAM_DATA,
     TUNED_LIGHTGBM_HYPERPARAMETERS,
@@ -1157,7 +1157,7 @@ def _register_training_candidate(
 
 def _stage_shared_inference_artifacts(staging_root: Path) -> None:
     """Include rating lookup tables required by registry-based inference."""
-    for source in (TEAM_LEAGUES_MAPPING, LEAGUE_ELO):
+    for source in (RATING_TEAM_LEAGUES_MAPPING, RATING_LEAGUE_ELO):
         if not source.is_file():
             raise RuntimeError(f"Required inference artifact is missing: {source}")
         shutil.copyfile(source, staging_root / source.name)
