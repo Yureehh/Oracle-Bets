@@ -27,6 +27,10 @@ from oracle_bets_core.pd import pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
+from lol_bets.data_generation.feature_engineering.ratings_features import (
+    freeze_same_date_rating_inputs,
+)
+
 try:
     _numba_njit: Any = importlib.import_module("numba").njit
 except Exception:
@@ -817,6 +821,30 @@ def run_elo_computation(
             initial_elo_adjustment_factor=initial_elo_adjustment_factor,
             position_reset_factor=position_reset_factor,
         )
+
+    df = freeze_same_date_rating_inputs(
+        df, entity=entity.lower(), rating_columns=("elo_before",)
+    )
+    for _, game_grp in df.groupby(["date", "gameid"], sort=False):
+        blue_rows = game_grp[game_grp["side"] == "Blue"]
+        red_rows = game_grp[game_grp["side"] == "Red"]
+
+        def _rating_total(rows: pd.DataFrame) -> float:
+            ratings = rows["elo_before"]
+            if entity.lower() != "player":
+                return float(ratings.sum())
+            weights = (
+                rows["position"]
+                .str.lower()
+                .map(lambda value: POSITION_WEIGHTS.get(value, DEFAULT_POSITION_WEIGHT))
+            )
+            return float((ratings * weights).sum() / weights.sum() * len(rows))
+
+        blue_expected = expected_outcome(
+            _rating_total(blue_rows), _rating_total(red_rows), elo_divisor
+        )
+        df.loc[blue_rows.index, "elo_win_likelihood"] = blue_expected
+        df.loc[red_rows.index, "elo_win_likelihood"] = 1.0 - blue_expected
 
     return df
 

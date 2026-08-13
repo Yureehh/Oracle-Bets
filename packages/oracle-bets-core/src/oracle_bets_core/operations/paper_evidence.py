@@ -118,7 +118,9 @@ def paper_rows(
             row[destination] = json.loads(raw) if raw else None
         model_target = row.pop("model_target")
         row["target"] = str(
-            (row.get("prediction_payload") or {}).get("target") or model_target
+            (row.get("payload") or {}).get("target")
+            or (row.get("prediction_payload") or {}).get("target")
+            or model_target
         )
         if target and row["target"] != target:
             continue
@@ -162,6 +164,32 @@ def count_open_positions(store: EvidenceStore) -> int:
             """
         ).fetchone()
     return int(row[0])
+
+
+def daily_position_exposure(
+    store: EvidenceStore,
+    *,
+    at: datetime | None = None,
+) -> float:
+    """Return paper stake opened on one UTC day, including later settlements."""
+    if not store.path.is_file():
+        return 0.0
+    current = at or datetime.now(UTC)
+    start = current.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    with store.connection(read_only=True) as conn:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(CAST(stake_units AS REAL)), 0.0)
+            FROM paper_positions
+            WHERE opened_at >= ? AND opened_at < ?
+            """,
+            (
+                start.isoformat().replace("+00:00", "Z"),
+                end.isoformat().replace("+00:00", "Z"),
+            ),
+        ).fetchone()
+    return float(row[0])
 
 
 def quote_prop(
@@ -436,8 +464,10 @@ def requote_paper(
     fill = confirmed_executable_fill(observations)
     odds = float(fill.decimal_odds or 0.0)
     payload = row.get("payload") or {}
-    probability = float(row["probability_point"])
-    lower = float(row.get("probability_lower") or probability)
+    probability = float(payload.get("probability", row["probability_point"]))
+    lower = float(
+        payload.get("probability_lower", row.get("probability_lower") or probability)
+    )
     start = datetime.fromisoformat(str(row["start_time"]))
     if start.tzinfo is None:
         start = start.replace(tzinfo=UTC)

@@ -9,5 +9,7 @@ LoL feature creation.
 Example:
 
 ```python
-from lol_bets.data_generation.feature_engineering.features_generator import FeatureGenerator
+from lol_bets.data_generation.feature_engineering.features_generator import (
+    FeatureGenerator,
+)
 ```

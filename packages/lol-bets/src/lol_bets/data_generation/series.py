@@ -9,9 +9,9 @@ from datetime import timedelta
 from typing import Any
 
 from oracle_bets_core.paths import (
+    INTERIM_TEAM_DATA,
     NEXT_MAP_PLAYER_DATA,
     NEXT_MAP_TEAM_DATA,
-    RAW_DATA,
     SERIES_MANIFEST,
     SERIES_REJECTIONS,
     SERIES_WINNER_PLAYER_DATA,
@@ -26,7 +26,6 @@ from lol_bets.data_generation.ingestion.quality import normalize_result
 MAX_MAP_GAP = timedelta(hours=6)
 MIN_BO1_PHASE_SERIES = 20
 MIN_BO1_PHASE_RATIO = 0.95
-TEAM_POSITION = "team"
 TEAM_ROWS_PER_MAP = 2
 PLAYER_ROWS_PER_MAP = 10
 MIN_MULTI_MAP_SERIES = 2
@@ -124,10 +123,7 @@ def reconstruct_series(team_rows: pd.DataFrame) -> SeriesBuildResult:
 
 def build_series_artifacts() -> dict[str, Any]:
     """Build series manifests plus Map-1-frozen supervised tables."""
-    raw = pd.read_parquet(RAW_DATA)
-    if "position" in raw.columns:
-        raw = raw.loc[raw["position"].astype(str).str.casefold() == TEAM_POSITION]
-    result = reconstruct_series(raw)
+    result = reconstruct_series(pd.read_parquet(INTERIM_TEAM_DATA))
     team = pd.read_parquet(TRAINING_TEAM_DATA)
     players = pd.read_parquet(TRAINING_PLAYER_DATA)
     series_team, series_players = _series_winner_training_tables(
@@ -164,7 +160,7 @@ def _map_records(team_rows: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, 
     records: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     for gameid, raw_rows in source.groupby("gameid", dropna=False, sort=False):
-        rows = raw_rows.drop_duplicates(subset=["teamid"], keep="last")
+        rows = raw_rows
         ids = tuple(sorted(rows["teamid"].dropna().astype(str).unique()))
         valid = (
             len(rows) == TEAM_ROWS_PER_MAP
@@ -249,6 +245,13 @@ def _classify_candidate(
     else:
         return None, "incomplete_or_ambiguous_series"
 
+    wins_required = 1 if best_of == 1 else (best_of // 2) + 1
+    running = dict.fromkeys(candidate["team_pair"], 0)
+    for row in maps[:-1]:
+        running[row["winner_teamid"]] += 1
+        if running[row["winner_teamid"]] >= wins_required:
+            return None, "map_after_series_clinch"
+
     source_ids = [str(row["gameid"]) for row in maps]
     identity = "|".join(
         [
@@ -314,7 +317,10 @@ def _series_winner_training_tables(
             len(team_frame) != TEAM_ROWS_PER_MAP
             or len(player_frame) != PLAYER_ROWS_PER_MAP
         ):
-            continue
+            raise RuntimeError(
+                "Accepted series is missing its complete pre-Map-1 feature rows: "
+                f"{row['series_id']} ({first_map})."
+            )
         for frame in (team_frame, player_frame):
             # The series winner is priced before Map 1. These columns belong to
             # the separate next-map experiment and must not survive even when a
@@ -354,7 +360,10 @@ def _next_map_training_tables(
             len(first_teams) != TEAM_ROWS_PER_MAP
             or len(first_players) != PLAYER_ROWS_PER_MAP
         ):
-            continue
+            raise RuntimeError(
+                "Accepted series is missing its complete pre-Map-1 feature rows: "
+                f"{row['series_id']} ({map_ids[0]})."
+            )
         score = {str(row["team_a_id"]): 0, str(row["team_b_id"]): 0}
         score[str(winners[0])] += 1
         for index in range(1, len(map_ids)):

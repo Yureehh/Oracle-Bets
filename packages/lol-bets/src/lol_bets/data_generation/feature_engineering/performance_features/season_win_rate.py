@@ -68,6 +68,10 @@ def compute_ema_season(df: pd.DataFrame, identity: str) -> pd.DataFrame:
         lambda x: x.ewm(halflife=HALF_LIFE, adjust=True, ignore_na=True).mean()
     )
     ema_before = ema_after.groupby([df[identity], df["season"]], sort=False).shift()
+    day = pd.to_datetime(df["date"], errors="raise").dt.normalize()
+    ema_before = ema_before.groupby(
+        [df[identity], df["season"], day], sort=False
+    ).transform(lambda values: values.iloc[0])
     df["ema_season_win_rate_before"] = ema_before.fillna(0.5)  # neutral prior
     df["ema_season_win_rate_after"] = ema_after
 
@@ -77,9 +81,10 @@ def compute_ema_season(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     games_after = g_ones.transform(
         lambda x: x.ewm(halflife=HALF_LIFE, adjust=True).sum()
     )
+    games_before = games_after.groupby([df[identity], df["season"]], sort=False).shift()
     games_before = (
-        games_after.groupby([df[identity], df["season"]], sort=False)
-        .shift()
+        games_before.groupby([df[identity], df["season"], day], sort=False)
+        .transform(lambda values: values.iloc[0])
         .fillna(0.0)
     )
 

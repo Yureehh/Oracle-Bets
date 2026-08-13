@@ -80,7 +80,7 @@ def test_scalar_props_are_shadow_only_and_never_actionable():
     assert decision.stake_units == 0
 
 
-def test_only_largest_edge_per_fixture_survives_without_portfolio_cap_claim():
+def test_only_largest_edge_per_fixture_survives_with_daily_exposure_cap():
     decisions = [
         _gate(proposal_id="a", fixture_id="one", probability_lower=0.60),
         _gate(
@@ -100,5 +100,33 @@ def test_only_largest_edge_per_fixture_survives_without_portfolio_cap_claim():
 
     selected = select_fixture_actions(decisions)
 
-    assert [item.proposal_id for item in selected] == ["b", "c", "d", "e"]
+    assert [item.proposal_id for item in selected] == ["b", "c", "d"]
     assert all(item.stake_units == 1 for item in selected)
+
+
+def test_daily_exposure_cap_includes_existing_paper_positions():
+    decisions = [
+        _gate(
+            proposal_id="a",
+            fixture_id="one",
+            probability=0.70,
+            probability_lower=0.65,
+        ),
+        _gate(
+            proposal_id="b",
+            fixture_id="two",
+            probability=0.70,
+            probability_lower=0.64,
+        ),
+    ]
+
+    selected = select_fixture_actions(decisions, existing_exposure_units=2.0)
+
+    assert [item.proposal_id for item in selected] == ["a"]
+
+
+def test_short_odds_below_one_point_five_are_blocked():
+    decision = _gate(decimal_odds=1.49, probability=0.8, probability_lower=0.75)
+
+    assert decision.state is ActionState.BLOCKED
+    assert decision.reason == "odds_below_1.50"

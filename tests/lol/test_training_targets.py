@@ -1,5 +1,7 @@
 import json
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from lol_bets import training
 from lol_bets.training import parse_training_targets, validate_training_tables
@@ -61,6 +63,21 @@ def test_routine_training_defaults_to_reviewed_compact_contract():
     args = build_parser().parse_args(["lol", "train"])
 
     assert args.feature_set == "compact"
+
+
+def test_winner_v2_targets_always_use_full_feature_contract():
+    configs = {config.target_name: config for config in training.ALL_MODEL_CONFIGS}
+
+    assert (
+        training._feature_set_for_config(configs["series_winner"], "compact") == "full"
+    )
+    assert (
+        training._feature_set_for_config(configs["next_map_winner"], "selected")
+        == "full"
+    )
+    assert (
+        training._feature_set_for_config(configs["gamelength"], "compact") == "compact"
+    )
 
 
 def test_training_parser_supports_validate_data_action():
@@ -177,7 +194,8 @@ def _tuning_candidate(model_name: str) -> dict:
 
 def _write_complete_tuning_manifest(root) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    root.joinpath("manifest.json").write_text(
+    manifest_path = root / "manifest.json"
+    manifest_path.write_text(
         json.dumps(
             {
                 "status": "completed",
@@ -189,6 +207,15 @@ def _write_complete_tuning_manifest(root) -> None:
             }
         )
     )
+    root.joinpath("tuning_review.json").write_text(
+        json.dumps(
+            {
+                "status": "approved",
+                "run_id": root.name,
+                "review_input_sha256": "test-review-inputs",
+            }
+        )
+    )
 
 
 def test_promote_tuning_run_requires_complete_four_target_bundle(tmp_path, monkeypatch):
@@ -196,6 +223,11 @@ def test_promote_tuning_run_requires_complete_four_target_bundle(tmp_path, monke
     tuned = tmp_path / "tuned"
     monkeypatch.setattr(training, "REPORTS_DIR", reports)
     monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tuned)
+    monkeypatch.setattr(
+        training,
+        "_tuning_review_input_fingerprint",
+        lambda _root: "test-review-inputs",
+    )
     _write_complete_tuning_manifest(reports / "training" / "runs" / "incomplete")
     existing = tuned / "OutcomePrediction_LightGBM.json"
     existing.parent.mkdir(parents=True)
@@ -226,7 +258,6 @@ def test_promote_tuning_run_rejects_incomplete_manifest(tmp_path, monkeypatch):
     run_root.joinpath("manifest.json").write_text(
         '{"status":"interrupted","retune":true,"targets_trained":[]}'
     )
-
     with pytest.raises(ValueError, match="not complete for its requested targets"):
         training.promote_tuning_run("interrupted")
 
@@ -236,6 +267,11 @@ def test_promote_tuning_run_publishes_only_requested_targets(tmp_path, monkeypat
     tuned = tmp_path / "tuned"
     monkeypatch.setattr(training, "REPORTS_DIR", reports)
     monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tuned)
+    monkeypatch.setattr(
+        training,
+        "_tuning_review_input_fingerprint",
+        lambda _root: "test-review-inputs",
+    )
     run_root = reports / "training" / "runs" / "winner-v2"
     selected = training.parse_training_targets("series_winner,next_map_winner")
     run_root.mkdir(parents=True)
@@ -247,6 +283,15 @@ def test_promote_tuning_run_publishes_only_requested_targets(tmp_path, monkeypat
                 "targets_requested": [config.target_name for config in selected],
                 "targets_trained": [config.model_name for config in selected],
                 "targets_failed": [],
+            }
+        )
+    )
+    run_root.joinpath("tuning_review.json").write_text(
+        json.dumps(
+            {
+                "status": "approved",
+                "run_id": "winner-v2",
+                "review_input_sha256": "test-review-inputs",
             }
         )
     )
@@ -270,6 +315,11 @@ def test_promote_tuning_run_atomically_publishes_complete_bundle(tmp_path, monke
     tuned = tmp_path / "tuned"
     monkeypatch.setattr(training, "REPORTS_DIR", reports)
     monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tuned)
+    monkeypatch.setattr(
+        training,
+        "_tuning_review_input_fingerprint",
+        lambda _root: "test-review-inputs",
+    )
 
     names = [
         training._lightgbm_model_name(config.model_name)
@@ -301,6 +351,11 @@ def test_promote_tuning_run_rejects_mixed_provenance(tmp_path, monkeypatch):
     tuned = tmp_path / "tuned"
     monkeypatch.setattr(training, "REPORTS_DIR", reports)
     monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tuned)
+    monkeypatch.setattr(
+        training,
+        "_tuning_review_input_fingerprint",
+        lambda _root: "test-review-inputs",
+    )
     run_root = reports / "training" / "runs" / "mixed"
     _write_complete_tuning_manifest(run_root)
     names = [
@@ -316,6 +371,271 @@ def test_promote_tuning_run_rejects_mixed_provenance(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="inconsistent provenance"):
         training.promote_tuning_run("mixed")
+
+
+@pytest.mark.parametrize(
+    ("review", "fingerprint", "message"),
+    [
+        (
+            {"status": "blocked", "run_id": "winner"},
+            "expected",
+            "stale, or blocked",
+        ),
+        (
+            {"status": "approved", "run_id": "other"},
+            "expected",
+            "stale, or blocked",
+        ),
+        (
+            {
+                "status": "approved",
+                "run_id": "winner",
+                "review_input_sha256": "old",
+            },
+            "expected",
+            "stale, or blocked",
+        ),
+    ],
+)
+def test_promote_winner_tuning_rejects_invalid_review(
+    tmp_path, monkeypatch, review, fingerprint, message
+):
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(training, "REPORTS_DIR", reports)
+    monkeypatch.setattr(
+        training, "_tuning_review_input_fingerprint", lambda _root: fingerprint
+    )
+    run_root = reports / "training" / "runs" / "winner"
+    run_root.mkdir(parents=True)
+    run_root.joinpath("manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "retune": True,
+                "targets_requested": ["series_winner"],
+                "targets_trained": ["SeriesWinnerPrediction"],
+                "targets_failed": [],
+            }
+        )
+    )
+    run_root.joinpath("tuning_review.json").write_text(json.dumps(review))
+
+    with pytest.raises(ValueError, match=message):
+        training.promote_tuning_run("winner")
+
+
+def test_promote_winner_tuning_rejects_change_during_copy(tmp_path, monkeypatch):
+    reports = tmp_path / "reports"
+    tuned = tmp_path / "tuned"
+    monkeypatch.setattr(training, "REPORTS_DIR", reports)
+    monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tuned)
+    fingerprints = iter(("expected", "changed"))
+    monkeypatch.setattr(
+        training,
+        "_tuning_review_input_fingerprint",
+        lambda _root: next(fingerprints),
+    )
+    run_root = reports / "training" / "runs" / "winner"
+    run_root.mkdir(parents=True)
+    run_root.joinpath("manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "retune": True,
+                "targets_requested": ["series_winner"],
+                "targets_trained": ["SeriesWinnerPrediction"],
+                "targets_failed": [],
+            }
+        )
+    )
+    run_root.joinpath("tuning_review.json").write_text(
+        json.dumps(
+            {
+                "status": "approved",
+                "run_id": "winner",
+                "review_input_sha256": "expected",
+            }
+        )
+    )
+    name = "SeriesWinnerPrediction_LightGBM"
+    candidate = run_root / name / "tuned_hyperparameters.json"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(json.dumps(_tuning_candidate(name)))
+
+    with pytest.raises(ValueError, match="changed during promotion"):
+        training.promote_tuning_run("winner")
+
+
+class _ReviewPipeline:
+    @staticmethod
+    def transform(frame):
+        return frame
+
+
+class _ReviewMember:
+    def __init__(self, learning_rate):
+        self.learning_rate = learning_rate
+
+    def get_params(self):
+        return {"learning_rate": self.learning_rate}
+
+
+class _ReviewWinnerModel:
+    def __init__(self, learning_rate):
+        self.members = (_ReviewMember(learning_rate), _ReviewMember(learning_rate))
+
+    @staticmethod
+    def rating_baseline_probability(frame):
+        return np.full(len(frame), 0.5)
+
+    @staticmethod
+    def predict_proba(frame):
+        probability = frame["candidate_probability"].to_numpy(dtype=float)
+        return np.column_stack([1.0 - probability, probability])
+
+
+class _ReviewCalibrator:
+    version = 3
+
+    @staticmethod
+    def predict(values, metadata=None):
+        del metadata
+        return np.asarray(values, dtype=float)
+
+
+class _ReviewUncertainty:
+    version = 1
+    fit_split = "uncertainty_fit"
+    sample_count = 100
+
+    @staticmethod
+    def interval(values):
+        return values, values
+
+
+def _winner_review_run(tmp_path, *, learning_rate=0.05):
+    run_root = tmp_path / "reports" / "training" / "runs" / "winner-review"
+    model_name = "SeriesWinnerPrediction_LightGBM"
+    model_root = run_root / "artifacts" / model_name
+    evaluation = run_root / "artifacts" / "_evaluation" / model_name
+    candidate = run_root / model_name / "tuned_hyperparameters.json"
+    model_root.mkdir(parents=True)
+    evaluation.mkdir(parents=True)
+    candidate.parent.mkdir(parents=True)
+    run_root.joinpath("manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "retune": True,
+                "targets_requested": ["series_winner"],
+            }
+        )
+    )
+    payload = _tuning_candidate(model_name)
+    payload["params"] = {"learning_rate": learning_rate}
+    candidate.write_text(json.dumps(payload))
+    for path in (
+        evaluation / "features.parquet",
+        evaluation / "labels.parquet",
+        model_root / f"{model_name}.pkl",
+        model_root / f"{model_name}_feature_pipeline.pkl",
+        model_root / f"{model_name}_probability_calibrator.pkl",
+        model_root / f"{model_name}_probability_uncertainty.pkl",
+    ):
+        path.write_bytes(b"review-fixture")
+    return run_root
+
+
+@pytest.mark.parametrize(
+    ("member_rate", "uncertainty", "expected_status", "expected_reason"),
+    [
+        (0.05, _ReviewUncertainty(), "approved", None),
+        (0.10, _ReviewUncertainty(), "blocked", "winner_member_parameter_mismatch"),
+        (
+            0.05,
+            SimpleNamespace(
+                version=1,
+                fit_split="uncertainty_fit",
+                sample_count=100,
+            ),
+            "blocked",
+            "invalid_probability_calibration_artifacts",
+        ),
+    ],
+)
+def test_review_winner_tuning_binds_model_parameters_and_artifacts(
+    tmp_path,
+    monkeypatch,
+    member_rate,
+    uncertainty,
+    expected_status,
+    expected_reason,
+):
+    import lol_bets.operations.models as model_operations
+    from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+
+    run_root = _winner_review_run(tmp_path)
+    monkeypatch.setattr(training, "REPORTS_DIR", tmp_path / "reports")
+    features = pd.DataFrame({"candidate_probability": np.tile([0.1, 0.9], 50)})
+    labels = pd.DataFrame(
+        {
+            "actual": np.tile([0, 1], 50),
+            "actionable": True,
+            "league": "LCK",
+        }
+    )
+    monkeypatch.setattr(
+        training.pd,
+        "read_parquet",
+        lambda path: (
+            labels.copy() if path.name == "labels.parquet" else features.copy()
+        ),
+    )
+    model = _ReviewWinnerModel(member_rate)
+
+    def fake_load(path):
+        name = path.name
+        if name.endswith("feature_pipeline.pkl"):
+            return _ReviewPipeline()
+        if name.endswith("probability_calibrator.pkl"):
+            return _ReviewCalibrator()
+        if name.endswith("probability_uncertainty.pkl"):
+            return uncertainty
+        return model
+
+    monkeypatch.setattr(training, "load_model", fake_load)
+    monkeypatch.setattr(
+        model_operations,
+        "evaluate_promotion",
+        lambda evidence, **_kwargs: SimpleNamespace(
+            promote=not evidence.operational_failures,
+            reasons=tuple(
+                f"operational_failure:{reason}"
+                for reason in evidence.operational_failures
+            ),
+            relative_improvement=0.10,
+            confidence_lower_bound=0.05,
+        ),
+    )
+    monkeypatch.setattr(
+        GradientBoostingModel,
+        "compute_probability_calibration_metrics",
+        staticmethod(
+            lambda *_args, **_kwargs: {
+                "calibration_slope": 1.0,
+                "calibration_intercept": 0.0,
+            }
+        ),
+    )
+
+    result = training.review_tuning_run(run_root.name)
+
+    assert result["status"] == expected_status
+    if expected_reason:
+        assert any(expected_reason in reason for reason in result["reasons"])
+    else:
+        assert result["reasons"] == []
+    assert json.loads(run_root.joinpath("tuning_review.json").read_text()) == result
 
 
 def test_training_summary_combines_metrics_cards_and_top_features(tmp_path):

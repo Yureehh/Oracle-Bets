@@ -28,6 +28,10 @@ from oracle_bets_core.pd import pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
+from lol_bets.data_generation.feature_engineering.ratings_features import (
+    freeze_same_date_rating_inputs,
+)
+
 # ------------------------------------------------------------------------------
 # 1. Global Config / Constants
 # ------------------------------------------------------------------------------
@@ -788,6 +792,26 @@ def run_pl_computation(
             position_reset_factor=position_reset_factor,
             league_elo_dict=league_elo_dict,
         )
+
+    df = freeze_same_date_rating_inputs(
+        df,
+        entity=entity.lower(),
+        rating_columns=("pl_mu_before", "pl_sigma_before"),
+    )
+    for _, game_grp in df.groupby(["date", "gameid"], sort=False):
+        blue_rows = game_grp[game_grp["side"] == "Blue"]
+        red_rows = game_grp[game_grp["side"] == "Red"]
+        blue = [
+            pl_model.rating(row.pl_mu_before, row.pl_sigma_before)
+            for row in blue_rows.itertuples()
+        ]
+        red = [
+            pl_model.rating(row.pl_mu_before, row.pl_sigma_before)
+            for row in red_rows.itertuples()
+        ]
+        blue_expected = predict_win_probability(pl_model, blue, red)
+        df.loc[blue_rows.index, "pl_win_likelihood"] = blue_expected
+        df.loc[red_rows.index, "pl_win_likelihood"] = 1.0 - blue_expected
 
     return df
 

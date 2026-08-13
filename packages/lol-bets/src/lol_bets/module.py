@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pickle
 from dataclasses import dataclass
+from pathlib import Path
 
 from oracle_bets_core.interfaces import ArtifactCheck, ArtifactHealth
 from oracle_bets_core.paths import (
@@ -14,6 +15,8 @@ from oracle_bets_core.paths import (
     GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
     GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY,
     LEAGUE_ELO,
+    MODEL_REGISTRY_DIR,
+    MODELS_DIR,
     NEXT_MAP_WINNER_FEATURE_PIPELINE,
     NEXT_MAP_WINNER_MATCHUP_SCHEMA,
     NEXT_MAP_WINNER_MODEL_PATH,
@@ -42,6 +45,8 @@ from oracle_bets_core.paths import (
     TRAINING_TEAM_DATA,
 )
 from oracle_bets_core.pd import pd
+
+from lol_bets.operations.models import ModelRegistryError, resolve_serving_artifact
 
 MODULE_ID = "lol-bets"
 TEAM_LEAGUE_COLUMNS = {"teamid", "league", "strength_pool"}
@@ -80,26 +85,60 @@ FLATTENED_PLAYER_COLUMNS = {
 CALIBRATOR_VERSION = 3
 
 
+def _resolve_model_path(path) -> Path:
+    candidate = Path(path)
+    if not candidate.resolve().is_relative_to(MODELS_DIR.resolve()):
+        return candidate
+    return resolve_serving_artifact(
+        candidate,
+        registry_root=MODEL_REGISTRY_DIR,
+        legacy_root=MODELS_DIR,
+    )
+
+
+def _resolve_file_check(name: str, path) -> tuple[ArtifactCheck, Path | None]:
+    try:
+        resolved = _resolve_model_path(path)
+    except ModelRegistryError as error:
+        return (
+            ArtifactCheck(
+                name=name,
+                path=str(path),
+                ok=False,
+                reason=f"serving bundle invalid: {error}",
+            ),
+            None,
+        )
+    if not resolved.exists():
+        return ArtifactCheck(
+            name=name, path=str(resolved), ok=False, reason="missing"
+        ), None
+    if not resolved.is_file():
+        return (
+            ArtifactCheck(name=name, path=str(resolved), ok=False, reason="not a file"),
+            None,
+        )
+    if resolved.stat().st_size <= 0:
+        return ArtifactCheck(
+            name=name, path=str(resolved), ok=False, reason="empty"
+        ), None
+    return ArtifactCheck(name=name, path=str(resolved), ok=True), resolved
+
+
 def _check_file(name: str, path) -> ArtifactCheck:
-    if not path.exists():
-        return ArtifactCheck(name=name, path=str(path), ok=False, reason="missing")
-    if not path.is_file():
-        return ArtifactCheck(name=name, path=str(path), ok=False, reason="not a file")
-    if path.stat().st_size <= 0:
-        return ArtifactCheck(name=name, path=str(path), ok=False, reason="empty")
-    return ArtifactCheck(name=name, path=str(path), ok=True)
+    return _resolve_file_check(name, path)[0]
 
 
 def _check_parquet_schema(name: str, path, required: set[str]) -> ArtifactCheck:
-    file_check = _check_file(name, path)
-    if not file_check.ok:
+    file_check, resolved = _resolve_file_check(name, path)
+    if not file_check.ok or resolved is None:
         return file_check
     try:
-        columns = set(pd.read_parquet(path).columns)
+        columns = set(pd.read_parquet(resolved).columns)
     except Exception as exc:
         return ArtifactCheck(
             name=name,
-            path=str(path),
+            path=str(resolved),
             ok=False,
             reason=f"unreadable parquet: {exc}",
         )
@@ -107,7 +146,7 @@ def _check_parquet_schema(name: str, path, required: set[str]) -> ArtifactCheck:
     if missing:
         return ArtifactCheck(
             name=name,
-            path=str(path),
+            path=str(resolved),
             ok=False,
             reason=f"outdated schema; missing {', '.join(sorted(missing))}",
         )
@@ -121,15 +160,15 @@ def _check_flattened_parquet(
     *,
     unique_keys: list[str],
 ) -> ArtifactCheck:
-    file_check = _check_file(name, path)
-    if not file_check.ok:
+    file_check, resolved = _resolve_file_check(name, path)
+    if not file_check.ok or resolved is None:
         return file_check
     try:
-        df = pd.read_parquet(path)
+        df = pd.read_parquet(resolved)
     except Exception as exc:
         return ArtifactCheck(
             name=name,
-            path=str(path),
+            path=str(resolved),
             ok=False,
             reason=f"unreadable parquet: {exc}",
         )
@@ -137,7 +176,7 @@ def _check_flattened_parquet(
     if missing:
         return ArtifactCheck(
             name=name,
-            path=str(path),
+            path=str(resolved),
             ok=False,
             reason=f"outdated schema; missing {', '.join(sorted(missing))}",
         )
@@ -145,7 +184,7 @@ def _check_flattened_parquet(
     if duplicate_count:
         return ArtifactCheck(
             name=name,
-            path=str(path),
+            path=str(resolved),
             ok=False,
             reason=(
                 "duplicate flattened snapshots; "
@@ -162,16 +201,16 @@ def _check_calibrator_schema(
     required_attrs: set[str],
     expected_version: int = CALIBRATOR_VERSION,
 ) -> ArtifactCheck:
-    file_check = _check_file(name, path)
-    if not file_check.ok:
+    file_check, resolved = _resolve_file_check(name, path)
+    if not file_check.ok or resolved is None:
         return file_check
     try:
-        with path.open("rb") as f:
+        with resolved.open("rb") as f:
             artifact = pickle.load(f)  # noqa: S301
     except Exception as exc:
         return ArtifactCheck(
             name=name,
-            path=str(path),
+            path=str(resolved),
             ok=False,
             reason=f"unreadable calibrator: {exc}",
         )
@@ -186,7 +225,7 @@ def _check_calibrator_schema(
             details.append(f"version {version!r} != {expected_version}")
         return ArtifactCheck(
             name=name,
-            path=str(path),
+            path=str(resolved),
             ok=False,
             reason=f"outdated calibrator schema; {'; '.join(details)}",
         )

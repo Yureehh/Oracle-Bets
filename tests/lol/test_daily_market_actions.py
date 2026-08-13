@@ -184,6 +184,22 @@ def test_daily_typed_markets_batch_quotes_and_cap_correlated_fixture():
         row["proposal_id"] for row in result.actions
     }
 
+    clock_calls = 0
+    capped = evaluate_daily_market_actions(
+        schedule=schedule,
+        snapshot_rows=snapshots,
+        markets={"pandascore:1": markets},
+        clob_client=_Books(),
+        model_healthy=True,
+        existing_exposure_units=3.0,
+        run_key="daily-lol-2026-08-02",
+        sleeper=lambda _seconds: None,
+        clock=clock,
+    )
+    favorite = next(row for row in capped.actions if row["selection"] == "T1")
+    assert favorite["state"] == ActionState.BLOCKED
+    assert favorite["reason"] == "daily_exposure_cap"
+
 
 def test_daily_discovers_supported_markets_with_fixture_specific_query():
     schedule = pd.DataFrame(

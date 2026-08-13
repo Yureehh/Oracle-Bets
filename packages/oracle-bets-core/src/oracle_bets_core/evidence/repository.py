@@ -375,13 +375,14 @@ class EvidenceStore:
                 raise EvidenceSchemaError(
                     f"Evidence schema version {current} is unsupported."
                 )
-            conn.executescript(append_only_triggers_sql())
             if current < SCHEMA_VERSION:
                 self._migrate_schema(conn, current)
+            conn.executescript(append_only_triggers_sql())
 
     @staticmethod
     def _migrate_schema(conn: sqlite3.Connection, current: int) -> None:
-        """Validate and record every version transition in one transaction."""
+        """Create additive schema objects, validate, and record each transition."""
+        conn.executescript(SCHEMA_SQL)
         existing_tables = {
             str(row[0])
             for row in conn.execute(
@@ -391,7 +392,7 @@ class EvidenceStore:
         missing_tables = {table.value for table in EvidenceTable} - existing_tables
         if missing_tables:
             raise EvidenceSchemaError(
-                f"Evidence migration found missing tables: {sorted(missing_tables)}"
+                f"Evidence migration could not create tables: {sorted(missing_tables)}"
             )
         for table, required in TABLE_COLUMNS.items():
             columns = {

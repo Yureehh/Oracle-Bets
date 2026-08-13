@@ -27,6 +27,10 @@ from oracle_bets_core.pd import pd
 from sklearn.metrics import log_loss
 from tqdm import tqdm
 
+from lol_bets.data_generation.feature_engineering.ratings_features import (
+    freeze_same_date_rating_inputs,
+)
+
 # ----------------------------------------------------------------------
 # Global Config / Constants
 # ----------------------------------------------------------------------
@@ -791,6 +795,30 @@ def run_glicko2_computation(
             initial_elo_adjustment_factor=initial_elo_adjustment_factor,
             position_reset_factor=position_reset_factor,
         )
+
+    df = freeze_same_date_rating_inputs(
+        df,
+        entity=entity.lower(),
+        rating_columns=("glicko2_mu_before", "glicko2_phi_before"),
+    )
+    for _, game_grp in df.groupby(["date", "gameid"], sort=False):
+        blue_rows = game_grp[game_grp["side"] == "Blue"]
+        red_rows = game_grp[game_grp["side"] == "Red"]
+        blue = [
+            Rating(mu=row.glicko2_mu_before, phi=row.glicko2_phi_before, sigma=sigma)
+            for row in blue_rows.itertuples()
+        ]
+        red = [
+            Rating(mu=row.glicko2_mu_before, phi=row.glicko2_phi_before, sigma=sigma)
+            for row in red_rows.itertuples()
+        ]
+        blue_mean = calculate_mean_rating(blue)
+        red_mean = calculate_mean_rating(red)
+        blue_expected = glicko2_model.expect_score(
+            blue_mean, red_mean, glicko2_model.reduce_impact(red_mean)
+        )
+        df.loc[blue_rows.index, "glicko2_win_likelihood"] = blue_expected
+        df.loc[red_rows.index, "glicko2_win_likelihood"] = 1.0 - blue_expected
 
     return df
 

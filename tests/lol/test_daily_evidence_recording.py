@@ -16,6 +16,7 @@ from oracle_bets_core.markets import OrderBook, OrderLevel
 from oracle_bets_core.operations.paper_evidence import (
     PaperEvidenceError,
     capture_closing_snapshots,
+    daily_position_exposure,
     decide_paper,
     performance_summary,
     record_map_state,
@@ -257,12 +258,21 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):  # noqa
         scheduled_for=NOW,
         effective_config={"horizon_hours": 36},
         schedule=schedule,
-        snapshot_rows=[snapshot],
+        snapshot_rows=[
+            snapshot,
+            snapshot
+            | {
+                "selection": "Gen.G",
+                "model_value": 0.39,
+                "probability_lower": 0.34,
+                "probability_upper": 0.44,
+            },
+        ],
         steps=[DailyStepResult("schedule", True, "one fixture")],
         market_actions=[action, failed_action],
     )
 
-    assert store.count(EvidenceTable.PREDICTIONS) == TWO_VERSIONS + 1
+    assert store.count(EvidenceTable.PREDICTIONS) == TWO_VERSIONS
     assert store.count(EvidenceTable.MARKET_CANDIDATES) == TWO_VERSIONS
     assert store.count(EvidenceTable.MARKET_SNAPSHOTS) == TWO_VERSIONS
     proposal = store.get(EvidenceTable.PROPOSALS, "proposal-typed-1")
@@ -338,6 +348,8 @@ def test_typed_executable_market_chain_is_recorded_atomically(tmp_path):  # noqa
     assert float(
         store.get(EvidenceTable.PAPER_POSITIONS, position_id)["decimal_odds"]
     ) == pytest.approx(1 / 0.55)
+    assert daily_position_exposure(store, at=NOW) == 1.0
+    assert daily_position_exposure(store, at=NOW + timedelta(days=1)) == 0.0
     close_time = ENTRY_WINDOW_START - timedelta(minutes=5)
 
     class ClosingClient:

@@ -50,6 +50,28 @@ def test_incremental_refresh_adds_new_rows_and_replaces_corrected_rows():
     assert manifest.removed_rows == 0
 
 
+def test_incremental_refresh_replaces_the_complete_incoming_game():
+    existing = pd.DataFrame(
+        [
+            _row("g1", result=1),
+            {**_row("g1", result=0), "side": "Red", "teamid": "team-b"},
+            _row("older", result=1),
+        ]
+    )
+    incoming = pd.DataFrame([_row("g1", result=1)])
+
+    merged, manifest = merge_history(
+        existing,
+        incoming,
+        mode=HistoryRefreshMode.INCREMENTAL,
+        refreshed_at=NOW,
+    )
+
+    assert len(merged.loc[merged["gameid"] == "g1"]) == 1
+    assert "older" in set(merged["gameid"])
+    assert manifest.removed_rows == 1
+
+
 def test_full_refresh_uses_the_new_audited_snapshot_and_reports_removed_rows():
     existing = pd.DataFrame([_row("old", result=1), _row("keep", result=0)])
     incoming = pd.DataFrame([_row("keep", result=0), _row("new", result=1)])

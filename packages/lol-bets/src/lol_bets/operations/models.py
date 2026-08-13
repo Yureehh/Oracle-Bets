@@ -977,6 +977,20 @@ class ModelRegistry:
     ) -> Path:
         """Return one checksum-verified artifact from a candidate bundle."""
         safe_name = self._validate_artifact_name(name)
+        artifacts = self.verified_artifact_paths(model_id=model_id)
+        if safe_name not in artifacts:
+            selected = model_id or self.champion_id()
+            raise ModelRegistryError(
+                f"candidate {selected} does not contain artifact: {safe_name}"
+            )
+        return artifacts[safe_name]
+
+    def verified_artifact_paths(
+        self,
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, Path]:
+        """Verify one immutable bundle once and return all declared paths."""
         selected = model_id or self.champion_id()
         if selected is None:
             raise ModelRegistryError("no champion is selected")
@@ -990,11 +1004,10 @@ class ModelRegistry:
             files = manifest["files"]
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
             raise ModelRegistryError("candidate manifest is malformed") from error
-        if safe_name not in files:
-            raise ModelRegistryError(
-                f"candidate {selected} does not contain artifact: {safe_name}"
-            )
-        return self.candidates / selected / safe_name
+        return {
+            self._validate_artifact_name(name): self.candidates / selected / name
+            for name in files
+        }
 
     def promote(
         self,
@@ -1142,10 +1155,11 @@ def resolve_serving_artifact(
     *,
     registry_root: Path,
     legacy_root: Path,
+    model_id: str | None = None,
 ) -> Path:
     """Resolve a verified champion artifact or retain bootstrap legacy paths."""
     registry = ModelRegistry(registry_root)
-    champion = registry.champion_id()
+    champion = model_id or registry.champion_id()
     if champion is None:
         return Path(legacy_path)
     try:

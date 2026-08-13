@@ -62,9 +62,11 @@ def test_winner_output_is_compact_and_betting_focused():
     assert "Market" in output
     assert "PRICE NEEDED" in output
     assert "calibrated model (isotonic)" in output
-    assert "Game 1 Winner" in output
     assert "Series Winner" in output
-    assert "series markets are derived" in output
+    assert "independent prematch series-winner model" in output
+    assert "Game 1 Winner" not in output
+    assert "69.4%" in output
+    assert "78.0%" not in output
     assert "Probability range (90% calibration uncertainty)" in output
     assert "Main model drivers (descriptive, not causal)" in output
     assert "Team rating strength pushed the model toward T1" in output
@@ -73,7 +75,7 @@ def test_winner_output_is_compact_and_betting_focused():
     assert "Meaning" not in output
 
 
-def test_winner_output_prices_polymarket_game_winner_with_quarter_kelly():
+def test_winner_output_prices_polymarket_series_winner_with_quarter_kelly():
     output = format_winner_market_output(
         blue_team_name="Solary",
         red_team_name="Karmine Corp Blue",
@@ -83,23 +85,19 @@ def test_winner_output_prices_polymarket_game_winner_with_quarter_kelly():
         probability_source="raw model (selected by calibration)",
         warnings=["Side selection is ignored for this command."],
         context="- Context: side ignored | first pick unknown",
-        price_quotes=["g3: SLY=74c,KCB=27c"],
+        price_quotes=["series: SLY=54c,KCB=47c"],
     )
 
     assert "Bankroll: €500 | Kelly: 1/4 | No stake cap" in output
-    assert "Game 3 Winner" in output
+    assert "Series Winner" in output
     assert "Karmine Cor" in output
-    assert "27c" in output
-    assert "+33.0%" in output
-    assert "€ 15.24" in output
-    assert "VALUE" in output
+    assert "47c" in output
     assert "Solary" in output
-    assert "74c" in output
-    assert "PASS" in output
+    assert "54c" in output
     assert "Warning: Side selection is ignored for this command." in output
 
 
-def test_winner_output_maps_total_games_and_sorts_priced_edges():
+def test_winner_output_rejects_non_series_prices():
     output = format_winner_market_output(
         blue_team_name="Solary",
         red_team_name="Karmine Corp Blue",
@@ -110,22 +108,16 @@ def test_winner_output_maps_total_games_and_sorts_priced_edges():
         warnings=[],
         context="- Context: side ignored | first pick unknown",
         price_quotes=[
-            "g3: Solary=74c,Karmine Corp Blue=27c",
             "tg3.5: Over=61c,Under=40c",
         ],
     )
 
-    table = output.split("```text", 1)[1].split("```", 1)[0]
-    kcb_index = table.index("Karmine Cor")
-    solary_index = table.index("Solary")
-    assert kcb_index < solary_index
-    assert "Over 3.5 Maps" in output
-    assert "61c" in output
-    assert "Under 3.5 Maps" in output
-    assert "40c" in output
+    assert "Unsupported prices ignored: tg3.5" in output
+    assert "Over 3.5 Maps" not in output
+    assert "Under 3.5 Maps" not in output
 
 
-def test_winner_output_maps_numeric_price_pair_positions():
+def test_winner_output_maps_numeric_series_price_pair_positions():
     output = format_winner_market_output(
         blue_team_name="Solary",
         red_team_name="Karmine Corp Blue",
@@ -135,18 +127,14 @@ def test_winner_output_maps_numeric_price_pair_positions():
         probability_source="raw model",
         warnings=[],
         context="- Context: side ignored | first pick unknown",
-        price_quotes=["g3: 1=74,2=27", "tg3.5: 1=61,2=40"],
+        price_quotes=["series: 1=64,2=37"],
     )
 
-    assert "Game 3 Winner" in output
+    assert "Series Winner" in output
     assert "Solary" in output
-    assert "74c" in output
+    assert "64c" in output
     assert "Karmine Cor" in output
-    assert "27c" in output
-    assert "Over 3.5 Maps" in output
-    assert "61c" in output
-    assert "Under 3.5 Maps" in output
-    assert "40c" in output
+    assert "37c" in output
 
 
 def test_winner_output_ignores_unsupported_polymarket_markets():

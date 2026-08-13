@@ -57,6 +57,7 @@ uses wallets, or moves funds.
 | `lol train` | Routine refit with reviewed parameters; retrains weights and calibrators, registers an immutable candidate, and may auto-promote only a healthy non-inferior non-Optuna V2 bundle. It does not run Optuna. | `--targets all|series_winner|next_map_winner|props|<names>`, `--feature-set full|compact|selected`, `--max-features N`, report-only feature selection, and calibration/split options. |
 | `lol retune` | Explicit Optuna research search. Writes isolated tuning reports and artifacts; never updates reviewed parameters or champion automatically. | `--targets`, `--feature-set`, `--max-features`. |
 | `lol promote-tuning <run-id>` | Owner promotion of the complete target set requested by one reviewed tuning run. Writes only those production parameter files, not model weights. Run a complete `lol train` afterward. | Complete run ID. |
+| `lol review-tuning <run-id>` | Compare a Winner V2 Optuna result with its predeclared rating baseline on the untouched holdout. Writes `tuning_review.json`; blocked reviews cannot be promoted. | Completed Winner V2 tuning run ID. |
 
 Examples:
 

@@ -5,7 +5,11 @@ from lol_bets.data_generation.feature_engineering.features_generator import (
     _add_expanding_mean,
 )
 from lol_bets.data_generation.feature_engineering.performance_features.entity_stats import (
+    apply_ema,
     apply_opponent_stats,
+)
+from lol_bets.data_generation.feature_engineering.performance_features.patch_win_rate import (
+    compute_ema_patch,
 )
 from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
 from oracle_bets_core.pd import pd
@@ -39,6 +43,7 @@ EXPECTED_TWO_DAY_GAP = 2
 EXPECTED_ROSTER_CONTINUITY = 0.8
 EXPECTED_SAME_DAY_PLAYER_MEAN = 15.0
 EXPECTED_PRIOR_LOSS_MEAN = 10.0
+NEUTRAL_WIN_RATE = 0.5
 
 
 def test_player_win_loss_metrics_shift_within_player_season_patch():
@@ -116,6 +121,46 @@ def test_player_win_loss_metrics_exclude_same_date_maps():
     assert np.isnan(out.loc[1, "kills_prev_avg_season_win"])
     # The 01-02 map sees the average of both prior-day maps.
     assert out.loc[2, "kills_prev_avg_season_win"] == EXPECTED_SAME_DAY_PLAYER_MEAN
+
+
+def test_ema_features_exclude_other_games_on_the_same_date():
+    frame = pd.DataFrame(
+        {
+            "teamid": ["a", "a", "a"],
+            "date": pd.to_datetime(
+                ["2026-01-01 10:00", "2026-01-01 18:00", "2026-01-02 10:00"]
+            ),
+            "kills": [10.0, 30.0, 50.0],
+        }
+    )
+
+    out = apply_ema(frame, "teamid", ["kills"])
+
+    assert np.isnan(out.loc[0, "ema_kills_before"])
+    assert np.isnan(out.loc[1, "ema_kills_before"])
+    assert out.loc[2, "ema_kills_before"] > EXPECTED_PRIOR_LOSS_MEAN
+
+
+def test_patch_ema_features_exclude_other_games_on_the_same_date():
+    frame = pd.DataFrame(
+        {
+            "teamid": ["a", "a", "a"],
+            "gameid": ["g1", "g2", "g3"],
+            "side": ["Blue", "Red", "Blue"],
+            "patch": ["16.1"] * 3,
+            "date": pd.to_datetime(
+                ["2026-01-01 10:00", "2026-01-01 18:00", "2026-01-02 10:00"]
+            ),
+            "result": [1, 0, 1],
+        }
+    )
+
+    out = compute_ema_patch(frame, "teamid")
+
+    assert out.loc[0, "ema_patch_win_rate_before"] == NEUTRAL_WIN_RATE
+    assert out.loc[1, "ema_patch_win_rate_before"] == NEUTRAL_WIN_RATE
+    assert out.loc[0, "ema_patch_games_before"] == 0.0
+    assert out.loc[1, "ema_patch_games_before"] == 0.0
 
 
 def test_player_win_loss_metrics_ignore_missing_results():

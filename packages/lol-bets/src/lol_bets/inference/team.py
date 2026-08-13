@@ -11,12 +11,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS, PROCESSED_PLAYERS
 from oracle_bets_core.pd import pd
 
+from lol_bets.inference.roster import EXPECTED_ROLES
 from lol_bets.inference.team_resolver import TeamResolutionError, resolve_team_name
 
 if TYPE_CHECKING:
@@ -26,7 +28,8 @@ if TYPE_CHECKING:
 
 
 @lru_cache(maxsize=4)
-def _read_parquet_cached(path_str: str) -> pd.DataFrame:
+def _read_parquet_version(path_str: str, mtime_ns: int, size: int) -> pd.DataFrame:
+    _ = mtime_ns, size
     # sourcery skip: remove-unnecessary-cast
     path = str(path_str)
     try:
@@ -36,13 +39,26 @@ def _read_parquet_cached(path_str: str) -> pd.DataFrame:
         return pd.read_parquet(path)
 
 
-@lru_cache(maxsize=1)
-def _read_roster_history_cached(path_str: str) -> pd.DataFrame:
+def _read_parquet_cached(path_str: str) -> pd.DataFrame:
+    stat = Path(path_str).stat()
+    return _read_parquet_version(path_str, stat.st_mtime_ns, stat.st_size)
+
+
+@lru_cache(maxsize=2)
+def _read_roster_history_version(
+    path_str: str, mtime_ns: int, size: int
+) -> pd.DataFrame:
+    _ = mtime_ns, size
     columns = ["teamname", "playername", "position", "date"]
     try:
         return pd.read_parquet(path_str, columns=columns, engine="fastparquet")
     except (ImportError, ValueError):
         return pd.read_parquet(path_str, columns=columns)
+
+
+def _read_roster_history_cached(path_str: str) -> pd.DataFrame:
+    stat = Path(path_str).stat()
+    return _read_roster_history_version(path_str, stat.st_mtime_ns, stat.st_size)
 
 
 def _require_columns(df: pd.DataFrame, required: Iterable[str], where: str) -> None:
@@ -54,7 +70,7 @@ def _require_columns(df: pd.DataFrame, required: Iterable[str], where: str) -> N
 
 # ── Team ─────────────────────────────────────────────────────────────────── #
 
-_EXPECTED_POS = ("top", "jng", "mid", "bot", "sup")
+_EXPECTED_POS = EXPECTED_ROLES
 _VALID_SIDES = {"blue": "Blue", "red": "Red"}
 _DEFAULT_GLICKO_PHI = 350.0
 _DEFAULT_SKILL_SIGMA = 8.333
@@ -313,6 +329,10 @@ class Team:
         # attach canonical roles (by matching case-insensitive names back to roster)
         name_to_role = {wanted_lower[r]: r for r in _EXPECTED_POS}
         df["role"] = df["playername"].str.casefold().map(name_to_role).fillna("unknown")
+        if set(df["role"]) != set(_EXPECTED_POS) or df["role"].duplicated().any():
+            msg = f"Roster for '{self.name}' does not resolve to exactly one player per role."
+            raise ValueError(msg)
+        df["position"] = df["role"]
 
         # re-order helpful columns if present
         cols = ["role", "playername", "teamname", "position", "date"]

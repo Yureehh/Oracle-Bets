@@ -32,6 +32,25 @@ class _OffsetCalibrator:
         return np.asarray(values) + 0.02
 
 
+class _ValidationCalibrator:
+    version = 3
+
+    @staticmethod
+    def predict(values, metadata=None):
+        del metadata
+        return np.asarray(values)
+
+
+class _ValidationUncertainty:
+    version = 1
+    fit_split = "uncertainty_fit"
+    sample_count = 30
+
+    @staticmethod
+    def interval(values):
+        return values, values
+
+
 class _WinnerContractModel:
     def __init__(self, columns):
         self.rating_columns = tuple(columns)
@@ -93,7 +112,7 @@ def test_rating_baseline_has_its_own_calibration() -> None:
     assert model.rating_baseline_probability(frame)[0] == pytest.approx(0.57)
 
 
-def test_conservative_probability_uses_member_quantile_and_bias() -> None:
+def test_conservative_probability_uses_member_quantile() -> None:
     frame = pd.DataFrame({"delta_elo_win_likelihood": [0.1]})
     model = WinnerBlendClassifier(
         baseline=_ProbabilityModel([0.60]),
@@ -104,7 +123,6 @@ def test_conservative_probability_uses_member_quantile_and_bias() -> None:
         ),
         rating_columns=tuple(frame.columns),
         blend_weight=0.5,
-        calibration_bias_bound=0.02,
     )
 
     conservative = model.conservative_probability(frame)
@@ -122,7 +140,7 @@ def test_conservative_probability_uses_member_quantile_and_bias() -> None:
         )
         for probability in (0.58, 0.62, 0.70)
     ]
-    assert conservative[0] == pytest.approx(np.quantile(expected_members, 0.1) - 0.02)
+    assert conservative[0] == pytest.approx(np.quantile(expected_members, 0.1))
 
 
 def test_winner_validation_requires_ratings_parity_and_no_market_features(tmp_path):
@@ -137,12 +155,18 @@ def test_winner_validation_requires_ratings_parity_and_no_market_features(tmp_pa
     pipeline_path = tmp_path / "pipeline.pkl"
     schema_path = tmp_path / "schema.pkl"
     lineage_path = tmp_path / "lineage.json"
+    calibrator_path = tmp_path / "calibrator.pkl"
+    uncertainty_path = tmp_path / "uncertainty.pkl"
     with model_path.open("wb") as handle:
         pickle.dump(_WinnerContractModel(columns), handle)
     with pipeline_path.open("wb") as handle:
         pickle.dump(SimpleNamespace(train_columns=list(columns)), handle)
     with schema_path.open("wb") as handle:
         pickle.dump({"version": 1, "canonical_key": "teamid_then_teamname"}, handle)
+    with calibrator_path.open("wb") as handle:
+        pickle.dump(_ValidationCalibrator(), handle)
+    with uncertainty_path.open("wb") as handle:
+        pickle.dump(_ValidationUncertainty(), handle)
     lineage_path.write_text(
         json.dumps(
             [
@@ -188,6 +212,8 @@ def test_winner_validation_requires_ratings_parity_and_no_market_features(tmp_pa
         pipeline_path=pipeline_path,
         schema_path=schema_path,
         lineage_path=lineage_path,
+        calibrator_path=calibrator_path,
+        uncertainty_path=uncertainty_path,
         registry_root=registry.root,
     )
 

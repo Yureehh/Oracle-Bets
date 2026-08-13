@@ -1,1 +1,1 @@
-{"k_factor": 56.0, "initial_elo": 1700.0, "elo_divisor": 350.0, "decay_factor": 0.8}
+{"k_factor": 32.0, "initial_elo": 1500.0, "elo_divisor": 400.0, "decay_factor": 0.9}

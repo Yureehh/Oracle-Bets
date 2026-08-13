@@ -216,7 +216,6 @@ def record_daily_evidence(
             run_id=run_id,
             fixtures=fixtures,
             schedule=schedule,
-            model_id=model_ids["series_winner"],
             actions=market_actions,
             created_at=scheduled_for,
         )
@@ -234,7 +233,6 @@ def _record_typed_market_actions(
     run_id: str,
     fixtures: dict[str, str],
     schedule: pd.DataFrame,
-    model_id: str,
     actions: Sequence[dict[str, Any]],
     created_at: datetime,
 ) -> None:
@@ -246,6 +244,11 @@ def _record_typed_market_actions(
         _optional_text(row.get("match_key")): row.get("start_utc")
         for _, row in schedule.iterrows()
     }
+    predictions_by_selection = {
+        (str(row["fixture_id"]), str(row["selection_id"])): str(row["id"])
+        for row in store.list(EvidenceTable.PREDICTIONS)
+        if str(row["run_id"]) == run_id
+    }
     for action in actions:
         if not action.get("token_id"):
             continue
@@ -253,38 +256,15 @@ def _record_typed_market_actions(
         if fixture_id is None:
             continue
         proposal_id = str(action["proposal_id"])
-        prediction_id = _id("prediction", proposal_id)
-        point = float(action["probability"])
-        lower = float(action["probability_lower"])
-        records: list[tuple[EvidenceTable, dict[str, Any]]] = [
-            (
-                EvidenceTable.PREDICTIONS,
-                {
-                    "id": prediction_id,
-                    "run_id": run_id,
-                    "fixture_id": fixture_id,
-                    "model_version_id": model_id,
-                    "selection_id": (
-                        f"{action['target']}:{action.get('game_number') or ''}:"
-                        f"{action.get('total_line') or ''}:{action['selection']}"
-                    ),
-                    "mode": "prematch",
-                    "created_at": created_at,
-                    "probability_point": str(point),
-                    "probability_lower": str(lower),
-                    "probability_upper": str(point),
-                    "warnings_json": list(action.get("warnings") or []),
-                    "idempotency_key": prediction_id,
-                    "payload_json": {
-                        "target": action["target"],
-                        "game_number": action.get("game_number"),
-                        "total_line": action.get("total_line"),
-                        "selection": action["selection"],
-                        "source": "direct_series_winner_v2",
-                    },
-                },
+        prediction_id = predictions_by_selection.get(
+            (fixture_id, _identity_id(str(action["selection"])))
+        )
+        if prediction_id is None:
+            raise RuntimeError(
+                "Typed market action has no canonical prediction for selection: "
+                f"{action['selection']}"
             )
-        ]
+        records: list[tuple[EvidenceTable, dict[str, Any]]] = []
         candidate_id = _id(
             "market",
             f"{run_id}|{action['market_id']}|{action['token_id']}",
@@ -308,6 +288,8 @@ def _record_typed_market_actions(
                         "selection": action["selection"],
                         "url": action.get("market_url"),
                         "resolution_source": action.get("resolution_source"),
+                        "gate_state": action.get("state"),
+                        "gate_reason": action.get("reason"),
                     },
                 },
             )
@@ -369,6 +351,9 @@ def _record_typed_market_actions(
                         "stake_units": "1.0",
                         "idempotency_key": proposal_id,
                         "payload_json": {
+                            "target": action["target"],
+                            "probability": action.get("probability"),
+                            "probability_lower": action.get("probability_lower"),
                             "odds": action.get("decimal_odds"),
                             "conservative_edge": action.get("conservative_edge"),
                             "strategy_version": "independent-winner-v2",

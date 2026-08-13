@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -10,12 +11,14 @@ from oracle_bets_core.league_selection import actionable_leagues
 
 MINIMUM_CONSERVATIVE_EDGE = 0.05
 MINIMUM_FAVORITE_PROBABILITY = 0.525
+MINIMUM_DECIMAL_ODDS = 1.5
 MINIMUM_ENTRY_HOURS = 24.0
 MAXIMUM_ENTRY_HOURS = 48.0
 MAXIMUM_MODEL_MARKET_DISAGREEMENT = 0.20
 RATING_BASELINE_CONTRADICTION = 0.45
 KELLY_MULTIPLIER = 0.25
 MAXIMUM_POSITION_UNITS = 1.0
+MAXIMUM_DAILY_EXPOSURE_UNITS = 3.0
 RESEARCH_PROP_UNITS = 0.25
 DEFAULT_BANKROLL_UNITS = 100.0
 RESEARCH_PROP_TARGETS = frozenset({"gamelength", "total_kills", "total_towers"})
@@ -102,8 +105,12 @@ def apply_action_gate(value: ActionGateInput) -> ActionGateDecision:
 
 def select_fixture_actions(
     decisions: list[ActionGateDecision] | tuple[ActionGateDecision, ...],
+    *,
+    existing_exposure_units: float = 0.0,
 ) -> tuple[ActionGateDecision, ...]:
     """Keep at most one flat-unit winner action per fixture, without a portfolio claim."""
+    if not math.isfinite(existing_exposure_units) or existing_exposure_units < 0.0:
+        raise ValueError("existing exposure must be nonnegative and finite")
     best_by_fixture: dict[str, ActionGateDecision] = {}
     actionable = (
         decision
@@ -117,7 +124,14 @@ def select_fixture_actions(
     ):
         best_by_fixture.setdefault(decision.fixture_id, decision)
 
-    return tuple(best_by_fixture.values())
+    selected: list[ActionGateDecision] = []
+    exposure = existing_exposure_units
+    for decision in best_by_fixture.values():
+        if exposure + decision.stake_units > MAXIMUM_DAILY_EXPOSURE_UNITS:
+            continue
+        selected.append(decision)
+        exposure += decision.stake_units
+    return tuple(selected)
 
 
 def _blocked_reason(value: ActionGateInput) -> str | None:  # noqa: PLR0911, PLR0912
@@ -135,6 +149,8 @@ def _blocked_reason(value: ActionGateInput) -> str | None:  # noqa: PLR0911, PLR
         return "unsupported_market"
     if not value.quote_valid or value.decimal_odds <= 1:
         return "invalid_quote"
+    if value.decimal_odds < MINIMUM_DECIMAL_ODDS:
+        return "odds_below_1.50"
     if not 0 <= value.probability_lower <= value.probability <= 1:
         return "invalid_probability"
     if not value.is_model_favorite:

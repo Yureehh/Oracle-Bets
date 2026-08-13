@@ -129,6 +129,13 @@ def _compute_side_ema_all(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     ]
     df[ffill_cols] = by_id[ffill_cols].ffill()
 
+    day = pd.to_datetime(df["date"], errors="raise").dt.normalize()
+    before_cols = [column for column in ffill_cols if column.endswith("_before")]
+    for column in before_cols:
+        df[column] = df.groupby([df[identity], day], sort=False)[column].transform(
+            lambda values: values.iloc[0]
+        )
+
     # Neutral priors where history is missing
     df["ema_blue_side_before"] = df["ema_blue_side_before"].fillna(0.5)
     df["ema_red_side_before"] = df["ema_red_side_before"].fillna(0.5)

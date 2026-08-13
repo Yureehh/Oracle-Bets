@@ -82,6 +82,25 @@ def test_schema_upgrade_records_auditable_transactional_migration(tmp_path):
     assert tuple(row) == (3, 4)
 
 
+def test_schema_upgrade_creates_tables_missing_from_older_additive_schema(tmp_path):
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE evidence_schema_version "
+            "(version INTEGER NOT NULL, installed_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO evidence_schema_version VALUES (1, '2026-01-01T00:00:00Z')"
+        )
+
+    store = EvidenceStore(path)
+    store.initialize_schema()
+
+    assert store.schema_version() == EVIDENCE_SCHEMA_VERSION
+    assert "forecasts" in store.table_names()
+    assert store.integrity_check() == "ok"
+
+
 def test_append_is_idempotent_only_for_identical_content(evidence_store):
     first = evidence_store.append(EvidenceTable.RUNS, _run_record())
     repeated = evidence_store.append(EvidenceTable.RUNS, _run_record())

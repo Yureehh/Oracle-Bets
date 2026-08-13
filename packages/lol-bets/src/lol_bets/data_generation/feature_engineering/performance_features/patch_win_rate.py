@@ -68,6 +68,10 @@ def compute_ema_patch(df: pd.DataFrame, identity: str) -> pd.DataFrame:
     )
     # >>> change 1: shift WITHIN group, not globally
     ema_before = ema_after.groupby([df[identity], df["patch"]], sort=False).shift()
+    day = pd.to_datetime(df["date"], errors="raise").dt.normalize()
+    ema_before = ema_before.groupby(
+        [df[identity], df["patch"], day], sort=False
+    ).transform(lambda values: values.iloc[0])
 
     # A neutral prior for the first game in the patch (no history): 0.5
     df["ema_patch_win_rate_before"] = ema_before.fillna(0.5)
@@ -80,9 +84,12 @@ def compute_ema_patch(df: pd.DataFrame, identity: str) -> pd.DataFrame:
         lambda x: x.ewm(halflife=HALF_LIFE, adjust=True).sum()
     )
     # >>> change 2: shift WITHIN group, not globally
+    games_ema_before = games_ema_after.groupby(
+        [df[identity], df["patch"]], sort=False
+    ).shift()
     games_ema_before = (
-        games_ema_after.groupby([df[identity], df["patch"]], sort=False)
-        .shift()
+        games_ema_before.groupby([df[identity], df["patch"], day], sort=False)
+        .transform(lambda values: values.iloc[0])
         .fillna(0.0)
     )
 

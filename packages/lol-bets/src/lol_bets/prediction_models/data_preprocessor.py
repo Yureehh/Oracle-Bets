@@ -105,8 +105,13 @@ class DataPreprocessor:
             msg = "No numeric columns found in player data to pivot."
             raise ValueError(msg)
 
-        # If multiple rows exist per (gameid, side, position), average them beforehand
         grp_keys = [*self.merge_keys, "position"]
+        duplicate_roles = self.player_data.duplicated(grp_keys, keep=False)
+        if duplicate_roles.any():
+            raise ValueError(
+                "Player data contains duplicate game/side/role rows; refusing to "
+                "average ambiguous rosters."
+            )
         base = (
             self.player_data[grp_keys + numeric_cols]
             .groupby(grp_keys, observed=True, sort=False)
@@ -138,22 +143,27 @@ class DataPreprocessor:
         merged = self.team_data.merge(
             self.player_data,
             on=self.merge_keys,
-            how="inner",
-            validate="m:1",  # team rows m, one player-wide row per (gameid, side)
+            how="left",
+            validate="1:1",
+            indicator=True,
         )
+        missing_players = merged["_merge"].ne("both")
+        if missing_players.any():
+            raise ValueError(
+                "Team rows are missing complete player features for "
+                f"{int(missing_players.sum())} game/side rows."
+            )
+        merged = merged.drop(columns="_merge")
 
         # Sort deterministically if date provided
         if "date" in merged.columns:
             merged = merged.sort_values(by=["date", *self.merge_keys], kind="mergesort")
 
-        # Sanity: unique (gameid, side)  # noqa: ERA001
         dup_mask = merged.duplicated(self.merge_keys, keep=False)
         if dup_mask.any():
-            dup_count = dup_mask.sum()
-            logger.warning(
-                "Found %d duplicated (gameid, side) rows after merge; keeping all. "
-                "Downstream splitter should handle this.",
-                dup_count,
+            raise ValueError(
+                "Merged training rows are not unique by game and side: "
+                f"{int(dup_mask.sum())} duplicates."
             )
 
         self.training_data = merged

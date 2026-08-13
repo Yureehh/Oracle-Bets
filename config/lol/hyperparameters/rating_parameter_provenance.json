@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "source": "predeclared_defaults",
+  "target_fitted": false,
+  "description": "Rating parameters are copied from default_models_parameters.json and were not selected against Winner V2 evaluation outcomes."
+}

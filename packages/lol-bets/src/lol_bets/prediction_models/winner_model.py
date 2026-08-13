@@ -76,7 +76,6 @@ class WinnerBlendClassifier:
     members: tuple[Any, ...]
     rating_columns: tuple[str, ...]
     blend_weight: float = 1.0
-    calibration_bias_bound: float = 0.0
     baseline_calibrator: Any | None = None
     decision_threshold_: float = 0.5
     problem_type: str = "classification"
@@ -90,6 +89,14 @@ class WinnerBlendClassifier:
     def feature_importances_(self) -> np.ndarray:
         values = [
             np.asarray(member.feature_importances_, dtype=float)
+            for member in self.members
+        ]
+        return np.mean(values, axis=0)
+
+    def feature_contributions(self, X: pd.DataFrame) -> np.ndarray:
+        """Average local LightGBM contributions across every ensemble member."""
+        values = [
+            np.asarray(member.predict(X, pred_contrib=True), dtype=float)
             for member in self.members
         ]
         return np.mean(values, axis=0)
@@ -155,7 +162,7 @@ class WinnerBlendClassifier:
             members = np.vstack(
                 [calibrator.predict(values, metadata=metadata) for values in members]
             )
-        lower = np.quantile(members, 0.10, axis=0) - self.calibration_bias_bound
+        lower = np.quantile(members, 0.10, axis=0)
         return np.clip(lower, PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON)
 
     def conservative_interval(
@@ -170,8 +177,8 @@ class WinnerBlendClassifier:
             members = np.vstack(
                 [calibrator.predict(values, metadata=metadata) for values in members]
             )
-        lower = np.quantile(members, 0.10, axis=0) - self.calibration_bias_bound
-        upper = np.quantile(members, 0.90, axis=0) + self.calibration_bias_bound
+        lower = np.quantile(members, 0.10, axis=0)
+        upper = np.quantile(members, 0.90, axis=0)
         return (
             np.clip(lower, PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON),
             np.clip(upper, PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON),
@@ -405,15 +412,12 @@ class WinnerLightGBMModel(LightGBMModel):
         uncertainty = super().fit_probability_uncertainty(
             model, X_uncertainty, y_uncertainty, metadata
         )
-        point = model.predict_proba(X_uncertainty)[:, 1]
-        if self.probability_calibrator is not None:
-            point = self.probability_calibrator.predict(point, metadata=metadata)
-        residual = point - np.asarray(y_uncertainty, dtype=float)
-        model.calibration_bias_bound = max(0.0, float(np.quantile(residual, 0.90)))
         self._store_winner_report(
             {
-                "calibration_bias_bound": model.calibration_bias_bound,
-                "bias_split": "uncertainty_fit",
+                "calibration_bias_method": (
+                    uncertainty.method if uncertainty is not None else "unavailable"
+                ),
+                "calibration_bias_split": "uncertainty_fit",
             },
             merge=True,
         )

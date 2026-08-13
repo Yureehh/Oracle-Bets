@@ -4,7 +4,11 @@ import warnings
 import numpy as np
 import pytest
 from lol_bets.prediction_models import lightgbm_model
-from lol_bets.prediction_models.gbdt_model import FeaturePipeline, GradientBoostingModel
+from lol_bets.prediction_models.gbdt_model import (
+    FeaturePipeline,
+    GradientBoostingModel,
+    valid_probability_calibration_artifacts,
+)
 from lol_bets.prediction_models.lightgbm_model import LightGBMModel
 from oracle_bets_core.pd import pd
 from pandas.errors import PerformanceWarning
@@ -19,6 +23,37 @@ EXPECTED_ALPHA = 0.25
 EXPECTED_LEARNING_RATE = 0.05
 EXPECTED_LAST_MEDIAN = 159.0
 EXPECTED_VALIDATION_SCORE = 0.64
+
+
+def test_probability_artifact_contract_requires_serving_methods():
+    calibrator = type(
+        "Calibrator",
+        (),
+        {"version": 3, "predict": staticmethod(lambda values: values)},
+    )()
+    uncertainty = type(
+        "Uncertainty",
+        (),
+        {
+            "version": 1,
+            "fit_split": "uncertainty_fit",
+            "sample_count": 100,
+            "interval": staticmethod(lambda values: (values, values)),
+        },
+    )()
+
+    assert valid_probability_calibration_artifacts(calibrator, uncertainty)
+    assert not valid_probability_calibration_artifacts(
+        type("MetadataOnlyCalibrator", (), {"version": 3})(), uncertainty
+    )
+    assert not valid_probability_calibration_artifacts(
+        calibrator,
+        type(
+            "MetadataOnlyUncertainty",
+            (),
+            {"version": 1, "fit_split": "uncertainty_fit", "sample_count": 100},
+        )(),
+    )
 
 
 def test_feature_pipeline_adds_missing_columns_without_fragmentation_warning():
@@ -93,6 +128,25 @@ def test_probability_calibration_metrics_report_ece_and_reliability_line():
     assert metrics["calibration_ece"] == EXPECTED_ECE
     assert metrics["calibration_slope"] > 0
     assert metrics["calibration_intercept"] < 0
+
+
+def test_probability_calibration_slope_uses_log_odds_scale():
+    probabilities = np.repeat(np.array([0.1, 0.2, 0.4, 0.6, 0.8, 0.9]), 1000)
+    logits = np.log(probabilities / (1.0 - probabilities))
+    observed = 1.0 / (1.0 + np.exp(-(-0.2 + 0.7 * logits)))
+    outcomes = np.concatenate(
+        [
+            np.r_[np.ones(round(rate * 1000)), np.zeros(1000 - round(rate * 1000))]
+            for rate in observed[::1000]
+        ]
+    )
+
+    metrics = GradientBoostingModel.compute_probability_calibration_metrics(
+        pd.Series(outcomes), probabilities
+    )
+
+    assert metrics["calibration_slope"] == pytest.approx(0.7, abs=0.03)
+    assert metrics["calibration_intercept"] == pytest.approx(-0.2, abs=0.03)
 
 
 def test_stable_dataframe_hash_ignores_column_order_but_tracks_content():

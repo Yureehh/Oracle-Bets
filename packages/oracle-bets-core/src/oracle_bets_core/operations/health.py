@@ -657,11 +657,14 @@ def _market_check(store: EvidenceStore, now: datetime) -> HealthCheck:
         if _parse_utc(row["observed_at"]) >= cutoff
     }
     accepted = [
-        row for row in candidates if str(row["match_status"]).startswith("accepted")
+        row
+        for row in candidates
+        if str(row["match_status"]) == "typed_exact"
+        or str(row["match_status"]).startswith("accepted")
     ]
     level = (
         HealthLevel.WARNING
-        if predictions and (not candidates or (accepted and not snapshots))
+        if predictions and (not accepted or not snapshots)
         else HealthLevel.OK
     )
     return HealthCheck(

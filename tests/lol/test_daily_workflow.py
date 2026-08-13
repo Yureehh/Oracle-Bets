@@ -119,8 +119,10 @@ def test_reportable_schedule_excludes_empty_teams_and_equal_esports():
 def test_match_type_from_best_of_is_conservative():
     assert match_type_from_best_of(3) == "bo3"
     assert match_type_from_best_of("5") == "bo5"
-    assert match_type_from_best_of(7) == "bo1"
-    assert match_type_from_best_of(None) == "bo1"
+    with pytest.raises(ValueError, match="1, 3, or 5"):
+        match_type_from_best_of(2)
+    with pytest.raises(ValueError, match="1, 3, or 5"):
+        match_type_from_best_of(None)
 
 
 def test_expected_lineup_is_used_only_when_all_roles_are_unambiguous():
@@ -207,6 +209,30 @@ def test_partial_provider_lineup_never_uses_historical_fallback(monkeypatch):
 
     assert not resolved.ready
     assert resolved.source == "provider_lineup_incomplete"
+    assert resolved.evidence is None
+
+
+def test_lineup_refresh_failure_blocks_historical_fallback(monkeypatch):
+    import lol_bets.daily as daily_module
+
+    monkeypatch.setattr(
+        daily_module,
+        "_roster_history",
+        lambda: (_ for _ in ()).throw(AssertionError("fallback must not be read")),
+    )
+    row = pd.Series(
+        {
+            "team_a": "T1",
+            "team_a_lineup_json": "[]",
+            "lineup_refresh_error": "HTTPError: refresh_unavailable",
+            "start_utc": dt.datetime(2026, 7, 5, tzinfo=dt.UTC),
+        }
+    )
+
+    resolved = _resolve_fixture_roster(row, team="a")
+
+    assert not resolved.ready
+    assert resolved.source == "provider_refresh_failed:HTTPError: refresh_unavailable"
     assert resolved.evidence is None
 
 

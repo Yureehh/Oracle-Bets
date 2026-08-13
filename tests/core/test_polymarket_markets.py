@@ -318,6 +318,28 @@ def test_missing_resolution_source_is_rejected():
     assert assessment.reasons == ("resolution_rules_missing",)
 
 
+def test_search_skips_one_malformed_sibling_market_without_losing_valid_market():
+    valid = _market()
+    malformed = dict(valid, id="bad", outcomes="[]", clobTokenIds="[]")
+    session = _PagedSession(
+        {
+            1: {
+                "events": [
+                    {
+                        "id": "event-1",
+                        "title": "LCK: T1 vs Gen.G",
+                        "markets": [malformed, valid],
+                    }
+                ]
+            }
+        }
+    )
+
+    markets = PolymarketGammaAdapter(session=session).search_markets("T1 Gen.G")
+
+    assert [market.market_id for market in markets] == ["market-1"]
+
+
 @pytest.mark.parametrize(
     ("event_title", "question", "resolution_source", "reason"),
     [

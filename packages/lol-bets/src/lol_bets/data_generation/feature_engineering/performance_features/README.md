@@ -8,5 +8,7 @@ features for entity stats, side win rate, patch win rate, and season win rate.
 Example:
 
 ```python
-from lol_bets.data_generation.feature_engineering.performance_features.performance_metrics import PerformanceMetrics
+from lol_bets.data_generation.feature_engineering.performance_features.performance_metrics import (
+    PerformanceMetrics,
+)
 ```

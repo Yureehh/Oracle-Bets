@@ -8,5 +8,7 @@ implementations. Ratings should be tuned and validated with walk-forward splits.
 Example:
 
 ```python
-from lol_bets.data_generation.feature_engineering.ratings_features.elo import calculate_elo
+from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
+    calculate_elo,
+)
 ```

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from lol_bets.data_generation.series import (
     _next_map_training_tables,
     _series_winner_training_tables,
@@ -104,6 +105,33 @@ def test_series_must_start_at_map_one_and_remain_sequential() -> None:
     assert set(result.rejections["reason"]) == {"series_does_not_start_at_map_1"}
 
 
+def test_map_with_duplicate_team_rows_is_quarantined() -> None:
+    rows = _series_rows(
+        prefix="duplicate",
+        winners=["a", "a"],
+        start=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    rows.append(dict(rows[0]))
+
+    result = reconstruct_series(pd.DataFrame(rows))
+
+    assert result.series.empty
+    assert "invalid_map_identity_or_result" in set(result.rejections["reason"])
+
+
+def test_maps_after_a_series_clinch_are_quarantined() -> None:
+    rows = _series_rows(
+        prefix="post-clinch",
+        winners=["a", "a", "a", "b"],
+        start=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    result = reconstruct_series(pd.DataFrame(rows))
+
+    assert result.series.empty
+    assert set(result.rejections["reason"]) == {"map_after_series_clinch"}
+
+
 def test_series_winner_tables_remove_all_live_series_state() -> None:
     rows = _series_rows(
         prefix="prematch",
@@ -183,3 +211,18 @@ def test_next_map_tables_retain_only_explicit_score_state() -> None:
         "series_score_delta",
     }.issubset(next_teams.columns)
     assert sorted(next_teams["next_map_number"].unique()) == [2, 3]
+
+
+def test_accepted_series_cannot_silently_lose_map_one_features() -> None:
+    teams = pd.DataFrame(
+        _series_rows(
+            prefix="missing-features",
+            winners=["a", "a"],
+            start=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    )
+    manifest = reconstruct_series(teams).series
+    players = teams.iloc[0:0].copy()
+
+    with pytest.raises(RuntimeError, match="complete pre-Map-1"):
+        _series_winner_training_tables(manifest, teams, players)

@@ -185,9 +185,12 @@ def merge_history(
         merged_keyed = incoming_keyed
         removed_rows = len(removed)
     else:
-        retained = existing_keyed[~existing_keyed["__row_key"].isin(incoming_keys)]
+        incoming_gameids = set(incoming_keyed["gameid"])
+        replace_mask = existing_keyed["gameid"].isin(incoming_gameids)
+        replaced = existing_keyed[replace_mask]
+        retained = existing_keyed[~replace_mask]
         merged_keyed = pd.concat([retained, incoming_keyed], ignore_index=True)
-        removed_rows = 0
+        removed_rows = len(set(replaced["__row_key"]) - incoming_keys)
     merged_keyed = merged_keyed.sort_values("__row_key", kind="mergesort")
     merged = merged_keyed.drop(columns="__row_key").reset_index(drop=True)
     manifest = HistoryManifest(

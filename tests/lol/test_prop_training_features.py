@@ -182,3 +182,16 @@ def test_selected_feature_set_requires_a_recommendation_report(tmp_path, monkeyp
 
     with pytest.raises(FileNotFoundError, match="recommendation report"):
         model._apply_feature_set_filter(pd.DataFrame({"feature": [1.0]}))
+
+
+def test_compact_feature_set_never_fails_open_to_full_schema():
+    model = DummyModel(
+        model_name="Dummy",
+        problem_type="classification",
+        team_data=pd.DataFrame(),
+        player_data=pd.DataFrame(),
+        feature_set="compact",
+    )
+
+    with pytest.raises(ValueError, match="matched no columns"):
+        model._apply_feature_set_filter(pd.DataFrame({"unknown_feature": [1.0]}))

@@ -353,6 +353,21 @@ class ProbabilityUncertaintyModel:
         return lower, upper
 
 
+def valid_probability_calibration_artifacts(
+    calibrator: Any,
+    uncertainty: Any,
+) -> bool:
+    """Return whether actionability-grade probability artifacts are complete."""
+    return bool(
+        callable(getattr(calibrator, "predict", None))
+        and callable(getattr(uncertainty, "interval", None))
+        and getattr(calibrator, "version", None) == CALIBRATION_VERSION
+        and getattr(uncertainty, "version", None) == 1
+        and getattr(uncertainty, "fit_split", None) == "uncertainty_fit"
+        and int(getattr(uncertainty, "sample_count", 0)) >= MIN_UNCERTAINTY_SAMPLES
+    )
+
+
 @dataclass
 class SegmentProbabilityCalibrator:
     """One metadata segment's fitted calibration rule and shrinkage metadata."""
@@ -1638,12 +1653,11 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             raise ValueError(f"Unknown feature_set: {self.feature_set}")
 
         if not keep:
-            logger.warning(
-                "Feature set '%s' matched no columns for %s; falling back to full features.",
-                self.feature_set,
-                self.model_name,
+            msg = (
+                f"Feature set '{self.feature_set}' matched no columns for "
+                f"{self.model_name}."
             )
-            return X
+            raise ValueError(msg)
         logger.info(
             "Feature set '%s' keeps %d/%d features for %s.",
             self.feature_set,
@@ -1946,7 +1960,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         *,
         n_bins: int = CALIBRATION_BINS,
     ) -> dict[str, float]:
-        """Return ECE plus reliability-line slope/intercept for probability runs."""
+        """Return ECE plus logistic calibration slope/intercept."""
         y = pd.to_numeric(y_true, errors="coerce").to_numpy(dtype=float)
         p = np.clip(
             np.asarray(y_proba, dtype=float),
@@ -1970,10 +1984,16 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             ece += weight * float(abs(p[in_bin].mean() - y[in_bin].mean()))
 
         metrics = {"calibration_ece": float(ece)}
-        if np.unique(p).size > 1:
-            slope, intercept = np.polyfit(p, y, deg=1)
-            metrics["calibration_slope"] = float(slope)
-            metrics["calibration_intercept"] = float(intercept)
+        if np.unique(p).size > 1 and np.unique(y).size == BINARY_CLASS_UNIQUE_VALUES:
+            logits = np.log(p / (1.0 - p)).reshape(-1, 1)
+            calibration_model = LogisticRegression(
+                C=np.inf,
+                solver="lbfgs",
+                max_iter=1000,
+            )
+            calibration_model.fit(logits, y.astype(int))
+            metrics["calibration_slope"] = float(calibration_model.coef_[0, 0])
+            metrics["calibration_intercept"] = float(calibration_model.intercept_[0])
         return metrics
 
     @staticmethod

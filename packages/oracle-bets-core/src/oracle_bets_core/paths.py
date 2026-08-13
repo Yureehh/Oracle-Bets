@@ -305,6 +305,9 @@ TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR: Path = _model_artifact(
 HYPERPARAMETERS: Final = CONFIG_DIR / "hyperparameters"
 DEFAULT_MODELS_PARAMETERS: Final = HYPERPARAMETERS / "default_models_parameters.json"
 TUNED_RATING_HYPERPARAMETERS: Final = HYPERPARAMETERS / "tuned" / "ratings"
+RATING_HYPERPARAMETER_PROVENANCE: Final = (
+    HYPERPARAMETERS / "rating_parameter_provenance.json"
+)
 TUNED_LIGHTGBM_HYPERPARAMETERS: Final = HYPERPARAMETERS / "tuned" / "lightgbm"
 LEAGUES_ELO_HYPERPARAMETERS: Final = (
     TUNED_RATING_HYPERPARAMETERS / "leagues_elo_hyperparameters.json"

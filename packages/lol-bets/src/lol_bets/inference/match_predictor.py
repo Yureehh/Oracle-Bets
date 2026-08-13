@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -83,8 +84,13 @@ from lol_bets.data_generation.feature_engineering.ratings_features.trueskill imp
 from lol_bets.data_generation.feature_engineering.ratings_features.trueskill import (
     expected_win_probability as trueskill_win_probability,
 )
-from lol_bets.operations.models import resolve_serving_artifact
-from lol_bets.prediction_models.gbdt_model import FeaturePipeline, GradientBoostingModel
+from lol_bets.inference.roster import EXPECTED_ROLES
+from lol_bets.operations.models import ModelRegistry, ModelRegistryError
+from lol_bets.prediction_models.gbdt_model import (
+    FeaturePipeline,
+    GradientBoostingModel,
+    valid_probability_calibration_artifacts,
+)
 from lol_bets.prediction_models.prop_features import (
     build_game_level_outcome_features,
     build_game_level_prop_features,
@@ -98,7 +104,7 @@ if TYPE_CHECKING:
 ELO_FACTOR = 400.0
 RATING_DECIMALS = 3  # for human-facing rounded rating-based probs
 _PROB_EPS = 1e-12  # small epsilon for clipping
-_ROLES = ("top", "jng", "mid", "bot", "sup")
+_ROLES = EXPECTED_ROLES
 TARGET_COLUMNS = {"result", "gamelength", "total_kills", "total_towers"}
 TEAM_LEAGUE_COLUMNS = {"teamid", "league", "strength_pool"}
 LEAGUE_ELO_COLUMNS = {
@@ -117,7 +123,8 @@ MAX_PREDICTION_DRIVERS = 3
 
 
 @lru_cache(maxsize=4)
-def _read_parquet_cached(path: str) -> pd.DataFrame:
+def _read_parquet_version(path: str, mtime_ns: int, size: int) -> pd.DataFrame:
+    _ = mtime_ns, size
     try:
         return pd.read_parquet(path, engine="fastparquet")
     except (ImportError, ValueError):
@@ -125,13 +132,9 @@ def _read_parquet_cached(path: str) -> pd.DataFrame:
         return pd.read_parquet(path)
 
 
-def _serving_path(path) -> Any:
-    """Resolve a checksum-verified champion while supporting bootstrap installs."""
-    return resolve_serving_artifact(
-        path,
-        registry_root=MODEL_REGISTRY_DIR,
-        legacy_root=MODELS_DIR,
-    )
+def _read_parquet_cached(path: str) -> pd.DataFrame:
+    stat = Path(path).stat()
+    return _read_parquet_version(path, stat.st_mtime_ns, stat.st_size)
 
 
 def _require_columns(df: pd.DataFrame, required: set[str], artifact_name: str) -> None:
@@ -140,6 +143,11 @@ def _require_columns(df: pd.DataFrame, required: set[str], artifact_name: str) -
         missing_cols = ", ".join(sorted(missing))
         msg = f"{artifact_name} has outdated schema; missing columns: {missing_cols}"
         raise RuntimeError(msg)
+
+
+def _validate_series_calibration(calibrator: Any, uncertainty: Any) -> None:
+    if not valid_probability_calibration_artifacts(calibrator, uncertainty):
+        raise ValueError("invalid direct-series calibration artifacts")
 
 
 # ── probability helpers ──────────────────────────────────────────────────── #
@@ -317,10 +325,34 @@ class MatchPredictor:
     total_towers_pipeline: FeaturePipeline | None = field(
         default=None, init=False, repr=False
     )
+    serving_model_id: str | None = field(default=None, init=False)
+    serving_artifacts: dict[str, Any] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
-        # artifacts: load lazily but fail fast if missing
+        # Pin one immutable champion before resolving any bundle path.
+        registry = ModelRegistry(MODEL_REGISTRY_DIR)
+        self.serving_model_id = registry.champion_id()
+        if self.serving_model_id is not None:
+            self.serving_artifacts = registry.verified_artifact_paths(
+                model_id=self.serving_model_id
+            )
         self._load_artifacts()
+
+    def _serving_path(self, path: Any) -> Any:
+        if self.serving_model_id is None:
+            return path
+        try:
+            name = Path(path).resolve().relative_to(MODELS_DIR.resolve()).as_posix()
+        except ValueError as error:
+            raise ModelRegistryError(
+                f"serving artifact is outside the model root: {path}"
+            ) from error
+        try:
+            return self.serving_artifacts[name]
+        except KeyError as error:
+            raise ModelRegistryError(
+                f"candidate {self.serving_model_id} does not contain artifact: {name}"
+            ) from error
 
     # ── artifacts ───────────────────────────────────────────────────────── #
 
@@ -328,7 +360,7 @@ class MatchPredictor:
         # sourcery skip: remove-redundant-exception, simplify-single-exception-tuple
         try:
             self.outcome_model = load_model(
-                _serving_path(OUTCOME_PREDICTION_MODEL_PATH)
+                self._serving_path(OUTCOME_PREDICTION_MODEL_PATH)
             )
         except Exception as e:
             msg = f"Failed to load outcome model: {e}"
@@ -336,27 +368,27 @@ class MatchPredictor:
 
         try:
             self.outcome_calibrator = load_model(
-                _serving_path(OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR)
+                self._serving_path(OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR)
             )
         except Exception:
             self.outcome_calibrator = None
 
         try:
             self.outcome_uncertainty = load_model(
-                _serving_path(OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY)
+                self._serving_path(OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY)
             )
         except Exception:
             self.outcome_uncertainty = None
 
         try:
             self.series_winner_model = load_model(
-                _serving_path(SERIES_WINNER_MODEL_PATH)
+                self._serving_path(SERIES_WINNER_MODEL_PATH)
             )
             self.series_winner_pipeline = load_model(
-                _serving_path(SERIES_WINNER_FEATURE_PIPELINE)
+                self._serving_path(SERIES_WINNER_FEATURE_PIPELINE)
             )
             self.series_winner_matchup_schema = load_model(
-                _serving_path(SERIES_WINNER_MATCHUP_SCHEMA)
+                self._serving_path(SERIES_WINNER_MATCHUP_SCHEMA)
             )
         except Exception as error:
             raise RuntimeError(
@@ -365,26 +397,30 @@ class MatchPredictor:
             ) from error
         try:
             self.series_winner_calibrator = load_model(
-                _serving_path(SERIES_WINNER_PROBABILITY_CALIBRATOR)
+                self._serving_path(SERIES_WINNER_PROBABILITY_CALIBRATOR)
             )
-        except Exception:
-            self.series_winner_calibrator = None
-        try:
             self.series_winner_uncertainty = load_model(
-                _serving_path(SERIES_WINNER_PROBABILITY_UNCERTAINTY)
+                self._serving_path(SERIES_WINNER_PROBABILITY_UNCERTAINTY)
             )
-        except Exception:
-            self.series_winner_uncertainty = None
+            _validate_series_calibration(
+                self.series_winner_calibrator,
+                self.series_winner_uncertainty,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Direct series-winner calibration and uncertainty artifacts are "
+                "required before serving."
+            ) from error
 
         try:
             self.next_map_winner_model = load_model(
-                _serving_path(NEXT_MAP_WINNER_MODEL_PATH)
+                self._serving_path(NEXT_MAP_WINNER_MODEL_PATH)
             )
             self.next_map_winner_pipeline = load_model(
-                _serving_path(NEXT_MAP_WINNER_FEATURE_PIPELINE)
+                self._serving_path(NEXT_MAP_WINNER_FEATURE_PIPELINE)
             )
             self.next_map_winner_matchup_schema = load_model(
-                _serving_path(NEXT_MAP_WINNER_MATCHUP_SCHEMA)
+                self._serving_path(NEXT_MAP_WINNER_MATCHUP_SCHEMA)
             )
         except Exception:
             self.next_map_winner_model = None
@@ -392,13 +428,13 @@ class MatchPredictor:
             self.next_map_winner_matchup_schema = None
         try:
             self.next_map_winner_calibrator = load_model(
-                _serving_path(NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR)
+                self._serving_path(NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR)
             )
         except Exception:
             self.next_map_winner_calibrator = None
         try:
             self.next_map_winner_uncertainty = load_model(
-                _serving_path(NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY)
+                self._serving_path(NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY)
             )
         except Exception:
             self.next_map_winner_uncertainty = None
@@ -409,7 +445,11 @@ class MatchPredictor:
             ("total_towers", TOTAL_TOWERS_PREDICTION_MODEL_PATH),
         ):
             try:
-                setattr(self, f"{model_name}_model", load_model(_serving_path(path)))
+                setattr(
+                    self,
+                    f"{model_name}_model",
+                    load_model(self._serving_path(path)),
+                )
             except Exception:
                 setattr(self, f"{model_name}_model", None)
 
@@ -419,7 +459,7 @@ class MatchPredictor:
             ("total_towers_residual_summary", TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY),
         ):
             try:
-                setattr(self, name, load_model(_serving_path(path)))
+                setattr(self, name, load_model(self._serving_path(path)))
             except Exception:
                 setattr(self, name, None)
 
@@ -429,15 +469,17 @@ class MatchPredictor:
             ("total_towers_prop_calibrator", TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR),
         ):
             try:
-                setattr(self, name, load_model(_serving_path(path)))
+                setattr(self, name, load_model(self._serving_path(path)))
             except Exception:
                 setattr(self, name, None)
 
         try:
             self.team_to_league = _read_parquet_cached(
-                str(_serving_path(TEAM_LEAGUES_MAPPING))
+                str(self._serving_path(TEAM_LEAGUES_MAPPING))
             )
-            self.league_to_elo = _read_parquet_cached(str(_serving_path(LEAGUE_ELO)))
+            self.league_to_elo = _read_parquet_cached(
+                str(self._serving_path(LEAGUE_ELO))
+            )
             _require_columns(
                 self.team_to_league,
                 TEAM_LEAGUE_COLUMNS,
@@ -453,13 +495,13 @@ class MatchPredictor:
         # Load feature pipelines for training-inference parity
         try:
             self.outcome_pipeline = load_model(
-                _serving_path(OUTCOME_PREDICTION_FEATURE_PIPELINE)
+                self._serving_path(OUTCOME_PREDICTION_FEATURE_PIPELINE)
             )
         except Exception:
             self.outcome_pipeline = None
         try:
             self.outcome_matchup_schema = load_model(
-                _serving_path(OUTCOME_PREDICTION_MATCHUP_SCHEMA)
+                self._serving_path(OUTCOME_PREDICTION_MATCHUP_SCHEMA)
             )
         except Exception as exc:
             msg = (
@@ -475,7 +517,7 @@ class MatchPredictor:
             ("total_towers_pipeline", TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE),
         ):
             try:
-                setattr(self, pipeline_name, load_model(_serving_path(path)))
+                setattr(self, pipeline_name, load_model(self._serving_path(path)))
             except Exception:
                 setattr(self, pipeline_name, None)
 
@@ -751,6 +793,16 @@ class MatchPredictor:
         return a, b
 
     def calculate_player_stats(self, team1: Team, team2: Team) -> pd.DataFrame:
+        expected_roles = set(_ROLES)
+        for label, frame in (
+            (team1.name, team1.player_stats),
+            (team2.name, team2.player_stats),
+        ):
+            roles = frame["position"].astype(str)
+            if set(roles) != expected_roles or roles.duplicated().any():
+                raise ValueError(
+                    f"Player features for {label} require exactly one row per role."
+                )
         a, b = self.apply_player_stat_modifications(
             team1.player_stats, team2.player_stats
         )
@@ -764,7 +816,7 @@ class MatchPredictor:
         a["gameid"] = gid
         a["side"] = sde
 
-        return a.merge(b, on="position", how="inner", validate="many_to_many")
+        return a.merge(b, on="position", how="inner", validate="one_to_one")
 
     # ── preprocessing / model IO ────────────────────────────────────────── #
 
@@ -892,7 +944,7 @@ class MatchPredictor:
         # Legacy fallback when pipeline not available
         features_path, cats_path = self._feature_paths_for(model_name)
         try:
-            final_features: list[str] = load_model(_serving_path(features_path))
+            final_features: list[str] = load_model(self._serving_path(features_path))
         except Exception as e:
             msg = f"Failed to load final features list ({model_name}): {e}"
             raise RuntimeError(msg) from e
@@ -902,7 +954,7 @@ class MatchPredictor:
 
     def convert_data_types(self, X: pd.DataFrame, cats_path) -> pd.DataFrame:
         try:
-            cat_features: list[str] = load_model(_serving_path(cats_path))
+            cat_features: list[str] = load_model(self._serving_path(cats_path))
         except Exception as e:
             msg = f"Failed to load categorical features list: {e}"
             raise RuntimeError(msg) from e
@@ -1051,6 +1103,18 @@ class MatchPredictor:
                 metadata=matchup_meta,
             )
         )
+        if self.series_winner_uncertainty is not None:
+            calibration_lower, calibration_upper = (
+                values[0] for values in self.series_winner_uncertainty.interval(proba)
+            )
+            canonical_lower += calibration_lower - canonical_probability
+            canonical_upper += calibration_upper - canonical_probability
+        canonical_lower = float(
+            np.clip(canonical_lower, _PROB_EPS, canonical_probability)
+        )
+        canonical_upper = float(
+            np.clip(canonical_upper, canonical_probability, 1.0 - _PROB_EPS)
+        )
         team1_probability, team2_probability = (
             (canonical_probability, complement)
             if team1_is_canonical
@@ -1097,7 +1161,7 @@ class MatchPredictor:
             "blend_weight": float(self.series_winner_model.blend_weight),
             "strategy_version": "independent-winner-v2",
             "model_target": "series_winner",
-            "uncertainty_method": "week_block_member_quantile_with_bias_bound",
+            "uncertainty_method": "week_block_members_plus_held_out_calibration_bias",
             "uncertainty_confidence": getattr(
                 self.series_winner_uncertainty, "confidence", None
             ),
@@ -1206,15 +1270,25 @@ class MatchPredictor:
         unavailable_features: set[str] | None = None,
     ) -> tuple[list[str], list[dict[str, Any]]]:
         """Return local model contributions with an explicit non-causal label."""
+        ensemble_contributions = getattr(
+            self.series_winner_model, "feature_contributions", None
+        )
         raw_model = getattr(
             self.series_winner_model, "raw_model", self.series_winner_model
         )
-        predict = getattr(raw_model, "predict", None)
+        predict = (
+            ensemble_contributions
+            if callable(ensemble_contributions)
+            else getattr(raw_model, "predict", None)
+        )
         if not callable(predict):
             return [], []
         try:
             raw_contributions = np.asarray(
-                predict(X_matchup, pred_contrib=True), dtype=float
+                predict(X_matchup)
+                if callable(ensemble_contributions)
+                else predict(X_matchup, pred_contrib=True),
+                dtype=float,
             )
         except (TypeError, ValueError, AttributeError):
             return [], []

@@ -4,20 +4,27 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from oracle_bets_core.io_utils import load_model
 from oracle_bets_core.paths import (
     MODEL_REGISTRY_DIR,
+    MODELS_DIR,
     SERIES_WINNER_FEATURE_LINEAGE,
     SERIES_WINNER_FEATURE_PIPELINE,
     SERIES_WINNER_MATCHUP_SCHEMA,
     SERIES_WINNER_MODEL_PATH,
+    SERIES_WINNER_PROBABILITY_CALIBRATOR,
+    SERIES_WINNER_PROBABILITY_UNCERTAINTY,
 )
 from oracle_bets_core.pd import pd
 
 from lol_bets.operations.models import ModelRegistry
+from lol_bets.prediction_models.gbdt_model import (
+    valid_probability_calibration_artifacts,
+)
 from lol_bets.prediction_models.winner_model import (
     ENSEMBLE_MEMBERS,
     has_complete_direct_rating_contract,
@@ -63,6 +70,8 @@ def validate_winner_model(
     pipeline_path=SERIES_WINNER_FEATURE_PIPELINE,
     schema_path=SERIES_WINNER_MATCHUP_SCHEMA,
     lineage_path=SERIES_WINNER_FEATURE_LINEAGE,
+    calibrator_path=SERIES_WINNER_PROBABILITY_CALIBRATOR,
+    uncertainty_path=SERIES_WINNER_PROBABILITY_UNCERTAINTY,
     registry_root=MODEL_REGISTRY_DIR,
 ) -> WinnerValidationReport:
     """Fail closed when the serving bundle violates Winner V2's contract."""
@@ -74,10 +83,30 @@ def validate_winner_model(
         failures.append("champion_not_actionable")
 
     try:
+        serving_artifacts = (
+            registry.verified_artifact_paths(model_id=champion_id)
+            if champion_id is not None
+            else {}
+        )
+
+        def serving(path):
+            if not Path(path).resolve().is_relative_to(MODELS_DIR.resolve()):
+                return Path(path)
+            if champion_id is None:
+                return Path(path)
+            relative = Path(path).resolve().relative_to(MODELS_DIR.resolve())
+            return serving_artifacts[relative.as_posix()]
+
+        model_path = serving(model_path)
+        pipeline_path = serving(pipeline_path)
+        schema_path = serving(schema_path)
+        lineage_path = serving(lineage_path)
         model = load_model(model_path)
         pipeline = load_model(pipeline_path)
         schema = load_model(schema_path)
         lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+        calibrator = load_model(serving(calibrator_path))
+        uncertainty = load_model(serving(uncertainty_path))
     except Exception as error:
         failures.append(f"winner_artifact_unreadable:{type(error).__name__}")
         return WinnerValidationReport(
@@ -140,6 +169,12 @@ def validate_winner_model(
             getattr(model, "rating_baseline_probability", None)
         ),
         "exact_probability_complement": probability_contract,
+        "valid_calibrator": valid_probability_calibration_artifacts(
+            calibrator, uncertainty
+        ),
+        "valid_uncertainty": valid_probability_calibration_artifacts(
+            calibrator, uncertainty
+        ),
     }
     failures.extend(name for name, passed in checks.items() if not passed)
     return WinnerValidationReport(

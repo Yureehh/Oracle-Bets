@@ -91,6 +91,12 @@ def _add_lol_commands(sub) -> None:
         help="Promote one reviewed complete retuning run",
     )
     promote_tuning.add_argument("run_id")
+    review_tuning = lol_sub.add_parser(
+        "review-tuning",
+        help="Review Winner V2 tuning on sealed evidence before promotion",
+    )
+    review_tuning.add_argument("run_id")
+    review_tuning.add_argument("--format", choices=["table", "json"], default="table")
 
 
 def _add_train_arguments(train) -> None:
@@ -428,6 +434,25 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
         paths = promote_tuning_run(args.run_id)
         sys.stdout.write(f"Promoted {len(paths)} tuned parameter files.\n")
         return 0
+    if args.action == "review-tuning":
+        import json
+
+        from lol_bets.training import review_tuning_run
+
+        report = review_tuning_run(args.run_id)
+        if args.format == "json":
+            sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        else:
+            reasons = report.get("reasons")
+            reason_text = (
+                ", ".join(str(reason) for reason in reasons)
+                if isinstance(reasons, list)
+                else ""
+            )
+            sys.stdout.write(
+                f"Tuning review: {report['status']}\nReasons: {reason_text or 'none'}\n"
+            )
+        return 0 if report["status"] == "approved" else 2
     if args.action in {"train", "retune"}:
         from lol_bets.data_generation.ingestion.source import (
             OracleSourceReadinessError,

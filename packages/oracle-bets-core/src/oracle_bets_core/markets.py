@@ -150,7 +150,10 @@ class PolymarketGammaAdapter:
             for event in events:
                 raw_markets = event.get("markets", [])
                 for raw_market in raw_markets:
-                    market = self._market_from_payload(raw_market, event=event)
+                    try:
+                        market = self._market_from_payload(raw_market, event=event)
+                    except MarketDataError:
+                        continue
                     if market.market_id in seen_ids:
                         continue
                     markets.append(market)

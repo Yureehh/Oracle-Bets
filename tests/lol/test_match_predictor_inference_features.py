@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from lol_bets.inference.match_predictor import MatchPredictor
 from oracle_bets_core.pd import pd
 
@@ -31,6 +32,16 @@ def _players(strength: float) -> pd.DataFrame:
             "ema_kda": [3.0 + strength / 100, 3.1 + strength / 100],
         }
     )
+
+
+def _full_players(strength: float) -> pd.DataFrame:
+    frames = []
+    for index, role in enumerate(("top", "jng", "mid", "bot", "sup")):
+        row = _players(strength + index).iloc[[0]].copy()
+        row["playername"] = role
+        row["position"] = role
+        frames.append(row)
+    return pd.concat(frames, ignore_index=True)
 
 
 def test_player_lineup_likelihoods_are_available_for_inference() -> None:
@@ -102,6 +113,21 @@ def test_player_pivot_drops_target_columns_for_inference() -> None:
     assert "top_gamelength" not in out.columns
     assert "top_total_kills" not in out.columns
     assert "top_total_towers" not in out.columns
+
+
+def test_player_feature_assembly_rejects_duplicate_or_missing_roles() -> None:
+    predictor = MatchPredictor.__new__(MatchPredictor)
+    duplicate = _full_players(0)
+    duplicate.loc[duplicate["position"] == "sup", "position"] = "mid"
+    team_a = SimpleNamespace(
+        name="Alpha", player_stats=duplicate, team_stats={}, side="Blue"
+    )
+    team_b = SimpleNamespace(
+        name="Beta", player_stats=_full_players(10), team_stats={}, side="Red"
+    )
+
+    with pytest.raises(ValueError, match="exactly one row per role"):
+        predictor.calculate_player_stats(team_a, team_b)
 
 
 def test_team_series_context_overrides_stale_flattened_values() -> None:
@@ -260,7 +286,13 @@ def test_match_prediction_is_exactly_complementary_when_team_order_reverses() ->
     assert forward["team1_win_probability"] + forward["team2_win_probability"] == 1.0
     assert forward["team1_probability_lower"] == reverse["team2_probability_lower"]
     assert forward["team1_probability_upper"] == reverse["team2_probability_upper"]
-    assert forward["uncertainty_method"] == "week_block_member_quantile_with_bias_bound"
+    assert (
+        forward["uncertainty_method"]
+        == "week_block_members_plus_held_out_calibration_bias"
+    )
+    assert forward["team1_probability_lower"] == pytest.approx(
+        forward["team1_win_probability"] - 0.10
+    )
     assert forward["drivers"]
     assert "not causal proof" in forward["drivers"][0]
 

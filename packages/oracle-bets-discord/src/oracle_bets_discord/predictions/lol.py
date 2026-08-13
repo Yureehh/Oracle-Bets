@@ -20,7 +20,6 @@ from oracle_bets_core.pd import pd
 from oracle_bets_discord.formatting import (
     MESSAGE_LIMIT,
 )
-from oracle_bets_discord.predictions.best_ofs import bo1, bo2, bo3, bo5
 
 if TYPE_CHECKING:
     from lol_bets.inference.team import Team
@@ -328,80 +327,13 @@ def _base_market_rows(
     match_type: str,
     team_a_name: str,
     team_b_name: str,
-    map_a: float,
-    map_b: float,
+    series_a: float,
+    series_b: float,
 ) -> list[WinnerMarketRow]:
-    if match_type == "bo1":
-        d = bo1(map_a, map_b)
-        return [
-            WinnerMarketRow("Map Winner", team_a_name, d["t1"]),
-            WinnerMarketRow("Map Winner", team_b_name, d["t2"]),
-        ]
-    if match_type == "bo2":
-        d = bo2(map_a, map_b)
-        return [
-            WinnerMarketRow("Game 1 Winner", team_a_name, map_a),
-            WinnerMarketRow("Game 1 Winner", team_b_name, map_b),
-            WinnerMarketRow("2-0", team_a_name, d["t1_2_0"]),
-            WinnerMarketRow("1-1", "Draw", d["tie_1_1"]),
-            WinnerMarketRow("2-0", team_b_name, d["t2_0_2"]),
-        ]
-    if match_type == "bo3":
-        d = bo3(map_a, map_b)
-        return [
-            WinnerMarketRow("Game 1 Winner", team_a_name, map_a),
-            WinnerMarketRow("Game 1 Winner", team_b_name, map_b),
-            WinnerMarketRow("Series Winner", team_a_name, d["t1_series"]),
-            WinnerMarketRow("Series Winner", team_b_name, d["t2_series"]),
-            WinnerMarketRow("Over 2.5 Maps", "Over", d["exactly_3"]),
-            WinnerMarketRow("Under 2.5 Maps", "Under", 1.0 - d["exactly_3"]),
-            WinnerMarketRow("Game Handicap 1.5", f"{team_a_name} -1.5", d["t1_2_0"]),
-            WinnerMarketRow(
-                "Game Handicap 1.5", f"{team_b_name} +1.5", 1.0 - d["t1_2_0"]
-            ),
-            WinnerMarketRow("Game Handicap 1.5", f"{team_b_name} -1.5", d["t2_2_0"]),
-            WinnerMarketRow(
-                "Game Handicap 1.5", f"{team_a_name} +1.5", 1.0 - d["t2_2_0"]
-            ),
-        ]
-    d = bo5(map_a, map_b)
-    game4_a = d["at_least_4"] * map_a + (1.0 - d["at_least_4"]) * 0.5
-    game4_b = d["at_least_4"] * map_b + (1.0 - d["at_least_4"]) * 0.5
-    game5_a = d["exactly_5"] * map_a + (1.0 - d["exactly_5"]) * 0.5
-    game5_b = d["exactly_5"] * map_b + (1.0 - d["exactly_5"]) * 0.5
+    market = "Map Winner" if match_type == "bo1" else "Series Winner"
     return [
-        WinnerMarketRow("Series Winner", team_a_name, d["t1_series"]),
-        WinnerMarketRow("Series Winner", team_b_name, d["t2_series"]),
-        WinnerMarketRow("Over 3.5 Maps", "Over", d["at_least_4"]),
-        WinnerMarketRow("Under 3.5 Maps", "Under", 1.0 - d["at_least_4"]),
-        WinnerMarketRow("Over 4.5 Maps", "Over", d["exactly_5"]),
-        WinnerMarketRow("Under 4.5 Maps", "Under", 1.0 - d["exactly_5"]),
-        WinnerMarketRow(
-            "Game Handicap 1.5", f"{team_a_name} -1.5", d["t1_3_0"] + d["t1_3_1"]
-        ),
-        WinnerMarketRow(
-            "Game Handicap 1.5", f"{team_b_name} +1.5", 1.0 - d["t1_3_0"] - d["t1_3_1"]
-        ),
-        WinnerMarketRow(
-            "Game Handicap 1.5", f"{team_b_name} -1.5", d["t2_0_3"] + d["t2_1_3"]
-        ),
-        WinnerMarketRow(
-            "Game Handicap 1.5", f"{team_a_name} +1.5", 1.0 - d["t2_0_3"] - d["t2_1_3"]
-        ),
-        WinnerMarketRow("Game Handicap 2.5", f"{team_a_name} -2.5", d["t1_3_0"]),
-        WinnerMarketRow("Game Handicap 2.5", f"{team_b_name} +2.5", 1.0 - d["t1_3_0"]),
-        WinnerMarketRow("Game Handicap 2.5", f"{team_b_name} -2.5", d["t2_0_3"]),
-        WinnerMarketRow("Game Handicap 2.5", f"{team_a_name} +2.5", 1.0 - d["t2_0_3"]),
-        WinnerMarketRow("Game 1 Winner", team_a_name, map_a),
-        WinnerMarketRow("Game 1 Winner", team_b_name, map_b),
-        WinnerMarketRow("Game 2 Winner", team_a_name, map_a),
-        WinnerMarketRow("Game 2 Winner", team_b_name, map_b),
-        WinnerMarketRow("Game 3 Winner", team_a_name, map_a),
-        WinnerMarketRow("Game 3 Winner", team_b_name, map_b),
-        WinnerMarketRow("Game 4 Winner", team_a_name, game4_a),
-        WinnerMarketRow("Game 4 Winner", team_b_name, game4_b),
-        WinnerMarketRow("Game 5 Winner", team_a_name, game5_a),
-        WinnerMarketRow("Game 5 Winner", team_b_name, game5_b),
+        WinnerMarketRow(market, team_a_name, series_a),
+        WinnerMarketRow(market, team_b_name, series_b),
     ]
 
 
@@ -560,30 +492,9 @@ def _format_market_table_row(
 
 def _default_unpriced_rows(
     rows: list[WinnerMarketRow],
-    match_type: str,
     priced_keys: set[tuple[str, str]],
 ) -> list[WinnerMarketRow]:
-    if match_type == "bo5":
-        wanted = {
-            ("Series Winner", rows[0].pick),
-            ("Series Winner", rows[1].pick),
-            ("Over 3.5 Maps", "Over"),
-            ("Over 4.5 Maps", "Over"),
-            ("Game Handicap 1.5", rows[6].pick),
-            ("Game Handicap 1.5", rows[8].pick),
-        }
-    else:
-        wanted = {(row.market, row.pick) for row in rows[:6]}
-    if match_type != "bo1":
-        wanted.update(
-            (row.market, row.pick) for row in rows if row.market == "Game 1 Winner"
-        )
-    return [
-        row
-        for row in rows
-        if (row.market, row.pick) in wanted
-        and (row.market, row.pick) not in priced_keys
-    ]
+    return [row for row in rows if (row.market, row.pick) not in priced_keys]
 
 
 def format_winner_market_output(
@@ -610,7 +521,7 @@ def format_winner_market_output(
     priced_rows, priced_keys, unsupported = _price_rows(
         rows, quotes, blue_team_name, red_team_name
     )
-    unpriced_rows = _default_unpriced_rows(rows, match_type, priced_keys)
+    unpriced_rows = _default_unpriced_rows(rows, priced_keys)
     table_rows = priced_rows + unpriced_rows
 
     staking = get_staking_config()
@@ -627,8 +538,8 @@ def format_winner_market_output(
             f"Source: {probability_source} | Confidence: {confidence_label(warnings)}",
             *(
                 [
-                    "Evidence: map probabilities come from the champion map model; "
-                    "series markets are derived from them."
+                    "Evidence: probabilities come directly from the independent "
+                    "prematch series-winner model."
                 ]
                 if match_type != "bo1"
                 else []

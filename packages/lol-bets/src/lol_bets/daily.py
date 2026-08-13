@@ -33,8 +33,10 @@ from oracle_bets_core.operations import (
     daily_run_key,
     run_workflow,
 )
+from oracle_bets_core.operations.paper_evidence import daily_position_exposure
 from oracle_bets_core.paths import (
     EVIDENCE_DB,
+    INTERIM_PLAYER_DATA,
     MODEL_REGISTRY_DIR,
     RAW_DATA,
     REPORTS_DIR,
@@ -449,6 +451,16 @@ def _resolve_fixture_roster(
     team: str,
 ) -> ResolvedFixtureRoster:
     """Prefer a complete provider five; use history only when it is absent."""
+    raw_refresh_error = row.get("lineup_refresh_error")
+    refresh_error = (
+        ""
+        if raw_refresh_error is None or pd.isna(raw_refresh_error)
+        else str(raw_refresh_error).strip()
+    )
+    if refresh_error:
+        return ResolvedFixtureRoster(
+            get_empty_roster(), False, f"provider_refresh_failed:{refresh_error}"
+        )
     provider_roster, provider_ready = expected_roster_from_schedule(row, team=team)
     if provider_ready:
         return ResolvedFixtureRoster(
@@ -516,10 +528,11 @@ def _provider_lineup_absent(raw: Any) -> bool:
     return isinstance(parsed, list) and not parsed
 
 
-@lru_cache(maxsize=1)
-def _roster_history() -> pd.DataFrame:
+@lru_cache(maxsize=2)
+def _roster_history_version(mtime_ns: int, size: int) -> pd.DataFrame:
+    _ = mtime_ns, size
     return pd.read_parquet(
-        RAW_DATA,
+        INTERIM_PLAYER_DATA,
         columns=[
             "date",
             "gameid",
@@ -530,6 +543,11 @@ def _roster_history() -> pd.DataFrame:
             "position",
         ],
     )
+
+
+def _roster_history() -> pd.DataFrame:
+    stat = INTERIM_PLAYER_DATA.stat()
+    return _roster_history_version(stat.st_mtime_ns, stat.st_size)
 
 
 def _evaluate_team_roster_gate(
@@ -572,11 +590,11 @@ def _evaluate_team_roster_gate(
 def match_type_from_best_of(best_of: Any) -> str:
     try:
         value = int(best_of)
-    except (TypeError, ValueError):
-        return "bo1"
-    if value in {1, 2, 3, 5}:
+    except (TypeError, ValueError) as error:
+        raise ValueError("best_of must be one of 1, 3, or 5") from error
+    if value in {1, 3, 5}:
         return f"bo{value}"
-    return "bo1"
+    raise ValueError("best_of must be one of 1, 3, or 5")
 
 
 def _normalize_market_text(value: str) -> set[str]:
@@ -1419,6 +1437,7 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
     clob_client_factory: Callable[[], Any] = PolymarketClobClient,
     market_sleeper: Callable[[float], None] = time.sleep,
     market_run_key: str | None = None,
+    existing_exposure_units: float = 0.0,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     schedule = _actionable_schedule(schedule)
     if schedule.empty:
@@ -1538,6 +1557,7 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
                 markets=typed_markets,
                 clob_client=clob_client_factory(),
                 model_healthy=model_actionable,
+                existing_exposure_units=existing_exposure_units,
                 run_key=market_run_key,
                 sleeper=market_sleeper,
             )
@@ -1819,7 +1839,9 @@ def _refresh_expected_lineups(
         )
     except Exception as exc:
         logger.exception("Expected-lineup refresh failed.")
-        return schedule, DailyStepResult(
+        failed = schedule.copy()
+        failed["lineup_refresh_error"] = f"{type(exc).__name__}: refresh_unavailable"
+        return failed, DailyStepResult(
             "lineups",
             True,
             f"unavailable ({exc}); embedded fixture lineups retained",
@@ -1859,6 +1881,12 @@ def _fetch_daily_schedule(
             schedule = pd.read_parquet(SCHEDULE)
         except Exception:
             raise exc from None
+        age = dt.datetime.now(dt.UTC).timestamp() - SCHEDULE.stat().st_mtime
+        if age > 2 * 60 * 60:
+            raise RuntimeError(
+                "PandaScore fetch failed and the stored schedule is older than two "
+                "hours; refusing stale fixtures."
+            ) from exc
         detail = f"fetch failed ({exc}); using stored schedule"
     if cfg.leagues is None:
         raise ValueError("daily league filter was not resolved")
@@ -1976,6 +2004,10 @@ def run_daily_lol_workflow(  # noqa: PLR0915
                 "lol",
                 scheduled_for=scheduled_for,
                 config=effective_config,
+            ),
+            existing_exposure_units=daily_position_exposure(
+                EvidenceStore(EVIDENCE_DB),
+                at=run_now,
             ),
         )
         messages.extend(prediction_messages)

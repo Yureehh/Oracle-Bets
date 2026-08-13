@@ -122,6 +122,7 @@ def apply_ema(df: pd.DataFrame, identity: str, columns: Iterable[str]) -> pd.Dat
     """
     out = df.copy()
     new_cols = {}  # <- collect here
+    day = pd.to_datetime(out["date"], errors="raise").dt.normalize()
 
     for col in tqdm(
         list(columns),
@@ -131,6 +132,9 @@ def apply_ema(df: pd.DataFrame, identity: str, columns: Iterable[str]) -> pd.Dat
         grp = out.groupby(identity, sort=False, observed=True)[col]
         ema_after = grp.transform(_ema)
         ema_before = ema_after.groupby(out[identity], sort=False).shift()
+        ema_before = ema_before.groupby([out[identity], day], sort=False).transform(
+            lambda values: values.iloc[0]
+        )
 
         new_cols[f"ema_{col}_after"] = ema_after
         new_cols[f"ema_{col}_before"] = ema_before

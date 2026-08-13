@@ -80,6 +80,7 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
     markets: (Sequence[PolymarketMarket] | Mapping[str, Sequence[PolymarketMarket]]),
     clob_client: OrderBookClient,
     model_healthy: bool,
+    existing_exposure_units: float = 0.0,
     run_key: str | None = None,
     interval_seconds: int = 45,
     sleeper: Callable[[float], None] = time.sleep,
@@ -282,9 +283,12 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
                 ],
             }
         )
-    selected_ids = {
-        decision.proposal_id for decision in select_fixture_actions(decisions)
-    }
+    selected = select_fixture_actions(
+        decisions,
+        existing_exposure_units=existing_exposure_units,
+    )
+    selected_ids = {decision.proposal_id for decision in selected}
+    selected_fixtures = {decision.fixture_id for decision in selected}
     for index, row in enumerate(action_rows):
         if (
             row["state"] == ActionState.PAPER_ACTIONABLE
@@ -292,7 +296,11 @@ def evaluate_daily_market_actions(  # noqa: PLR0912, PLR0915
         ):
             action_rows[index] = row | {
                 "state": ActionState.BLOCKED.value,
-                "reason": "correlated_fixture_exposure",
+                "reason": (
+                    "correlated_fixture_exposure"
+                    if row["fixture_id"] in selected_fixtures
+                    else "daily_exposure_cap"
+                ),
                 "stake_units": 0.0,
             }
     return DailyMarketEvaluation(tuple(review_rows), tuple(action_rows))

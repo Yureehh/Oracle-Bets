@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
+from lol_bets import training
 from lol_bets.operations.provenance import (
     DirtyWorktreeError,
     require_clean_repository,
@@ -49,3 +51,18 @@ def test_dirty_or_untracked_source_blocks_registered_training(tmp_path):
         require_clean_repository(tmp_path)
 
     assert "?? new.py" in str(error.value)
+
+
+def test_rating_parameter_provenance_is_bound_to_actual_values(tmp_path, monkeypatch):
+    source = Path("config/lol/hyperparameters/tuned/ratings")
+    tuned = tmp_path / "ratings"
+    tuned.mkdir()
+    for path in source.glob("*.json"):
+        (tuned / path.name).write_bytes(path.read_bytes())
+    monkeypatch.setattr(training, "TUNED_RATING_HYPERPARAMETERS", tuned)
+
+    training._validate_predeclared_rating_parameters()
+    (tuned / "team_elo_hyperparameters.json").write_text('{"k_factor": 999}')
+
+    with pytest.raises(RuntimeError, match="differ from their predeclared defaults"):
+        training._validate_predeclared_rating_parameters()

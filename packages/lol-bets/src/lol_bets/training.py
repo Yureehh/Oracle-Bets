@@ -24,24 +24,31 @@ import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+import numpy as np
+
 if TYPE_CHECKING:
     from pathlib import Path
 
-from oracle_bets_core.io_utils import load_training_data, store_model
+from oracle_bets_core.io_utils import load_model, load_training_data, store_model
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import (
+    DEFAULT_MODELS_PARAMETERS,
     LEAGUE_ELO,
     MODELS_DIR,
     NEXT_MAP_PLAYER_DATA,
     NEXT_MAP_TEAM_DATA,
+    RATING_HYPERPARAMETER_PROVENANCE,
     RAW_DATA,
     REPORTS_DIR,
+    SERIES_MANIFEST,
+    SERIES_REJECTIONS,
     SERIES_WINNER_PLAYER_DATA,
     SERIES_WINNER_TEAM_DATA,
     TEAM_LEAGUES_MAPPING,
     TRAINING_PLAYER_DATA,
     TRAINING_TEAM_DATA,
     TUNED_LIGHTGBM_HYPERPARAMETERS,
+    TUNED_RATING_HYPERPARAMETERS,
 )
 from oracle_bets_core.pd import pd
 
@@ -51,7 +58,10 @@ from lol_bets.operations.provenance import (
     RepositoryProvenance,
     require_clean_repository,
 )
-from lol_bets.prediction_models.gbdt_model import DEFAULT_SELECTED_MAX_FEATURES
+from lol_bets.prediction_models.gbdt_model import (
+    DEFAULT_SELECTED_MAX_FEATURES,
+    valid_probability_calibration_artifacts,
+)
 from lol_bets.prediction_models.lightgbm_model import LightGBMModel
 from lol_bets.prediction_models.prop_features import PROP_TARGETS
 from lol_bets.prediction_models.winner_model import WinnerLightGBMModel
@@ -64,6 +74,9 @@ TrainingFeatureSet = Literal["full", "compact", "selected"]
 CalibrationMode = Literal["auto", "none"]
 CalibrationMethod = Literal["raw", "sigmoid", "isotonic", "auto"]
 MODEL_FILE_EXTENSION = "pkl"
+MIN_CALIBRATION_REVIEW_SLOPE = 0.8
+MAX_CALIBRATION_REVIEW_SLOPE = 1.2
+MAX_CALIBRATION_REVIEW_INTERCEPT = 0.10
 
 
 @dataclass(frozen=True)
@@ -410,6 +423,14 @@ def _training_frames_for_config(
     return pd.read_parquet(paths[0]), pd.read_parquet(paths[1])
 
 
+def _feature_set_for_config(
+    cfg: ModelConfig,
+    requested: TrainingFeatureSet,
+) -> TrainingFeatureSet:
+    """Use every eligible prematch feature for Winner V2 targets."""
+    return "full" if cfg.dataset in {"series", "next_map"} else requested
+
+
 def train_models(  # noqa: PLR0915
     feature_selection: FeatureSelectionMethod = "none",
     targets: str = "all",
@@ -459,6 +480,10 @@ def train_models(  # noqa: PLR0915
         "parameter_source": parameter_source,
         "tuning_run_id": tuning_run_id,
         "parameter_provenance": _parameter_provenance_by_target(),
+        "feature_set_by_target": {
+            cfg.target_name: _feature_set_for_config(cfg, feature_set)
+            for cfg in selected_models
+        },
         "code_version": repository.revision,
         "worktree_clean": repository.clean,
     }
@@ -478,7 +503,7 @@ def train_models(  # noqa: PLR0915
                 training_player_data=cfg_player,
                 feature_selection=feature_selection,
                 force_retune=force_retune,
-                feature_set=feature_set,
+                feature_set=_feature_set_for_config(cfg, feature_set),
                 max_features=max_features,
                 calibration=calibration,
                 calibration_method=calibration_method,
@@ -541,13 +566,133 @@ def train_models(  # noqa: PLR0915
 
 def _training_preflight() -> RepositoryProvenance:
     repository = require_clean_repository()
+    try:
+        rating_provenance = json.loads(
+            RATING_HYPERPARAMETER_PROVENANCE.read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Rating hyperparameter provenance is missing or invalid."
+        ) from exc
+    if (
+        rating_provenance.get("source") != "predeclared_defaults"
+        or rating_provenance.get("target_fitted") is not False
+    ):
+        raise RuntimeError(
+            "Winner V2 requires predeclared, target-independent rating parameters."
+        )
+    _validate_predeclared_rating_parameters()
     LoLBetsModule().training_artifact_health().raise_if_unhealthy()
     return repository
+
+
+def _validate_predeclared_rating_parameters() -> None:
+    defaults = json.loads(DEFAULT_MODELS_PARAMETERS.read_text(encoding="utf-8"))
+    shared = defaults["shared"]
+    expected = {
+        "leagues_elo_hyperparameters.json": defaults["leagues_elo"],
+    }
+    families = {
+        "elo": {
+            "k_factor": defaults["elo"]["k_factor"],
+            "initial_elo": defaults["elo"]["initial"],
+            "elo_divisor": defaults["elo"]["elo_divisor"],
+        },
+        "glicko": {key: defaults["glicko2"][key] for key in ("mu", "phi", "sigma")},
+        "pl": {key: defaults["plackett_luce"][key] for key in ("mu", "sigma")},
+        "trueskill": {
+            key: defaults["trueskill"][key] for key in ("mu", "sigma", "beta")
+        },
+    }
+    shared_keys = (
+        "decay_factor",
+        "transfer_factor",
+        "initial_elo_adjustment_factor",
+        "position_reset_factor",
+    )
+    for entity in ("player", "team"):
+        for family, base in families.items():
+            expected[f"{entity}_{family}_hyperparameters.json"] = base | {
+                key: shared[key] for key in shared_keys
+            }
+    for filename, expected_values in expected.items():
+        path = TUNED_RATING_HYPERPARAMETERS / filename
+        try:
+            actual = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Rating parameter file is invalid: {path}") from exc
+        if actual != expected_values:
+            raise RuntimeError(
+                "Rating parameters differ from their predeclared defaults: "
+                f"{path}. Rating retuning must be isolated inside the Winner V2 "
+                "development window before these values may change."
+            )
 
 
 def _sha256_file(path: Path) -> str:
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def _tuning_review_input_fingerprint(run_root: Path) -> str:
+    """Bind a tuning approval to every model/evaluation file it reviewed."""
+    model_name = "SeriesWinnerPrediction_LightGBM"
+    artifact_root = run_root / "artifacts"
+    paths = (
+        run_root / "manifest.json",
+        run_root / model_name / "tuned_hyperparameters.json",
+        artifact_root / "_evaluation" / model_name / "features.parquet",
+        artifact_root / "_evaluation" / model_name / "labels.parquet",
+        artifact_root / model_name / f"{model_name}.pkl",
+        artifact_root / model_name / f"{model_name}_feature_pipeline.pkl",
+        artifact_root / model_name / f"{model_name}_probability_calibrator.pkl",
+        artifact_root / model_name / f"{model_name}_probability_uncertainty.pkl",
+    )
+    digest = hashlib.sha256()
+    for path in paths:
+        if not path.is_file():
+            raise FileNotFoundError(f"Tuning review input is missing: {path}")
+        digest.update(path.relative_to(run_root).as_posix().encode())
+        digest.update(_sha256_file(path).encode())
+    return digest.hexdigest()
+
+
+def _same_tuned_parameter(actual: object, expected: object) -> bool:
+    if isinstance(expected, float):
+        if not isinstance(actual, (int, float, str)):
+            return False
+        try:
+            return math.isclose(float(actual), expected, rel_tol=0.0, abs_tol=1e-12)
+        except (TypeError, ValueError):
+            return False
+    return actual == expected
+
+
+def _winner_parameter_failures(model: object, payload: dict) -> list[str]:
+    """Bind the reviewed Winner ensemble to the parameter payload being promoted."""
+    expected = payload.get("params")
+    members = getattr(model, "members", ())
+    if not isinstance(expected, dict) or not expected:
+        return ["winner_tuned_parameters_missing"]
+    if not members:
+        return ["winner_ensemble_members_missing"]
+    failures: list[str] = []
+    for index, member in enumerate(members):
+        get_params = getattr(member, "get_params", None)
+        if not callable(get_params):
+            failures.append(f"winner_member_parameters_unavailable:{index}")
+            continue
+        actual = get_params()
+        mismatched = sorted(
+            key
+            for key, value in expected.items()
+            if key not in actual or not _same_tuned_parameter(actual[key], value)
+        )
+        if mismatched:
+            failures.append(
+                f"winner_member_parameter_mismatch:{index}:{','.join(mismatched)}"
+            )
+    return failures
 
 
 def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR0915
@@ -581,6 +726,24 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
         raise ValueError(
             f"Tuning run is not complete for its requested targets: {manifest_path}"
         )
+    if any(config.target_name == "series_winner" for config in selected):
+        review_path = run_root / "tuning_review.json"
+        try:
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "Winner tuning must pass `oracle-bets lol review-tuning` before "
+                "parameter promotion."
+            ) from exc
+        reviewed_fingerprint = review.get("review_input_sha256")
+        if (
+            review.get("status") != "approved"
+            or review.get("run_id") != run_id
+            or reviewed_fingerprint != _tuning_review_input_fingerprint(run_root)
+        ):
+            raise ValueError("Winner tuning review is missing, stale, or blocked.")
+    else:
+        reviewed_fingerprint = None
 
     names = tuple(_lightgbm_model_name(cfg.model_name) for cfg in selected)
     payloads: dict[str, dict] = {}
@@ -604,7 +767,8 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
         candidate = run_root / name / "tuned_hyperparameters.json"
         if not candidate.is_file():
             raise FileNotFoundError(f"Tuning candidate is missing: {candidate}")
-        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        content = candidate.read_bytes()
+        payload = json.loads(content)
         metadata = payload.get("metadata", {})
         params = payload.get("params")
         if (
@@ -626,6 +790,12 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
                 f"Tuning candidates have inconsistent provenance: {candidate}"
             )
         payloads[name] = payload
+
+    if (
+        reviewed_fingerprint is not None
+        and reviewed_fingerprint != _tuning_review_input_fingerprint(run_root)
+    ):
+        raise ValueError("Winner tuning review changed during promotion.")
 
     for payload in payloads.values():
         payload["metadata"] |= {
@@ -657,6 +827,118 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
                 destination.write_bytes(content)
         raise
     return tuple(promoted)
+
+
+def review_tuning_run(run_id: str) -> dict[str, object]:
+    """Review a Winner V2 Optuna run against its sealed rating baseline."""
+    from oracle_bets_core.evidence.performance import prediction_quality
+
+    from lol_bets.operations.models import (
+        PromotionEvidence,
+        PromotionPolicy,
+        _binary_log_losses,
+        _cohort_replay_losses,
+        evaluate_promotion,
+    )
+    from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+
+    run_root = REPORTS_DIR / "training" / "runs" / run_id
+    manifest_path = run_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (
+        manifest.get("status") != "completed"
+        or manifest.get("retune") is not True
+        or "series_winner" not in manifest.get("targets_requested", [])
+    ):
+        raise ValueError("Run is not a completed Winner V2 tuning study.")
+    review_fingerprint = _tuning_review_input_fingerprint(run_root)
+
+    model_name = "SeriesWinnerPrediction_LightGBM"
+    artifact_root = run_root / "artifacts"
+    evaluation = artifact_root / "_evaluation" / model_name
+    raw = pd.read_parquet(evaluation / "features.parquet")
+    labels = pd.read_parquet(evaluation / "labels.parquet")
+    actual = pd.to_numeric(labels["actual"], errors="raise").to_numpy(dtype=float)
+    metadata = labels.drop(columns=["actual"])
+    model_root = artifact_root / model_name
+    pipeline = load_model(model_root / f"{model_name}_feature_pipeline.pkl")
+    model = load_model(model_root / f"{model_name}.pkl")
+    calibrator = load_model(model_root / f"{model_name}_probability_calibrator.pkl")
+    uncertainty = load_model(model_root / f"{model_name}_probability_uncertainty.pkl")
+    tuning_payload = json.loads(
+        (run_root / model_name / "tuned_hyperparameters.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    transformed = pipeline.transform(raw)
+    baseline = np.asarray(model.rating_baseline_probability(transformed), dtype=float)
+    candidate = np.asarray(
+        calibrator.predict(model.predict_proba(transformed)[:, 1], metadata=metadata),
+        dtype=float,
+    )
+    baseline_quality = prediction_quality(
+        actual.astype(int).tolist(), baseline.tolist()
+    )
+    candidate_quality = prediction_quality(
+        actual.astype(int).tolist(), candidate.tolist()
+    )
+    operational_failures = _winner_parameter_failures(model, tuning_payload)
+    if not valid_probability_calibration_artifacts(calibrator, uncertainty):
+        operational_failures.append("invalid_probability_calibration_artifacts")
+    evidence = PromotionEvidence(
+        champion_log_losses=tuple(_binary_log_losses(actual, baseline)),
+        candidate_log_losses=tuple(_binary_log_losses(actual, candidate)),
+        champion_brier=baseline_quality.brier,
+        candidate_brier=candidate_quality.brier,
+        champion_ece=baseline_quality.calibration_error,
+        candidate_ece=candidate_quality.calibration_error,
+        cohort_log_loss=_cohort_replay_losses(labels, actual, baseline, candidate),
+        operational_failures=tuple(operational_failures),
+    )
+    decision = evaluate_promotion(evidence, policy=PromotionPolicy.OPTUNA)
+    calibration = GradientBoostingModel.compute_probability_calibration_metrics(
+        pd.Series(actual), candidate
+    )
+    reasons = list(decision.reasons)
+    slope = calibration.get("calibration_slope")
+    intercept = calibration.get("calibration_intercept")
+    if slope is None or not (
+        MIN_CALIBRATION_REVIEW_SLOPE <= float(slope) <= MAX_CALIBRATION_REVIEW_SLOPE
+    ):
+        reasons.append("calibration_slope_outside_0.8_1.2")
+    if intercept is None or abs(float(intercept)) > MAX_CALIBRATION_REVIEW_INTERCEPT:
+        reasons.append("calibration_intercept_above_0.10")
+    if _tuning_review_input_fingerprint(run_root) != review_fingerprint:
+        raise ValueError("Winner tuning artifacts changed during review.")
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "review_input_sha256": review_fingerprint,
+        "status": "approved" if decision.promote and not reasons else "blocked",
+        "reasons": list(dict.fromkeys(reasons)),
+        "rating_baseline": {
+            "log_loss": baseline_quality.log_loss,
+            "brier": baseline_quality.brier,
+            "ece": baseline_quality.calibration_error,
+        },
+        "candidate": {
+            "log_loss": candidate_quality.log_loss,
+            "brier": candidate_quality.brier,
+            "ece": candidate_quality.calibration_error,
+        },
+        "calibration": calibration,
+        "relative_improvement": decision.relative_improvement,
+        "confidence_lower_bound": decision.confidence_lower_bound,
+        "cohorts": {
+            name: {"baseline": values[0], "candidate": values[1], "count": values[2]}
+            for name, values in evidence.cohort_log_loss.items()
+        },
+    }
+    _atomic_write_text(
+        run_root / "tuning_review.json",
+        json.dumps(result, indent=2, sort_keys=True) + "\n",
+    )
+    return result
 
 
 def _write_training_manifest(report_root: Path, payload: dict) -> Path:
@@ -857,6 +1139,17 @@ def _register_training_candidate(
         metrics=metrics,
         created_at=dt.datetime.now(dt.UTC),
         model_root=staging_root,
+        training_paths=(
+            RAW_DATA,
+            TRAINING_TEAM_DATA,
+            TRAINING_PLAYER_DATA,
+            SERIES_MANIFEST,
+            SERIES_REJECTIONS,
+            SERIES_WINNER_TEAM_DATA,
+            SERIES_WINNER_PLAYER_DATA,
+            NEXT_MAP_TEAM_DATA,
+            NEXT_MAP_PLAYER_DATA,
+        ),
     )
     shutil.rmtree(staging_root)
     return candidate_id
