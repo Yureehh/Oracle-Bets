@@ -726,6 +726,11 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
         raise ValueError(
             f"Tuning run is not complete for its requested targets: {manifest_path}"
         )
+    if any(config.target_name == "next_map_winner" for config in selected):
+        raise ValueError(
+            "Next-map tuning promotion is disabled until an independent sealed "
+            "review gate is implemented."
+        )
     if any(config.target_name == "series_winner" for config in selected):
         review_path = run_root / "tuning_review.json"
         try:

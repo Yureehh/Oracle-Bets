@@ -193,6 +193,9 @@ def _tuning_candidate(model_name: str) -> dict:
 
 
 def _write_complete_tuning_manifest(root) -> None:
+    selected = training.parse_training_targets(
+        "map_winner,gamelength,total_kills,total_towers"
+    )
     root.mkdir(parents=True, exist_ok=True)
     manifest_path = root / "manifest.json"
     manifest_path.write_text(
@@ -200,9 +203,8 @@ def _write_complete_tuning_manifest(root) -> None:
             {
                 "status": "completed",
                 "retune": True,
-                "targets_trained": [
-                    config.model_name for config in training.ALL_MODEL_CONFIGS
-                ],
+                "targets_requested": [config.target_name for config in selected],
+                "targets_trained": [config.model_name for config in selected],
                 "targets_failed": [],
             }
         )
@@ -273,7 +275,7 @@ def test_promote_tuning_run_publishes_only_requested_targets(tmp_path, monkeypat
         lambda _root: "test-review-inputs",
     )
     run_root = reports / "training" / "runs" / "winner-v2"
-    selected = training.parse_training_targets("series_winner,next_map_winner")
+    selected = training.parse_training_targets("series_winner")
     run_root.mkdir(parents=True)
     run_root.joinpath("manifest.json").write_text(
         json.dumps(
@@ -310,7 +312,30 @@ def test_promote_tuning_run_publishes_only_requested_targets(tmp_path, monkeypat
     ]
 
 
-def test_promote_tuning_run_atomically_publishes_complete_bundle(tmp_path, monkeypatch):
+def test_promote_tuning_run_rejects_unreviewed_next_map_target(tmp_path, monkeypatch):
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(training, "REPORTS_DIR", reports)
+    run_root = reports / "training" / "runs" / "next-map"
+    run_root.mkdir(parents=True)
+    run_root.joinpath("manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "retune": True,
+                "targets_requested": ["next_map_winner"],
+                "targets_trained": ["NextMapWinnerPrediction"],
+                "targets_failed": [],
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="independent sealed review gate"):
+        training.promote_tuning_run("next-map")
+
+
+def test_promote_tuning_run_atomically_publishes_requested_targets(
+    tmp_path, monkeypatch
+):
     reports = tmp_path / "reports"
     tuned = tmp_path / "tuned"
     monkeypatch.setattr(training, "REPORTS_DIR", reports)
@@ -321,10 +346,10 @@ def test_promote_tuning_run_atomically_publishes_complete_bundle(tmp_path, monke
         lambda _root: "test-review-inputs",
     )
 
-    names = [
-        training._lightgbm_model_name(config.model_name)
-        for config in training.ALL_MODEL_CONFIGS
-    ]
+    selected = training.parse_training_targets(
+        "map_winner,gamelength,total_kills,total_towers"
+    )
+    names = [training._lightgbm_model_name(config.model_name) for config in selected]
     _write_complete_tuning_manifest(reports / "training" / "runs" / "complete")
     for name in names:
         candidate = (
@@ -358,10 +383,10 @@ def test_promote_tuning_run_rejects_mixed_provenance(tmp_path, monkeypatch):
     )
     run_root = reports / "training" / "runs" / "mixed"
     _write_complete_tuning_manifest(run_root)
-    names = [
-        training._lightgbm_model_name(config.model_name)
-        for config in training.ALL_MODEL_CONFIGS
-    ]
+    selected = training.parse_training_targets(
+        "map_winner,gamelength,total_kills,total_towers"
+    )
+    names = [training._lightgbm_model_name(config.model_name) for config in selected]
     for index, name in enumerate(names):
         candidate = run_root / name / "tuned_hyperparameters.json"
         candidate.parent.mkdir(parents=True)
