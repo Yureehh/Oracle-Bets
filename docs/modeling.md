@@ -60,8 +60,10 @@ Explicit retuning:
 - runs seeded Optuna research;
 - writes candidate JSON inside the run report;
 - does not mutate production parameters or models;
-- promotes only the complete requested target set after owner review (normally
-  `series_winner,next_map_winner` for the one-time V2 study);
+- promotes direct-series parameters only after `review-tuning` approves the
+  sealed rating-baseline, calibration, and cohort evidence;
+- does not yet permit experimental next-map parameter promotion because that
+  target still needs an equivalent sealed review gate;
 - marks reviewed parameter files with their Optuna run provenance;
 - is followed by one full training whose model candidate still requires manual
   champion promotion.
@@ -76,7 +78,8 @@ prediction-distribution shift, and top feature/family stability. Drift findings
 are warning-only review evidence; they do not create or bypass promotion gates.
 Importance is diagnostic, not proof of causality.
 
-The production default is the tracked `compact` feature contract. The
-`selected` mode is research-only and requires a prior temporal recommendation
-report; it fails clearly when that report is absent instead of silently
-training every available feature or ignoring `--max-features`.
+Winner V2 targets use the full eligible prematch feature contract. Legacy map
+and prop targets use the tracked `compact` contract by default. The `selected`
+mode is research-only and requires a prior temporal recommendation report; it
+fails clearly when that report is absent instead of silently training every
+available feature or ignoring `--max-features`.

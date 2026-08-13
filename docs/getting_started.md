@@ -61,11 +61,16 @@ uv run oracle-bets lol reconcile-history
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol build-series
 uv run oracle-bets lol retune \
-  --targets series_winner,next_map_winner --feature-set compact
+  --targets series_winner --feature-set full
+uv run oracle-bets lol review-tuning <run-id> --format json
 ```
 
 Review the printed run directory, especially temporal metrics, calibration,
-probability-sum checks, cohorts, and feature attribution. Then:
+probability-sum checks, cohorts, and feature attribution. Continue only when
+`review-tuning` returns `status: approved`; a blocked study must remain isolated.
+The experimental next-map target still needs its own sealed tuning-review gate
+and is not part of the bootstrap procedure yet. After both Winner V2 targets
+have reviewed fixed parameters:
 
 ```bash
 uv run oracle-bets lol promote-tuning <run-id>
@@ -90,7 +95,9 @@ uv run oracle-bets discord doctor --live
 ```
 
 This explicit first pass retunes because the canonical symmetric feature schema
-changed. Future scheduled runs retrain without retuning.
+changed. Future scheduled runs retrain without retuning. As of August 14, 2026,
+study `20260813T233204_354446Z` is blocked and the subsequent promotion/training
+commands must not be run for that study.
 
 If existing evidence and the model registry are valuable, back them up first
 and omit the `data/state` cleanup line. Removing it intentionally resets paper

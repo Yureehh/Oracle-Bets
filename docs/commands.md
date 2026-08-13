@@ -75,11 +75,19 @@ uv run oracle-bets lol market-watch
 # Routine retraining: no Optuna
 uv run oracle-bets lol train --targets all --feature-set compact
 
-# One required Winner V2 research retune, manual parameter promotion, then retrain
-uv run oracle-bets lol retune --targets series_winner,next_map_winner --feature-set compact
+# Winner V2 research retune; continue only if review status is approved
+uv run oracle-bets lol retune --targets series_winner --feature-set full
+uv run oracle-bets lol review-tuning <run-id> --format json
 uv run oracle-bets lol promote-tuning <run-id>
+
+# Only after series and next-map targets both have reviewed fixed parameters
 uv run oracle-bets lol train --targets all --feature-set compact
 ```
+
+The experimental next-map target does not yet have the independent tuning
+review required for parameter promotion. Do not use a combined retune to bypass
+that missing gate. The August 14, 2026 series study
+`20260813T233204_354446Z` is blocked and must not be promoted.
 
 Source refresh, ingestion, retraining, and retuning are separate operations.
 The daily workflow refreshes the public cache before ingestion. Retraining updates
