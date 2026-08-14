@@ -80,6 +80,56 @@ def test_winner_v2_targets_always_use_full_feature_contract():
     )
 
 
+def test_routine_training_preflight_requires_all_selected_winner_parameters(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tmp_path)
+    selected = training.parse_training_targets("series_winner,next_map_winner")
+
+    with pytest.raises(
+        RuntimeError,
+        match="reviewed fixed parameters for: series_winner, next_map_winner",
+    ):
+        training._validate_reviewed_winner_parameters(
+            selected,
+            force_retune=False,
+        )
+
+
+def test_routine_training_preflight_accepts_independently_reviewed_parameters(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tmp_path)
+    selected = training.parse_training_targets("series_winner,next_map_winner")
+    for config in selected:
+        model_name = training.WINNER_TUNING_MODELS[config.target_name]
+        tmp_path.joinpath(f"{model_name}.json").write_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "model_name": model_name,
+                        "source": "optuna_reviewed",
+                        "promoted_tuning_run_id": f"run-{config.target_name}",
+                    },
+                    "params": {"num_leaves": 15},
+                }
+            )
+        )
+
+    training._validate_reviewed_winner_parameters(selected, force_retune=False)
+
+
+def test_research_retune_does_not_require_existing_reviewed_parameters(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tmp_path)
+
+    training._validate_reviewed_winner_parameters(
+        training.parse_training_targets("series_winner"),
+        force_retune=True,
+    )
+
+
 def test_training_parser_supports_validate_data_action():
     args = build_parser().parse_args(["lol", "validate-data"])
 

@@ -451,6 +451,8 @@ def train_models(  # noqa: PLR0915
 ) -> Path:
     """Train all configured models using shared training tables."""
     repository = _training_preflight()
+    selected_models = parse_training_targets(targets)
+    _validate_reviewed_winner_parameters(selected_models, force_retune=force_retune)
 
     try:
         logger.info("Loading training data…")
@@ -464,7 +466,6 @@ def train_models(  # noqa: PLR0915
 
     run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S_%fZ")
     report_root = REPORTS_DIR / "training" / "runs" / run_id
-    selected_models = parse_training_targets(targets)
     promotable = tuple(selected_models) == ALL_MODEL_CONFIGS and not force_retune
     artifact_root = (
         MODELS_DIR / ".staging" / run_id if promotable else report_root / "artifacts"
@@ -590,6 +591,42 @@ def _training_preflight() -> RepositoryProvenance:
     _validate_predeclared_rating_parameters()
     LoLBetsModule().training_artifact_health().raise_if_unhealthy()
     return repository
+
+
+def _validate_reviewed_winner_parameters(
+    selected_models: tuple[ModelConfig, ...],
+    *,
+    force_retune: bool,
+) -> None:
+    """Fail routine training before any target runs without reviewed V2 params."""
+    if force_retune:
+        return
+    missing: list[str] = []
+    for config in selected_models:
+        if config.target_name not in WINNER_TUNING_MODELS:
+            continue
+        model_name = WINNER_TUNING_MODELS[config.target_name]
+        path = TUNED_LIGHTGBM_HYPERPARAMETERS / f"{model_name}.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            missing.append(config.target_name)
+            continue
+        metadata = payload.get("metadata") or {}
+        if (
+            metadata.get("model_name") != model_name
+            or metadata.get("source") != "optuna_reviewed"
+            or not metadata.get("promoted_tuning_run_id")
+            or not isinstance(payload.get("params"), dict)
+            or not payload["params"]
+        ):
+            missing.append(config.target_name)
+    if missing:
+        targets = ", ".join(missing)
+        raise RuntimeError(
+            "Routine Winner V2 training requires reviewed fixed parameters for: "
+            f"{targets}. Review and promote independent research runs first."
+        )
 
 
 def _validate_predeclared_rating_parameters() -> None:
