@@ -19,8 +19,9 @@
 | Blocked | P0 | First Winner V2 Optuna study | Run `20260813T233204_354446Z` improved aggregate/actionable log loss but failed calibration-intercept and cohort-regression gates; parameters were not promoted |
 | Done | P0 | Calibration-safe tuning selection | Unsafe slope/intercept candidates cannot win calibration selection merely through lower log loss |
 | Done | P0 | Experimental next-map tuning review | Independent study required; bootstrap and cohorts cluster by series; complete bundles require both Winner decisions |
+| Blocked | P0 | First next-map Optuna study | Run `20260814T005027_980518Z` improved aggregate log loss by 2.72% but improvement was not statistically proven; ECE, calibration intercept, and multiple cohorts failed; parameters were not promoted |
 | Done | P0 | Holdout exposure enforcement | Completed studies expose their final metrics; reviews record date window/label hash, and overlapping later studies cannot promote parameters |
-| Now | P0 | Winner V2 research correction | Wait for genuinely post-exposure series labels, then run the predeclared calibration/cohort-safe study on a non-overlapping final holdout |
+| Now | P0 | Winner V2 research correction | Wait for genuinely post-exposure labels for each target, then run the predeclared calibration/cohort-safe studies on non-overlapping final holdouts |
 | Blocked | P0 | Clean V2 rebuild and manual first promotion | Requires reviewed fixed parameters for both Winner V2 targets and all sealed rating-baseline/calibration/cohort gates |
 | Next | P1 | Accumulate prematch paper evidence | At least 200 manually settled signals with positive lower-95% ROI and CLV plus healthy calibration |
 | Later | P2 | Reactive evidence sufficiency | Separate 200-series-clustered gate; no martingale or overlapping prematch exposure |
@@ -28,8 +29,9 @@
 | Later | P3 | Portfolio sizing | Correlation-aware exposure before any real-money sizing claim |
 | Later | P3 | Counter-Strike / real-sport adapters | Only after LoL has credible sealed and settled evidence |
 
-The repository is not proven profitable. The first direct-series study was
-correctly rejected, the legacy champion remains non-actionable, and scheduled
-daily execution stays disabled until a complete healthy V2 bundle exists.
+The repository is not proven profitable. The first direct-series and next-map
+studies were correctly rejected, the legacy champion remains non-actionable,
+and scheduled daily execution stays disabled until a complete healthy V2
+bundle exists.
 Real-money consideration remains blocked until every evidence gate is met;
 individual predictions can always lose.

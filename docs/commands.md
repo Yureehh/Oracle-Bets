@@ -93,6 +93,11 @@ Both Winner targets now have independent review code. A combined retune is
 rejected, and both independent decisions must pass complete-bundle promotion.
 The August 14, 2026 series study
 `20260813T233204_354446Z` is blocked and must not be promoted.
+The independent next-map study `20260814T005027_980518Z` is also blocked: its
+average log loss improved, but statistical confidence, calibration, and cohort
+gates failed. Neither run produced reviewed fixed Winner V2 parameters, so a
+complete routine training run must remain blocked until fresh non-overlapping
+evidence supports both targets.
 
 Source refresh, ingestion, retraining, and retuning are separate operations.
 The daily workflow refreshes the public cache before ingestion. Retraining updates
