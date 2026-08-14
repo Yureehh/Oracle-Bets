@@ -12,6 +12,7 @@ from lol_bets.operations.winner_validation import validate_winner_model
 from lol_bets.prediction_models.winner_model import (
     DIRECT_RATING_STATE_COLUMNS,
     WinnerBlendClassifier,
+    WinnerLightGBMModel,
 )
 from oracle_bets_core.pd import pd
 
@@ -24,6 +25,68 @@ class _ProbabilityModel:
     def predict_proba(self, frame: pd.DataFrame) -> np.ndarray:
         values = np.resize(self.values, len(frame))
         return np.column_stack([1.0 - values, values])
+
+
+def _winner_calibration_trainer() -> WinnerLightGBMModel:
+    trainer = object.__new__(WinnerLightGBMModel)
+    trainer.calibration = "auto"
+    trainer.calibration_method = "raw"
+    return trainer
+
+
+def _balanced_probability_rows() -> tuple[pd.DataFrame, pd.Series]:
+    probabilities = np.tile([0.2, 0.8], 40)
+    return (
+        pd.DataFrame({"probability": probabilities}),
+        pd.Series(np.tile([0, 1], 40)),
+    )
+
+
+def test_serving_blend_requires_safe_calibration_selection() -> None:
+    trainer = _winner_calibration_trainer()
+    X, y = _balanced_probability_rows()
+    model = SimpleNamespace(
+        blend_weight=1.0,
+        predict_proba=lambda frame: np.column_stack(
+            [1.0 - frame["probability"], frame["probability"]]
+        ),
+    )
+    observed: list[bool] = []
+
+    def stop_after_selection(_candidates, *, require_safe_calibration):
+        observed.append(require_safe_calibration)
+        raise RuntimeError("selection observed")
+
+    trainer._select_probability_calibration_candidate = stop_after_selection
+
+    with pytest.raises(RuntimeError, match="selection observed"):
+        trainer.fit_probability_calibrator(model, X, y, X, y, X, y)
+
+    assert observed == [True]
+
+
+def test_rating_baseline_is_a_transparent_comparator_not_a_serving_gate() -> None:
+    trainer = _winner_calibration_trainer()
+    trainer._store_winner_report = lambda *_args, **_kwargs: None
+    X, y = _balanced_probability_rows()
+    model = SimpleNamespace(
+        baseline=_ProbabilityModel([0.2, 0.8]),
+        rating_columns=("probability",),
+    )
+    observed: list[bool] = []
+
+    def select_first(candidates, *, require_safe_calibration):
+        observed.append(require_safe_calibration)
+        candidates[0]["selection_eligible"] = False
+        candidates[0]["selection_reasons"] = ["comparator_not_in_safe_band"]
+        return candidates[0]
+
+    trainer._select_probability_calibration_candidate = select_first
+
+    calibrator = trainer._fit_rating_baseline_calibrator(model, X, y, X, y, X, y)
+
+    assert calibrator is not None
+    assert observed == [False]
 
 
 class _OffsetCalibrator:

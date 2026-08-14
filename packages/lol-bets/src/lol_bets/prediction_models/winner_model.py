@@ -380,7 +380,7 @@ class WinnerLightGBMModel(LightGBMModel):
                     )
         selected = self._select_probability_calibration_candidate(
             candidates,
-            require_safe_calibration=False,
+            require_safe_calibration=True,
         )
         model.blend_weight = float(selected["blend_weight"])
         self._store_winner_report(
@@ -456,7 +456,7 @@ class WinnerLightGBMModel(LightGBMModel):
             candidates.append({"method": method, "metrics": metrics})
         selected = self._select_probability_calibration_candidate(
             candidates,
-            require_safe_calibration=True,
+            require_safe_calibration=False,
         )
         selected_method = selected["method"]
         self._store_winner_report(
