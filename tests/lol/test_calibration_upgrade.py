@@ -247,6 +247,29 @@ def test_winner_calibration_fails_when_no_candidate_is_safe() -> None:
         )
 
 
+def test_rating_baseline_can_remain_an_explicitly_unsafe_comparator() -> None:
+    candidates = [
+        {
+            "method": "raw",
+            "metrics": {
+                "log_loss": 0.61,
+                "brier": 0.21,
+                "calibration_slope": 0.7,
+                "calibration_intercept": 0.12,
+            },
+        }
+    ]
+
+    selected = GradientBoostingModel._select_probability_calibration_candidate(
+        candidates,
+        require_safe_calibration=False,
+    )
+
+    assert selected["method"] == "raw"
+    assert selected["selection_eligible"] is False
+    assert selected["selection_reasons"]
+
+
 def test_probability_uncertainty_uses_held_out_residual_intervals() -> None:
     probabilities = np.tile(np.array([0.3, 0.7]), 50)
     actual = np.tile(np.array([0, 1]), 50)

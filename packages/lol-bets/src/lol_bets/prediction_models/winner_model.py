@@ -380,7 +380,7 @@ class WinnerLightGBMModel(LightGBMModel):
                     )
         selected = self._select_probability_calibration_candidate(
             candidates,
-            require_safe_calibration=True,
+            require_safe_calibration=False,
         )
         model.blend_weight = float(selected["blend_weight"])
         self._store_winner_report(
@@ -469,7 +469,9 @@ class WinnerLightGBMModel(LightGBMModel):
                         "selection_reasons": candidate["selection_reasons"],
                     }
                     for candidate in candidates
-                ]
+                ],
+                "rating_baseline_selected_safe": selected["selection_eligible"],
+                "rating_baseline_selection_reasons": selected["selection_reasons"],
             },
             merge=True,
         )

@@ -37,6 +37,11 @@ on log loss, Brier score, ECE, calibration slope/intercept, reliability tables,
 probability-sum invariants, and league/patch/roster cohorts. Accuracy is
 secondary.
 
+The rating-only model is an unchanged-prematch comparator, not the serving
+candidate. It uses its best selection-split calibration and records whether
+that calibration meets the absolute band. An imperfect comparator does not
+waive the candidate's absolute calibration gates or its required improvement.
+
 Calibration candidates are evaluated on held-out game rows and selected
 conservatively. Winner calibration candidates whose held-out slope or intercept
 falls outside the production safety range are ineligible even when their log
