@@ -8,6 +8,7 @@ from lol_bets.prediction_models.prop_features import (
 from oracle_bets_core.pd import pd
 
 EXPECTED_RATING_DELTA = -8.0
+EXPECTED_NEXT_MAP_NUMBER = 2
 
 
 def test_regression_preprocessing_does_not_filter_by_full_dataset_quantiles() -> None:
@@ -108,3 +109,44 @@ def test_outcome_matchup_features_are_canonical_and_side_free() -> None:
     assert "delta_side_win_likelihood" not in X_game
     assert y_game.tolist() == [0.0]
     assert meta_game.loc[0, "canonical_teamname"] == "Alpha"
+
+
+def test_outcome_matchup_preserves_series_cluster_identity() -> None:
+    features = pd.DataFrame({"rating": [20.0, 12.0], "next_map_number": [2, 2]})
+    metadata = pd.DataFrame(
+        {
+            "gameid": ["series-a:map-2", "series-a:map-2"],
+            "series_id": ["series-a", "series-a"],
+            "source_gameid": ["map-1", "map-1"],
+            "target_gameid": ["map-2", "map-2"],
+            "teamid": ["z", "a"],
+            "teamname": ["Zulu", "Alpha"],
+        }
+    )
+
+    _, _, meta_game = build_game_level_outcome_features(
+        features, metadata, pd.Series([1, 0])
+    )
+
+    assert meta_game.loc[0, "series_id"] == "series-a"
+    assert meta_game.loc[0, "source_gameid"] == "map-1"
+    assert meta_game.loc[0, "target_gameid"] == "map-2"
+    assert meta_game.loc[0, "next_map_number"] == EXPECTED_NEXT_MAP_NUMBER
+
+
+def test_outcome_matchup_rejects_conflicting_series_cluster_identity() -> None:
+    metadata = pd.DataFrame(
+        {
+            "gameid": ["g1", "g1"],
+            "series_id": ["series-a", "series-b"],
+            "teamid": ["z", "a"],
+            "teamname": ["Zulu", "Alpha"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="conflicting identity metadata 'series_id'"):
+        build_game_level_outcome_features(
+            pd.DataFrame({"rating": [20.0, 12.0]}),
+            metadata,
+            pd.Series([1, 0]),
+        )

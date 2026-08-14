@@ -801,7 +801,34 @@ def test_review_next_map_tuning_bootstraps_by_series(tmp_path, monkeypatch):
     assert result["status"] == "approved"
     assert result["target"] == "next_map_winner"
     assert result["bootstrap_unit"] == "series_id"
+    assert result["cluster_identity_source"] == "sealed_series_id"
     assert observed == {"bootstrap_units": 50, "cohort_units": 50}
+
+
+def test_next_map_review_recovers_strict_synthetic_series_identity() -> None:
+    labels = pd.DataFrame(
+        {
+            "gameid": [
+                "series-0123456789abcdef01234567:map-2",
+                "series-0123456789abcdef01234567:map-3",
+                "series-fedcba9876543210fedcba98:map-2",
+            ]
+        }
+    )
+
+    recovered, source = training._next_map_review_labels(labels)
+
+    assert source == "derived_from_synthetic_gameid"
+    assert recovered["series_id"].tolist() == [
+        "series-0123456789abcdef01234567",
+        "series-0123456789abcdef01234567",
+        "series-fedcba9876543210fedcba98",
+    ]
+
+
+def test_next_map_review_rejects_unverified_game_identity() -> None:
+    with pytest.raises(ValueError, match="complete series_id clusters"):
+        training._next_map_review_labels(pd.DataFrame({"gameid": ["provider-map-123"]}))
 
 
 @pytest.mark.parametrize(

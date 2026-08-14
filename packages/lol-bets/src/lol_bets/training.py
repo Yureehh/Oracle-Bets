@@ -20,6 +20,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import re
 import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -1037,6 +1038,9 @@ def _winner_tuning_review_evidence(
     if not valid_probability_calibration_artifacts(calibrator, uncertainty):
         operational_failures.append("invalid_probability_calibration_artifacts")
     cluster_col = "series_id" if target == "next_map_winner" else None
+    cluster_identity_source = None
+    if cluster_col is not None:
+        labels, cluster_identity_source = _next_map_review_labels(labels)
     if cluster_col is None:
         baseline_losses = _binary_log_losses(actual, baseline)
         candidate_losses = _binary_log_losses(actual, candidate)
@@ -1079,6 +1083,7 @@ def _winner_tuning_review_evidence(
     return {
         "bootstrap_unit": cluster_col or "series",
         "bootstrap_units": len(baseline_losses),
+        "cluster_identity_source": cluster_identity_source,
         "status": "approved" if decision.promote and not reasons else "blocked",
         "reasons": list(dict.fromkeys(reasons)),
         "rating_baseline": {
@@ -1099,6 +1104,31 @@ def _winner_tuning_review_evidence(
             for name, values in evidence.cohort_log_loss.items()
         },
     }
+
+
+_SYNTHETIC_NEXT_MAP_ID = re.compile(r"^(series-[0-9a-f]{24}):map-([2-9][0-9]*)$")
+
+
+def _next_map_review_labels(labels: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """Return complete next-map cluster labels without changing sealed outcomes."""
+    if "series_id" in labels and labels["series_id"].notna().all():
+        values = labels["series_id"].astype(str).str.strip()
+        if values.ne("").all():
+            output = labels.copy()
+            output["series_id"] = values
+            return output, "sealed_series_id"
+
+    if "gameid" not in labels or labels["gameid"].isna().any():
+        raise ValueError("sealed labels require complete series_id clusters")
+    matches = [
+        _SYNTHETIC_NEXT_MAP_ID.fullmatch(str(value).strip())
+        for value in labels["gameid"]
+    ]
+    if not matches or any(match is None for match in matches):
+        raise ValueError("sealed labels require complete series_id clusters")
+    output = labels.copy()
+    output["series_id"] = [match.group(1) for match in matches if match is not None]
+    return output, "derived_from_synthetic_gameid"
 
 
 def _write_training_manifest(report_root: Path, payload: dict) -> Path:

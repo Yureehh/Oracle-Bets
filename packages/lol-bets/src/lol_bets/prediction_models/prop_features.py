@@ -16,6 +16,12 @@ TARGET_TOLERANCE = 1e-9
 TEAMS_PER_GAME = 2
 MATCHUP_EXCLUDED_FEATURES = frozenset({"first_pick", "side_win_likelihood"})
 MATCHUP_INVARIANT_NUMERIC = frozenset({"best_of", "maps_completed", "next_map_number"})
+MATCHUP_IDENTITY_METADATA = (
+    "series_id",
+    "source_gameid",
+    "target_gameid",
+    "next_map_number",
+)
 
 
 def is_prop_target(target_col: str) -> bool:
@@ -83,26 +89,26 @@ def build_game_level_outcome_features(
                 )
                 out[f"pair_{column}"] = "|".join(values) if values else "Unknown"
         feature_rows.append(out)
-        meta_rows.append(
-            {
-                "gameid": gameid,
-                "date": first.get("date"),
-                "league": first.get("league"),
-                "season": first.get("season"),
-                "patch": first.get("patch"),
-                "split": first.get("split"),
-                "playoffs": first.get("playoffs"),
-                "league_region": first.get("league_region"),
-                "league_tier": first.get("league_tier"),
-                "strength_pool": first.get("strength_pool"),
-                "best_of": first.get("best_of"),
-                "is_bo1": first.get("is_bo1"),
-                "is_bo3": first.get("is_bo3"),
-                "is_bo5": first.get("is_bo5"),
-                "canonical_teamid": first["teamid"],
-                "canonical_teamname": first["teamname"],
-            }
-        )
+        meta_payload = {
+            "gameid": gameid,
+            "date": first.get("date"),
+            "league": first.get("league"),
+            "season": first.get("season"),
+            "patch": first.get("patch"),
+            "split": first.get("split"),
+            "playoffs": first.get("playoffs"),
+            "league_region": first.get("league_region"),
+            "league_tier": first.get("league_tier"),
+            "strength_pool": first.get("strength_pool"),
+            "best_of": first.get("best_of"),
+            "is_bo1": first.get("is_bo1"),
+            "is_bo3": first.get("is_bo3"),
+            "is_bo5": first.get("is_bo5"),
+            "canonical_teamid": first["teamid"],
+            "canonical_teamname": first["teamname"],
+        }
+        meta_payload.update(_matchup_identity_metadata(game, gameid))
+        meta_rows.append(meta_payload)
         if y_team is not None:
             target = _finite_or_nan(first.get("__target"))
             if not np.isfinite(target) or target not in {0.0, 1.0}:
@@ -113,6 +119,19 @@ def build_game_level_outcome_features(
     X_game = pd.DataFrame(feature_rows)
     y_game = pd.Series(target_rows, name=target_col) if y_team is not None else None
     return X_game, y_game, pd.DataFrame(meta_rows)
+
+
+def _matchup_identity_metadata(game: pd.DataFrame, gameid: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for column in MATCHUP_IDENTITY_METADATA:
+        if column not in game.columns:
+            continue
+        values = game[column].dropna().unique().tolist()
+        if len(values) != 1:
+            msg = f"Game '{gameid}' has conflicting identity metadata '{column}'."
+            raise ValueError(msg)
+        payload[column] = values[0]
+    return payload
 
 
 def build_game_level_prop_features(
