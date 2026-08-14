@@ -17,8 +17,10 @@
 | Done | P2 | Read-only timing observer | Hourly evidence/report snapshots; provisional 48–24h policy |
 | Done | P2 | Experimental next-map dataset/model | Frozen prematch plus manually sourced map state; shadow-only safety |
 | Blocked | P0 | First Winner V2 Optuna study | Run `20260813T233204_354446Z` improved aggregate/actionable log loss but failed calibration-intercept and cohort-regression gates; parameters were not promoted |
-| Now | P0 | Winner V2 research correction | Predeclare and validate a calibration/cohort-safe revision without reusing the exposed final holdout for model selection |
-| Next | P0 | Experimental next-map tuning review | Add an independent sealed review gate before any next-map parameters can enter a complete bundle |
+| Done | P0 | Calibration-safe tuning selection | Unsafe slope/intercept candidates cannot win calibration selection merely through lower log loss |
+| Done | P0 | Experimental next-map tuning review | Independent study required; bootstrap and cohorts cluster by series; complete bundles require both Winner decisions |
+| Done | P0 | Holdout exposure enforcement | Completed studies expose their final metrics; reviews record date window/label hash, and overlapping later studies cannot promote parameters |
+| Now | P0 | Winner V2 research correction | Wait for genuinely post-exposure series labels, then run the predeclared calibration/cohort-safe study on a non-overlapping final holdout |
 | Blocked | P0 | Clean V2 rebuild and manual first promotion | Requires reviewed fixed parameters for both Winner V2 targets and all sealed rating-baseline/calibration/cohort gates |
 | Next | P1 | Accumulate prematch paper evidence | At least 200 manually settled signals with positive lower-95% ROI and CLV plus healthy calibration |
 | Later | P2 | Reactive evidence sufficiency | Separate 200-series-clustered gate; no martingale or overlapping prematch exposure |

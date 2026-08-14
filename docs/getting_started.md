@@ -68,12 +68,26 @@ uv run oracle-bets lol review-tuning <run-id> --format json
 Review the printed run directory, especially temporal metrics, calibration,
 probability-sum checks, cohorts, and feature attribution. Continue only when
 `review-tuning` returns `status: approved`; a blocked study must remain isolated.
-The experimental next-map target still needs its own sealed tuning-review gate
-and is not part of the bootstrap procedure yet. After both Winner V2 targets
-have reviewed fixed parameters:
+The review records the sealed holdout date window and labels. Completion already
+reports final-test metrics, so those rows are exposed forever for that target
+even if the review command is skipped; an overlapping later study is
+blocked from promotion even if its metrics look better.
+
+Run next-map research independently—never combine the two Winner targets in one
+Optuna invocation:
 
 ```bash
-uv run oracle-bets lol promote-tuning <run-id>
+uv run oracle-bets lol retune \
+  --targets next_map_winner --feature-set full
+uv run oracle-bets lol review-tuning <next-map-run-id> --format json
+```
+
+Next-map evidence is clustered by series. Promote each approved parameter run
+separately, then train the complete compatible bundle:
+
+```bash
+uv run oracle-bets lol promote-tuning <series-run-id>
+uv run oracle-bets lol promote-tuning <next-map-run-id>
 uv run oracle-bets lol train --targets all --feature-set compact
 uv run oracle-bets model list
 uv run oracle-bets model review <candidate-id> --format json
@@ -97,7 +111,8 @@ uv run oracle-bets discord doctor --live
 This explicit first pass retunes because the canonical symmetric feature schema
 changed. Future scheduled runs retrain without retuning. As of August 14, 2026,
 study `20260813T233204_354446Z` is blocked and the subsequent promotion/training
-commands must not be run for that study.
+commands must not be run for that study. Its final series holdout is exposed;
+another overlapping series study may be diagnostic but cannot unlock promotion.
 
 If existing evidence and the model registry are valuable, back them up first
 and omit the `data/state` cleanup line. Removing it intentionally resets paper

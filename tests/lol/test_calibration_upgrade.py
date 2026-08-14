@@ -195,6 +195,58 @@ def test_probability_calibrators_share_predict_interface() -> None:
     assert np.all((predicted > 0) & (predicted < 1))
 
 
+def test_winner_calibration_rejects_better_loss_when_slope_is_unsafe() -> None:
+    candidates = [
+        {
+            "method": "raw",
+            "metrics": {
+                "log_loss": 0.5000,
+                "brier": 0.1900,
+                "calibration_slope": 1.21,
+                "calibration_intercept": 0.0,
+            },
+        },
+        {
+            "method": "sigmoid",
+            "metrics": {
+                "log_loss": 0.5001,
+                "brier": 0.1901,
+                "calibration_slope": 1.0,
+                "calibration_intercept": 0.0,
+            },
+        },
+    ]
+
+    selected = GradientBoostingModel._select_probability_calibration_candidate(
+        candidates,
+        require_safe_calibration=True,
+    )
+
+    assert selected["method"] == "sigmoid"
+    assert candidates[0]["selection_eligible"] is False
+    assert candidates[1]["selection_eligible"] is True
+
+
+def test_winner_calibration_fails_when_no_candidate_is_safe() -> None:
+    candidates = [
+        {
+            "method": "raw",
+            "metrics": {
+                "log_loss": 0.50,
+                "brier": 0.19,
+                "calibration_slope": 1.0,
+                "calibration_intercept": -0.11,
+            },
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="No probability calibrator passed"):
+        GradientBoostingModel._select_probability_calibration_candidate(
+            candidates,
+            require_safe_calibration=True,
+        )
+
+
 def test_probability_uncertainty_uses_held_out_residual_intervals() -> None:
     probabilities = np.tile(np.array([0.3, 0.7]), 50)
     actual = np.tile(np.array([0, 1]), 50)

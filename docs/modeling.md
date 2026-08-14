@@ -38,7 +38,13 @@ probability-sum invariants, and league/patch/roster cohorts. Accuracy is
 secondary.
 
 Calibration candidates are evaluated on held-out game rows and selected
-conservatively. Props store residual distributions and calibrated line
+conservatively. Winner calibration candidates whose held-out slope or intercept
+falls outside the production safety range are ineligible even when their log
+loss is lower. Each tuning run records its sealed date window and label hash.
+Because completed training reports final-test metrics, that window is considered
+exposed even before `review-tuning`. A later study whose test window overlaps any exposed
+window for that target is diagnostic-only and cannot promote parameters.
+Props store residual distributions and calibrated line
 probabilities, not only point estimates.
 
 ## Retraining versus retuning
@@ -60,10 +66,12 @@ Explicit retuning:
 - runs seeded Optuna research;
 - writes candidate JSON inside the run report;
 - does not mutate production parameters or models;
-- promotes direct-series parameters only after `review-tuning` approves the
-  sealed rating-baseline, calibration, and cohort evidence;
-- does not yet permit experimental next-map parameter promotion because that
-  target still needs an equivalent sealed review gate;
+- requires separate series-winner and next-map Optuna runs;
+- promotes either Winner target's parameters only after its own
+  `review-tuning` approves sealed rating-baseline, calibration, cohort, and
+  fresh-holdout evidence;
+- clusters next-map bootstrap and cohort evidence by historical series, so
+  correlated maps cannot masquerade as independent samples;
 - marks reviewed parameter files with their Optuna run provenance;
 - is followed by one full training whose model candidate still requires manual
   champion promotion.
@@ -78,7 +86,9 @@ prediction-distribution shift, and top feature/family stability. Drift findings
 are warning-only review evidence; they do not create or bypass promotion gates.
 Importance is diagnostic, not proof of causality.
 
-Winner V2 targets use the full eligible prematch feature contract. Legacy map
+Winner V2 targets use their full eligible contracts. Direct series features
+must exist before Map 1; next-map series-state fields must exist after the
+previous map and before the target map. Legacy map
 and prop targets use the tracked `compact` contract by default. The `selected`
 mode is research-only and requires a prior temporal recommendation report; it
 fails clearly when that report is absent instead of silently training every

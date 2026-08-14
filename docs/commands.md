@@ -56,8 +56,8 @@ uses wallets, or moves funds.
 | `lol market-watch` | Write one JSON/Markdown pair and append read-only series-winner price/book observations for timing/CLV research. Intended for an hourly scheduler; never creates a proposal. | `--format table|json`. |
 | `lol train` | Routine refit with reviewed parameters; retrains weights and calibrators, registers an immutable candidate, and may auto-promote only a healthy non-inferior non-Optuna V2 bundle. It does not run Optuna. | `--targets all|series_winner|next_map_winner|props|<names>`, `--feature-set full|compact|selected`, `--max-features N`, report-only feature selection, and calibration/split options. |
 | `lol retune` | Explicit Optuna research search. Writes isolated tuning reports and artifacts; never updates reviewed parameters or champion automatically. | `--targets`, `--feature-set`, `--max-features`. |
-| `lol promote-tuning <run-id>` | Owner promotion of the complete target set requested by one reviewed tuning run. Writes only those production parameter files, not model weights. Run a complete `lol train` afterward. | Complete run ID. |
-| `lol review-tuning <run-id>` | Compare a Winner V2 Optuna result with its predeclared rating baseline on the untouched holdout. Writes `tuning_review.json`; blocked reviews cannot be promoted. | Completed Winner V2 tuning run ID. |
+| `lol promote-tuning <run-id>` | Owner promotion of the single target requested by one reviewed Winner run. Writes only that production parameter file, not model weights. Series and next-map runs are promoted separately; run a complete `lol train` only after both are approved. | Complete run ID with schema-v3 review and fresh holdout. |
+| `lol review-tuning <run-id>` | Compare exactly one Winner V2 target with its predeclared rating baseline. Series uses series rows; next-map evidence is clustered by series. Records the sealed date window and label hash; overlap with any prior completed study window blocks promotion. | Completed single-target Winner V2 tuning run ID. |
 
 Examples:
 
@@ -80,13 +80,18 @@ uv run oracle-bets lol retune --targets series_winner --feature-set full
 uv run oracle-bets lol review-tuning <run-id> --format json
 uv run oracle-bets lol promote-tuning <run-id>
 
+# Independent next-map research; never combine Winner targets in one study
+uv run oracle-bets lol retune --targets next_map_winner --feature-set full
+uv run oracle-bets lol review-tuning <next-map-run-id> --format json
+uv run oracle-bets lol promote-tuning <next-map-run-id>
+
 # Only after series and next-map targets both have reviewed fixed parameters
 uv run oracle-bets lol train --targets all --feature-set compact
 ```
 
-The experimental next-map target does not yet have the independent tuning
-review required for parameter promotion. Do not use a combined retune to bypass
-that missing gate. The August 14, 2026 series study
+Both Winner targets now have independent review code. A combined retune is
+rejected, and both independent decisions must pass complete-bundle promotion.
+The August 14, 2026 series study
 `20260813T233204_354446Z` is blocked and must not be promoted.
 
 Source refresh, ingestion, retraining, and retuning are separate operations.

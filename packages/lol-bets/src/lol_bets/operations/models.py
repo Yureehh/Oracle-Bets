@@ -536,16 +536,19 @@ def review_candidate_on_sealed_rows(
             bootstrap_samples=bootstrap_samples,
         )
     try:
-        evidence, fingerprints, report = _replay_promotion_evidence(
+        winner_evidence, fingerprints, report = _replay_promotion_evidence(
             registry,
             candidate_id=candidate_id,
             champion_id=champion_id,
         )
-        decision = evaluate_promotion(
-            evidence,
-            policy=policy,
-            bootstrap_samples=bootstrap_samples,
-        )
+        decisions = {
+            target: evaluate_promotion(
+                evidence,
+                policy=policy,
+                bootstrap_samples=bootstrap_samples,
+            )
+            for target, evidence in winner_evidence.items()
+        }
     except Exception as error:
         return _write_candidate_review(
             registry,
@@ -562,8 +565,27 @@ def review_candidate_on_sealed_rows(
             reviewed_at=reviewed_at,
         )
 
+    reasons = tuple(
+        f"{target}:{reason}"
+        for target, decision in decisions.items()
+        for reason in decision.reasons
+    )
+    decision_report = {
+        target: {
+            "promote": decision.promote,
+            "reasons": list(decision.reasons),
+            "relative_improvement": decision.relative_improvement,
+            "confidence_lower_bound": decision.confidence_lower_bound,
+            "confidence_degradation_upper_bound": (
+                decision.confidence_degradation_upper_bound
+            ),
+            "safety_failures": list(decision.safety_failures),
+        }
+        for target, decision in decisions.items()
+    }
+    all_winners_pass = all(decision.promote for decision in decisions.values())
     should_promote = (
-        automatic and policy is PromotionPolicy.ROUTINE and decision.promote
+        automatic and policy is PromotionPolicy.ROUTINE and all_winners_pass
     )
     if should_promote:
         _write_candidate_review(
@@ -574,17 +596,9 @@ def review_candidate_on_sealed_rows(
                 status="promotion_approved",
                 policy=policy,
                 promoted=False,
-                reasons=decision.reasons,
+                reasons=reasons,
                 row_fingerprints=fingerprints,
-                evidence=report
-                | {
-                    "relative_improvement": decision.relative_improvement,
-                    "confidence_lower_bound": decision.confidence_lower_bound,
-                    "confidence_degradation_upper_bound": (
-                        decision.confidence_degradation_upper_bound
-                    ),
-                    "safety_failures": list(decision.safety_failures),
-                },
+                evidence=report | {"winner_decisions": decision_report},
             ),
             reviewed_at=reviewed_at,
         )
@@ -595,7 +609,7 @@ def review_candidate_on_sealed_rows(
         )
     if should_promote:
         status = "auto_promoted"
-    elif decision.promote and policy is PromotionPolicy.OPTUNA:
+    elif all_winners_pass and policy is PromotionPolicy.OPTUNA:
         status = "manual_review_required"
     else:
         status = "blocked"
@@ -607,17 +621,9 @@ def review_candidate_on_sealed_rows(
             status=status,
             policy=policy,
             promoted=should_promote,
-            reasons=decision.reasons,
+            reasons=reasons,
             row_fingerprints=fingerprints,
-            evidence=report
-            | {
-                "relative_improvement": decision.relative_improvement,
-                "confidence_lower_bound": decision.confidence_lower_bound,
-                "confidence_degradation_upper_bound": (
-                    decision.confidence_degradation_upper_bound
-                ),
-                "safety_failures": list(decision.safety_failures),
-            },
+            evidence=report | {"winner_decisions": decision_report},
         ),
         reviewed_at=reviewed_at,
     )
@@ -632,99 +638,38 @@ def _review_first_winner_v2_candidate(
     reviewed_at: datetime,
     bootstrap_samples: int,
 ) -> CandidateReview:
-    """Compare the first direct-series candidate with its predeclared baseline."""
+    """Compare both first-generation Winner V2 targets with rating baselines."""
     root = registry.candidates / candidate_id
-    model_name = _EVALUATION_MODELS["series_winner"]
-    evaluation = root / "_evaluation" / model_name
     reasons: list[str] = []
-    evidence_report: dict[str, Any] = {}
+    operational_failures = _candidate_operational_failures(root)
+    winner_reports: dict[str, Any] = {}
     fingerprints: dict[str, str] = {}
-    try:
-        raw = pd.read_parquet(evaluation / "features.parquet")
-        labels = pd.read_parquet(evaluation / "labels.parquet")
-        actual = pd.to_numeric(labels["actual"], errors="raise").to_numpy(dtype=float)
-        metadata = labels.drop(columns=["actual"])
-        pipeline = load_model(root / model_name / f"{model_name}_feature_pipeline.pkl")
-        model = load_model(root / model_name / f"{model_name}.pkl")
-        calibrator = load_model(
-            root / model_name / f"{model_name}_probability_calibrator.pkl"
-        )
-        transformed = pipeline.transform(raw.copy())
-        if callable(getattr(model, "rating_baseline_probability", None)):
-            baseline = model.rating_baseline_probability(transformed)
-        else:
-            baseline, _full = model.component_probabilities(transformed)
-        candidate_raw = model.predict_proba(transformed)[:, 1]
-        candidate = np.asarray(
-            calibrator.predict(candidate_raw, metadata=metadata), dtype=float
-        )
-        baseline = np.asarray(baseline, dtype=float)
-        baseline_quality = prediction_quality(
-            actual.astype(int).tolist(), baseline.tolist()
-        )
-        candidate_quality = prediction_quality(
-            actual.astype(int).tolist(), candidate.tolist()
-        )
-        promotion_evidence = PromotionEvidence(
-            champion_log_losses=tuple(_binary_log_losses(actual, baseline)),
-            candidate_log_losses=tuple(_binary_log_losses(actual, candidate)),
-            champion_brier=baseline_quality.brier,
-            candidate_brier=candidate_quality.brier,
-            champion_ece=baseline_quality.calibration_error,
-            candidate_ece=candidate_quality.calibration_error,
-            cohort_log_loss=_cohort_replay_losses(labels, actual, baseline, candidate),
-            operational_failures=tuple(_candidate_operational_failures(root)),
-        )
-        decision = evaluate_promotion(
-            promotion_evidence,
-            policy=PromotionPolicy.ROUTINE,
-            bootstrap_samples=bootstrap_samples,
-        )
-        from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+    for target in sorted(_WINNER_EVALUATION_TARGETS):
+        try:
+            target_reasons, fingerprint, report = (
+                _review_winner_target_against_rating_baseline(
+                    root,
+                    target=target,
+                    operational_failures=(
+                        operational_failures if target == "series_winner" else []
+                    ),
+                    bootstrap_samples=bootstrap_samples,
+                )
+            )
+            reasons.extend(f"{target}:{reason}" for reason in target_reasons)
+            fingerprints[target] = fingerprint
+            winner_reports[target] = report
+        except Exception as error:
+            reasons.append(
+                f"{target}:baseline_review_failed:{type(error).__name__}:{error}"
+            )
 
-        calibration = GradientBoostingModel.compute_probability_calibration_metrics(
-            pd.Series(actual), candidate
-        )
-        slope = calibration.get("calibration_slope")
-        intercept = calibration.get("calibration_intercept")
-        if slope is None or not (
-            _MIN_CALIBRATION_SLOPE <= float(slope) <= _MAX_CALIBRATION_SLOPE
-        ):
-            reasons.append("calibration_slope_outside_0.8_1.2")
-        if (
-            intercept is None
-            or abs(float(intercept)) > _MAX_ABSOLUTE_CALIBRATION_INTERCEPT
-        ):
-            reasons.append("calibration_intercept_above_0.10")
-        reasons.extend(decision.reasons)
-        fingerprints["series_winner"] = _frame_fingerprint(labels)
-        evidence_report = {
-            "first_winner_v2": True,
-            "comparator": "predeclared_rating_logistic_baseline",
-            "sealed_rows": len(labels),
-            "rating_baseline": asdict(baseline_quality),
-            "candidate": asdict(candidate_quality),
-            "calibration": calibration,
-            "relative_improvement": decision.relative_improvement,
-            "confidence_lower_bound": decision.confidence_lower_bound,
-            "confidence_degradation_upper_bound": (
-                decision.confidence_degradation_upper_bound
-            ),
-            "cohorts": {
-                name: {
-                    "rating_baseline_log_loss": values[0],
-                    "candidate_log_loss": values[1],
-                    "count": values[2],
-                }
-                for name, values in promotion_evidence.cohort_log_loss.items()
-            },
-            "operational_failures": list(promotion_evidence.operational_failures),
-            "manual_promotion_required": True,
-        }
-    except Exception as error:
-        reasons.append(
-            f"winner_v2_baseline_review_failed:{type(error).__name__}:{error}"
-        )
+    evidence_report: dict[str, Any] = {
+        "first_winner_v2": True,
+        "comparator": "predeclared_rating_logistic_baseline",
+        "winner_targets": winner_reports,
+        "manual_promotion_required": True,
+    }
 
     review = CandidateReview(
         candidate_id=candidate_id,
@@ -737,6 +682,109 @@ def _review_first_winner_v2_candidate(
         evidence=evidence_report,
     )
     return _write_candidate_review(registry, review, reviewed_at=reviewed_at)
+
+
+def _review_winner_target_against_rating_baseline(
+    root: Path,
+    *,
+    target: str,
+    operational_failures: list[str],
+    bootstrap_samples: int,
+) -> tuple[list[str], str, dict[str, Any]]:
+    """Review one Winner V2 target without borrowing evidence from another."""
+    from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+
+    model_name = _EVALUATION_MODELS[target]
+    evaluation = root / "_evaluation" / model_name
+    raw = pd.read_parquet(evaluation / "features.parquet")
+    labels = pd.read_parquet(evaluation / "labels.parquet")
+    actual = pd.to_numeric(labels["actual"], errors="raise").to_numpy(dtype=float)
+    metadata = labels.drop(columns=["actual"])
+    pipeline = load_model(root / model_name / f"{model_name}_feature_pipeline.pkl")
+    model = load_model(root / model_name / f"{model_name}.pkl")
+    calibrator = load_model(
+        root / model_name / f"{model_name}_probability_calibrator.pkl"
+    )
+    transformed = pipeline.transform(raw.copy())
+    baseline = np.asarray(model.rating_baseline_probability(transformed), dtype=float)
+    candidate = np.asarray(
+        calibrator.predict(model.predict_proba(transformed)[:, 1], metadata=metadata),
+        dtype=float,
+    )
+    baseline_quality = prediction_quality(
+        actual.astype(int).tolist(), baseline.tolist()
+    )
+    candidate_quality = prediction_quality(
+        actual.astype(int).tolist(), candidate.tolist()
+    )
+    cluster_col = "series_id" if target == "next_map_winner" else None
+    if cluster_col is None:
+        baseline_losses = _binary_log_losses(actual, baseline)
+        candidate_losses = _binary_log_losses(actual, candidate)
+    else:
+        baseline_losses = _clustered_binary_log_losses(
+            labels, actual, baseline, cluster_col=cluster_col
+        )
+        candidate_losses = _clustered_binary_log_losses(
+            labels, actual, candidate, cluster_col=cluster_col
+        )
+    evidence = PromotionEvidence(
+        champion_log_losses=tuple(baseline_losses),
+        candidate_log_losses=tuple(candidate_losses),
+        champion_brier=baseline_quality.brier,
+        candidate_brier=candidate_quality.brier,
+        champion_ece=baseline_quality.calibration_error,
+        candidate_ece=candidate_quality.calibration_error,
+        cohort_log_loss=_cohort_replay_losses(
+            labels,
+            actual,
+            baseline,
+            candidate,
+            cluster_col=cluster_col,
+        ),
+        operational_failures=tuple(operational_failures),
+    )
+    decision = evaluate_promotion(
+        evidence,
+        policy=PromotionPolicy.ROUTINE,
+        bootstrap_samples=bootstrap_samples,
+    )
+    calibration = GradientBoostingModel.compute_probability_calibration_metrics(
+        pd.Series(actual), candidate
+    )
+    reasons = list(decision.reasons)
+    slope = calibration.get("calibration_slope")
+    intercept = calibration.get("calibration_intercept")
+    if slope is None or not (
+        _MIN_CALIBRATION_SLOPE <= float(slope) <= _MAX_CALIBRATION_SLOPE
+    ):
+        reasons.append("calibration_slope_outside_0.8_1.2")
+    if intercept is None or abs(float(intercept)) > _MAX_ABSOLUTE_CALIBRATION_INTERCEPT:
+        reasons.append("calibration_intercept_above_0.10")
+    report = {
+        "sealed_rows": len(labels),
+        "bootstrap_unit": cluster_col or "series",
+        "bootstrap_units": len(baseline_losses),
+        "rating_baseline": asdict(baseline_quality),
+        "candidate": asdict(candidate_quality),
+        "calibration": calibration,
+        "relative_improvement": decision.relative_improvement,
+        "confidence_lower_bound": decision.confidence_lower_bound,
+        "confidence_degradation_upper_bound": (
+            decision.confidence_degradation_upper_bound
+        ),
+        "cohorts": {
+            name: {
+                "rating_baseline_log_loss": values[0],
+                "candidate_log_loss": values[1],
+                "count": values[2],
+            }
+            for name, values in evidence.cohort_log_loss.items()
+        },
+        "operational_failures": list(operational_failures),
+        "reasons": list(dict.fromkeys(reasons)),
+    }
+    return list(dict.fromkeys(reasons)), _frame_fingerprint(labels), report
 
 
 def load_candidate_review(
@@ -1217,10 +1265,12 @@ def register_current_candidate(
 
 _EVALUATION_MODELS = {
     "series_winner": "SeriesWinnerPrediction_LightGBM",
+    "next_map_winner": "NextMapWinnerPrediction_LightGBM",
     "gamelength": "GamelengthPrediction_LightGBM",
     "total_kills": "TotalKillsPrediction_LightGBM",
     "total_towers": "TotalTowersPrediction_LightGBM",
 }
+_WINNER_EVALUATION_TARGETS = frozenset({"series_winner", "next_map_winner"})
 
 
 def _replay_promotion_evidence(
@@ -1228,18 +1278,15 @@ def _replay_promotion_evidence(
     *,
     candidate_id: str,
     champion_id: str,
-) -> tuple[PromotionEvidence, dict[str, str], dict[str, Any]]:
+) -> tuple[dict[str, PromotionEvidence], dict[str, str], dict[str, Any]]:
     candidate_root = registry.candidates / candidate_id
     champion_root = registry.candidates / champion_id
     operational_failures = _candidate_operational_failures(candidate_root)
     fingerprints: dict[str, str] = {}
     results: dict[str, dict[str, Any]] = {}
-    cohort_log_loss: dict[str, tuple[float, float, int]] = {}
     regression_mae: dict[str, tuple[float, float]] = {}
     drift_targets: dict[str, dict[str, Any]] = {}
-    outcome_losses: tuple[list[float], list[float]] | None = None
-    champion_brier = candidate_brier = 0.0
-    champion_ece = candidate_ece = 0.0
+    winner_evidence: dict[str, PromotionEvidence] = {}
 
     for target, model_name in _EVALUATION_MODELS.items():
         evaluation = candidate_root / "_evaluation" / model_name
@@ -1254,14 +1301,14 @@ def _replay_promotion_evidence(
             model_name=model_name,
             raw_features=raw,
             metadata=labels.drop(columns=["actual"]),
-            classification=target == "series_winner",
+            classification=target in _WINNER_EVALUATION_TARGETS,
         )
         candidate_prediction = _replay_bundle_target(
             candidate_root,
             model_name=model_name,
             raw_features=raw,
             metadata=labels.drop(columns=["actual"]),
-            classification=target == "series_winner",
+            classification=target in _WINNER_EVALUATION_TARGETS,
         )
         try:
             drift_targets[target] = _target_drift_review(
@@ -1278,28 +1325,50 @@ def _replay_promotion_evidence(
                 "status": "unavailable",
                 "warnings": [f"drift_review_unavailable:{type(error).__name__}"],
             }
-        if target == "series_winner":
+        if target in _WINNER_EVALUATION_TARGETS:
             champion_quality = prediction_quality(
                 actual.astype(int).tolist(), champion_prediction.tolist()
             )
             candidate_quality = prediction_quality(
                 actual.astype(int).tolist(), candidate_prediction.tolist()
             )
-            champion_losses = _binary_log_losses(actual, champion_prediction)
-            candidate_losses = _binary_log_losses(actual, candidate_prediction)
-            outcome_losses = (champion_losses, candidate_losses)
-            champion_brier = champion_quality.brier
-            candidate_brier = candidate_quality.brier
-            champion_ece = champion_quality.calibration_error
-            candidate_ece = candidate_quality.calibration_error
-            cohort_log_loss = _cohort_replay_losses(
+            cluster_col = "series_id" if target == "next_map_winner" else None
+            if cluster_col is None:
+                champion_losses = _binary_log_losses(actual, champion_prediction)
+                candidate_losses = _binary_log_losses(actual, candidate_prediction)
+            else:
+                champion_losses = _clustered_binary_log_losses(
+                    labels,
+                    actual,
+                    champion_prediction,
+                    cluster_col=cluster_col,
+                )
+                candidate_losses = _clustered_binary_log_losses(
+                    labels,
+                    actual,
+                    candidate_prediction,
+                    cluster_col=cluster_col,
+                )
+            target_cohorts = _cohort_replay_losses(
                 labels,
                 actual,
                 champion_prediction,
                 candidate_prediction,
+                cluster_col=cluster_col,
+            )
+            winner_evidence[target] = PromotionEvidence(
+                champion_log_losses=tuple(champion_losses),
+                candidate_log_losses=tuple(candidate_losses),
+                champion_brier=champion_quality.brier,
+                candidate_brier=candidate_quality.brier,
+                champion_ece=champion_quality.calibration_error,
+                candidate_ece=candidate_quality.calibration_error,
+                cohort_log_loss=target_cohorts,
             )
             results[target] = {
                 "rows": len(labels),
+                "bootstrap_unit": cluster_col or "series",
+                "bootstrap_units": len(champion_losses),
                 "champion": asdict(champion_quality),
                 "candidate": asdict(candidate_quality),
                 "cohorts": {
@@ -1308,7 +1377,7 @@ def _replay_promotion_evidence(
                         "candidate_log_loss": values[1],
                         "count": values[2],
                     }
-                    for name, values in cohort_log_loss.items()
+                    for name, values in target_cohorts.items()
                 },
             }
         else:
@@ -1321,25 +1390,29 @@ def _replay_promotion_evidence(
                 "candidate_mae": candidate_error,
             }
 
-    if outcome_losses is None:
-        raise ValueError("sealed outcome evaluation is missing")
+    missing_winner_evidence = _WINNER_EVALUATION_TARGETS - set(winner_evidence)
+    if missing_winner_evidence:
+        raise ValueError(
+            f"sealed winner evaluation is missing: {sorted(missing_winner_evidence)}"
+        )
     champion_status = _bundle_evidence_status(champion_root)
     candidate_status = _bundle_evidence_status(candidate_root)
-    evidence = PromotionEvidence(
-        champion_log_losses=tuple(outcome_losses[0]),
-        candidate_log_losses=tuple(outcome_losses[1]),
-        champion_brier=champion_brier,
-        candidate_brier=candidate_brier,
-        champion_ece=champion_ece,
-        candidate_ece=candidate_ece,
-        cohort_log_loss=cohort_log_loss,
+    series_evidence = winner_evidence["series_winner"]
+    winner_evidence["series_winner"] = PromotionEvidence(
+        champion_log_losses=series_evidence.champion_log_losses,
+        candidate_log_losses=series_evidence.candidate_log_losses,
+        champion_brier=series_evidence.champion_brier,
+        candidate_brier=series_evidence.candidate_brier,
+        champion_ece=series_evidence.champion_ece,
+        candidate_ece=series_evidence.candidate_ece,
+        cohort_log_loss=series_evidence.cohort_log_loss,
         regression_target_mae=regression_mae,
         champion_evidence_status=champion_status,
         candidate_evidence_status=candidate_status,
         operational_failures=tuple(operational_failures),
     )
     return (
-        evidence,
+        winner_evidence,
         fingerprints,
         {
             "sealed_rows": results,
@@ -1507,11 +1580,32 @@ def _binary_log_losses(actual: np.ndarray, probability: np.ndarray) -> list[floa
     return (-(actual * np.log(clipped) + (1 - actual) * np.log(1 - clipped))).tolist()
 
 
+def _clustered_binary_log_losses(
+    labels: pd.DataFrame,
+    actual: np.ndarray,
+    probability: np.ndarray,
+    *,
+    cluster_col: str,
+) -> list[float]:
+    """Average correlated row losses within a cluster before bootstrapping."""
+    if cluster_col not in labels or labels[cluster_col].isna().any():
+        raise ValueError(f"sealed labels require complete {cluster_col} clusters")
+    frame = pd.DataFrame(
+        {
+            "cluster": labels[cluster_col].astype(str).to_numpy(),
+            "loss": _binary_log_losses(actual, probability),
+        }
+    )
+    return frame.groupby("cluster", sort=False)["loss"].mean().tolist()
+
+
 def _cohort_replay_losses(
     labels: pd.DataFrame,
     actual: np.ndarray,
     champion: np.ndarray,
     candidate: np.ndarray,
+    *,
+    cluster_col: str | None = None,
 ) -> dict[str, tuple[float, float, int]]:
     cohorts: dict[str, np.ndarray] = {
         "all_research_all_supported": np.ones(len(labels), dtype=bool)
@@ -1532,15 +1626,36 @@ def _cohort_replay_losses(
             cohorts[f"{prefix}:{value}"] = values.eq(value).to_numpy()
     champion_losses = np.asarray(_binary_log_losses(actual, champion))
     candidate_losses = np.asarray(_binary_log_losses(actual, candidate))
-    return {
-        name: (
-            float(np.mean(champion_losses[mask])),
-            float(np.mean(candidate_losses[mask])),
-            int(np.sum(mask)),
+    results: dict[str, tuple[float, float, int]] = {}
+    for name, mask in cohorts.items():
+        if not np.any(mask):
+            continue
+        if cluster_col is None:
+            results[name] = (
+                float(np.mean(champion_losses[mask])),
+                float(np.mean(candidate_losses[mask])),
+                int(np.sum(mask)),
+            )
+            continue
+        if cluster_col not in labels or labels[cluster_col].isna().any():
+            raise ValueError(f"sealed labels require complete {cluster_col} clusters")
+        clustered = (
+            pd.DataFrame(
+                {
+                    "cluster": labels.loc[mask, cluster_col].astype(str).to_numpy(),
+                    "champion": champion_losses[mask],
+                    "candidate": candidate_losses[mask],
+                }
+            )
+            .groupby("cluster", sort=False)[["champion", "candidate"]]
+            .mean()
         )
-        for name, mask in cohorts.items()
-        if np.any(mask)
-    }
+        results[name] = (
+            float(clustered["champion"].mean()),
+            float(clustered["candidate"].mean()),
+            int(len(clustered)),
+        )
+    return results
 
 
 def _bundle_evidence_status(root: Path) -> dict[str, str]:
@@ -1565,29 +1680,32 @@ def _candidate_operational_failures(root: Path) -> list[str]:  # noqa: PLR0912
             failures.append(f"split_overlap:{model_name}")
         if checks.get("temporal_ordered") is not True:
             failures.append(f"temporal_order_failed:{model_name}")
-    outcome = _EVALUATION_MODELS["series_winner"]
-    schema_path = root / outcome / f"{outcome}_outcome_matchup_schema.pkl"
-    try:
-        schema = load_model(schema_path)
-    except Exception:
-        failures.append("missing_symmetric_matchup_schema")
-    else:
-        excluded = set(schema.get("excluded_features") or [])
-        if not {"first_pick", "side_win_likelihood"}.issubset(excluded):
-            failures.append("prematch_side_feature_contract_failed")
-    try:
-        pipeline = load_model(root / outcome / f"{outcome}_feature_pipeline.pkl")
-        model = load_model(root / outcome / f"{outcome}.pkl")
-        columns = tuple(str(value) for value in pipeline.train_columns)
-        rating_columns = tuple(str(value) for value in model.rating_columns)
-        lineage = json.loads(
-            (root / outcome / f"{outcome}_feature_lineage.json").read_text(
-                encoding="utf-8"
+    for target in sorted(_WINNER_EVALUATION_TARGETS):
+        outcome = _EVALUATION_MODELS[target]
+        prefix = "" if target == "series_winner" else "next_map_"
+        schema_path = root / outcome / f"{outcome}_outcome_matchup_schema.pkl"
+        try:
+            schema = load_model(schema_path)
+        except Exception:
+            failures.append(f"{prefix}missing_symmetric_matchup_schema")
+        else:
+            excluded = set(schema.get("excluded_features") or [])
+            if not {"first_pick", "side_win_likelihood"}.issubset(excluded):
+                failures.append(f"{prefix}prematch_side_feature_contract_failed")
+        try:
+            pipeline = load_model(root / outcome / f"{outcome}_feature_pipeline.pkl")
+            model = load_model(root / outcome / f"{outcome}.pkl")
+            columns = tuple(str(value) for value in pipeline.train_columns)
+            rating_columns = tuple(str(value) for value in model.rating_columns)
+            lineage = json.loads(
+                (root / outcome / f"{outcome}_feature_lineage.json").read_text(
+                    encoding="utf-8"
+                )
             )
-        )
-    except Exception:
-        failures.append("winner_train_serve_contract_unreadable")
-    else:
+        except Exception:
+            failures.append(f"{prefix}winner_train_serve_contract_unreadable")
+            continue
+
         from lol_bets.operations.winner_validation import (
             FORBIDDEN_WINNER_FEATURE_FRAGMENTS,
         )
@@ -1596,27 +1714,47 @@ def _candidate_operational_failures(root: Path) -> list[str]:  # noqa: PLR0912
         )
 
         if not set(rating_columns).issubset(columns):
-            failures.append("rating_train_serve_parity_failed")
+            failures.append(f"{prefix}rating_train_serve_parity_failed")
         if not callable(getattr(model, "rating_baseline_probability", None)):
-            failures.append("calibrated_rating_baseline_missing")
+            failures.append(f"{prefix}calibrated_rating_baseline_missing")
         if not has_complete_direct_rating_contract(rating_columns):
-            failures.append("direct_rating_family_missing")
+            failures.append(f"{prefix}direct_rating_family_missing")
+        forbidden = FORBIDDEN_WINNER_FEATURE_FRAGMENTS
+        if target == "next_map_winner":
+            allowed_state = {
+                "current_series",
+                "game_in_series",
+                "is_deciding_game",
+                "maps_completed",
+                "next_map_number",
+                "series_wins_before",
+                "series_losses_before",
+                "series_score",
+            }
+            forbidden = tuple(
+                fragment for fragment in forbidden if fragment not in allowed_state
+            )
         if any(
             fragment in column.casefold()
             for column in columns
-            for fragment in FORBIDDEN_WINNER_FEATURE_FRAGMENTS
+            for fragment in forbidden
         ):
-            failures.append("forbidden_winner_feature")
+            failures.append(f"{prefix}forbidden_winner_feature")
         lineage_columns = {
             str(item.get("feature")) for item in lineage if isinstance(item, dict)
         }
+        valid_availability = {"strictly_before_fixture_start"} | (
+            {"after_previous_map_before_target_map"}
+            if target == "next_map_winner"
+            else set()
+        )
         if lineage_columns != set(columns) or any(
-            item.get("availability_timestamp") != "strictly_before_fixture_start"
+            item.get("availability_timestamp") not in valid_availability
             or item.get("model_eligible") is not True
             for item in lineage
             if isinstance(item, dict)
         ):
-            failures.append("winner_feature_lineage_failed")
+            failures.append(f"{prefix}winner_feature_lineage_failed")
     return failures
 
 

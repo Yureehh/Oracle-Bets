@@ -291,9 +291,12 @@ def test_promote_tuning_run_publishes_only_requested_targets(tmp_path, monkeypat
     run_root.joinpath("tuning_review.json").write_text(
         json.dumps(
             {
+                "schema_version": 3,
                 "status": "approved",
                 "run_id": "winner-v2",
+                "target": "series_winner",
                 "review_input_sha256": "test-review-inputs",
+                "sealed_holdout": {"fresh_for_promotion": True},
             }
         )
     )
@@ -329,8 +332,55 @@ def test_promote_tuning_run_rejects_unreviewed_next_map_target(tmp_path, monkeyp
         )
     )
 
-    with pytest.raises(ValueError, match="independent sealed review gate"):
+    with pytest.raises(ValueError, match=r"must pass.*review-tuning"):
         training.promote_tuning_run("next-map")
+
+
+def test_promote_tuning_run_accepts_independently_reviewed_next_map(
+    tmp_path, monkeypatch
+):
+    reports = tmp_path / "reports"
+    tuned = tmp_path / "tuned"
+    monkeypatch.setattr(training, "REPORTS_DIR", reports)
+    monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tuned)
+    monkeypatch.setattr(
+        training,
+        "_tuning_review_input_fingerprint",
+        lambda _root: "next-map-review-inputs",
+    )
+    run_root = reports / "training" / "runs" / "next-map"
+    run_root.mkdir(parents=True)
+    run_root.joinpath("manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "retune": True,
+                "targets_requested": ["next_map_winner"],
+                "targets_trained": ["NextMapWinnerPrediction"],
+                "targets_failed": [],
+            }
+        )
+    )
+    run_root.joinpath("tuning_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "status": "approved",
+                "run_id": "next-map",
+                "target": "next_map_winner",
+                "review_input_sha256": "next-map-review-inputs",
+                "sealed_holdout": {"fresh_for_promotion": True},
+            }
+        )
+    )
+    name = "NextMapWinnerPrediction_LightGBM"
+    candidate = run_root / name / "tuned_hyperparameters.json"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(json.dumps(_tuning_candidate(name)))
+
+    promoted = training.promote_tuning_run("next-map")
+
+    assert [path.name for path in promoted] == [f"{name}.json"]
 
 
 def test_promote_tuning_run_atomically_publishes_requested_targets(
@@ -476,9 +526,12 @@ def test_promote_winner_tuning_rejects_change_during_copy(tmp_path, monkeypatch)
     run_root.joinpath("tuning_review.json").write_text(
         json.dumps(
             {
+                "schema_version": 3,
                 "status": "approved",
                 "run_id": "winner",
+                "target": "series_winner",
                 "review_input_sha256": "expected",
+                "sealed_holdout": {"fresh_for_promotion": True},
             }
         )
     )
@@ -538,9 +591,15 @@ class _ReviewUncertainty:
         return values, values
 
 
-def _winner_review_run(tmp_path, *, learning_rate=0.05):
-    run_root = tmp_path / "reports" / "training" / "runs" / "winner-review"
-    model_name = "SeriesWinnerPrediction_LightGBM"
+def _winner_review_run(
+    tmp_path,
+    *,
+    learning_rate=0.05,
+    target="series_winner",
+    run_id="winner-review",
+):
+    run_root = tmp_path / "reports" / "training" / "runs" / run_id
+    model_name = training.WINNER_TUNING_MODELS[target]
     model_root = run_root / "artifacts" / model_name
     evaluation = run_root / "artifacts" / "_evaluation" / model_name
     candidate = run_root / model_name / "tuned_hyperparameters.json"
@@ -552,13 +611,25 @@ def _winner_review_run(tmp_path, *, learning_rate=0.05):
             {
                 "status": "completed",
                 "retune": True,
-                "targets_requested": ["series_winner"],
+                "targets_requested": [target],
+                "targets_trained": [model_name.removesuffix("_LightGBM")],
+                "targets_failed": [],
             }
         )
     )
     payload = _tuning_candidate(model_name)
     payload["params"] = {"learning_rate": learning_rate}
     candidate.write_text(json.dumps(payload))
+    run_root.joinpath(model_name, "split_report.json").write_text(
+        json.dumps(
+            {
+                "test": {
+                    "date_min": "2026-07-01T00:00:00+00:00",
+                    "date_max": "2026-07-31T00:00:00+00:00",
+                }
+            }
+        )
+    )
     for path in (
         evaluation / "features.parquet",
         evaluation / "labels.parquet",
@@ -656,11 +727,122 @@ def test_review_winner_tuning_binds_model_parameters_and_artifacts(
     result = training.review_tuning_run(run_root.name)
 
     assert result["status"] == expected_status
+    assert result["target"] == "series_winner"
     if expected_reason:
         assert any(expected_reason in reason for reason in result["reasons"])
     else:
         assert result["reasons"] == []
     assert json.loads(run_root.joinpath("tuning_review.json").read_text()) == result
+
+
+def test_review_next_map_tuning_bootstraps_by_series(tmp_path, monkeypatch):
+    import lol_bets.operations.models as model_operations
+    from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+
+    run_root = _winner_review_run(tmp_path, target="next_map_winner")
+    monkeypatch.setattr(training, "REPORTS_DIR", tmp_path / "reports")
+    features = pd.DataFrame({"candidate_probability": np.tile([0.1, 0.9], 50)})
+    labels = pd.DataFrame(
+        {
+            "actual": np.tile([0, 1], 50),
+            "series_id": np.repeat([f"series-{index}" for index in range(50)], 2),
+            "actionable": True,
+            "league": "LCK",
+        }
+    )
+    monkeypatch.setattr(
+        training.pd,
+        "read_parquet",
+        lambda path: (
+            labels.copy() if path.name == "labels.parquet" else features.copy()
+        ),
+    )
+    model = _ReviewWinnerModel(0.05)
+
+    def fake_load(path):
+        name = path.name
+        if name.endswith("feature_pipeline.pkl"):
+            return _ReviewPipeline()
+        if name.endswith("probability_calibrator.pkl"):
+            return _ReviewCalibrator()
+        if name.endswith("probability_uncertainty.pkl"):
+            return _ReviewUncertainty()
+        return model
+
+    observed: dict[str, int] = {}
+
+    def fake_evaluate(evidence, **_kwargs):
+        observed["bootstrap_units"] = len(evidence.candidate_log_losses)
+        observed["cohort_units"] = evidence.cohort_log_loss[
+            "all_research_all_supported"
+        ][2]
+        return SimpleNamespace(
+            promote=True,
+            reasons=(),
+            relative_improvement=0.10,
+            confidence_lower_bound=0.05,
+        )
+
+    monkeypatch.setattr(training, "load_model", fake_load)
+    monkeypatch.setattr(model_operations, "evaluate_promotion", fake_evaluate)
+    monkeypatch.setattr(
+        GradientBoostingModel,
+        "compute_probability_calibration_metrics",
+        staticmethod(
+            lambda *_args, **_kwargs: {
+                "calibration_slope": 1.0,
+                "calibration_intercept": 0.0,
+            }
+        ),
+    )
+
+    result = training.review_tuning_run(run_root.name)
+
+    assert result["status"] == "approved"
+    assert result["target"] == "next_map_winner"
+    assert result["bootstrap_unit"] == "series_id"
+    assert observed == {"bootstrap_units": 50, "cohort_units": 50}
+
+
+@pytest.mark.parametrize(
+    ("date_min", "expected_fresh"),
+    [
+        ("2026-07-15T00:00:00+00:00", False),
+        ("2026-08-01T00:00:00+00:00", True),
+    ],
+)
+def test_tuning_holdout_must_follow_every_previously_exposed_row(
+    tmp_path,
+    date_min,
+    expected_fresh,
+):
+    _winner_review_run(tmp_path, run_id="previous")
+    current = _winner_review_run(tmp_path, run_id="current")
+    model_name = training.WINNER_TUNING_MODELS["series_winner"]
+    current.joinpath(model_name, "split_report.json").write_text(
+        json.dumps(
+            {
+                "test": {
+                    "date_min": date_min,
+                    "date_max": "2026-08-31T00:00:00+00:00",
+                }
+            }
+        )
+    )
+
+    holdout = training._sealed_tuning_holdout(
+        current,
+        target="series_winner",
+    )
+
+    assert holdout["fresh_for_promotion"] is expected_fresh
+    assert holdout["latest_prior_run_id"] == "previous"
+
+
+def test_legacy_naive_holdout_dates_are_interpreted_as_utc() -> None:
+    parsed = training._parse_utc_holdout_date("2026-08-13T16:27:00")
+
+    assert parsed.isoformat() == "2026-08-13T16:27:00+00:00"
 
 
 def test_training_summary_combines_metrics_cards_and_top_features(tmp_path):

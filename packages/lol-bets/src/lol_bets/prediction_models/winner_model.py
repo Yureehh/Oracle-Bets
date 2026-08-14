@@ -336,24 +336,79 @@ class WinnerLightGBMModel(LightGBMModel):
         return dict(study.best_params)
 
     def fit_probability_calibrator(self, model, *args, **kwargs):
-        X_select = args[2]
-        y_select = args[3]
-        losses: list[tuple[float, float]] = []
+        if self.calibration == "none":
+            raise RuntimeError("Winner V2 requires probability calibration.")
+        X_fit, y_fit, X_select, y_select = args[:4]
+        y_fit = pd.to_numeric(y_fit, errors="coerce").dropna()
+        y_select = pd.to_numeric(y_select, errors="coerce").dropna()
+        if (
+            len(y_fit) < MIN_CALIBRATION_SAMPLES
+            or y_fit.nunique() != BINARY_CLASS_UNIQUE_VALUES
+            or y_select.nunique() != BINARY_CLASS_UNIQUE_VALUES
+        ):
+            raise RuntimeError(
+                "Winner V2 requires diverse calibration-fit and selection rows."
+            )
+        methods = ["raw", "sigmoid", "isotonic"]
+        if self.calibration_method != "auto":
+            methods = [self.calibration_method]
+        candidates: list[dict[str, Any]] = []
         for weight in BLEND_GRID:
             model.blend_weight = float(weight)
-            probability = model.predict_proba(X_select)[:, 1]
-            losses.append((float(log_loss(y_select, probability)), float(weight)))
-        model.blend_weight = min(losses)[1]
+            p_fit = model.predict_proba(X_fit.loc[y_fit.index])[:, 1]
+            p_select = model.predict_proba(X_select.loc[y_select.index])[:, 1]
+            for method in methods:
+                try:
+                    calibrator = self._fit_probability_candidate(method, p_fit, y_fit)
+                    metrics = self._probability_quality_metrics(
+                        y_select,
+                        calibrator.predict(p_select),
+                    )
+                    candidates.append(
+                        {
+                            "method": method,
+                            "blend_weight": float(weight),
+                            "metrics": metrics,
+                        }
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "Winner blend/calibration candidate %.2f/%s failed: %s",
+                        weight,
+                        method,
+                        error,
+                    )
+        selected = self._select_probability_calibration_candidate(
+            candidates,
+            require_safe_calibration=True,
+        )
+        model.blend_weight = float(selected["blend_weight"])
         self._store_winner_report(
             {
                 "blend_weight": model.blend_weight,
                 "selection_split": "calibration_select",
-                "selection_log_loss": min(losses)[0],
+                "selection_log_loss": selected["metrics"]["log_loss"],
+                "selected_calibration_method": selected["method"],
+                "blend_calibration_candidates": [
+                    {
+                        "blend_weight": candidate["blend_weight"],
+                        "method": candidate["method"],
+                        "metrics": candidate["metrics"],
+                        "selection_eligible": candidate["selection_eligible"],
+                        "selection_reasons": candidate["selection_reasons"],
+                    }
+                    for candidate in candidates
+                ],
                 "ensemble_members": len(model.members),
                 "rating_columns": list(model.rating_columns),
             }
         )
-        calibrator = super().fit_probability_calibrator(model, *args, **kwargs)
+        configured_method = self.calibration_method
+        self.calibration_method = selected["method"]
+        try:
+            calibrator = super().fit_probability_calibrator(model, *args, **kwargs)
+        finally:
+            self.calibration_method = configured_method
         model.baseline_calibrator = self._fit_rating_baseline_calibrator(model, *args)
         self._store_winner_report(
             {
@@ -392,14 +447,32 @@ class WinnerLightGBMModel(LightGBMModel):
         p_full = model.baseline.predict_proba(
             X_full.loc[y_full.index, model.rating_columns]
         )[:, 1]
-        candidates: list[tuple[float, float, str]] = []
+        candidates: list[dict[str, Any]] = []
         for method in methods:
             candidate = self._fit_probability_candidate(method, p_fit, y_fit)
             metrics = self._probability_quality_metrics(
                 y_select, candidate.predict(p_select)
             )
-            candidates.append((metrics["log_loss"], metrics["brier"], method))
-        selected_method = min(candidates)[2]
+            candidates.append({"method": method, "metrics": metrics})
+        selected = self._select_probability_calibration_candidate(
+            candidates,
+            require_safe_calibration=True,
+        )
+        selected_method = selected["method"]
+        self._store_winner_report(
+            {
+                "rating_baseline_calibration_selection": [
+                    {
+                        "method": candidate["method"],
+                        "metrics": candidate["metrics"],
+                        "selection_eligible": candidate["selection_eligible"],
+                        "selection_reasons": candidate["selection_reasons"],
+                    }
+                    for candidate in candidates
+                ]
+            },
+            merge=True,
+        )
         return self._fit_probability_candidate(selected_method, p_full, y_full)
 
     def fit_probability_uncertainty(

@@ -24,10 +24,20 @@ Before a release or after changing ingestion/model schemas also run:
 uv run oracle-bets lol reconcile-history
 uv run oracle-bets lol build-series
 uv run oracle-bets lol retune \
-  --targets series_winner,next_map_winner --feature-set compact
-uv run oracle-bets lol promote-tuning <run-id>
+  --targets series_winner --feature-set full
+uv run oracle-bets lol review-tuning <series-run-id> --format json
+uv run oracle-bets lol promote-tuning <series-run-id>
+uv run oracle-bets lol retune \
+  --targets next_map_winner --feature-set full
+uv run oracle-bets lol review-tuning <next-map-run-id> --format json
+uv run oracle-bets lol promote-tuning <next-map-run-id>
 uv run oracle-bets lol train --targets all --feature-set compact
 ```
+
+Do not execute the research commands merely as a smoke test: they are expensive
+and completion exposes their final holdouts. Use fixtures for CI. A real review records its
+label hash and requires every row to be later than the target's previously
+exposed test window.
 
 Required invariants include chronological availability, complete two-team/ten-
 player maps, deterministic complete-series reconstruction, exact complementary

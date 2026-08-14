@@ -114,6 +114,10 @@ ALL_MODEL_CONFIGS: tuple[ModelConfig, ...] = (
     ModelConfig("TotalKillsPrediction", "total_kills", "total_kills", "regression"),
     ModelConfig("TotalTowersPrediction", "total_towers", "total_towers", "regression"),
 )
+WINNER_TUNING_MODELS = {
+    "series_winner": "SeriesWinnerPrediction_LightGBM",
+    "next_map_winner": "NextMapWinnerPrediction_LightGBM",
+}
 
 TARGET_ALIASES = {
     "outcome": "map_winner",
@@ -141,6 +145,7 @@ TRAINING_REPORT_RETENTION = 12
 RANDOM_CLASSIFIER_LOG_LOSS = 0.693147
 RANDOM_CLASSIFIER_BRIER = 0.25
 WEAK_REGRESSION_R2 = 0.1
+TUNING_REVIEW_SCHEMA_VERSION = 3
 
 
 # ───────────────────────────────  helpers  ───────────────────────────────────
@@ -636,10 +641,20 @@ def _sha256_file(path: Path) -> str:
 
 def _tuning_review_input_fingerprint(run_root: Path) -> str:
     """Bind a tuning approval to every model/evaluation file it reviewed."""
-    model_name = "SeriesWinnerPrediction_LightGBM"
+    manifest_path = run_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    requested = manifest.get("targets_requested")
+    winner_targets = (
+        [str(target) for target in requested if str(target) in WINNER_TUNING_MODELS]
+        if isinstance(requested, list)
+        else []
+    )
+    if len(requested or []) != 1 or len(winner_targets) != 1:
+        raise ValueError("Winner V2 targets require independent tuning runs.")
+    model_name = WINNER_TUNING_MODELS[winner_targets[0]]
     artifact_root = run_root / "artifacts"
     paths = (
-        run_root / "manifest.json",
+        manifest_path,
         run_root / model_name / "tuned_hyperparameters.json",
         artifact_root / "_evaluation" / model_name / "features.parquet",
         artifact_root / "_evaluation" / model_name / "labels.parquet",
@@ -726,12 +741,15 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
         raise ValueError(
             f"Tuning run is not complete for its requested targets: {manifest_path}"
         )
-    if any(config.target_name == "next_map_winner" for config in selected):
-        raise ValueError(
-            "Next-map tuning promotion is disabled until an independent sealed "
-            "review gate is implemented."
-        )
-    if any(config.target_name == "series_winner" for config in selected):
+    winner_targets = [
+        config.target_name
+        for config in selected
+        if config.target_name in WINNER_TUNING_MODELS
+    ]
+    if len(winner_targets) > 1:
+        raise ValueError("Winner V2 targets require independent tuning runs.")
+    if winner_targets:
+        winner_target = winner_targets[0]
         review_path = run_root / "tuning_review.json"
         try:
             review = json.loads(review_path.read_text(encoding="utf-8"))
@@ -742,8 +760,12 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
             ) from exc
         reviewed_fingerprint = review.get("review_input_sha256")
         if (
-            review.get("status") != "approved"
+            review.get("schema_version") != TUNING_REVIEW_SCHEMA_VERSION
+            or review.get("status") != "approved"
             or review.get("run_id") != run_id
+            or review.get("target") != winner_target
+            or (review.get("sealed_holdout") or {}).get("fresh_for_promotion")
+            is not True
             or reviewed_fingerprint != _tuning_review_input_fingerprint(run_root)
         ):
             raise ValueError("Winner tuning review is missing, stale, or blocked.")
@@ -835,30 +857,154 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
 
 
 def review_tuning_run(run_id: str) -> dict[str, object]:
-    """Review a Winner V2 Optuna run against its sealed rating baseline."""
+    """Review one Winner V2 Optuna run against its sealed rating baseline."""
+    run_root = REPORTS_DIR / "training" / "runs" / run_id
+    manifest = json.loads((run_root / "manifest.json").read_text(encoding="utf-8"))
+    target = _validated_winner_tuning_target(manifest)
+    review_fingerprint = _tuning_review_input_fingerprint(run_root)
+    review_path = run_root / "tuning_review.json"
+    if review_path.is_file():
+        existing = json.loads(review_path.read_text(encoding="utf-8"))
+        if (
+            existing.get("schema_version") == TUNING_REVIEW_SCHEMA_VERSION
+            and existing.get("review_input_sha256") == review_fingerprint
+        ):
+            return existing
+    holdout = _sealed_tuning_holdout(run_root, target=target)
+    evidence = _winner_tuning_review_evidence(run_root, target=target)
+    if not holdout["fresh_for_promotion"]:
+        existing_reasons = evidence.get("reasons")
+        if not isinstance(existing_reasons, list):
+            raise ValueError("Winner tuning evidence has malformed reasons.")
+        reasons = [
+            *(str(reason) for reason in existing_reasons),
+            "holdout_overlaps_previously_exposed_window",
+        ]
+        evidence["reasons"] = list(dict.fromkeys(reasons))
+        evidence["status"] = "blocked"
+    result: dict[str, object] = {
+        "schema_version": TUNING_REVIEW_SCHEMA_VERSION,
+        "run_id": run_id,
+        "target": target,
+        "review_input_sha256": review_fingerprint,
+        "sealed_holdout": holdout,
+    } | evidence
+    if _tuning_review_input_fingerprint(run_root) != review_fingerprint:
+        raise ValueError("Winner tuning artifacts changed during review.")
+    _atomic_write_text(
+        run_root / "tuning_review.json",
+        json.dumps(result, indent=2, sort_keys=True) + "\n",
+    )
+    return result
+
+
+def _validated_winner_tuning_target(manifest: dict[str, object]) -> str:
+    requested = manifest.get("targets_requested")
+    if (
+        manifest.get("status") != "completed"
+        or manifest.get("retune") is not True
+        or not isinstance(requested, list)
+    ):
+        raise ValueError("Run is not a completed Winner V2 tuning study.")
+    winner_targets = [
+        str(target) for target in requested if str(target) in WINNER_TUNING_MODELS
+    ]
+    if len(requested) != 1 or len(winner_targets) != 1:
+        raise ValueError("Winner V2 targets require independent tuning runs.")
+    target = winner_targets[0]
+    expected_trained = WINNER_TUNING_MODELS[target].removesuffix("_LightGBM")
+    if manifest.get("targets_trained") != [expected_trained] or manifest.get(
+        "targets_failed"
+    ):
+        raise ValueError("Run is not a completed Winner V2 tuning study.")
+    return target
+
+
+def _sealed_tuning_holdout(run_root: Path, *, target: str) -> dict[str, object]:
+    """Identify a holdout and reject temporal overlap with earlier reviews."""
+    model_name = WINNER_TUNING_MODELS[target]
+    split_path = run_root / model_name / "split_report.json"
+    split = json.loads(split_path.read_text(encoding="utf-8"))["test"]
+    date_min = str(split.get("date_min") or "")
+    date_max = str(split.get("date_max") or "")
+    if not date_min or not date_max:
+        raise ValueError("Winner tuning review requires sealed test date bounds.")
+    current_min = _parse_utc_holdout_date(date_min)
+    current_max = _parse_utc_holdout_date(date_max)
+    prior: list[tuple[dt.datetime, str]] = []
+    runs_root = run_root.parent
+    for manifest_path in sorted(runs_root.glob("*/manifest.json")):
+        previous_root = manifest_path.parent
+        if previous_root == run_root:
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            requested = manifest.get("targets_requested")
+            expected_trained = WINNER_TUNING_MODELS[target].removesuffix("_LightGBM")
+            if (
+                manifest.get("status") != "completed"
+                or manifest.get("retune") is not True
+                or not isinstance(requested, list)
+                or target not in requested
+                or expected_trained not in (manifest.get("targets_trained") or [])
+            ):
+                continue
+            previous_split = json.loads(
+                (previous_root / model_name / "split_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )["test"]
+            previous_max = _parse_utc_holdout_date(str(previous_split["date_max"]))
+            prior.append((previous_max, previous_root.name))
+        except (
+            FileNotFoundError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            continue
+    latest_prior = max(prior, default=None)
+    labels_path = run_root / "artifacts" / "_evaluation" / model_name / "labels.parquet"
+    fresh = latest_prior is None or current_min > latest_prior[0]
+    return {
+        "date_min": current_min.isoformat(),
+        "date_max": current_max.isoformat(),
+        "labels_sha256": _sha256_file(labels_path),
+        "fresh_for_promotion": fresh,
+        "latest_prior_exposed_date_max": (
+            latest_prior[0].isoformat() if latest_prior is not None else None
+        ),
+        "latest_prior_run_id": latest_prior[1] if latest_prior is not None else None,
+    }
+
+
+def _parse_utc_holdout_date(value: str) -> dt.datetime:
+    parsed = dt.datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed.astimezone(dt.UTC)
+
+
+def _winner_tuning_review_evidence(
+    run_root: Path,
+    *,
+    target: str,
+) -> dict[str, object]:
+    """Build sealed, target-specific Optuna evidence against the rating baseline."""
     from oracle_bets_core.evidence.performance import prediction_quality
 
     from lol_bets.operations.models import (
         PromotionEvidence,
         PromotionPolicy,
         _binary_log_losses,
+        _clustered_binary_log_losses,
         _cohort_replay_losses,
         evaluate_promotion,
     )
     from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
 
-    run_root = REPORTS_DIR / "training" / "runs" / run_id
-    manifest_path = run_root / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if (
-        manifest.get("status") != "completed"
-        or manifest.get("retune") is not True
-        or "series_winner" not in manifest.get("targets_requested", [])
-    ):
-        raise ValueError("Run is not a completed Winner V2 tuning study.")
-    review_fingerprint = _tuning_review_input_fingerprint(run_root)
-
-    model_name = "SeriesWinnerPrediction_LightGBM"
+    model_name = WINNER_TUNING_MODELS[target]
     artifact_root = run_root / "artifacts"
     evaluation = artifact_root / "_evaluation" / model_name
     raw = pd.read_parquet(evaluation / "features.parquet")
@@ -890,14 +1036,31 @@ def review_tuning_run(run_id: str) -> dict[str, object]:
     operational_failures = _winner_parameter_failures(model, tuning_payload)
     if not valid_probability_calibration_artifacts(calibrator, uncertainty):
         operational_failures.append("invalid_probability_calibration_artifacts")
+    cluster_col = "series_id" if target == "next_map_winner" else None
+    if cluster_col is None:
+        baseline_losses = _binary_log_losses(actual, baseline)
+        candidate_losses = _binary_log_losses(actual, candidate)
+    else:
+        baseline_losses = _clustered_binary_log_losses(
+            labels, actual, baseline, cluster_col=cluster_col
+        )
+        candidate_losses = _clustered_binary_log_losses(
+            labels, actual, candidate, cluster_col=cluster_col
+        )
     evidence = PromotionEvidence(
-        champion_log_losses=tuple(_binary_log_losses(actual, baseline)),
-        candidate_log_losses=tuple(_binary_log_losses(actual, candidate)),
+        champion_log_losses=tuple(baseline_losses),
+        candidate_log_losses=tuple(candidate_losses),
         champion_brier=baseline_quality.brier,
         candidate_brier=candidate_quality.brier,
         champion_ece=baseline_quality.calibration_error,
         candidate_ece=candidate_quality.calibration_error,
-        cohort_log_loss=_cohort_replay_losses(labels, actual, baseline, candidate),
+        cohort_log_loss=_cohort_replay_losses(
+            labels,
+            actual,
+            baseline,
+            candidate,
+            cluster_col=cluster_col,
+        ),
         operational_failures=tuple(operational_failures),
     )
     decision = evaluate_promotion(evidence, policy=PromotionPolicy.OPTUNA)
@@ -913,12 +1076,9 @@ def review_tuning_run(run_id: str) -> dict[str, object]:
         reasons.append("calibration_slope_outside_0.8_1.2")
     if intercept is None or abs(float(intercept)) > MAX_CALIBRATION_REVIEW_INTERCEPT:
         reasons.append("calibration_intercept_above_0.10")
-    if _tuning_review_input_fingerprint(run_root) != review_fingerprint:
-        raise ValueError("Winner tuning artifacts changed during review.")
-    result: dict[str, object] = {
-        "schema_version": 1,
-        "run_id": run_id,
-        "review_input_sha256": review_fingerprint,
+    return {
+        "bootstrap_unit": cluster_col or "series",
+        "bootstrap_units": len(baseline_losses),
         "status": "approved" if decision.promote and not reasons else "blocked",
         "reasons": list(dict.fromkeys(reasons)),
         "rating_baseline": {
@@ -939,11 +1099,6 @@ def review_tuning_run(run_id: str) -> dict[str, object]:
             for name, values in evidence.cohort_log_loss.items()
         },
     }
-    _atomic_write_text(
-        run_root / "tuning_review.json",
-        json.dumps(result, indent=2, sort_keys=True) + "\n",
-    )
-    return result
 
 
 def _write_training_manifest(report_root: Path, payload: dict) -> Path:

@@ -104,6 +104,9 @@ PROBABILITY_EPSILON = 1e-6
 CALIBRATION_BINS = 10
 CALIBRATION_SEGMENT_SHRINKAGE = 120
 CALIBRATION_VERSION = 3
+MIN_CALIBRATION_SLOPE = 0.8
+MAX_CALIBRATION_SLOPE = 1.2
+MAX_ABSOLUTE_CALIBRATION_INTERCEPT = 0.10
 CONFIDENCE_BAND_LOW = 0.55
 CONFIDENCE_BAND_HIGH = 0.70
 PATCH_FAMILY_PARTS = 2
@@ -150,7 +153,11 @@ DERIVED_STRENGTH_FEATURES = (
 )
 
 
-def _model_feature_lineage(feature: str) -> dict[str, Any]:
+def _model_feature_lineage(
+    feature: str,
+    *,
+    next_map: bool = False,
+) -> dict[str, Any]:
     """Describe one final matchup feature without claiming post-start availability."""
     source = feature
     swap_behavior = "canonical_team_a_minus_team_b"
@@ -174,10 +181,24 @@ def _model_feature_lineage(feature: str) -> dict[str, Any]:
         family = "historical_form"
     else:
         family = "prematch_context"
+    next_map_state = any(
+        token in lowered
+        for token in (
+            "maps_completed",
+            "next_map_number",
+            "series_wins_before",
+            "series_losses_before",
+            "series_score",
+        )
+    )
     return {
         "feature": feature,
         "source": source,
-        "availability_timestamp": "strictly_before_fixture_start",
+        "availability_timestamp": (
+            "after_previous_map_before_target_map"
+            if next_map and next_map_state
+            else "strictly_before_fixture_start"
+        ),
         "family": family,
         "swap_behavior": swap_behavior,
         "model_eligible": True,
@@ -1690,7 +1711,9 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 else None,
             }
             if "date" in X_split:
-                dates = pd.to_datetime(X_split["date"], errors="coerce").dropna()
+                dates = pd.to_datetime(
+                    X_split["date"], errors="coerce", utc=True
+                ).dropna()
                 payload["date_min"] = (
                     dates.min().isoformat() if not dates.empty else None
                 )
@@ -1807,7 +1830,13 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
     def store_feature_lineage(self, all_features: pd.Index) -> None:
         """Persist the train/serve availability contract for every final feature."""
-        lineage = [_model_feature_lineage(str(feature)) for feature in all_features]
+        lineage = [
+            _model_feature_lineage(
+                str(feature),
+                next_map=self.model_name == "NextMapWinnerPrediction_LightGBM",
+            )
+            for feature in all_features
+        ]
         payload = json.dumps(lineage, indent=2, sort_keys=True) + "\n"
         artifact = self.artifact_root / self.model_name
         artifact.mkdir(parents=True, exist_ok=True)
@@ -2315,6 +2344,48 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             return ProbabilityCalibrator(method="isotonic", model=model)
         raise ValueError(f"Unknown calibration method: {method}")
 
+    @staticmethod
+    def _select_probability_calibration_candidate(
+        candidates: list[dict[str, Any]],
+        *,
+        require_safe_calibration: bool,
+    ) -> dict[str, Any]:
+        """Choose on the selection split, rejecting unsafe Winner V2 calibration."""
+        for candidate in candidates:
+            metrics = candidate["metrics"]
+            reasons: list[str] = []
+            slope = metrics.get("calibration_slope")
+            intercept = metrics.get("calibration_intercept")
+            if slope is None or not (
+                MIN_CALIBRATION_SLOPE <= float(slope) <= MAX_CALIBRATION_SLOPE
+            ):
+                reasons.append("calibration_slope_outside_0.8_1.2")
+            if (
+                intercept is None
+                or abs(float(intercept)) > MAX_ABSOLUTE_CALIBRATION_INTERCEPT
+            ):
+                reasons.append("calibration_intercept_above_0.10")
+            candidate["selection_reasons"] = reasons
+            candidate["selection_eligible"] = not reasons
+
+        eligible = (
+            [candidate for candidate in candidates if candidate["selection_eligible"]]
+            if require_safe_calibration
+            else candidates
+        )
+        if not eligible:
+            raise RuntimeError(
+                "No probability calibrator passed Winner V2 selection-split "
+                "slope/intercept gates."
+            )
+        return min(
+            eligible,
+            key=lambda item: (
+                item["metrics"].get("log_loss", float("inf")),
+                item["metrics"].get("brier", float("inf")),
+            ),
+        )
+
     def fit_probability_calibrator(
         self,
         model,
@@ -2378,13 +2449,10 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         if not candidates:
             return None
 
-        best = sorted(
+        best = self._select_probability_calibration_candidate(
             candidates,
-            key=lambda item: (
-                item["metrics"].get("log_loss", float("inf")),
-                item["metrics"].get("brier", float("inf")),
-            ),
-        )[0]
+            require_safe_calibration=self.model_name in WINNER_V2_MODEL_NAMES,
+        )
         final_global = self._fit_probability_candidate(best["method"], p_full, y_full)
         global_selection_metrics = best["metrics"]
         segmented_selection_metrics = global_selection_metrics
@@ -2425,7 +2493,12 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 "cal_full": int(len(y_full)),
             },
             "candidates": [
-                {"method": item["method"], "metrics": item["metrics"]}
+                {
+                    "method": item["method"],
+                    "metrics": item["metrics"],
+                    "selection_eligible": item["selection_eligible"],
+                    "selection_reasons": item["selection_reasons"],
+                }
                 for item in candidates
             ],
             "segments": segment_reports,
@@ -3143,7 +3216,11 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                         "patch",
                         "side",
                         "gameid",
+                        "series_id",
+                        "source_gameid",
+                        "target_gameid",
                         "game",
+                        "next_map_number",
                         "date",
                     ]
                     if c in meta_df.columns

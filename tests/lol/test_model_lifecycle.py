@@ -14,6 +14,8 @@ from lol_bets.operations.models import (
     PromotionEvidence,
     PromotionPolicy,
     TrainingTriggerState,
+    _clustered_binary_log_losses,
+    _cohort_replay_losses,
     _target_drift_review,
     evaluate_promotion,
     evaluate_training_triggers_from_history,
@@ -31,6 +33,48 @@ MIN_PROMOTION_IMPROVEMENT = 0.01
 MAX_ROUTINE_DEGRADATION = 0.01
 MAJOR_MAPS = 25
 SEALED_ROWS = 80
+
+
+def test_next_map_evidence_clusters_correlated_maps_by_series() -> None:
+    expected_clusters = 2
+    labels = pd.DataFrame(
+        {
+            "series_id": ["s1", "s1", "s2"],
+            "league": ["LCK", "LCK", "LCK"],
+            "actionable": [True, True, True],
+        }
+    )
+    actual = np.array([1.0, 0.0, 1.0])
+    baseline = np.array([0.6, 0.6, 0.6])
+    candidate = np.array([0.7, 0.4, 0.7])
+
+    clustered = _clustered_binary_log_losses(
+        labels,
+        actual,
+        candidate,
+        cluster_col="series_id",
+    )
+    cohorts = _cohort_replay_losses(
+        labels,
+        actual,
+        baseline,
+        candidate,
+        cluster_col="series_id",
+    )
+
+    assert len(clustered) == expected_clusters
+    assert cohorts["all_research_all_supported"][2] == expected_clusters
+    assert cohorts["actionable_tier1_plus_erls"][2] == expected_clusters
+
+
+def test_clustered_next_map_evidence_requires_series_identity() -> None:
+    with pytest.raises(ValueError, match="complete series_id clusters"):
+        _clustered_binary_log_losses(
+            pd.DataFrame({"series_id": ["s1", None]}),
+            np.array([1.0, 0.0]),
+            np.array([0.6, 0.4]),
+            cluster_col="series_id",
+        )
 
 
 class _IdentityPipeline:
@@ -499,6 +543,7 @@ def test_routine_review_replays_both_bundles_on_candidate_sealed_rows(tmp_path):
     assert registry.champion_id() == "candidate"
     assert set(review.row_fingerprints) == {
         "series_winner",
+        "next_map_winner",
         "gamelength",
         "total_kills",
         "total_towers",
@@ -508,6 +553,40 @@ def test_routine_review_replays_both_bundles_on_candidate_sealed_rows(tmp_path):
     assert drift["status"] == "warning_only"
     assert drift["promotion_gate_effect"] == "none"
     assert drift["targets"]["series_winner"]["feature_availability"]["columns"] == 1
+
+
+def test_next_map_regression_blocks_an_otherwise_healthy_candidate(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry")
+    _register_replay_bundle(
+        registry,
+        tmp_path / "champion",
+        "champion",
+        confidence=0.65,
+        regression_error=1.0,
+        include_evaluation=False,
+    )
+    _register_replay_bundle(
+        registry,
+        tmp_path / "candidate",
+        "candidate",
+        confidence=0.70,
+        next_map_confidence=0.50,
+        regression_error=0.5,
+        include_evaluation=True,
+    )
+    registry.promote("champion", promoted_at=NOW, reason="bootstrap")
+
+    review = review_candidate_on_sealed_rows(
+        registry,
+        "candidate",
+        reviewed_at=NOW + timedelta(minutes=1),
+        bootstrap_samples=500,
+    )
+
+    assert review.status == "blocked"
+    assert not review.promoted
+    assert registry.champion_id() == "champion"
+    assert any(reason.startswith("next_map_winner:") for reason in review.reasons)
 
 
 def test_routine_promotion_writes_recoverable_approval_before_pointer_change(
@@ -692,6 +771,14 @@ def test_first_v2_without_legacy_champion_runs_internal_baseline_review(tmp_path
 
     assert review.evidence["first_winner_v2"] is True
     assert review.evidence["comparator"] == "predeclared_rating_logistic_baseline"
+    assert set(review.evidence["winner_targets"]) == {
+        "series_winner",
+        "next_map_winner",
+    }
+    assert (
+        review.evidence["winner_targets"]["next_map_winner"]["bootstrap_unit"]
+        == "series_id"
+    )
     assert "no_champion_comparator" not in review.reasons
 
 
@@ -701,6 +788,7 @@ def _register_replay_bundle(
     model_id,
     *,
     confidence,
+    next_map_confidence=None,
     regression_error,
     include_evaluation,
 ):
@@ -708,6 +796,7 @@ def _register_replay_bundle(
 
     model_names = {
         "series_winner": "SeriesWinnerPrediction_LightGBM",
+        "next_map_winner": "NextMapWinnerPrediction_LightGBM",
         "gamelength": "GamelengthPrediction_LightGBM",
         "total_kills": "TotalKillsPrediction_LightGBM",
         "total_towers": "TotalTowersPrediction_LightGBM",
@@ -717,8 +806,13 @@ def _register_replay_bundle(
         model_root = root / name
         model_root.mkdir(parents=True, exist_ok=True)
         _pickle(model_root / f"{name}_feature_pipeline.pkl", _IdentityPipeline())
-        if target == "series_winner":
-            _pickle(model_root / f"{name}.pkl", _ProbabilityModel(confidence))
+        if target in {"series_winner", "next_map_winner"}:
+            target_confidence = (
+                next_map_confidence
+                if target == "next_map_winner" and next_map_confidence is not None
+                else confidence
+            )
+            _pickle(model_root / f"{name}.pkl", _ProbabilityModel(target_confidence))
             (model_root / f"{name}_feature_lineage.json").write_text(
                 json.dumps(
                     [
@@ -751,14 +845,16 @@ def _register_replay_bundle(
             {
                 "target": target,
                 "evidence_status": (
-                    "meets_basic_sanity" if target == "series_winner" else "weak_signal"
+                    "meets_basic_sanity"
+                    if target in {"series_winner", "next_map_winner"}
+                    else "weak_signal"
                 ),
             }
         )
         if include_evaluation:
             evaluation = root / "_evaluation" / name
             evaluation.mkdir(parents=True, exist_ok=True)
-            if target == "series_winner":
+            if target in {"series_winner", "next_map_winner"}:
                 actual = np.tile([1, 0], 40)
             else:
                 actual = np.linspace(10, 20, 80)
@@ -773,6 +869,7 @@ def _register_replay_bundle(
                     "league_region": ["Korea"] * 80,
                     "league_tier": ["tier1"] * 80,
                     "actionable": [True] * 80,
+                    "series_id": [f"series-{index // 2}" for index in range(80)],
                 }
             ).to_parquet(evaluation / "labels.parquet", index=False)
         evaluation = root / "_evaluation" / name
