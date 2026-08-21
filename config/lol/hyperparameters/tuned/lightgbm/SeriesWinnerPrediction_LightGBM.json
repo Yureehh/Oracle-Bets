@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "calibration": "auto",
+    "calibration_method": "auto",
+    "calibration_size": 0.15,
+    "code_version": "9a8f28e7fabb9ea50958cf17dbc05ca064cd940a",
+    "dataset_fingerprint": "80750682328ad0d0b51b31f4409f27d5a99aecee84846007dae7b59574fe7aa6",
+    "feature_schema_fingerprint": "b9dc7c5cabb010977acfb865b189ed38317510ab9ea2c0835da36f3f5ade7590",
+    "feature_set": "full",
+    "max_features": 120,
+    "model_name": "SeriesWinnerPrediction_LightGBM",
+    "model_type": "lightgbm",
+    "objective": "binary_logloss",
+    "problem_type": "classification",
+    "promoted_tuning_run_id": "20260821T112810_829000Z",
+    "random_seed": 42,
+    "review_warnings": [
+      "calibration_intercept_above_0.10",
+      "cohort_regression:league:CBLOL",
+      "cohort_regression:league:EBL",
+      "cohort_regression:league:EM",
+      "cohort_regression:league:NACL",
+      "cohort_regression:league:ROL",
+      "cohort_regression:region:BR",
+      "cohort_regression:region:NA",
+      "holdout_overlaps_previously_exposed_window"
+    ],
+    "search_space_version": 1,
+    "source": "optuna_reviewed",
+    "test_size": 0.15,
+    "tune_size": 0.1,
+    "validation_score": 0.583035114788125,
+    "version": 2
+  },
+  "params": {
+    "colsample_bytree": 0.5716516935071895,
+    "learning_rate": 0.027889623817092885,
+    "max_depth": 4,
+    "min_child_samples": 108,
+    "num_leaves": 49,
+    "reg_alpha": 0.00010073517439759003,
+    "reg_lambda": 0.33332477869293264,
+    "subsample": 0.9538136867711331
+  }
+}
