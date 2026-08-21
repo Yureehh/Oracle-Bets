@@ -771,7 +771,9 @@ def test_optuna_derived_review_never_auto_promotes(tmp_path):
     assert registry.champion_id() == "champion"
 
 
-def test_first_v2_without_legacy_champion_runs_internal_baseline_review(tmp_path):
+def test_first_v2_without_legacy_champion_runs_internal_baseline_review(
+    tmp_path, monkeypatch
+):
     registry = ModelRegistry(tmp_path / "registry")
     _register_replay_bundle(
         registry,
@@ -780,6 +782,14 @@ def test_first_v2_without_legacy_champion_runs_internal_baseline_review(tmp_path
         confidence=0.70,
         regression_error=0.5,
         include_evaluation=True,
+    )
+    monkeypatch.setattr(
+        "lol_bets.prediction_models.gbdt_model.GradientBoostingModel."
+        "compute_probability_calibration_metrics",
+        lambda *_args, **_kwargs: {
+            "calibration_slope": 1.0,
+            "calibration_intercept": -0.15,
+        },
     )
 
     review = review_candidate_on_sealed_rows(
@@ -795,6 +805,10 @@ def test_first_v2_without_legacy_champion_runs_internal_baseline_review(tmp_path
         "series_winner",
     }
     assert "no_champion_comparator" not in review.reasons
+    assert review.status == "manual_review_required"
+    assert review.evidence["winner_targets"]["series_winner"]["warnings"] == [
+        "calibration_intercept_above_0.10"
+    ]
 
 
 def _register_replay_bundle(

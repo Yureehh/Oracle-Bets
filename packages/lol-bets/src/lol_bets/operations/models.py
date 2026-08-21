@@ -725,14 +725,15 @@ def _review_winner_target_against_rating_baseline(
         pd.Series(actual), candidate
     )
     reasons = list(decision.reasons)
+    warnings: list[str] = []
     slope = calibration.get("calibration_slope")
     intercept = calibration.get("calibration_intercept")
     if slope is None or not (
         _MIN_CALIBRATION_SLOPE <= float(slope) <= _MAX_CALIBRATION_SLOPE
     ):
-        reasons.append("calibration_slope_outside_0.8_1.2")
+        warnings.append("calibration_slope_outside_0.8_1.2")
     if intercept is None or abs(float(intercept)) > _MAX_ABSOLUTE_CALIBRATION_INTERCEPT:
-        reasons.append("calibration_intercept_above_0.10")
+        warnings.append("calibration_intercept_above_0.10")
     report = {
         "sealed_rows": len(labels),
         "bootstrap_unit": cluster_col or "series",
@@ -755,6 +756,7 @@ def _review_winner_target_against_rating_baseline(
         },
         "operational_failures": list(operational_failures),
         "reasons": list(dict.fromkeys(reasons)),
+        "warnings": warnings,
     }
     return list(dict.fromkeys(reasons)), _frame_fingerprint(labels), report
 
