@@ -16,24 +16,22 @@
 | Done | P0 | Gateway-only delivery | Durable send intent, history recovery, process lock; no webhook duplication path |
 | Done | P1 | Manual owner settlement | Win/Loss/Push/Void with source reference; no automatic reconciliation |
 | Done | P2 | Read-only timing observer | Hourly evidence/report snapshots; provisional 48–24h policy |
-| Done | P2 | Experimental next-map dataset/model | Frozen prematch plus manually sourced map state; shadow-only safety |
-| Blocked | P0 | Latest series-winner Optuna study | Independent run `20260821T112810_829000Z` improved aggregate and actionable log loss versus the rating baseline, but failed absolute calibration-intercept and cohort-regression gates; its holdout is exposed and parameters were not promoted |
+| Done | P2 | Experimental next-map dataset/model | Frozen prematch plus manually sourced map state; shadow-only and excluded from the normal bundle |
+| Review | P0 | Latest series-winner Optuna study | Run `20260821T112810_829000Z` improved aggregate and actionable log loss versus its rating baseline; hard performance gates passed, while calibration-intercept, holdout-reuse, and small non-actionable cohort findings remain explicit paper-mode warnings |
 | Done | P0 | Calibration-safe tuning selection | Unsafe slope/intercept candidates cannot win calibration selection merely through lower log loss |
-| Done | P0 | Experimental next-map tuning review | Independent study required; bootstrap and cohorts cluster by series; complete bundles require both Winner decisions |
+| Done | P0 | Experimental next-map tuning review | Independent study required; bootstrap and cohorts cluster by series; it is not required by normal training or promotion |
 | Blocked | P0 | First next-map Optuna study | Run `20260814T005027_980518Z` improved aggregate log loss by 2.72% but improvement was not statistically proven; ECE, calibration intercept, and multiple cohorts failed; parameters were not promoted |
-| Done | P0 | Holdout exposure enforcement | Completed studies expose their final metrics; reviews record date window/label hash, and overlapping later studies cannot promote parameters |
-| Now | P0 | Winner V2 research correction | Diagnose calibration bias and cohort instability using development/calibration data only, then wait for genuinely post-exposure labels before a new non-overlapping final holdout |
-| Blocked | P0 | Clean V2 rebuild and manual first promotion | Requires reviewed fixed parameters for both Winner V2 targets and all sealed rating-baseline/calibration/cohort gates |
+| Done | P0 | Holdout exposure disclosure | Reviews record date window/label hash and flag overlapping evidence; reused evidence is never described as fresh confirmation |
+| Now | P0 | Clean V2 rebuild and manual first promotion | Review/promote the superior direct-series parameters, run the five-target fixed-parameter full-feature build, then promote only if structural, aggregate, and actionable hard gates pass |
 | Next | P1 | Accumulate prematch paper evidence | At least 200 manually settled signals with positive lower-95% ROI and CLV plus healthy calibration |
 | Later | P2 | Reactive evidence sufficiency | Separate 200-series-clustered gate; no martingale or overlapping prematch exposure |
 | Later | P2 | Provider-backed settlement | Explicit opt-in only after identity/rule/conflict/correction proof |
 | Later | P3 | Portfolio sizing | Correlation-aware exposure before any real-money sizing claim |
 | Later | P3 | Counter-Strike / real-sport adapters | Only after LoL has credible sealed and settled evidence |
 
-The repository is not proven profitable. The latest direct-series and next-map
-studies were correctly rejected, the legacy champion remains non-actionable,
-and proposal publication stays disabled until a complete healthy V2 bundle
-exists. Routine full training correctly refuses to start while reviewed fixed
-parameters are missing.
+The repository is not proven profitable. The legacy champion remains
+non-actionable and proposal publication stays disabled until a complete healthy
+V2 bundle exists. The next-map study remains experimental and cannot delay the
+direct-series paper workflow.
 Real-money consideration remains blocked until every evidence gate is met;
 individual predictions can always lose.

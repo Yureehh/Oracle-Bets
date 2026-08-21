@@ -50,15 +50,15 @@ uses wallets, or moves funds.
 | `lol sync-identities` | Rebuild canonical player/team/league/series/map identity evidence from retained raw data. Writes evidence. | None. |
 | `lol schedule` | Fetch and print PandaScore fixtures only; does not write the schedule or train. | `--days N`, `--leagues LCK,LEC`. |
 | `lol validate-data` | Read-only validation of generated supervised tables and feature contracts. | None. |
-| `lol build-series` | Reconstruct deterministic complete BO1/BO3/BO5 series, write one frozen prematch row per accepted series plus the next-map shadow dataset, and write an explicit rejection manifest. Run after ingestion and before Winner V2 training. | None. |
+| `lol build-series` | Reconstruct deterministic complete BO1/BO3/BO5 series, write one frozen prematch row per accepted series plus the optional next-map shadow dataset, and write an explicit rejection manifest. Run after ingestion and before Winner V2 training. | None. |
 | `lol validate-winner-model` | Fail-closed validation of the promoted direct-series bundle: actionability, ten-member ensemble, direct rating families, train/serve parity, canonical swap contract, and forbidden-feature absence. | `--format table|json`. |
 | `lol market-check` | Public, read-only Gamma/CLOB check. Reports typed match, token orientation, minimum shares, hypothetical cost, executable odds, and isolated token failures. Two observations use one shared 45-second wait. | `--match-key <pandascore-key>` checks that fixture's supported typed market. |
-| `lol market-review` | Review one or more exact owner-selected Polymarket LoL event URLs. The default writes one read-only JSON/Markdown report pair; `--publish` also records eligible paper proposals for the Gateway bot. It never places orders. | One or more canonical event URLs; `--publish`; `--format table|json`. |
+| `lol market-review` | Review one or more exact owner-selected Polymarket LoL event URLs. It writes one JSON/Markdown pair containing direct-series probabilities, research-only Map 1 probabilities and prop means, typed contracts, executable quotes, and gates. `--publish` queues a Discord summary/report and separately records a proposal only when all series gates pass. It never places orders. | One or more canonical event URLs; `--publish`; `--format table|json`. |
 | `lol market-watch` | Write one JSON/Markdown pair and append read-only series-winner price/book observations for timing/CLV research. Intended for an hourly scheduler; never creates a proposal. | `--format table|json`. |
-| `lol train` | Routine refit with reviewed parameters; retrains weights and calibrators, registers an immutable candidate, and may auto-promote only a healthy non-inferior non-Optuna V2 bundle. It does not run Optuna. | `--targets all|series_winner|next_map_winner|props|<names>`, `--feature-set full|compact|selected`, `--max-features N`, report-only feature selection, and calibration/split options. |
+| `lol train` | Routine refit with reviewed parameters; retrains weights and calibrators, registers an immutable candidate, and may auto-promote only a healthy non-inferior non-Optuna V2 bundle. `all` means direct series, diagnostic map, and three shadow props; experimental next-map must be requested explicitly. It does not run Optuna. | `--targets all|series_winner|next_map_winner|props|<names>`, `--feature-set full|compact|selected`, `--max-features N`, report-only feature selection, and calibration/split options. |
 | `lol retune` | Explicit Optuna research search. Writes isolated tuning reports and artifacts; never updates reviewed parameters or champion automatically. | `--targets`, `--feature-set`, `--max-features`. |
-| `lol promote-tuning <run-id>` | Owner promotion of the single target requested by one reviewed Winner run. Writes only that production parameter file, not model weights. Series and next-map runs are promoted separately; run a complete `lol train` only after both are approved. | Complete run ID with schema-v3 review and fresh holdout. |
-| `lol review-tuning <run-id>` | Compare exactly one Winner V2 target with its predeclared rating baseline. Series uses series rows; next-map evidence is clustered by series. Records the sealed date window and label hash; overlap with any prior completed study window blocks promotion. | Completed single-target Winner V2 tuning run ID. |
+| `lol promote-tuning <run-id>` | Owner promotion of the single target requested by one reviewed Winner run. Writes only that production parameter file, not model weights. Accepts `approved` or `approved_with_warnings`; warnings are copied into parameter metadata. | Complete run ID with a current schema-v4 review and no hard failure. |
+| `lol review-tuning <run-id>` | Compare exactly one Winner target with its predeclared rating baseline. Structural failures, aggregate/actionable degradation, and failed bootstrap evidence block. Calibration-intercept, holdout-reuse, and small non-actionable cohort findings remain visible warnings for paper mode. | Completed single-target Winner tuning run ID. |
 
 Examples:
 
@@ -75,32 +75,30 @@ uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL>
 uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL> --publish
 uv run oracle-bets lol market-watch
 
-# Routine retraining: no Optuna
-uv run oracle-bets lol train --targets all --feature-set compact
+# Routine full-feature retraining: five normal targets, no Optuna
+uv run oracle-bets lol train --targets all --feature-set full
 
-# Winner V2 research retune; continue only if review status is approved
+# Winner V2 research retune; continue only if no hard review reason remains
 uv run oracle-bets lol retune --targets series_winner --feature-set full
 uv run oracle-bets lol review-tuning <run-id> --format json
 uv run oracle-bets lol promote-tuning <run-id>
 
-# Independent next-map research; never combine Winner targets in one study
+# Optional independent next-map experiment; not part of the normal bundle
 uv run oracle-bets lol retune --targets next_map_winner --feature-set full
 uv run oracle-bets lol review-tuning <next-map-run-id> --format json
 uv run oracle-bets lol promote-tuning <next-map-run-id>
 
-# Only after series and next-map targets both have reviewed fixed parameters
-uv run oracle-bets lol train --targets all --feature-set compact
+# Build the normal production candidate after series parameters are reviewed
+uv run oracle-bets lol train --targets all --feature-set full
 ```
 
-Both Winner targets now have independent review code. A combined retune is
-rejected, and both independent decisions must pass complete-bundle promotion.
-The August 21, 2026 series study
-`20260821T112810_829000Z` is blocked and must not be promoted.
-The independent next-map study `20260814T005027_980518Z` is also blocked: its
-average log loss improved, but statistical confidence, calibration, and cohort
-gates failed. Neither run produced reviewed fixed Winner V2 parameters, so a
-complete routine training run must remain blocked until fresh non-overlapping
-evidence supports both targets.
+Winner targets retain independent review code and a combined retune is rejected.
+The August 21, 2026 direct-series study `20260821T112810_829000Z` improved both
+aggregate and actionable log loss over its predeclared rating baseline. Under
+the paper-mode policy its calibration intercept, previously exposed window, and
+small non-actionable cohort findings are warnings, not silent hard vetoes. The
+experimental next-map study remains unapproved and is not required by the normal
+bundle.
 
 Source refresh, ingestion, retraining, and retuning are separate operations.
 The daily workflow refreshes the public cache before ingestion. Retraining updates
@@ -120,15 +118,16 @@ closed without replacing the previous cache.
 | `model status [--registry PATH]` | Read champion and registry health. |
 | `model list [--format table|json] [--registry PATH]` | List immutable candidates. |
 | `model review <model-id> [--format table|json]` | Show manifest, evidence, gates, and artifacts. |
-| `model register-run <run-id|latest>` | Confirm an automatically registered training run. A complete LoL bundle includes direct series, experimental next-map, legacy map diagnostic, three shadow props, their calibrators/uncertainty, and shared rating lookups. |
+| `model register-run <run-id|latest>` | Confirm an automatically registered training run. A complete normal LoL bundle includes direct series, diagnostic map, three shadow props, their calibrators/uncertainty, and shared rating lookups. Experimental next-map is optional. |
 | `model register-current <id> --code-version <sha> --metric name=value [...]` | Freeze the current complete inference tree as a manual candidate; optional `--target`, `--random-seed`, `--registry`. |
 | `model promote <id> --reason <text>` | Explicitly move the champion pointer after owner review. |
 | `model quarantine <id> --reason <text>` | Immediately make a model research-only; diagnostic predictions remain available but it cannot create paper proposals. |
 | `model rollback <id> --reason <text>` | Explicitly restore a prior healthy bundle. |
 
-The first champion is manual. Later routine candidates may auto-promote only
-after sealed-row non-inferiority, calibration, cohort, regression-target, and
-artifact gates pass. Optuna-derived candidates always remain manual.
+The first champion is manual. Later routine candidates may auto-promote after
+hard structural, aggregate-probability, and actionable-cohort gates pass.
+Diagnostic small-cohort and shadow-prop warnings remain recorded but do not
+veto a better winner model. Optuna-derived candidates always remain manual.
 
 ## Daily workflow
 

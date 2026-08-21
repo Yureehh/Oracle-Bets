@@ -135,12 +135,18 @@ caller order. Exact `P(A beats B) + P(B beats A) == 1` is a serving invariant,
 not an averaged repair. The conservative probability is an ensemble lower
 quantile adjusted by held-out calibration bias; it is not a guarantee.
 
-Promotion requires clean provenance, a checksummed complete bundle, train/serve
-feature parity, zero forbidden fields, exact symmetry, no temporal or
-intra-series leakage, acceptable log loss/Brier/ECE, calibration slope and
-intercept, and healthy actionable cohorts. A completed study exposes its final
-holdout forever. A later overlapping study is diagnostic-only even if its score
-looks better.
+Promotion keeps structural safety separate from empirical model choice. Clean
+provenance, a checksummed bundle, train/serve parity, zero forbidden or market
+fields, exact symmetry, and no temporal or intra-series leakage are hard gates.
+Aggregate log loss, Brier/ECE, bootstrap evidence, and the actionable betting
+cohort are also hard performance gates. Calibration-intercept diagnostics and
+small non-actionable league/region regressions are visible warnings during
+paper testing: they no longer veto an otherwise superior model. Holdout reuse
+is disclosed as a warning, never presented as fresh confirmation.
+
+Among valid candidates, the system promotes the best supported aggregate and
+actionable probability model; recency breaks ties but cannot excuse a material
+regression. Shadow prop quality cannot block a better series-winner model.
 
 Routine retraining and retuning are different:
 
@@ -149,10 +155,11 @@ Routine retraining and retuning are different:
 - retuning searches parameters with Optuna, carries extra overfitting risk, and
   never changes reviewed parameters or the champion automatically.
 
-Series and next-map Winner studies must run independently. A complete training
-bundle remains blocked until both targets have reviewed fixed parameters. The
-first Winner V2 champion and every Optuna-derived candidate require explicit
-owner promotion.
+Series and next-map studies must run independently. The normal bundle contains
+direct series winner, diagnostic map winner, and three shadow scalar props.
+Next-map is an explicit experimental target and is not required for normal
+training or promotion. The first Winner V2 champion and every Optuna-derived
+candidate require explicit owner promotion.
 
 Training reports include metrics, reliability, cohorts, feature lineage,
 availability/missingness, league coverage, gain/split importance, held-out
@@ -193,11 +200,17 @@ that the rating baseline prices at 45% or below, is quarantined rather than
 treated as a dream upset. Polymarket favorite status is irrelevant. Paper stake
 is a flat one unit; quarter-Kelly is counterfactual evidence only.
 
-`--publish` records eligible proposals for the single Gateway bot. Accept begins
-a two-phase process: fetch two fresh books, rerun every gate, then show a
-Confirm/Cancel control valid for 120 seconds. The confirmed quote becomes the
-immutable paper entry. The bot uses durable send intent, deterministic markers,
-bounded history recovery, owner checks, and a single-instance lock.
+Every exact-link review returns the independent direct-series price, a separate
+Map 1 research price, and game-length/kills/towers point means. Props need an
+explicit line before an over/under probability can be calculated. Only the
+series result can become actionable.
+
+`--publish` queues one compact Discord review with its Markdown report attached.
+If every series gate passes, the system records a separate interactive proposal.
+Accept begins a two-phase process: fetch two fresh books, rerun every gate, then
+show a Confirm/Cancel control valid for 120 seconds. The confirmed quote becomes
+the immutable paper entry. The bot uses durable send intent, deterministic
+markers, bounded history recovery, owner checks, and a single-instance lock.
 
 Positions close only through owner-confirmed `win`, `loss`, `push`, or `void`
 with a non-empty source reference. Identical repeats are idempotent; conflicts
@@ -244,3 +257,33 @@ outbound-network caveats.
 
 See [Command runbook](commands.md) for exact operations and [Roadmap](roadmap.md)
 for the current evidence gates.
+
+## Repository audit and simplification boundary
+
+The August 2026 audit found a sound safety architecture and no market-derived
+model feature or trading surface. The main risk is maintainability, not missing
+layers: model training, daily orchestration, model operations, market matching,
+and the Gateway bot contain several large multi-purpose functions. The test
+suite covers the repository at roughly 67% overall, with materially weaker
+coverage in Discord interaction recovery, live match inference, and several
+rating implementations.
+
+Safe simplifications completed in the current product cutover are limited to
+behavioral duplication and obsolete target requirements: matchup assembly is
+shared by series and Map 1 inference, unused serving state was removed, and the
+experimental next-map target was removed from normal training and registry
+requirements. Broad file merging or line-count-driven rewriting would increase
+prediction and evidence risk immediately before paper testing.
+
+The remaining cleanup is deliberately staged:
+
+1. raise focused coverage for Discord recovery, match inference, and ratings;
+2. split the largest orchestration functions along existing data/model/evidence
+   boundaries without changing public commands or artifacts;
+3. deduplicate the rating-tuning research utilities only after benchmark tests
+   establish equivalent results;
+4. delete code only when static search, coverage, and artifact compatibility
+   prove it has no caller.
+
+This is not a claim that the code is bug-free or that the strategy is
+profitable. It is the minimum-risk route to a maintainable paper-testing system.

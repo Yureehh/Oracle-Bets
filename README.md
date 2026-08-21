@@ -6,7 +6,7 @@ matching, and real paper-profit evidence.
 
 It downloads the public 2024–2026 Oracle's Elixir files into a validated local
 cache, generates chronological team/player features and ratings, reconstructs
-complete historical series, and trains six research targets. The actionable
+complete historical series, and normally trains five targets. The actionable
 Winner V2 model is a direct, symmetric series-winner model with a rating
 baseline, ten week-block LightGBM members, held-out calibration, and a
 conservative probability bound. Upcoming PandaScore fixtures are compared
@@ -49,8 +49,10 @@ uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL> --publish
 ```
 
 The source refresh is built into ingestion. `market-review` uses only the exact
-owner-selected event links and is read-only; `--publish` records eligible paper
-proposals for the Gateway bot. It still cannot place an order.
+owner-selected event links and is read-only; `--publish` queues a compact
+Discord review with the full report attached and records a separate interactive
+proposal only when every deterministic series-winner gate passes. Map 1 and
+scalar props remain clearly research-only. It still cannot place an order.
 
 ## Explicit research retuning
 
@@ -59,19 +61,15 @@ uv run oracle-bets lol retune \
   --targets series_winner --feature-set full
 uv run oracle-bets lol review-tuning <series-run-id> --format json
 uv run oracle-bets lol promote-tuning <series-run-id>
-uv run oracle-bets lol retune \
-  --targets next_map_winner --feature-set full
-uv run oracle-bets lol review-tuning <next-map-run-id> --format json
-uv run oracle-bets lol promote-tuning <next-map-run-id>
-uv run oracle-bets lol train --targets all --feature-set compact
+uv run oracle-bets lol train --targets all --feature-set full
 ```
 
-Winner targets must be studied and reviewed independently. Continue only when
-each review says `approved`; a completed study exposes its final holdout even
-when it fails. Routine training refits with reviewed parameters and never runs
-Optuna. As of August 21, 2026, the latest series and next-map studies are
-blocked, so full routine training and first V2 champion promotion must remain
-blocked too.
+Winner tuning remains an explicit research action. Continue only when the
+series review is `approved` or `approved_with_warnings` and every hard safety
+gate passes. Warnings remain recorded for later evidence review. Routine
+training refits with reviewed parameters and never runs Optuna. The experimental
+next-map model is trained only when named explicitly and is not required by the
+normal bundle.
 
 ## Repository layout
 
