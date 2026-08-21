@@ -189,7 +189,7 @@ def test_accuracy_gain_cannot_override_worse_probability_quality():
     assert "log_loss_noninferiority_failed" in decision.reasons
 
 
-def test_major_cohort_regression_blocks_aggregate_promotion():
+def test_actionable_cohort_regression_blocks_aggregate_promotion():
     evidence = PromotionEvidence(
         champion_log_losses=(0.70, 0.72, 0.68, 0.71) * 40,
         candidate_log_losses=(0.67, 0.69, 0.65, 0.68) * 40,
@@ -197,13 +197,35 @@ def test_major_cohort_regression_blocks_aggregate_promotion():
         candidate_brier=0.21,
         champion_ece=0.03,
         candidate_ece=0.03,
-        cohort_log_loss={"LCK": (0.60, 0.66, 50)},
+        cohort_log_loss={"actionable_tier1_plus_erls": (0.60, 0.66, 50)},
     )
 
     decision = evaluate_promotion(evidence, bootstrap_samples=1000, seed=3)
 
     assert not decision.promote
-    assert decision.safety_failures == ("cohort_regression:LCK",)
+    assert decision.safety_failures == ("cohort_regression:actionable_tier1_plus_erls",)
+
+
+def test_small_cohort_regression_is_diagnostic_not_a_promotion_blocker():
+    evidence = PromotionEvidence(
+        champion_log_losses=(0.70, 0.72, 0.68, 0.71) * 40,
+        candidate_log_losses=(0.67, 0.69, 0.65, 0.68) * 40,
+        champion_brier=0.22,
+        candidate_brier=0.21,
+        champion_ece=0.03,
+        candidate_ece=0.03,
+        cohort_log_loss={"league:CBLOL": (0.60, 0.66, 50)},
+    )
+
+    decision = evaluate_promotion(
+        evidence,
+        policy=PromotionPolicy.OPTUNA,
+        bootstrap_samples=1000,
+        seed=3,
+    )
+
+    assert decision.promote
+    assert decision.safety_failures == ()
 
 
 def test_routine_candidate_can_promote_when_safely_non_inferior():
@@ -251,7 +273,7 @@ def test_optuna_candidate_requires_meaningful_improvement():
     assert "meaningful_improvement_not_proven" in decision.reasons
 
 
-def test_prop_or_evidence_status_regression_blocks_routine_promotion():
+def test_shadow_prop_regression_does_not_block_winner_promotion():
     losses = tuple([0.60, 0.62, 0.61, 0.63] * 50)
     evidence = PromotionEvidence(
         champion_log_losses=losses,
@@ -268,9 +290,8 @@ def test_prop_or_evidence_status_regression_blocks_routine_promotion():
 
     decision = evaluate_promotion(evidence, bootstrap_samples=1000)
 
-    assert not decision.promote
-    assert "mae_regression:total_kills" in decision.safety_failures
-    assert "evidence_status_downgrade:total_towers" in decision.safety_failures
+    assert decision.promote
+    assert decision.safety_failures == ()
 
 
 @pytest.mark.parametrize(
@@ -543,7 +564,6 @@ def test_routine_review_replays_both_bundles_on_candidate_sealed_rows(tmp_path):
     assert registry.champion_id() == "candidate"
     assert set(review.row_fingerprints) == {
         "series_winner",
-        "next_map_winner",
         "gamelength",
         "total_kills",
         "total_towers",
@@ -555,7 +575,7 @@ def test_routine_review_replays_both_bundles_on_candidate_sealed_rows(tmp_path):
     assert drift["targets"]["series_winner"]["feature_availability"]["columns"] == 1
 
 
-def test_next_map_regression_blocks_an_otherwise_healthy_candidate(tmp_path):
+def test_experimental_next_map_regression_does_not_block_prematch_candidate(tmp_path):
     registry = ModelRegistry(tmp_path / "registry")
     _register_replay_bundle(
         registry,
@@ -583,10 +603,10 @@ def test_next_map_regression_blocks_an_otherwise_healthy_candidate(tmp_path):
         bootstrap_samples=500,
     )
 
-    assert review.status == "blocked"
-    assert not review.promoted
-    assert registry.champion_id() == "champion"
-    assert any(reason.startswith("next_map_winner:") for reason in review.reasons)
+    assert review.status == "auto_promoted"
+    assert review.promoted
+    assert registry.champion_id() == "candidate"
+    assert not any(reason.startswith("next_map_winner:") for reason in review.reasons)
 
 
 def test_routine_promotion_writes_recoverable_approval_before_pointer_change(
@@ -773,12 +793,7 @@ def test_first_v2_without_legacy_champion_runs_internal_baseline_review(tmp_path
     assert review.evidence["comparator"] == "predeclared_rating_logistic_baseline"
     assert set(review.evidence["winner_targets"]) == {
         "series_winner",
-        "next_map_winner",
     }
-    assert (
-        review.evidence["winner_targets"]["next_map_winner"]["bootstrap_unit"]
-        == "series_id"
-    )
     assert "no_champion_comparator" not in review.reasons
 
 

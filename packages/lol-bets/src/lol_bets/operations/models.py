@@ -62,11 +62,6 @@ _COMPLETE_LOL_BUNDLE_REQUIRED_ARTIFACTS = frozenset(
         "SeriesWinnerPrediction_LightGBM/SeriesWinnerPrediction_LightGBM_outcome_matchup_schema.pkl",
         "SeriesWinnerPrediction_LightGBM/SeriesWinnerPrediction_LightGBM_probability_calibrator.pkl",
         "SeriesWinnerPrediction_LightGBM/SeriesWinnerPrediction_LightGBM_probability_uncertainty.pkl",
-        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM.pkl",
-        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM_feature_pipeline.pkl",
-        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM_outcome_matchup_schema.pkl",
-        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM_probability_calibrator.pkl",
-        "NextMapWinnerPrediction_LightGBM/NextMapWinnerPrediction_LightGBM_probability_uncertainty.pkl",
         "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM.pkl",
         "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM_feature_pipeline.pkl",
         "GamelengthPrediction_LightGBM/GamelengthPrediction_LightGBM_residual_summary.pkl",
@@ -372,7 +367,7 @@ class CandidateReview:
     evidence: dict[str, Any]
 
 
-def evaluate_promotion(  # noqa: PLR0912
+def evaluate_promotion(
     evidence: PromotionEvidence,
     *,
     policy: PromotionPolicy = PromotionPolicy.ROUTINE,
@@ -421,38 +416,15 @@ def evaluate_promotion(  # noqa: PLR0912
 
     for cohort in sorted(evidence.cohort_log_loss):
         champion_loss, candidate_loss, count = evidence.cohort_log_loss[cohort]
-        if count < minimum_cohort_size or champion_loss == 0:
+        if (
+            not cohort.startswith("actionable")
+            or count < minimum_cohort_size
+            or champion_loss == 0
+        ):
             continue
         relative_regression = (candidate_loss - champion_loss) / champion_loss
         if relative_regression > maximum_cohort_relative_regression:
             safety_failures.append(f"cohort_regression:{cohort}")
-
-    for target, (champion_mae, candidate_mae) in sorted(
-        (evidence.regression_target_mae or {}).items()
-    ):
-        if champion_mae == 0:
-            if candidate_mae > 0:
-                safety_failures.append(f"mae_regression:{target}")
-            continue
-        if (
-            candidate_mae - champion_mae
-        ) / champion_mae >= _MAX_REGRESSION_MAE_DEGRADATION:
-            safety_failures.append(f"mae_regression:{target}")
-
-    status_rank = {
-        "below_constant_baseline": 0,
-        "review_required": 0,
-        "weak_signal": 1,
-        "meets_basic_sanity": 2,
-    }
-    champion_status = evidence.champion_evidence_status or {}
-    candidate_status = evidence.candidate_evidence_status or {}
-    for target, previous in sorted(champion_status.items()):
-        current = candidate_status.get(target)
-        if current is None or status_rank.get(current, -1) < status_rank.get(
-            previous, -1
-        ):
-            safety_failures.append(f"evidence_status_downgrade:{target}")
 
     safety_failures.extend(
         f"operational_failure:{reason}" for reason in evidence.operational_failures
@@ -1265,12 +1237,11 @@ def register_current_candidate(
 
 _EVALUATION_MODELS = {
     "series_winner": "SeriesWinnerPrediction_LightGBM",
-    "next_map_winner": "NextMapWinnerPrediction_LightGBM",
     "gamelength": "GamelengthPrediction_LightGBM",
     "total_kills": "TotalKillsPrediction_LightGBM",
     "total_towers": "TotalTowersPrediction_LightGBM",
 }
-_WINNER_EVALUATION_TARGETS = frozenset({"series_winner", "next_map_winner"})
+_WINNER_EVALUATION_TARGETS = frozenset({"series_winner"})
 
 
 def _replay_promotion_evidence(
@@ -1406,9 +1377,6 @@ def _replay_promotion_evidence(
         champion_ece=series_evidence.champion_ece,
         candidate_ece=series_evidence.candidate_ece,
         cohort_log_loss=series_evidence.cohort_log_loss,
-        regression_target_mae=regression_mae,
-        champion_evidence_status=champion_status,
-        candidate_evidence_status=candidate_status,
         operational_failures=tuple(operational_failures),
     )
     return (

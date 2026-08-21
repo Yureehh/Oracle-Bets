@@ -78,6 +78,8 @@ MODEL_FILE_EXTENSION = "pkl"
 MIN_CALIBRATION_REVIEW_SLOPE = 0.8
 MAX_CALIBRATION_REVIEW_SLOPE = 1.2
 MAX_CALIBRATION_REVIEW_INTERCEPT = 0.10
+MIN_DIAGNOSTIC_COHORT_SIZE = 30
+MAX_DIAGNOSTIC_COHORT_REGRESSION = 0.02
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,11 @@ ALL_MODEL_CONFIGS: tuple[ModelConfig, ...] = (
         "classification",
         "series",
     ),
+    ModelConfig("GamelengthPrediction", "gamelength", "gamelength", "regression"),
+    ModelConfig("TotalKillsPrediction", "total_kills", "total_kills", "regression"),
+    ModelConfig("TotalTowersPrediction", "total_towers", "total_towers", "regression"),
+)
+EXPERIMENTAL_MODEL_CONFIGS: tuple[ModelConfig, ...] = (
     ModelConfig(
         "NextMapWinnerPrediction",
         "next_map_winner",
@@ -111,10 +118,8 @@ ALL_MODEL_CONFIGS: tuple[ModelConfig, ...] = (
         "classification",
         "next_map",
     ),
-    ModelConfig("GamelengthPrediction", "gamelength", "gamelength", "regression"),
-    ModelConfig("TotalKillsPrediction", "total_kills", "total_kills", "regression"),
-    ModelConfig("TotalTowersPrediction", "total_towers", "total_towers", "regression"),
 )
+MODEL_CONFIGS = (*ALL_MODEL_CONFIGS, *EXPERIMENTAL_MODEL_CONFIGS)
 WINNER_TUNING_MODELS = {
     "series_winner": "SeriesWinnerPrediction_LightGBM",
     "next_map_winner": "NextMapWinnerPrediction_LightGBM",
@@ -146,7 +151,7 @@ TRAINING_REPORT_RETENTION = 12
 RANDOM_CLASSIFIER_LOG_LOSS = 0.693147
 RANDOM_CLASSIFIER_BRIER = 0.25
 WEAK_REGRESSION_R2 = 0.1
-TUNING_REVIEW_SCHEMA_VERSION = 3
+TUNING_REVIEW_SCHEMA_VERSION = 4
 
 
 # ───────────────────────────────  helpers  ───────────────────────────────────
@@ -291,7 +296,7 @@ def validate_training_tables(team_df: pd.DataFrame, player_df: pd.DataFrame) -> 
 def parse_training_targets(targets: str) -> tuple[ModelConfig, ...]:
     """Resolve CLI target selectors to concrete model configs."""
     raw = targets.strip().casefold()
-    by_target = {cfg.target_name: cfg for cfg in ALL_MODEL_CONFIGS}
+    by_target = {cfg.target_name: cfg for cfg in MODEL_CONFIGS}
     if not raw or raw == "all":
         return ALL_MODEL_CONFIGS
     if raw == "props":
@@ -762,7 +767,7 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Tuning manifest is missing: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    by_target = {config.target_name: config for config in ALL_MODEL_CONFIGS}
+    by_target = {config.target_name: config for config in MODEL_CONFIGS}
     requested = manifest.get("targets_requested")
     if requested is None:
         selected = ALL_MODEL_CONFIGS
@@ -793,6 +798,7 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
     ]
     if len(winner_targets) > 1:
         raise ValueError("Winner V2 targets require independent tuning runs.")
+    review: dict[str, object] = {}
     if winner_targets:
         winner_target = winner_targets[0]
         review_path = run_root / "tuning_review.json"
@@ -804,13 +810,12 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
                 "parameter promotion."
             ) from exc
         reviewed_fingerprint = review.get("review_input_sha256")
+        accepted_statuses = {"approved", "approved_with_warnings"}
         if (
             review.get("schema_version") != TUNING_REVIEW_SCHEMA_VERSION
-            or review.get("status") != "approved"
+            or review.get("status") not in accepted_statuses
             or review.get("run_id") != run_id
             or review.get("target") != winner_target
-            or (review.get("sealed_holdout") or {}).get("fresh_for_promotion")
-            is not True
             or reviewed_fingerprint != _tuning_review_input_fingerprint(run_root)
         ):
             raise ValueError("Winner tuning review is missing, stale, or blocked.")
@@ -869,10 +874,14 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
     ):
         raise ValueError("Winner tuning review changed during promotion.")
 
+    review_warnings = review.get("warnings")
+    if not isinstance(review_warnings, list):
+        review_warnings = []
     for payload in payloads.values():
         payload["metadata"] |= {
             "source": "optuna_reviewed",
             "promoted_tuning_run_id": run_id,
+            "review_warnings": review_warnings,
         }
 
     TUNED_LIGHTGBM_HYPERPARAMETERS.mkdir(parents=True, exist_ok=True)
@@ -921,12 +930,14 @@ def review_tuning_run(run_id: str) -> dict[str, object]:
         existing_reasons = evidence.get("reasons")
         if not isinstance(existing_reasons, list):
             raise ValueError("Winner tuning evidence has malformed reasons.")
-        reasons = [
-            *(str(reason) for reason in existing_reasons),
-            "holdout_overlaps_previously_exposed_window",
-        ]
-        evidence["reasons"] = list(dict.fromkeys(reasons))
-        evidence["status"] = "blocked"
+        existing_warnings = evidence.get("warnings")
+        if not isinstance(existing_warnings, list):
+            raise ValueError("Winner tuning evidence has malformed warnings.")
+        warnings = list(existing_warnings)
+        warnings.append("holdout_overlaps_previously_exposed_window")
+        evidence["warnings"] = list(dict.fromkeys(warnings))
+        if not existing_reasons:
+            evidence["status"] = "approved_with_warnings"
     result: dict[str, object] = {
         "schema_version": TUNING_REVIEW_SCHEMA_VERSION,
         "run_id": run_id,
@@ -1116,20 +1127,36 @@ def _winner_tuning_review_evidence(
         pd.Series(actual), candidate
     )
     reasons = list(decision.reasons)
+    warnings: list[str] = []
     slope = calibration.get("calibration_slope")
     intercept = calibration.get("calibration_intercept")
     if slope is None or not (
         MIN_CALIBRATION_REVIEW_SLOPE <= float(slope) <= MAX_CALIBRATION_REVIEW_SLOPE
     ):
-        reasons.append("calibration_slope_outside_0.8_1.2")
+        warnings.append("calibration_slope_outside_0.8_1.2")
     if intercept is None or abs(float(intercept)) > MAX_CALIBRATION_REVIEW_INTERCEPT:
-        reasons.append("calibration_intercept_above_0.10")
+        warnings.append("calibration_intercept_above_0.10")
+    for cohort, (baseline_loss, candidate_loss, count) in sorted(
+        evidence.cohort_log_loss.items()
+    ):
+        if (
+            not cohort.startswith("actionable")
+            and count >= MIN_DIAGNOSTIC_COHORT_SIZE
+            and baseline_loss > 0
+            and (candidate_loss - baseline_loss) / baseline_loss
+            > MAX_DIAGNOSTIC_COHORT_REGRESSION
+        ):
+            warnings.append(f"cohort_regression:{cohort}")
+    status = (
+        "blocked" if reasons else ("approved_with_warnings" if warnings else "approved")
+    )
     return {
         "bootstrap_unit": cluster_col or "series",
         "bootstrap_units": len(baseline_losses),
         "cluster_identity_source": cluster_identity_source,
-        "status": "approved" if decision.promote and not reasons else "blocked",
+        "status": status,
         "reasons": list(dict.fromkeys(reasons)),
+        "warnings": list(dict.fromkeys(warnings)),
         "rating_baseline": {
             "log_loss": baseline_quality.log_loss,
             "brier": baseline_quality.brier,
@@ -1381,8 +1408,6 @@ def _register_training_candidate(
             SERIES_REJECTIONS,
             SERIES_WINNER_TEAM_DATA,
             SERIES_WINNER_PLAYER_DATA,
-            NEXT_MAP_TEAM_DATA,
-            NEXT_MAP_PLAYER_DATA,
         ),
     )
     shutil.rmtree(staging_root)

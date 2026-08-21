@@ -22,7 +22,6 @@ def test_training_target_parser_supports_all_outcome_props_and_commas():
     assert _targets("all") == [
         "map_winner",
         "series_winner",
-        "next_map_winner",
         "gamelength",
         "total_kills",
         "total_towers",
@@ -66,7 +65,7 @@ def test_routine_training_defaults_to_reviewed_compact_contract():
 
 
 def test_winner_v2_targets_always_use_full_feature_contract():
-    configs = {config.target_name: config for config in training.ALL_MODEL_CONFIGS}
+    configs = {config.target_name: config for config in training.MODEL_CONFIGS}
 
     assert (
         training._feature_set_for_config(configs["series_winner"], "compact") == "full"
@@ -78,6 +77,14 @@ def test_winner_v2_targets_always_use_full_feature_contract():
     assert (
         training._feature_set_for_config(configs["gamelength"], "compact") == "compact"
     )
+
+
+def test_routine_all_excludes_experimental_next_map_target():
+    routine = training.parse_training_targets("all")
+    experimental = training.parse_training_targets("next_map_winner")
+
+    assert "next_map_winner" not in {config.target_name for config in routine}
+    assert [config.target_name for config in experimental] == ["next_map_winner"]
 
 
 def test_routine_training_preflight_requires_all_selected_winner_parameters(
@@ -363,7 +370,7 @@ def test_promote_tuning_run_publishes_only_requested_targets(tmp_path, monkeypat
     run_root.joinpath("tuning_review.json").write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": training.TUNING_REVIEW_SCHEMA_VERSION,
                 "status": "approved",
                 "run_id": "winner-v2",
                 "target": "series_winner",
@@ -384,6 +391,57 @@ def test_promote_tuning_run_publishes_only_requested_targets(tmp_path, monkeypat
 
     assert [path.stem for path in promoted] == [
         training._lightgbm_model_name(config.model_name) for config in selected
+    ]
+
+
+def test_promote_tuning_accepts_approved_review_with_disclosed_warnings(
+    tmp_path, monkeypatch
+):
+    reports = tmp_path / "reports"
+    tuned = tmp_path / "tuned"
+    monkeypatch.setattr(training, "REPORTS_DIR", reports)
+    monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tuned)
+    monkeypatch.setattr(
+        training,
+        "_tuning_review_input_fingerprint",
+        lambda _root: "test-review-inputs",
+    )
+    run_root = reports / "training" / "runs" / "winner-v2"
+    run_root.mkdir(parents=True)
+    run_root.joinpath("manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "retune": True,
+                "targets_requested": ["series_winner"],
+                "targets_trained": ["SeriesWinnerPrediction"],
+                "targets_failed": [],
+            }
+        )
+    )
+    run_root.joinpath("tuning_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": training.TUNING_REVIEW_SCHEMA_VERSION,
+                "status": "approved_with_warnings",
+                "warnings": ["holdout_overlaps_previously_exposed_window"],
+                "run_id": "winner-v2",
+                "target": "series_winner",
+                "review_input_sha256": "test-review-inputs",
+                "sealed_holdout": {"fresh_for_promotion": False},
+            }
+        )
+    )
+    name = "SeriesWinnerPrediction_LightGBM"
+    candidate = run_root / name / "tuned_hyperparameters.json"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(json.dumps(_tuning_candidate(name)))
+
+    [promoted] = training.promote_tuning_run("winner-v2")
+    payload = json.loads(promoted.read_text())
+
+    assert payload["metadata"]["review_warnings"] == [
+        "holdout_overlaps_previously_exposed_window"
     ]
 
 
@@ -436,7 +494,7 @@ def test_promote_tuning_run_accepts_independently_reviewed_next_map(
     run_root.joinpath("tuning_review.json").write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": training.TUNING_REVIEW_SCHEMA_VERSION,
                 "status": "approved",
                 "run_id": "next-map",
                 "target": "next_map_winner",
@@ -598,7 +656,7 @@ def test_promote_winner_tuning_rejects_change_during_copy(tmp_path, monkeypatch)
     run_root.joinpath("tuning_review.json").write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": training.TUNING_REVIEW_SCHEMA_VERSION,
                 "status": "approved",
                 "run_id": "winner",
                 "target": "series_winner",
