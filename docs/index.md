@@ -17,5 +17,6 @@ The repository contains no automated betting, wallet, signing, private-key,
 order-submission, or fund-movement path. Counter-Strike and real sports are
 future architecture concerns, not active implementations.
 
-Start with [Getting started](getting_started.md), then read the
-[architecture](architecture.md) and [daily operations](daily_operations.md).
+Read the [system design and operating decisions](system.md), use the
+[command runbook](commands.md), and check the [roadmap](roadmap.md) before any
+model promotion or paper proposal.

@@ -37,39 +37,41 @@ export DISCORD_DELIVERY_MODE="gateway"
 export OPENAI_API_KEY="..."
 ```
 
-## Normal workflow
+## Owner workflow
 
 ```bash
-uv run oracle-bets lol source-refresh
-uv run oracle-bets lol source-check
 uv run oracle-bets lol ingest
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol build-series
-uv run oracle-bets lol train --targets all --feature-set compact
-uv run oracle-bets model list
-uv run oracle-bets model review <candidate-id> --format json
-uv run oracle-bets model promote <candidate-id> \
-  --reason "reviewed first Winner V2 champion"
-uv run oracle-bets lol validate-winner-model
-uv run oracle-bets lol health
-uv run oracle-bets daily lol --dry-run --no-ai-review
+uv run oracle-bets lol schedule --days 7
+uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL>
+uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL> --publish
 ```
 
-Routine training refits weights and calibrators with reviewed production
-hyperparameters and never runs Optuna.
+The source refresh is built into ingestion. `market-review` uses only the exact
+owner-selected event links and is read-only; `--publish` records eligible paper
+proposals for the Gateway bot. It still cannot place an order.
 
 ## Explicit research retuning
 
 ```bash
 uv run oracle-bets lol retune \
-  --targets series_winner,next_map_winner --feature-set compact
-uv run oracle-bets lol promote-tuning <run-id>
+  --targets series_winner --feature-set full
+uv run oracle-bets lol review-tuning <series-run-id> --format json
+uv run oracle-bets lol promote-tuning <series-run-id>
+uv run oracle-bets lol retune \
+  --targets next_map_winner --feature-set full
+uv run oracle-bets lol review-tuning <next-map-run-id> --format json
+uv run oracle-bets lol promote-tuning <next-map-run-id>
 uv run oracle-bets lol train --targets all --feature-set compact
 ```
 
-Retuning writes isolated research artifacts under a timestamped report.
-Promotion is explicit and publishes only the complete reviewed target set from
-that run. Any model bundle derived from Optuna remains manual-promotion only.
+Winner targets must be studied and reviewed independently. Continue only when
+each review says `approved`; a completed study exposes its final holdout even
+when it fails. Routine training refits with reviewed parameters and never runs
+Optuna. As of August 21, 2026, the latest series and next-map studies are
+blocked, so full routine training and first V2 champion promotion must remain
+blocked too.
 
 ## Repository layout
 
@@ -82,7 +84,7 @@ that run. Any model bundle derived from Optuna remains manual-promotion only.
 - `models/lol`: bootstrap serving artifacts and temporary training staging.
 - `reports/lol`: ingestion, training, and daily review artifacts.
 - `notebooks/lol`: thin read-only analysis notebooks.
-- `ops/launchd`: daily, monthly, hourly market-watch, and Gateway-bot examples.
+- `ops/launchd`: optional always-on Gateway-bot example.
 
 Generated data, databases, models, logs, and reports are ignored. Reviewed
 configuration, docs, cleared notebooks, and migration manifests are tracked.

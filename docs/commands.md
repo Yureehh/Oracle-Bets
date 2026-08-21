@@ -8,18 +8,18 @@ environment and the ignored `.env`; inspect any command with
 
 | When | Run | Purpose |
 | --- | --- | --- |
-| Normal day, around 00:15 Rome time | `uv run oracle-bets daily lol` | Refresh history, conditionally retrain, validate, predict, read public markets, write one report pair, and notify Discord. |
+| Morning data refresh | `lol ingest`, `lol validate-data`, `lol build-series`, then `lol schedule --days 7` | Refresh supported history, validate derived data, update series rows, and inspect upcoming fixtures. No Optuna. |
+| After selecting markets | `lol market-review <URL> [<URL> ...]` | Review only the exact Polymarket LoL events you selected; add `--publish` only when you want eligible paper cards sent through the Gateway bot. |
 | Before trusting a changed setup | `uv run oracle-bets daily lol --dry-run` | Exercise schedule, prediction, quotes, gates, and reports without ingestion, training, evidence writes, model promotion, or Discord. |
-| Monday | Commands printed by the daily reminder | Review open positions, system health, and previous-week performance. |
-| Thursday | Commands printed by the daily reminder | Review open positions, current-week performance, exposure, and market failures. |
-| First calendar day | Commands printed by the daily reminder | Run the previous-month audit and paper-performance review. |
+| Weekly | `paper performance`, `paper list --state open`, and health checks | Review calibration, results, exposure, and unresolved positions. |
+| First calendar day | `audit monthly` plus `paper performance` | Review the previous month; no model or position changes occur automatically. |
 | After routine training | `model list`, then `model review <id>` | Confirm whether the candidate was safely promoted or which gate retained the champion. |
 | After Optuna retuning | Review the run, then `lol promote-tuning <run-id>` only if justified | Retuning never promotes parameters or a model automatically. Retrain afterward. |
 | After accepting a paper proposal | Keep the Gateway bot running or inspect `paper list --state open` | Capture closing evidence and later settle manually. |
 
-Monday, Thursday, and first-of-month reminders use `Europe/Rome`. When they
-overlap, the daily report and Discord receive one combined advisory. Reminders
-never run audits, promote models, suppress predictions, or settle positions.
+The optional `daily lol` command still emits Monday, Thursday, and first-of-month
+advisories in `Europe/Rome`; reminders never run audits, promote models,
+suppress predictions, or settle positions.
 
 ## Installation and configuration
 
@@ -94,8 +94,8 @@ uv run oracle-bets lol train --targets all --feature-set compact
 
 Both Winner targets now have independent review code. A combined retune is
 rejected, and both independent decisions must pass complete-bundle promotion.
-The August 14, 2026 series study
-`20260813T233204_354446Z` is blocked and must not be promoted.
+The August 21, 2026 series study
+`20260821T112810_829000Z` is blocked and must not be promoted.
 The independent next-map study `20260814T005027_980518Z` is also blocked: its
 average log loss improved, but statistical confidence, calibration, and cohort
 gates failed. Neither run produced reviewed fixed Winner V2 parameters, so a
@@ -242,8 +242,6 @@ seconds opens the flat one-unit paper position.
 Settlement buttons open a required source-reference modal. Controls persist
 across restarts and disable after settlement. The LLM never sees or influences
 settlement. Webhook delivery is disabled.
-Do not run the separate closing-line launchd job when the Gateway bot is doing
-the same capture.
 Before each new card is sent, the bot records a durable intent and embeds a
 deterministic marker. After a crash it searches bounded channel history and
 records the existing message instead of sending a duplicate. A process lock
@@ -285,11 +283,21 @@ requires regenerating those artifacts.
 ## launchd and recovery
 
 Supported macOS templates and installation commands are in `ops/README.md`.
-Use the Gateway-bot template for interactive controls. Do not install a second
-message-delivery job.
+Only the Gateway-bot template remains; data refresh, studies, market reviews,
+and monthly audits are owner-triggered.
 
-The clean research rebuild sequence is in
-[Getting started](getting_started.md#first-clean-research-rebuild). It deletes
-generated data, models, reports, logs, evidence, and registry state, so back up
-`data/state/` first. A clean rebuild is disaster recovery/research setup, not a
-normal retrain.
+For disaster recovery, back up `data/state/` first, remove only generated data,
+models, reports, and logs, then follow this explicit rebuild sequence:
+
+```bash
+uv run oracle-bets evidence backup
+uv run oracle-bets lol source-refresh
+uv run oracle-bets lol source-check
+uv run oracle-bets lol reconcile-history
+uv run oracle-bets lol validate-data
+uv run oracle-bets lol build-series
+```
+
+Do not delete evidence or the registry for a normal retrain. Do not run Optuna
+as part of cleanup or disaster recovery: every completed study exposes its
+final holdout.

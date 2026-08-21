@@ -22,20 +22,9 @@ theme:
 
 nav:
   - Home: index.md
-  - Getting Started: getting_started.md
-  - Architecture: architecture.md
+  - System: system.md
   - Commands: commands.md
-  - Configuration: configuration.md
-  - Data Pipeline: data_pipeline.md
-  - Modeling: modeling.md
-  - Daily Operations: daily_operations.md
-  - Predictions and Markets: predictions_markets.md
-  - Evidence and Profit: evidence_profit.md
-  - Reports and Notebooks: reports_notebooks.md
-  - Security and Hosting: security_hosting.md
-  - Testing: testing.md
   - Roadmap: roadmap.md
-  - Contributing: contributing.md
 
 markdown_extensions:
   - toc:
@@ -54,10 +43,5 @@ markdown_extensions:
 plugins:
   - search
   - markdownextradata
-
-extra_css:
-  - stylesheets/extra.css
-extra_javascript:
-  - javascripts/extra.js
 
 site_dir: "site"
