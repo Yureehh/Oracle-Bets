@@ -45,10 +45,9 @@ from oracle_bets_discord.delivery import (
     resolve_delivery_mode,
 )
 from oracle_bets_discord.predictions.lol import (
-    confidence_label,
     context_line,
+    format_research_forecasts,
     format_schedule_messages,
-    format_warnings,
     format_winner_market_output,
     get_empty_roster,
     outcome_probability_source,
@@ -98,12 +97,21 @@ if TYPE_CHECKING:
 
 class Predictor(Protocol):
     outcome_calibrator: Any
+    series_winner_calibrator: Any
 
     def predict_match(
         self,
         team1: Team,
         team2: Team,
         account_for_side: bool = True,
+        match_type: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def predict_map(
+        self,
+        team1: Team,
+        team2: Team,
+        account_for_side: bool = False,
         match_type: str | None = None,
     ) -> dict[str, Any]: ...
 
@@ -692,9 +700,9 @@ def build_match_prediction_message(  # noqa: PLR0915
             f"{team_b_roster_gate.completed_series}/"
             f"{team_b_roster_gate.required_completed_series})."
         )
-    if getattr(predictor, "outcome_calibrator", None) is None:
+    if getattr(predictor, "series_winner_calibrator", None) is None:
         warnings.append(
-            "Outcome calibration artifact is missing; raw model probability is being used."
+            "Series calibration artifact is missing; raw model probability is being used."
         )
     if not uncertainty_method:
         warnings.append(
@@ -736,6 +744,19 @@ def build_match_prediction_message(  # noqa: PLR0915
             continue
         prop_values[source_name] = float(value)
 
+    map_prediction = None
+    predict_map = getattr(predictor, "predict_map", None)
+    if callable(predict_map):
+        try:
+            map_prediction = predict_map(
+                team_a,
+                team_b,
+                account_for_side=False,
+                match_type=match_type,
+            )
+        except Exception as exc:
+            logger.debug("Shadow Map 1 prediction unavailable: %s", exc)
+
     if snapshot_sink is not None:
         snapshot_sink.extend(
             build_prediction_snapshot_rows(
@@ -765,13 +786,20 @@ def build_match_prediction_message(  # noqa: PLR0915
                 team_a_roster_gate=team_a_roster_gate,
                 team_b_roster_gate=team_b_roster_gate,
                 prop_values=prop_values,
+                map_prediction=map_prediction,
                 lineup_ready=lineup_ready,
                 roster_ready=roster_ready,
             )
         )
 
-    output += f"\n\nDaily confidence: **{confidence_label(warnings)}**"
-    output += format_warnings(warnings)
+    research = format_research_forecasts(
+        team_a=team_a_name,
+        team_b=team_b_name,
+        map_prediction=map_prediction,
+        prop_values=prop_values,
+    )
+    if research:
+        output += "\n\n" + research
     return output
 
 
@@ -788,6 +816,7 @@ def build_prediction_snapshot_rows(
     team_b_win: float,
     probability_source: str,
     prop_values: dict[str, float],
+    map_prediction: dict[str, Any] | None = None,
     team_a_lower: float | None = None,
     team_a_upper: float | None = None,
     team_b_lower: float | None = None,
@@ -936,6 +965,41 @@ def build_prediction_snapshot_rows(
                 "model_value": float(value),
             }
         )
+    if map_prediction is not None:
+        for selection, probability, lower, upper in (
+            (
+                team_a_name,
+                map_prediction["team1_win_probability"],
+                map_prediction.get("team1_probability_lower"),
+                map_prediction.get("team1_probability_upper"),
+            ),
+            (
+                team_b_name,
+                map_prediction["team2_win_probability"],
+                map_prediction.get("team2_probability_lower"),
+                map_prediction.get("team2_probability_upper"),
+            ),
+        ):
+            rows.append(
+                {
+                    **base,
+                    "market": "map_winner",
+                    "selection": selection,
+                    "model_value": float(probability),
+                    "probability_lower": float(lower or probability),
+                    "probability_upper": float(upper or probability),
+                    "probability_source": "independent_map_winner_model",
+                    "uncertainty_method": map_prediction.get("uncertainty_method"),
+                    "uncertainty_confidence": map_prediction.get(
+                        "uncertainty_confidence"
+                    ),
+                    "uncertainty_sample_count": map_prediction.get(
+                        "uncertainty_sample_count"
+                    ),
+                    "strategy_version": "map-winner-shadow-v1",
+                    "model_target": "map_winner",
+                }
+            )
     return rows
 
 

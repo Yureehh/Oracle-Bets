@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from lol_bets.operations import manual_market
 from oracle_bets_core.markets import PolymarketEvent, PolymarketGammaAdapter
+from oracle_bets_core.pd import pd
 
 NOW = datetime(2026, 8, 21, 8, tzinfo=UTC)
 EXPECTED_REPORT_FILES = 2
@@ -107,12 +108,18 @@ def test_manual_review_publishes_only_when_explicitly_requested(tmp_path, monkey
         ),
     )
     calls = []
+    queued = []
 
     def fake_record(**kwargs):
         calls.append(kwargs)
         return "run-1"
 
     monkeypatch.setattr(manual_market, "record_daily_evidence", fake_record)
+    monkeypatch.setattr(
+        manual_market,
+        "_queue_discord_review",
+        lambda **kwargs: queued.append(kwargs),
+    )
 
     result = manual_market.review_polymarket_events(
         [URL],
@@ -125,3 +132,39 @@ def test_manual_review_publishes_only_when_explicitly_requested(tmp_path, monkey
     assert result.evidence_run_id == "run-1"
     assert calls[0]["run_type"] == "manual_lol_market_review"
     assert calls[0]["run_key"].startswith("manual-lol-market-")
+    assert queued[0]["run_id"] == "run-1"
+    assert queued[0]["report_path"] == result.report_paths[1]
+
+
+def test_manual_discord_summary_includes_series_map_props_and_quote_state():
+    schedule = pd.DataFrame([{"team_a": "Team WE", "team_b": "Top Esports"}])
+    snapshots = [
+        {"market": "series_winner", "selection": "Team WE", "model_value": 0.4},
+        {
+            "market": "series_winner",
+            "selection": "Top Esports",
+            "model_value": 0.6,
+        },
+        {"market": "map_winner", "selection": "Team WE", "model_value": 0.45},
+        {"market": "map_winner", "selection": "Top Esports", "model_value": 0.55},
+        {"market": "gamelength_mean", "selection": None, "model_value": 31.2},
+        {"market": "total_kills_mean", "selection": None, "model_value": 27.5},
+    ]
+    actions = [
+        {
+            "selection": "Top Esports",
+            "decimal_odds": 1.8,
+            "state": "no_edge",
+        }
+    ]
+
+    summary = manual_market._discord_review_summary(schedule, snapshots, actions)
+
+    assert "Series" in summary
+    assert "Top Esports 60.0%" in summary
+    assert "Map 1 research" in summary
+    assert "Team WE 45.0%" in summary
+    assert "Length 31.2m" in summary
+    assert "Kills 27.5" in summary
+    assert "@ 1.800 · no_edge" in summary
+    assert "Paper controls appear only" in summary

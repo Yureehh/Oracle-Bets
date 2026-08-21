@@ -297,6 +297,50 @@ def test_match_prediction_is_exactly_complementary_when_team_order_reverses() ->
     assert "not causal proof" in forward["drivers"][0]
 
 
+def test_map_prediction_is_research_only_and_exactly_complementary() -> None:
+    class _MapModel:
+        @staticmethod
+        def predict_proba(frame):
+            probability = 0.7 if frame.loc[0, "delta_rating"] > 0 else 0.3
+            return np.array([[1.0 - probability, probability]])
+
+    class _IdentityPipeline:
+        train_columns = ("delta_rating",)
+
+        @staticmethod
+        def transform(frame):
+            return frame
+
+    class _Uncertainty:
+        method = "held_out_calibration_residual_mean"
+        confidence = 0.9
+        sample_count = 80
+
+        @staticmethod
+        def interval(probabilities):
+            return probabilities - 0.05, probabilities + 0.05
+
+    predictor = MatchPredictor.__new__(MatchPredictor)
+    predictor.outcome_model = _MapModel()
+    predictor.outcome_calibrator = None
+    predictor.outcome_uncertainty = _Uncertainty()
+    predictor.outcome_pipeline = _IdentityPipeline()
+    predictor._outcome_team_features = lambda team, _opponent, **_kwargs: pd.DataFrame(
+        {"rating": [team.rating]}
+    )
+    alpha = SimpleNamespace(name="Alpha", rating=1.0, team_stats={"teamid": "a"})
+    zulu = SimpleNamespace(name="Zulu", rating=2.0, team_stats={"teamid": "z"})
+
+    forward = predictor.predict_map(alpha, zulu)
+    reverse = predictor.predict_map(zulu, alpha)
+
+    assert forward["team1_win_probability"] == reverse["team2_win_probability"]
+    assert forward["team2_win_probability"] == reverse["team1_win_probability"]
+    assert forward["team1_probability_lower"] == reverse["team2_probability_lower"]
+    assert forward["model_target"] == "map_winner"
+    assert forward["research_mode"] == "shadow_only"
+
+
 def test_next_map_prediction_is_shadow_only_and_exactly_complementary() -> None:
     class _NextMapModel:
         @staticmethod

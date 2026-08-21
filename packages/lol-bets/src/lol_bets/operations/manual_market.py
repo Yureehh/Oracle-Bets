@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote, urlsplit
 
-from oracle_bets_core.evidence import EvidenceStore
+from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.league_selection import selected_leagues
 from oracle_bets_core.markets import (
     MarketDataError,
@@ -134,7 +134,7 @@ def review_polymarket_events(
     market_actions: list[dict[str, Any]] = []
     prediction_details: list[dict[str, Any]] = []
     messages: list[str] = []
-    run_key = _manual_run_key(events)
+    run_key = _manual_run_key(events, reviewed_at=reviewed_at)
     if not schedule.empty:
         kwargs: dict[str, Any] = {}
         if sleeper is not None:
@@ -192,6 +192,14 @@ def review_polymarket_events(
         messages=messages,
         evidence_run_id=evidence_run_id,
     )
+    if publish and evidence_run_id is not None:
+        _queue_discord_review(
+            store=store or EvidenceStore(EVIDENCE_DB),
+            run_id=evidence_run_id,
+            message=_discord_review_summary(schedule, snapshots, market_actions),
+            report_path=paths[1],
+            queued_at=reviewed_at,
+        )
     predicted = sum(
         detail.get("status") == "predicted" for detail in prediction_details
     )
@@ -334,9 +342,108 @@ def _enrich_from_stored_schedule(row: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
-def _manual_run_key(events: Sequence[PolymarketEvent]) -> str:
+def _manual_run_key(
+    events: Sequence[PolymarketEvent], *, reviewed_at: dt.datetime
+) -> str:
     identity = "|".join(sorted(f"{event.event_id}:{event.slug}" for event in events))
-    return "manual-lol-market-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+    payload = f"{reviewed_at.isoformat()}|{identity}"
+    return "manual-lol-market-" + hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+def _discord_review_summary(
+    schedule: pd.DataFrame,
+    snapshots: Sequence[dict[str, Any]],
+    actions: Sequence[dict[str, Any]],
+) -> str:
+    """Build one compact Gateway summary; full evidence stays in the attachment."""
+    lines = ["**Manual LoL market review**"]
+    for _, fixture in schedule.iterrows():
+        fixture_key = str(fixture.get("match_key") or "")
+        fixture_rows = [
+            row
+            for row in snapshots
+            if not fixture_key or str(row.get("source_match_key") or "") == fixture_key
+        ]
+        team_a = str(fixture.get("team_a") or "")
+        team_b = str(fixture.get("team_b") or "")
+        lines.append(f"**{team_a} vs {team_b}**")
+        for market, label in (
+            ("series_winner", "Series"),
+            ("map_winner", "Map 1 research"),
+        ):
+            probabilities = [
+                (str(row.get("selection") or ""), float(row["model_value"]))
+                for row in fixture_rows
+                if row.get("market") == market
+            ]
+            if probabilities:
+                lines.append(
+                    f"- {label}: "
+                    + " · ".join(
+                        f"{selection} {probability:.1%} (fair {1 / probability:.2f})"
+                        for selection, probability in probabilities
+                        if probability > 0
+                    )
+                )
+        prop_labels = {
+            "gamelength_mean": ("Length", "m"),
+            "total_kills_mean": ("Kills", ""),
+            "total_towers_mean": ("Towers", ""),
+        }
+        props = [
+            f"{label} {float(row['model_value']):.1f}{suffix}"
+            for row in fixture_rows
+            if row.get("market") in prop_labels
+            for label, suffix in (prop_labels[str(row["market"])],)
+        ]
+        if props:
+            lines.append("- Prop means research: " + " · ".join(props))
+        fixture_actions = [
+            action
+            for action in actions
+            if not fixture_key or str(action.get("fixture_key") or "") == fixture_key
+        ]
+        quotes = [
+            f"{action.get('selection')} @ {float(action['decimal_odds']):.3f} · "
+            f"{action.get('state')}"
+            for action in fixture_actions
+            if action.get("decimal_odds") is not None
+        ]
+        if quotes:
+            lines.append("- Polymarket series: " + " | ".join(quotes))
+    lines.append(
+        "Paper controls appear only in a separate card when every deterministic "
+        "series-winner gate passes."
+    )
+    return "\n".join(lines)
+
+
+def _queue_discord_review(
+    *,
+    store: EvidenceStore,
+    run_id: str,
+    message: str,
+    report_path: Path,
+    queued_at: dt.datetime,
+) -> str:
+    """Queue one durable, non-interactive Gateway review summary."""
+    review_id = "review-" + hashlib.sha256(run_id.encode()).hexdigest()[:24]
+    return store.append(
+        EvidenceTable.RUN_EVENTS,
+        {
+            "id": f"discord-review-request-{review_id}",
+            "run_id": run_id,
+            "event_at": queued_at,
+            "event_type": "discord_manual_review_requested",
+            "status": "pending",
+            "idempotency_key": f"discord-manual-review:{review_id}",
+            "payload_json": {
+                "review_id": review_id,
+                "message": message,
+                "report_path": str(report_path),
+            },
+        },
+    )
 
 
 def _write_report(
@@ -360,7 +467,7 @@ def _write_report(
     json_path = report_dir / f"{stem}.json"
     markdown_path = report_dir / f"{stem}.md"
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": reviewed_at.isoformat(),
         "publish_requested": publish,
         "evidence_run_id": evidence_run_id,

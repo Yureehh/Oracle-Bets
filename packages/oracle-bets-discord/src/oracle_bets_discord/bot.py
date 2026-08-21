@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
 from lol_bets.operations.models import ModelRegistry
@@ -30,7 +31,6 @@ from oracle_bets_discord.formatting import DELIVERY_TARGET
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-    from pathlib import Path
 
 
 def run_bot() -> None:  # noqa: PLR0915
@@ -412,6 +412,7 @@ def run_bot() -> None:  # noqa: PLR0915
 
     published = _published_proposals(store)
     published_positions = _published_positions(store)
+    published_reviews = _published_reviews(store)
     report_cache: dict[str, Path | None] = {}
     pending_ids = {
         str(row["proposal_id"]) for row in paper_rows(store, state="pending")
@@ -488,6 +489,35 @@ def run_bot() -> None:  # noqa: PLR0915
             asyncio.to_thread(paper_rows, store, state="open"),
         )
         await refresh_controls(channel, pending_rows, open_rows)
+        review_rows = await asyncio.to_thread(_manual_review_requests, store)
+        for row in _unpublished_review_rows(review_rows, published_reviews):
+            review_id = str(row["review_id"])
+            intent = await asyncio.to_thread(
+                _publication_intent, store, row, kind="review"
+            )
+            report = _safe_review_report(row.get("report_path"))
+
+            async def send_review(
+                review_row=row,
+                marker=str(intent["marker"]),
+                report_path=report,
+            ):
+                attachment = {"file": discord.File(report_path)} if report_path else {}
+                return await channel.send(
+                    _bounded_message([str(review_row["message"])], marker=marker),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                    **attachment,
+                )
+
+            message_id, _ = await _send_or_recover(
+                channel,
+                marker=str(intent["marker"]),
+                after=str(intent["intent_at"]),
+                author_id=int(bot_user.id),
+                send=send_review,
+            )
+            published_reviews[review_id] = message_id
+            _record_review_publication(store, row, message_id)
         for row in _unpublished_actionable_rows(pending_rows, published):
             proposal_id = str(row["proposal_id"])
             intent = await asyncio.to_thread(
@@ -643,8 +673,8 @@ def _publication_intent(
     kind: str,
 ) -> dict[str, str]:
     """Persist a stable marker before a Discord send can occur."""
-    if kind not in {"proposal", "position"}:
-        raise ValueError("Publication kind must be proposal or position")
+    if kind not in {"proposal", "position", "review"}:
+        raise ValueError("Publication kind must be proposal, position, or review")
     identity_key = f"{kind}_id"
     identity = str(row[identity_key])
     event_type = f"discord_{kind}_publish_intent"
@@ -760,6 +790,44 @@ def _unpublished_actionable_rows(
     ]
 
 
+def _manual_review_requests(store: EvidenceStore) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for event in store.list(EvidenceTable.RUN_EVENTS):
+        if event["event_type"] != "discord_manual_review_requested":
+            continue
+        payload = _json_payload(event.get("payload_json"))
+        if not payload.get("review_id") or not payload.get("message"):
+            continue
+        output.append(
+            {
+                "review_id": str(payload["review_id"]),
+                "run_id": str(event["run_id"]),
+                "message": str(payload["message"]),
+                "report_path": payload.get("report_path"),
+            }
+        )
+    return output
+
+
+def _unpublished_review_rows(
+    rows: list[dict[str, Any]], published: dict[str, int]
+) -> list[dict[str, Any]]:
+    return [row for row in rows if row["review_id"] not in published]
+
+
+def _published_reviews(store: EvidenceStore) -> dict[str, int]:
+    output: dict[str, int] = {}
+    for event in store.list(EvidenceTable.RUN_EVENTS):
+        if event["event_type"] != "discord_manual_review_published":
+            continue
+        payload = _json_payload(event.get("payload_json"))
+        try:
+            output[str(payload["review_id"])] = int(payload["message_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return output
+
+
 def _published_proposals(store: EvidenceStore) -> dict[str, int]:
     output: dict[str, int] = {}
     for event in store.list(EvidenceTable.RUN_EVENTS):
@@ -839,6 +907,38 @@ def _record_position_publication(
             },
         },
     )
+
+
+def _record_review_publication(
+    store: EvidenceStore,
+    row: dict[str, Any],
+    message_id: int,
+) -> None:
+    review_id = str(row["review_id"])
+    identity = hashlib.sha256(review_id.encode()).hexdigest()[:24]
+    store.append(
+        EvidenceTable.RUN_EVENTS,
+        {
+            "id": f"discord-review-published-{identity}",
+            "run_id": row["run_id"],
+            "event_at": datetime.now(UTC),
+            "event_type": "discord_manual_review_published",
+            "status": "completed",
+            "idempotency_key": f"discord-manual-review-published:{review_id}",
+            "payload_json": {
+                "review_id": review_id,
+                "message_id": message_id,
+            },
+        },
+    )
+
+
+def _safe_review_report(value: Any) -> Path | None:
+    if not value:
+        return None
+    path = Path(str(value)).resolve()
+    root = REPORTS_DIR.resolve()
+    return path if path.is_file() and path.is_relative_to(root) else None
 
 
 def _report_for_run(run_id: str) -> Path | None:

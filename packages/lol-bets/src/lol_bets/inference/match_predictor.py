@@ -33,7 +33,6 @@ from oracle_bets_core.paths import (
     NEXT_MAP_WINNER_MATCHUP_SCHEMA,
     NEXT_MAP_WINNER_MODEL_PATH,
     NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR,
-    NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY,
     OUTCOME_PREDICTION_CATEGORICAL_FEATURES,
     OUTCOME_PREDICTION_FEATURE_PIPELINE,
     OUTCOME_PREDICTION_FINAL_FEATURES,
@@ -280,16 +279,9 @@ class MatchPredictor:
     series_winner_pipeline: FeaturePipeline | None = field(
         default=None, init=False, repr=False
     )
-    series_winner_matchup_schema: dict[str, Any] | None = field(
-        default=None, init=False, repr=False
-    )
     next_map_winner_model: Any = field(default=None, init=False, repr=False)
     next_map_winner_calibrator: Any = field(default=None, init=False, repr=False)
-    next_map_winner_uncertainty: Any = field(default=None, init=False, repr=False)
     next_map_winner_pipeline: FeaturePipeline | None = field(
-        default=None, init=False, repr=False
-    )
-    next_map_winner_matchup_schema: dict[str, Any] | None = field(
         default=None, init=False, repr=False
     )
     gamelength_model: Any = field(default=None, init=False, repr=False)
@@ -311,9 +303,6 @@ class MatchPredictor:
     league_to_elo: pd.DataFrame = field(init=False, repr=False)
     # Feature pipelines for inference parity with training
     outcome_pipeline: FeaturePipeline | None = field(
-        default=None, init=False, repr=False
-    )
-    outcome_matchup_schema: dict[str, Any] | None = field(
         default=None, init=False, repr=False
     )
     gamelength_pipeline: FeaturePipeline | None = field(
@@ -387,9 +376,7 @@ class MatchPredictor:
             self.series_winner_pipeline = load_model(
                 self._serving_path(SERIES_WINNER_FEATURE_PIPELINE)
             )
-            self.series_winner_matchup_schema = load_model(
-                self._serving_path(SERIES_WINNER_MATCHUP_SCHEMA)
-            )
+            load_model(self._serving_path(SERIES_WINNER_MATCHUP_SCHEMA))
         except Exception as error:
             raise RuntimeError(
                 "Direct series-winner artifacts are unavailable; the quarantined "
@@ -419,26 +406,16 @@ class MatchPredictor:
             self.next_map_winner_pipeline = load_model(
                 self._serving_path(NEXT_MAP_WINNER_FEATURE_PIPELINE)
             )
-            self.next_map_winner_matchup_schema = load_model(
-                self._serving_path(NEXT_MAP_WINNER_MATCHUP_SCHEMA)
-            )
+            load_model(self._serving_path(NEXT_MAP_WINNER_MATCHUP_SCHEMA))
         except Exception:
             self.next_map_winner_model = None
             self.next_map_winner_pipeline = None
-            self.next_map_winner_matchup_schema = None
         try:
             self.next_map_winner_calibrator = load_model(
                 self._serving_path(NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR)
             )
         except Exception:
             self.next_map_winner_calibrator = None
-        try:
-            self.next_map_winner_uncertainty = load_model(
-                self._serving_path(NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY)
-            )
-        except Exception:
-            self.next_map_winner_uncertainty = None
-
         for model_name, path in (
             ("gamelength", GAMELENGTH_PREDICTION_MODEL_PATH),
             ("total_kills", TOTAL_KILLS_PREDICTION_MODEL_PATH),
@@ -500,9 +477,7 @@ class MatchPredictor:
         except Exception:
             self.outcome_pipeline = None
         try:
-            self.outcome_matchup_schema = load_model(
-                self._serving_path(OUTCOME_PREDICTION_MATCHUP_SCHEMA)
-            )
+            load_model(self._serving_path(OUTCOME_PREDICTION_MATCHUP_SCHEMA))
         except Exception as exc:
             msg = (
                 "Outcome model uses the retired team-row schema. Retrain the outcome "
@@ -1033,34 +1008,12 @@ class MatchPredictor:
 
         """
         del account_for_side
-        X_team = pd.concat(
-            [
-                self._outcome_team_features(team1, team2, match_type=match_type),
-                self._outcome_team_features(team2, team1, match_type=match_type),
-            ],
-            ignore_index=True,
+        X_matchup, matchup_meta, team1_is_canonical = self._current_matchup_features(
+            team1,
+            team2,
+            match_type=match_type,
+            gameid="live-series",
         )
-        metadata = pd.DataFrame(
-            {
-                "gameid": ["live", "live"],
-                "teamid": [
-                    str(team1.team_stats.get("teamid", team1.name)),
-                    str(team2.team_stats.get("teamid", team2.name)),
-                ],
-                "teamname": [team1.name, team2.name],
-                "date": [team1.team_stats.get("date"), team2.team_stats.get("date")],
-                "league": [
-                    team1.team_stats.get("league"),
-                    team2.team_stats.get("league"),
-                ],
-                "season": [
-                    team1.team_stats.get("season"),
-                    team2.team_stats.get("season"),
-                ],
-                "patch": [team1.team_stats.get("patch"), team2.team_stats.get("patch")],
-            }
-        )
-        X_matchup, _, matchup_meta = build_game_level_outcome_features(X_team, metadata)
         if self.series_winner_pipeline is None:
             msg = "Direct series-winner feature pipeline is missing."
             raise RuntimeError(msg)
@@ -1079,10 +1032,6 @@ class MatchPredictor:
         baseline = self.series_winner_model.rating_baseline_probability(X_matchup)
         if self.series_winner_calibrator is not None:
             proba = self.series_winner_calibrator.predict(proba, metadata=matchup_meta)
-        canonical_teamid = str(matchup_meta.loc[0, "canonical_teamid"])
-        team1_is_canonical = (
-            str(team1.team_stats.get("teamid", team1.name)) == canonical_teamid
-        )
         canonical_probability = float(proba[0])
         complement = 1.0 - canonical_probability
         canonical_lower, canonical_upper = (
@@ -1162,6 +1111,105 @@ class MatchPredictor:
             "driver_attribution": attribution,
             "attribution_stable": attribution_stable,
         }
+
+    def predict_map(
+        self,
+        team1: Team,
+        team2: Team,
+        account_for_side: bool = False,
+        match_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Price Map 1 independently for research; side and draft remain unknown."""
+        del account_for_side
+        X_matchup, metadata, team1_is_canonical = self._current_matchup_features(
+            team1,
+            team2,
+            match_type=match_type,
+            gameid="live-map-1",
+        )
+        if self.outcome_pipeline is None:
+            raise RuntimeError("Map-winner feature pipeline is missing.")
+        X_matchup = self.outcome_pipeline.transform(X_matchup)
+        probability = self.outcome_model.predict_proba(X_matchup)[:, 1]
+        if self.outcome_calibrator is not None:
+            probability = self.outcome_calibrator.predict(
+                probability,
+                metadata=metadata,
+            )
+        canonical = float(probability[0])
+        lower = upper = canonical
+        if self.outcome_uncertainty is not None:
+            lower_values, upper_values = self.outcome_uncertainty.interval(probability)
+            lower = float(np.clip(lower_values[0], _PROB_EPS, canonical))
+            upper = float(np.clip(upper_values[0], canonical, 1.0 - _PROB_EPS))
+        team1_probability, team2_probability = (
+            (canonical, 1.0 - canonical)
+            if team1_is_canonical
+            else (1.0 - canonical, canonical)
+        )
+        team1_lower, team1_upper, team2_lower, team2_upper = (
+            (lower, upper, 1.0 - upper, 1.0 - lower)
+            if team1_is_canonical
+            else (1.0 - upper, 1.0 - lower, lower, upper)
+        )
+        return {
+            "team1_win_probability": team1_probability,
+            "team2_win_probability": team2_probability,
+            "team1_probability_lower": team1_lower,
+            "team1_probability_upper": team1_upper,
+            "team2_probability_lower": team2_lower,
+            "team2_probability_upper": team2_upper,
+            "model_target": "map_winner",
+            "research_mode": "shadow_only",
+            "uncertainty_method": getattr(self.outcome_uncertainty, "method", None),
+            "uncertainty_confidence": getattr(
+                self.outcome_uncertainty, "confidence", None
+            ),
+            "uncertainty_sample_count": getattr(
+                self.outcome_uncertainty, "sample_count", None
+            ),
+        }
+
+    def _current_matchup_features(
+        self,
+        team1: Team,
+        team2: Team,
+        *,
+        match_type: str | None,
+        gameid: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
+        """Build one canonical current-opponent row shared by winner models."""
+        X_team = pd.concat(
+            [
+                self._outcome_team_features(team1, team2, match_type=match_type),
+                self._outcome_team_features(team2, team1, match_type=match_type),
+            ],
+            ignore_index=True,
+        )
+        team_ids = (
+            str(team1.team_stats.get("teamid", team1.name)),
+            str(team2.team_stats.get("teamid", team2.name)),
+        )
+        metadata = pd.DataFrame(
+            {
+                "gameid": [gameid, gameid],
+                "teamid": list(team_ids),
+                "teamname": [team1.name, team2.name],
+                "date": [team1.team_stats.get("date"), team2.team_stats.get("date")],
+                "league": [
+                    team1.team_stats.get("league"),
+                    team2.team_stats.get("league"),
+                ],
+                "season": [
+                    team1.team_stats.get("season"),
+                    team2.team_stats.get("season"),
+                ],
+                "patch": [team1.team_stats.get("patch"), team2.team_stats.get("patch")],
+            }
+        )
+        X_matchup, _, matchup_meta = build_game_level_outcome_features(X_team, metadata)
+        team1_is_canonical = team_ids[0] == str(matchup_meta.loc[0, "canonical_teamid"])
+        return X_matchup, matchup_meta, team1_is_canonical
 
     def predict_next_map(
         self,

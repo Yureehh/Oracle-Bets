@@ -99,7 +99,7 @@ def record_daily_evidence(
         )
     }
     for row in snapshot_rows:
-        if row.get("market") not in {"winner", "series_winner"}:
+        if row.get("market") not in {"winner", "map_winner", "series_winner"}:
             _record_scalar_forecast(
                 store,
                 run_id=run_id,

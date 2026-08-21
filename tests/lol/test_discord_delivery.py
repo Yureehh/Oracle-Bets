@@ -14,6 +14,7 @@ from oracle_bets_discord.bot import (
     _settlement_message,
     _unpublished_actionable_rows,
     _unpublished_open_position_rows,
+    _unpublished_review_rows,
 )
 from oracle_bets_discord.delivery import (
     DiscordDeliveryMode,
@@ -120,6 +121,15 @@ def test_discord_publication_selects_only_unpublished_live_controls():
     assert _unpublished_open_position_rows(open_positions, {"open-2": 20}) == [
         open_positions[0]
     ]
+
+
+def test_manual_review_publication_filters_completed_requests():
+    requests = [
+        {"review_id": "r1", "run_id": "run-1"},
+        {"review_id": "r2", "run_id": "run-2"},
+    ]
+
+    assert _unpublished_review_rows(requests, {"r1": 10}) == [requests[1]]
 
 
 def test_publication_intent_is_durable_before_send_and_marker_is_stable():

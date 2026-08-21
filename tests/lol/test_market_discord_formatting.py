@@ -1,6 +1,7 @@
 from oracle_bets_core.betting import price_over_under
 from oracle_bets_discord.predictions.lol import (
     format_prop_market_output,
+    format_research_forecasts,
     format_winner_market_output,
 )
 
@@ -60,6 +61,31 @@ def test_winner_output_is_compact_and_betting_focused():
     assert "Bankroll:" not in output
     assert "Found Rosters" not in output
     assert "Meaning" not in output
+
+
+def test_research_forecasts_show_map_one_and_prop_means_without_action_language():
+    output = format_research_forecasts(
+        team_a="Team WE",
+        team_b="Top Esports",
+        map_prediction={
+            "team1_win_probability": 0.42,
+            "team2_win_probability": 0.58,
+        },
+        prop_values={
+            "gamelength": 31.2,
+            "total_kills": 27.5,
+            "total_towers": 12.1,
+        },
+    )
+
+    assert "Map 1" in output
+    assert "Team WE 42.0%" in output
+    assert "Top Esports 58.0%" in output
+    assert "Length 31.2m" in output
+    assert "Kills 27.5" in output
+    assert "Towers 12.1" in output
+    assert "require an explicit market line" in output
+    assert "cannot create paper proposals" in output
 
 
 def test_side_note_does_not_lower_confidence_tier():

@@ -175,7 +175,7 @@ def format_warnings(warnings: list[str]) -> str:
 
 
 def outcome_probability_source(predictor) -> str:
-    calibrator = getattr(predictor, "outcome_calibrator", None)
+    calibrator = getattr(predictor, "series_winner_calibrator", None)
     method = getattr(calibrator, "method", None)
     if method and method != "raw":
         return f"calibrated model ({method})"
@@ -254,6 +254,41 @@ def format_winner_market_output(
     # Informational notes are displayed alongside warnings but do not count
     # against the confidence tier shown above.
     return "\n".join(lines) + format_warnings([*warnings, *(notes or [])])
+
+
+def format_research_forecasts(
+    *,
+    team_a: str,
+    team_b: str,
+    map_prediction: dict | None,
+    prop_values: dict[str, float],
+) -> str:
+    """Render compact non-actionable Map 1 and scalar forecasts."""
+    lines = ["**Research-only forecasts**"]
+    if map_prediction is not None:
+        team_a_map = float(map_prediction["team1_win_probability"])
+        team_b_map = float(map_prediction["team2_win_probability"])
+        lines.append(
+            f"- Map 1: {team_a} {_pct(team_a_map)} (fair {_odds(team_a_map)}) · "
+            f"{team_b} {_pct(team_b_map)} (fair {_odds(team_b_map)})"
+        )
+    labels = {
+        "gamelength": ("Length", "m"),
+        "total_kills": ("Kills", ""),
+        "total_towers": ("Towers", ""),
+    }
+    values = [
+        f"{label} {float(prop_values[key]):.1f}{suffix}"
+        for key, (label, suffix) in labels.items()
+        if key in prop_values
+    ]
+    if values:
+        lines.append("- Point means: " + " · ".join(values))
+        lines.append("- Prop over/under probabilities require an explicit market line.")
+    if len(lines) == 1:
+        return ""
+    lines.append("These forecasts cannot create paper proposals.")
+    return "\n".join(lines)
 
 
 def _format_prop_line(label: str, signal: OverUnderSignal) -> str:

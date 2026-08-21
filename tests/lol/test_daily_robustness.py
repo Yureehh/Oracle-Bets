@@ -17,6 +17,7 @@ from oracle_bets_core.pd import pd
 
 EXPECTED_WIN_PROBABILITY = 0.6
 EXPECTED_TOTAL_KILLS = 27.5
+EXPECTED_MAP_WIN_PROBABILITY = 0.55
 
 
 @pytest.fixture(autouse=True)
@@ -225,12 +226,36 @@ def _snapshot_rows() -> list[dict]:
 
 
 def test_snapshot_rows_cover_both_selections_and_props():
-    rows = _snapshot_rows()
+    rows = build_prediction_snapshot_rows(
+        _future_schedule().iloc[0],
+        team_a_name="T1",
+        team_b_name="Gen.G",
+        match_type="bo3",
+        team_a_win=0.6,
+        team_b_win=0.4,
+        probability_source="calibrated",
+        prop_values={"total_kills": 27.5},
+        map_prediction={
+            "team1_win_probability": 0.55,
+            "team2_win_probability": 0.45,
+            "team1_probability_lower": 0.50,
+            "team1_probability_upper": 0.60,
+            "team2_probability_lower": 0.40,
+            "team2_probability_upper": 0.50,
+            "uncertainty_method": "held_out",
+        },
+    )
 
     winner_rows = [r for r in rows if r["market"] == "series_winner"]
     assert {r["selection"] for r in winner_rows} == {"T1", "Gen.G"}
     t1_row = next(r for r in winner_rows if r["selection"] == "T1")
     assert t1_row["model_value"] == EXPECTED_WIN_PROBABILITY
+    map_rows = [r for r in rows if r["market"] == "map_winner"]
+    assert {r["selection"] for r in map_rows} == {"T1", "Gen.G"}
+    assert (
+        next(r for r in map_rows if r["selection"] == "T1")["model_value"]
+        == EXPECTED_MAP_WIN_PROBABILITY
+    )
     prop_rows = [r for r in rows if r["market"] == "total_kills_mean"]
     assert len(prop_rows) == 1
     assert prop_rows[0]["model_value"] == EXPECTED_TOTAL_KILLS
