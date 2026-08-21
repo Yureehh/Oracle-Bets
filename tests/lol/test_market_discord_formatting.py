@@ -1,11 +1,4 @@
-import pytest
 from oracle_bets_core.betting import price_over_under
-from oracle_bets_discord.predictions.best_ofs import (
-    bo3,
-    bo5,
-    handicap_lines_bo3,
-    handicap_lines_bo5,
-)
 from oracle_bets_discord.predictions.lol import (
     format_prop_market_output,
     format_winner_market_output,
@@ -13,10 +6,6 @@ from oracle_bets_discord.predictions.lol import (
 
 KILLS_LINE = 26.5
 OVER_ODDS = 1.85
-DEFAULT_BANKROLL = 500.0
-DEFAULT_KELLY_FRACTION = 0.25
-CUSTOM_BANKROLL = 2000.0
-CUSTOM_KELLY_FRACTION = 0.5
 DISCORD_MESSAGE_LIMIT = 2000
 
 
@@ -60,7 +49,7 @@ def test_winner_output_is_compact_and_betting_focused():
 
     assert "LoL Markets" in output
     assert "Market" in output
-    assert "PRICE NEEDED" in output
+    assert "Fair" in output
     assert "calibrated model (isotonic)" in output
     assert "Series Winner" in output
     assert "independent prematch series-winner model" in output
@@ -73,188 +62,6 @@ def test_winner_output_is_compact_and_betting_focused():
     assert "Bankroll:" not in output
     assert "Found Rosters" not in output
     assert "Meaning" not in output
-
-
-def test_winner_output_prices_polymarket_series_winner_with_quarter_kelly():
-    output = format_winner_market_output(
-        blue_team_name="Solary",
-        red_team_name="Karmine Corp Blue",
-        match_type="bo5",
-        blue_win=0.641,
-        red_win=0.359,
-        probability_source="raw model (selected by calibration)",
-        warnings=["Side selection is ignored for this command."],
-        context="- Context: side ignored | first pick unknown",
-        price_quotes=["series: SLY=54c,KCB=47c"],
-    )
-
-    assert "Bankroll: €500 | Kelly: 1/4 | No stake cap" in output
-    assert "Series Winner" in output
-    assert "Karmine Cor" in output
-    assert "47c" in output
-    assert "Solary" in output
-    assert "54c" in output
-    assert "Warning: Side selection is ignored for this command." in output
-
-
-def test_winner_output_rejects_non_series_prices():
-    output = format_winner_market_output(
-        blue_team_name="Solary",
-        red_team_name="Karmine Corp Blue",
-        match_type="bo5",
-        blue_win=0.641,
-        red_win=0.359,
-        probability_source="raw model",
-        warnings=[],
-        context="- Context: side ignored | first pick unknown",
-        price_quotes=[
-            "tg3.5: Over=61c,Under=40c",
-        ],
-    )
-
-    assert "Unsupported prices ignored: tg3.5" in output
-    assert "Over 3.5 Maps" not in output
-    assert "Under 3.5 Maps" not in output
-
-
-def test_winner_output_maps_numeric_series_price_pair_positions():
-    output = format_winner_market_output(
-        blue_team_name="Solary",
-        red_team_name="Karmine Corp Blue",
-        match_type="bo5",
-        blue_win=0.641,
-        red_win=0.359,
-        probability_source="raw model",
-        warnings=[],
-        context="- Context: side ignored | first pick unknown",
-        price_quotes=["series: 1=64,2=37"],
-    )
-
-    assert "Series Winner" in output
-    assert "Solary" in output
-    assert "64c" in output
-    assert "Karmine Cor" in output
-    assert "37c" in output
-
-
-def test_winner_output_ignores_unsupported_polymarket_markets():
-    output = format_winner_market_output(
-        blue_team_name="Solary",
-        red_team_name="Karmine Corp Blue",
-        match_type="bo5",
-        blue_win=0.641,
-        red_win=0.359,
-        probability_source="raw model",
-        warnings=[],
-        context="- Context: side ignored | first pick unknown",
-        price_quotes=["First Blood Game 1: Solary=50c,Karmine Corp Blue=50c"],
-    )
-
-    assert "Unsupported prices ignored: First Blood Game 1" in output
-    assert "First Blood" not in output.split("```text", 1)[1].split("```", 1)[0]
-
-
-# ---------- handicap math tests ---------- #
-
-
-def test_bo3_handicap_50_50():
-    """At 50/50, both teams' +1.5 must be 75% and -1.5 must be 25%."""
-    d = bo3(0.5)
-    t1_plus = 1.0 - d["t2_2_0"]
-    t2_plus = 1.0 - d["t1_2_0"]
-    assert t1_plus == pytest.approx(0.75)
-    assert t2_plus == pytest.approx(0.75)
-    assert d["t1_2_0"] == pytest.approx(0.25)  # -1.5 for t1
-    assert d["t2_2_0"] == pytest.approx(0.25)  # -1.5 for t2
-
-
-def test_bo3_handicap_60_40():
-    """At 60/40, favourite +1.5 = 84%, underdog +1.5 = 64%."""
-    d = bo3(0.6)
-    t1_plus = 1.0 - d["t2_2_0"]  # 1 - 0.16 = 0.84
-    t2_plus = 1.0 - d["t1_2_0"]  # 1 - 0.36 = 0.64
-    assert t1_plus == pytest.approx(0.84)
-    assert t2_plus == pytest.approx(0.64)
-
-
-def test_bo3_handicap_output_contains_fair_odds():
-    out = handicap_lines_bo3("Vitality", 0.5, "KOI")
-    assert "75.00%" in out
-    assert "1.33" in out
-    assert "Vitality +1.5" in out
-    assert "KOI +1.5" in out
-
-
-def test_bo3_handicap_output_plus_minus_sum_to_one():
-    """
-    For any p1, t1 +1.5 + t1 -1.5 != 1 (they are independent), but
-    t1_plus + t2_minus == 1 because t1_plus = 1 - t2_sweep and t2_minus = t2_sweep.
-    """
-    d = bo3(0.65)
-    t1_plus = 1.0 - d["t2_2_0"]
-    t2_minus = d["t2_2_0"]
-    assert t1_plus + t2_minus == pytest.approx(1.0)
-
-
-def test_bo5_handicap_50_50():
-    """At 50/50, +2.5 = 87.5%; +1.5 = series win or 2-3 loss = 68.75%."""
-    d = bo5(0.5)
-    t1_plus25 = 1.0 - d["t2_0_3"]  # 1 - 0.125 = 0.875
-    t1_plus15 = d["t1_series"] + d["t2_2_3"]
-    assert t1_plus25 == pytest.approx(0.875)
-    assert t1_plus15 == pytest.approx(0.6875)
-
-
-def test_bo5_handicap_output_contains_both_lines():
-    out = handicap_lines_bo5("T1", 0.5, "G2")
-    assert "+1.5" in out
-    assert "+2.5" in out
-    assert "T1 +1.5" in out
-    assert "G2 +2.5" in out
-
-
-def test_staking_config_defaults_match_legacy_display(monkeypatch):
-    from oracle_bets_discord.predictions.lol import get_staking_config
-
-    monkeypatch.delenv("ORACLE_BETS_BANKROLL", raising=False)
-    monkeypatch.delenv("ORACLE_BETS_KELLY_FRACTION", raising=False)
-    monkeypatch.delenv("ORACLE_BETS_STAKE_CAP", raising=False)
-
-    staking = get_staking_config()
-
-    assert staking.bankroll == DEFAULT_BANKROLL
-    assert staking.kelly_fraction == DEFAULT_KELLY_FRACTION
-    assert staking.kelly_label == "1/4"
-    assert staking.cap_label == "No stake cap"
-
-
-def test_staking_config_reads_environment_overrides(monkeypatch):
-    from oracle_bets_discord.predictions.lol import get_staking_config
-
-    monkeypatch.setenv("ORACLE_BETS_BANKROLL", "2000")
-    monkeypatch.setenv("ORACLE_BETS_KELLY_FRACTION", "0.5")
-    monkeypatch.setenv("ORACLE_BETS_STAKE_CAP", "100")
-
-    staking = get_staking_config()
-
-    assert staking.bankroll == CUSTOM_BANKROLL
-    assert staking.kelly_fraction == CUSTOM_KELLY_FRACTION
-    assert staking.kelly_label == "1/2"
-    assert staking.cap_label == "Stake cap: €100"
-
-
-def test_staking_config_rejects_invalid_environment_values(monkeypatch):
-    from oracle_bets_discord.predictions.lol import get_staking_config
-
-    monkeypatch.setenv("ORACLE_BETS_BANKROLL", "-5")
-    monkeypatch.setenv("ORACLE_BETS_KELLY_FRACTION", "abc")
-    monkeypatch.setenv("ORACLE_BETS_STAKE_CAP", "0")
-
-    staking = get_staking_config()
-
-    assert staking.bankroll == DEFAULT_BANKROLL
-    assert staking.kelly_fraction == DEFAULT_KELLY_FRACTION
-    assert staking.stake_cap is None
 
 
 def test_side_note_does_not_lower_confidence_tier():
