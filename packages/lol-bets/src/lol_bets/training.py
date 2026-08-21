@@ -600,6 +600,13 @@ def _validate_reviewed_winner_parameters(
 ) -> None:
     """Fail routine training before any target runs without reviewed V2 params."""
     if force_retune:
+        winner_targets = [
+            config.target_name
+            for config in selected_models
+            if config.target_name in WINNER_TUNING_MODELS
+        ]
+        if winner_targets and len(selected_models) != 1:
+            raise ValueError("Winner V2 targets require independent tuning runs.")
         return
     missing: list[str] = []
     for config in selected_models:

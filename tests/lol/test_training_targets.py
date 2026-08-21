@@ -130,6 +130,13 @@ def test_research_retune_does_not_require_existing_reviewed_parameters(
     )
 
 
+def test_research_retune_requires_one_independent_winner_target():
+    selected = training.parse_training_targets("series_winner,next_map_winner")
+
+    with pytest.raises(ValueError, match="independent tuning runs"):
+        training._validate_reviewed_winner_parameters(selected, force_retune=True)
+
+
 def test_training_parser_supports_validate_data_action():
     args = build_parser().parse_args(["lol", "validate-data"])
 
