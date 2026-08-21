@@ -17,11 +17,6 @@ from oracle_bets_core.paths import (
     LEAGUE_ELO,
     MODEL_REGISTRY_DIR,
     MODELS_DIR,
-    NEXT_MAP_WINNER_FEATURE_PIPELINE,
-    NEXT_MAP_WINNER_MATCHUP_SCHEMA,
-    NEXT_MAP_WINNER_MODEL_PATH,
-    NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR,
-    NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY,
     OUTCOME_PREDICTION_FEATURE_PIPELINE,
     OUTCOME_PREDICTION_MATCHUP_SCHEMA,
     OUTCOME_PREDICTION_MODEL_PATH,
@@ -313,32 +308,6 @@ class LoLBetsModule:
                 expected_version=1,
             ),
             _check_winner_contract(),
-            _check_file("experimental next-map model", NEXT_MAP_WINNER_MODEL_PATH),
-            _check_file(
-                "experimental next-map feature pipeline",
-                NEXT_MAP_WINNER_FEATURE_PIPELINE,
-            ),
-            _check_file(
-                "experimental next-map matchup schema", NEXT_MAP_WINNER_MATCHUP_SCHEMA
-            ),
-            _check_calibrator_schema(
-                "experimental next-map calibrator",
-                NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR,
-                required_attrs={"global_calibrator", "segments", "version"},
-            ),
-            _check_calibrator_schema(
-                "experimental next-map uncertainty",
-                NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY,
-                required_attrs={
-                    "bins",
-                    "confidence",
-                    "fit_split",
-                    "interval",
-                    "sample_count",
-                    "version",
-                },
-                expected_version=1,
-            ),
             _check_file("gamelength model", GAMELENGTH_PREDICTION_MODEL_PATH),
             _check_file(
                 "gamelength feature pipeline", GAMELENGTH_PREDICTION_FEATURE_PIPELINE

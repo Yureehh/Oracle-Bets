@@ -41,6 +41,12 @@ def test_lol_health_reports_missing_training_player_artifact():
     assert by_name["training players"].path.endswith("training_players.parquet")
 
 
+def test_normal_health_does_not_require_experimental_next_map_artifacts():
+    names = {check.name for check in LoLBetsModule().artifact_health().checks}
+
+    assert not any("next-map" in name for name in names)
+
+
 def test_lol_health_checks_are_file_based(tmp_path):
     path = tmp_path / "artifact.parquet"
     path.write_bytes(b"not empty")
