@@ -1458,7 +1458,3 @@ def _review_training_candidate(candidate_id: str, parameter_source: str):
         automatic=policy is PromotionPolicy.ROUTINE,
         reviewed_at=dt.datetime.now(dt.UTC),
     )
-
-
-def _raise_missing_staged_model(path: Path) -> None:
-    raise RuntimeError(f"Staged model directory is missing: {path}")

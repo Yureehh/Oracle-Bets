@@ -4,8 +4,6 @@ from oracle_bets_discord.predictions.lol import (
     format_winner_market_output,
 )
 
-KILLS_LINE = 26.5
-OVER_ODDS = 1.85
 DISCORD_MESSAGE_LIMIT = 2000
 
 
