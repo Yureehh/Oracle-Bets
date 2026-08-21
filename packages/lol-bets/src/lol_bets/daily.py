@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
 
-from oracle_bets_core.betting import expected_edge
 from oracle_bets_core.config import load_product_config
 from oracle_bets_core.evidence import EvidenceStore
 from oracle_bets_core.league_selection import (
@@ -21,8 +20,6 @@ from oracle_bets_core.league_selection import (
 )
 from oracle_bets_core.logger import logger
 from oracle_bets_core.markets import (
-    MarketAdapter,
-    MarketQuote,
     PolymarketClobClient,
     PolymarketGammaAdapter,
     PolymarketMarket,
@@ -76,10 +73,6 @@ from lol_bets.inference.roster import (
     evaluate_roster_gate,
     infer_historical_roster,
 )
-from lol_bets.inference.series import (
-    derive_series_distribution,
-    total_maps_probability_range,
-)
 from lol_bets.inference.team import InsufficientRosterHistoryError, Team
 from lol_bets.inference.team_resolver import (
     TeamResolutionError,
@@ -125,6 +118,12 @@ class Predictor(Protocol):
     def predict_total_towers(
         self, team1: Team, team2: Team, account_for_side: bool = True
     ) -> float: ...
+
+
+class MarketSearch(Protocol):
+    def search_markets(
+        self, query: str, *, limit: int = 25
+    ) -> list[PolymarketMarket]: ...
 
 
 @dataclass(frozen=True)
@@ -597,122 +596,10 @@ def match_type_from_best_of(best_of: Any) -> str:
     raise ValueError("best_of must be one of 1, 3, or 5")
 
 
-def _normalize_market_text(value: str) -> set[str]:
-    return {
-        part
-        for part in "".join(ch.lower() if ch.isalnum() else " " for ch in value).split()
-        if part
-    }
-
-
-# Tokens that are common English words or generic org words. Short team names
-# like "T1", "WE", or "G2" otherwise false-positive on unrelated questions.
-_MATCH_STOPWORDS = frozenset(
-    {"we", "will", "the", "team", "of", "in", "vs", "beat", "win", "and", "to", "a"}
-)
-
-
-def _team_matches_text(team_name: str, text: str) -> bool:
-    """All informative tokens of the team name must appear in the text."""
-    team_tokens = _normalize_market_text(team_name)
-    if not team_tokens:
-        return False
-    informative = {t for t in team_tokens if t not in _MATCH_STOPWORDS}
-    # A name made entirely of stopword-like tokens ("Team WE") must match on
-    # its full token set instead.
-    required = informative or team_tokens
-    return required <= _normalize_market_text(text)
-
-
-def _quote_score(quote: MarketQuote, team_a: str, team_b: str) -> int:
-    question_tokens = _normalize_market_text(quote.question)
-    score = 0
-    if _team_matches_text(team_a, quote.question):
-        score += 1
-    if _team_matches_text(team_b, quote.question):
-        score += 1
-    if _team_matches_text(team_a, quote.outcome) or _team_matches_text(
-        team_b, quote.outcome
-    ):
-        score += 1
-    if {"lol", "league", "legends", "esports"} & question_tokens:
-        score += 1
-    return score
-
-
-def select_market_candidates(
-    quotes: Sequence[MarketQuote],
-    *,
-    team_a: str,
-    team_b: str,
-    min_score: int = 3,
-    limit: int = 6,
-) -> list[MarketQuote]:
-    """Conservatively keep quotes that mention both the matchup and a selection."""
-    scored = [
-        (quote, _quote_score(quote, team_a, team_b))
-        for quote in quotes
-        if quote.implied_probability is not None
-    ]
-    kept = [quote for quote, score in scored if score >= min_score]
-    kept.sort(
-        key=lambda quote: (quote.liquidity or 0.0, quote.volume or 0.0), reverse=True
-    )
-    return kept[:limit]
-
-
-def format_market_candidates(
-    *,
-    team_a: str,
-    team_b: str,
-    team_a_probability: float,
-    team_b_probability: float,
-    quotes: Sequence[MarketQuote],
-) -> str:
-    candidates = select_market_candidates(quotes, team_a=team_a, team_b=team_b)
-    if not candidates:
-        return "Polymarket: no confident matching active market found."
-    lines = [
-        "Polymarket candidates (read-only, verify manually):",
-        "```text",
-        f"{'Outcome':<18} {'Poly':>6} {'Model':>7} {'Edge':>7} {'Liquid':>9}  Market",
-    ]
-    for quote in candidates:
-        if quote.implied_probability is None:
-            continue
-        price = float(quote.implied_probability)
-        if _team_matches_text(team_a, quote.outcome):
-            model_probability = team_a_probability
-        elif _team_matches_text(team_b, quote.outcome):
-            model_probability = team_b_probability
-        else:
-            model_probability = 0.0
-        edge = (
-            expected_edge(1.0 / price, model_probability)
-            if price > 0 and model_probability > 0
-            else None
-        )
-        edge_text = f"{edge * 100:+.1f}%" if edge is not None else "verify"
-        liquidity_text = (
-            f"{quote.liquidity:,.0f}" if quote.liquidity is not None else "n/a"
-        )
-        lines.append(
-            f"{quote.outcome[:18]:<18} {price * 100:>5.0f}c "
-            f"{model_probability * 100:>6.1f}% {edge_text:>7} {liquidity_text:>9}  "
-            f"{quote.question[:38]}"
-        )
-    lines.append("```")
-    urls = [quote.url for quote in candidates if quote.url]
-    if urls:
-        lines.append("Links: " + " | ".join(urls[:3]))
-    return "\n".join(lines)
-
-
 def build_match_prediction_message(  # noqa: PLR0915
     row: pd.Series,
     *,
     predictor: Predictor,
-    market_search: MarketAdapter | None = None,
     snapshot_sink: list[dict[str, Any]] | None = None,
     resolution_sink: list[dict[str, str]] | None = None,
 ) -> str:
@@ -849,22 +736,6 @@ def build_match_prediction_message(  # noqa: PLR0915
             continue
         prop_values[source_name] = float(value)
 
-    quotes: list[MarketQuote] = []
-    if market_search is not None:
-        query = str(row.get("market_query") or f"{team_a_name} {team_b_name} LoL")
-        try:
-            quotes = market_search.search(query, limit=12)
-            output += "\n\n" + format_market_candidates(
-                team_a=team_a_name,
-                team_b=team_b_name,
-                team_a_probability=team_a_win,
-                team_b_probability=team_b_win,
-                quotes=quotes,
-            )
-        except Exception as exc:
-            quotes = []
-            output += f"\n\nPolymarket: search failed ({exc})."
-
     if snapshot_sink is not None:
         snapshot_sink.extend(
             build_prediction_snapshot_rows(
@@ -896,7 +767,6 @@ def build_match_prediction_message(  # noqa: PLR0915
                 prop_values=prop_values,
                 lineup_ready=lineup_ready,
                 roster_ready=roster_ready,
-                quotes=quotes,
             )
         )
 
@@ -934,7 +804,6 @@ def build_prediction_snapshot_rows(
     team_b_roster_gate: RosterGateDecision | None = None,
     lineup_ready: bool = False,
     roster_ready: bool = False,
-    quotes: Sequence[MarketQuote] = (),
 ) -> list[dict[str, Any]]:
     """One snapshot row per (match, market, selection) for later CLV/backtests."""
     run_ts = dt.datetime.now(dt.UTC)
@@ -1005,16 +874,6 @@ def build_prediction_snapshot_rows(
         "lineup_ready": lineup_ready,
         "roster_ready": roster_ready,
     }
-    candidates = select_market_candidates(
-        quotes, team_a=team_a_name, team_b=team_b_name
-    )
-
-    def _best_quote_for(team_name: str) -> MarketQuote | None:
-        for quote in candidates:
-            if _team_matches_text(team_name, quote.outcome):
-                return quote
-        return None
-
     rows: list[dict[str, Any]] = []
     for selection, probability in (
         (team_a_name, team_a_win),
@@ -1034,7 +893,6 @@ def build_prediction_snapshot_rows(
             probability_upper = (
                 float(team_b_upper) if team_b_upper is not None else float(probability)
             )
-        quote = _best_quote_for(selection)
         rows.append(
             {
                 **base,
@@ -1067,19 +925,6 @@ def build_prediction_snapshot_rows(
                     bool(drivers) if attribution_stable is None else attribution_stable
                 ),
                 "driver_attribution": list(driver_attribution),
-                "poly_price": (
-                    float(quote.implied_probability)
-                    if quote is not None and quote.implied_probability is not None
-                    else None
-                ),
-                "poly_market_id": quote.market_id if quote is not None else None,
-                "poly_question": quote.question if quote is not None else None,
-                "poly_url": quote.url if quote is not None else None,
-                "poly_liquidity": (
-                    float(quote.liquidity)
-                    if quote is not None and quote.liquidity is not None
-                    else None
-                ),
             }
         )
     for market, value in prop_values.items():
@@ -1089,84 +934,9 @@ def build_prediction_snapshot_rows(
                 "market": f"{market}_mean",
                 "selection": None,
                 "model_value": float(value),
-                "poly_price": None,
-                "poly_question": None,
-                "poly_url": None,
-                "poly_liquidity": None,
             }
         )
     return rows
-
-
-def _paired_map_series_distribution(
-    *,
-    match_type: str,
-    team_a_name: str,
-    team_b_name: str,
-    team_a_point: float,
-    team_b_point: float,
-    team_a_lower: float | None,
-    team_a_upper: float | None,
-    team_b_lower: float | None,
-    team_b_upper: float | None,
-) -> dict[str, Any]:
-    best_of = int(match_type.removeprefix("bo"))
-    a_lower = float(team_a_lower if team_a_lower is not None else team_a_point)
-    a_upper = float(team_a_upper if team_a_upper is not None else team_a_point)
-    b_lower = float(team_b_lower if team_b_lower is not None else team_b_point)
-    b_upper = float(team_b_upper if team_b_upper is not None else team_b_point)
-    point = derive_series_distribution(
-        best_of,
-        [team_a_point] * best_of,
-    )
-    low = derive_series_distribution(best_of, [a_lower] * best_of)
-    high = derive_series_distribution(best_of, [a_upper] * best_of)
-    total_map_ranges = {
-        total: total_maps_probability_range(best_of, total, a_lower, a_upper)
-        for total in point.total_maps_probabilities
-    }
-    return {
-        "method": "derived_from_map_engine",
-        "best_of": best_of,
-        "map_1": {
-            team_a_name: {
-                "point": team_a_point,
-                "lower": a_lower,
-                "upper": a_upper,
-            },
-            team_b_name: {
-                "point": team_b_point,
-                "lower": b_lower,
-                "upper": b_upper,
-            },
-        },
-        "series": {
-            team_a_name: {
-                "point": point.team_a_win,
-                "lower": low.team_a_win,
-                "upper": high.team_a_win,
-            },
-            team_b_name: {
-                "point": point.team_b_win,
-                "lower": high.team_b_win,
-                "upper": low.team_b_win,
-            },
-            **({"draw": {"point": point.draw}} if point.draw else {}),
-        },
-        "score_probabilities": dict(point.score_probabilities),
-        "total_maps_probabilities": {
-            str(total): probability
-            for total, probability in point.total_maps_probabilities.items()
-        },
-        "total_maps_probability_ranges": {
-            str(total): {
-                "point": probability,
-                "lower": total_map_ranges[total][0],
-                "upper": total_map_ranges[total][1],
-            }
-            for total, probability in point.total_maps_probabilities.items()
-        },
-    }
 
 
 def append_prediction_snapshots(
@@ -1430,7 +1200,7 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
     *,
     cfg: DailyWorkflowConfig,
     predictor_factory: Callable[[], Predictor] | None,
-    market_search_factory: Callable[[], MarketAdapter],
+    market_search_factory: Callable[[], MarketSearch],
     snapshot_sink: list[dict[str, Any]] | None = None,
     market_review_sink: list[dict[str, Any]] | None = None,
     market_action_sink: list[dict[str, Any]] | None = None,
@@ -1438,6 +1208,7 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
     market_sleeper: Callable[[float], None] = time.sleep,
     market_run_key: str | None = None,
     existing_exposure_units: float = 0.0,
+    typed_markets_override: (dict[str, tuple[PolymarketMarket, ...]] | None) = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     schedule = _actionable_schedule(schedule)
     if schedule.empty:
@@ -1461,15 +1232,16 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
                 )
             raise
 
-    market_search = None if cfg.skip_market_search else market_search_factory()
     typed_markets: dict[str, tuple[PolymarketMarket, ...]] = {}
     typed_market_failures: dict[str, str] = {}
-    typed_search = getattr(market_search, "search_markets", None)
-    if callable(typed_search):
+    market_search = None
+    if typed_markets_override is not None:
+        typed_markets = typed_markets_override
+    elif not cfg.skip_market_search:
+        market_search = market_search_factory()
         discovery = _discover_typed_markets(schedule, market_search)
         typed_markets = discovery.markets
         typed_market_failures = discovery.failures
-        market_search = None
     messages: list[str] = []
     details: list[dict[str, Any]] = []
     unmatched: dict[str, tuple[str, ...]] = {}
@@ -1482,7 +1254,6 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
             message = build_match_prediction_message(
                 row,
                 predictor=predictor,
-                market_search=market_search,
                 snapshot_sink=snapshot_sink,
                 resolution_sink=resolutions,
             )
@@ -1641,11 +1412,10 @@ def _format_market_quote_messages(
 
 def _discover_typed_markets(
     schedule: pd.DataFrame,
-    market_search: Any,
+    market_search: MarketSearch,
 ) -> TypedMarketDiscovery:
     """Find only open supported markets using one exact query per fixture."""
-    typed_search = getattr(market_search, "search_markets", None)
-    if schedule.empty or not callable(typed_search):
+    if schedule.empty:
         return TypedMarketDiscovery({}, {})
     supported_types = {"child_moneyline", "moneyline", "totals"}
     discovered: dict[str, tuple[PolymarketMarket, ...]] = {}
@@ -1658,7 +1428,7 @@ def _discover_typed_markets(
             discovered[fixture_key] = ()
             continue
         try:
-            markets = typed_search(
+            markets = market_search.search_markets(
                 f"{canonical_team_name(team_a)} {canonical_team_name(team_b)}",
                 limit=100,
             )
@@ -1903,7 +1673,7 @@ def run_daily_lol_workflow(  # noqa: PLR0915
     module_factory: Callable[[], LoLBetsModule] = LoLBetsModule,
     predictor_factory: Callable[[], Predictor] | None = None,
     lineup_refresher_factory: (Callable[[], PandaScoreLineupRefresher] | None) = None,
-    market_search_factory: Callable[[], MarketAdapter] = PolymarketGammaAdapter,
+    market_search_factory: Callable[[], MarketSearch] = PolymarketGammaAdapter,
     clob_client_factory: Callable[[], Any] = PolymarketClobClient,
     market_sleeper: Callable[[float], None] = time.sleep,
     series_builder_fn: Callable[[], dict[str, Any]] = build_series_artifacts,

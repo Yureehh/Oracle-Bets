@@ -9,15 +9,12 @@ from lol_bets.daily import (
     cadence_reminders,
     expected_roster_from_schedule,
     filter_daily_schedule,
-    format_market_candidates,
     match_type_from_best_of,
     run_daily_lol_workflow,
-    select_market_candidates,
     split_reportable_schedule,
 )
 from oracle_bets_core.cli import build_parser
 from oracle_bets_core.evidence import EvidenceStore
-from oracle_bets_core.markets import MarketQuote
 from oracle_bets_core.operations import StepOutcome, WorkflowOutcome
 from oracle_bets_core.pd import pd
 from oracle_bets_discord.predictions.lol import format_schedule_messages
@@ -236,56 +233,6 @@ def test_lineup_refresh_failure_blocks_historical_fallback(monkeypatch):
     assert resolved.evidence is None
 
 
-def test_market_candidate_selection_requires_matchup_context():
-    quotes = [
-        MarketQuote(
-            source="polymarket",
-            market_id="1",
-            question="Will T1 beat Gen.G in League of Legends?",
-            outcome="T1",
-            implied_probability=0.44,
-            liquidity=1000,
-        ),
-        MarketQuote(
-            source="polymarket",
-            market_id="2",
-            question="Will G2 beat Fnatic in League of Legends?",
-            outcome="G2",
-            implied_probability=0.51,
-            liquidity=2000,
-        ),
-    ]
-
-    out = select_market_candidates(quotes, team_a="T1", team_b="Gen.G")
-
-    assert [quote.market_id for quote in out] == ["1"]
-
-
-def test_market_candidate_formatting_shows_model_edge():
-    output = format_market_candidates(
-        team_a="T1",
-        team_b="Gen.G",
-        team_a_probability=0.55,
-        team_b_probability=0.45,
-        quotes=[
-            MarketQuote(
-                source="polymarket",
-                market_id="1",
-                question="Will T1 beat Gen.G in League of Legends?",
-                outcome="T1",
-                implied_probability=0.44,
-                liquidity=1000,
-                url="https://polymarket.com/event/t1-geng",
-            )
-        ],
-    )
-
-    assert "Polymarket candidates" in output
-    assert "T1" in output
-    assert "+25.0%" in output
-    assert "https://polymarket.com/event/t1-geng" in output
-
-
 class _FakePredictor:
     outcome_calibrator = None
 
@@ -305,16 +252,8 @@ class _FakePredictor:
 
 
 class _FakeMarketSearch:
-    def search(self, _query: str, **_kwargs):
-        return [
-            MarketQuote(
-                source="polymarket",
-                market_id="1",
-                question="Will T1 beat Gen.G in League of Legends?",
-                outcome="T1",
-                implied_probability=0.50,
-            )
-        ]
+    def search_markets(self, _query: str, **_kwargs):
+        return []
 
 
 def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeypatch):
@@ -349,7 +288,7 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     assert result.ok
     assert not any(called.values())
     assert any("T1 vs Gen.G" in message for message in result.messages)
-    assert any("Polymarket candidates" in message for message in result.messages)
+    assert result.market_actions == []
     assert result.report_paths is not None
     json_path, markdown_path = result.report_paths
     assert json_path.is_file()

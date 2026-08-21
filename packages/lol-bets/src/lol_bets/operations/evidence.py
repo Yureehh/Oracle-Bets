@@ -42,27 +42,27 @@ def record_daily_evidence(
     schedule: pd.DataFrame,
     snapshot_rows: Sequence[dict[str, Any]],
     steps: Sequence[Any],
-    market_actions: Sequence[dict[str, Any]] | None = None,
+    market_actions: Sequence[dict[str, Any]] = (),
+    run_type: str = "daily_lol",
+    run_key: str | None = None,
 ) -> str:
     """Record predictions and honest no-bet outcomes without upgrading prices."""
     store.initialize_schema()
-    run_key = daily_run_key(
-        "lol",
-        scheduled_for=scheduled_for,
-        config=effective_config,
+    evidence_key = run_key or daily_run_key(
+        "lol", scheduled_for=scheduled_for, config=effective_config
     )
-    run_id = _id("run", run_key)
+    run_id = _id("run", evidence_key)
     _append_if_missing(
         store,
         EvidenceTable.RUNS,
         {
             "id": run_id,
-            "run_type": "daily_lol",
+            "run_type": run_type,
             "started_at": scheduled_for,
             "status": "completed" if all(step.ok for step in steps) else "partial",
-            "idempotency_key": run_key,
+            "idempotency_key": evidence_key,
             "payload_json": {
-                "run_key": run_key,
+                "run_key": evidence_key,
                 "steps": [
                     {"name": step.name, "ok": step.ok, "detail": step.detail}
                     for step in steps
@@ -153,7 +153,6 @@ def record_daily_evidence(
                     "uncertainty_sample_count": row.get("uncertainty_sample_count"),
                     "drivers": list(row.get("drivers") or []),
                     "paired_distribution": row.get("paired_distribution"),
-                    "display_market_price": row.get("poly_price"),
                     "lineup_ready": row.get("lineup_ready") is True,
                     "roster_ready": row.get("roster_ready") is True,
                     "team_a_roster_state": row.get("team_a_roster_state"),
@@ -169,48 +168,7 @@ def record_daily_evidence(
                 },
             },
         )
-        if market_actions is not None:
-            continue
-        market_candidate_id = _record_display_market(
-            store,
-            run_id=run_id,
-            fixture_id=fixture_id,
-            row=row,
-        )
-        if row.get("lineup_ready") is not True:
-            reason = "roster_unknown"
-        elif row.get("roster_ready") is not True:
-            reason = "roster_unstable"
-        elif market_candidate_id:
-            reason = "executable_order_book_unavailable"
-        else:
-            reason = "market_not_found"
-        proposal_id = _id("proposal", prediction_id)
-        _append_if_missing(
-            store,
-            EvidenceTable.PROPOSALS,
-            {
-                "id": proposal_id,
-                "run_id": run_id,
-                "prediction_id": prediction_id,
-                "market_snapshot_id": None,
-                "created_at": _as_utc(row["run_ts"]),
-                "state": "rejected",
-                "rejection_reason": reason,
-                "ruleset_version": "legacy-daily-bridge-v1",
-                "strategy": None,
-                "stake_units": None,
-                "idempotency_key": proposal_id,
-                "payload_json": {
-                    "market_candidate_id": market_candidate_id,
-                    "reason": (
-                        "Gamma display prices are research context, not an "
-                        "executable two-observation CLOB price."
-                    ),
-                },
-            },
-        )
-    if market_actions is not None:
+    if market_actions:
         _record_typed_market_actions(
             store,
             run_id=run_id,
@@ -990,44 +948,6 @@ def _record_scalar_forecast(
             },
         },
     )
-
-
-def _record_display_market(
-    store: EvidenceStore,
-    *,
-    run_id: str,
-    fixture_id: str,
-    row: dict[str, Any],
-) -> str | None:
-    provider_market_id = row.get("poly_market_id")
-    if not provider_market_id:
-        return None
-    candidate_id = _id(
-        "market",
-        f"{run_id}|{fixture_id}|{provider_market_id}|{row['selection']}",
-    )
-    _append_if_missing(
-        store,
-        EvidenceTable.MARKET_CANDIDATES,
-        {
-            "id": candidate_id,
-            "run_id": run_id,
-            "fixture_id": fixture_id,
-            "provider": "polymarket",
-            "provider_market_id": str(provider_market_id),
-            "provider_selection_id": str(row["selection"]),
-            "discovered_at": _as_utc(row["run_ts"]),
-            "match_status": "display_only",
-            "rejection_reason": "executable_order_book_unavailable",
-            "idempotency_key": candidate_id,
-            "payload_json": {
-                "question": row.get("poly_question"),
-                "url": row.get("poly_url"),
-                "display_probability": row.get("poly_price"),
-            },
-        },
-    )
-    return candidate_id
 
 
 def _fixture_lookup_key(row: Any) -> str:

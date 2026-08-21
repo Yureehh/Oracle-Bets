@@ -154,6 +154,21 @@ def test_lol_schedule_parser_supports_days_and_league_filter():
     assert args.leagues == "LCK,LEC"
 
 
+def test_lol_market_review_parser_requires_explicit_urls_and_publish_flag():
+    args = build_parser().parse_args(
+        [
+            "lol",
+            "market-review",
+            "https://polymarket.com/event/lol-t1-geng",
+            "--publish",
+        ]
+    )
+
+    assert args.action == "market-review"
+    assert args.urls == ["https://polymarket.com/event/lol-t1-geng"]
+    assert args.publish is True
+
+
 def _valid_training_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
     team_df = pd.DataFrame(
         {

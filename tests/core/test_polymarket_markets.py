@@ -17,6 +17,7 @@ from oracle_bets_core.markets import (
     capture_order_book_pair,
     confirmed_executable_fill,
     match_market,
+    polymarket_event_slug,
     select_best_market,
     walk_buy_book,
     walk_buy_book_by_risk,
@@ -88,6 +89,16 @@ class _PagedSession:
         return _Response(self.pages.get(params["page"], {"events": []}))
 
 
+class _EventSession:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def get(self, url, *, timeout):
+        self.calls.append((url, timeout))
+        return _Response(self.payload)
+
+
 def test_public_search_pages_and_maps_outcomes_to_clob_tokens():
     session = _PagedSession(
         {
@@ -121,6 +132,41 @@ def test_public_search_pages_and_maps_outcomes_to_clob_tokens():
     assert session.calls[0][0].endswith("/public-search")
     assert session.calls[0][1]["limit_per_type"] == EXPECTED_MARKETS
     assert [call[1]["page"] for call in session.calls] == [1, 2]
+
+
+def test_exact_event_url_loads_by_slug_without_fuzzy_search():
+    session = _EventSession(
+        {
+            "id": "event-1",
+            "slug": "lol-t1-geng-2026-08-21",
+            "title": "T1 vs Gen.G",
+            "markets": [_market()],
+        }
+    )
+    adapter = PolymarketGammaAdapter(session=session)
+
+    event = adapter.event(
+        "https://polymarket.com/esports/league-of-legends/lck/lol-t1-geng-2026-08-21"
+    )
+
+    assert event.event_id == "event-1"
+    assert event.markets[0].outcomes[0].token_id == T1_ASSET_ID
+    assert session.calls[0][0].endswith("/events/slug/lol-t1-geng-2026-08-21")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://polymarket.com/event/lol-t1-geng",
+        "https://polymarket.example/event/lol-t1-geng",
+        "https://polymarket.com@evil.example/event/lol-t1-geng",
+        "https://polymarket.com/event/lol-t1-geng?redirect=1",
+        "https://polymarket.com/sports",
+    ],
+)
+def test_polymarket_event_slug_rejects_noncanonical_urls(url):
+    with pytest.raises(MarketDataError):
+        polymarket_event_slug(url)
 
 
 def test_market_schema_drift_fails_when_outcome_token_orientation_is_unknown():
@@ -783,4 +829,4 @@ def test_polymarket_clients_expose_read_methods_only():
     }
 
     assert clob_methods == {"get_order_book"}
-    assert gamma_methods == {"search", "search_markets"}
+    assert gamma_methods == {"event", "search_markets"}

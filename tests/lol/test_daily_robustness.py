@@ -7,19 +7,15 @@ from lol_bets.daily import (
     DailyStepResult,
     DailyWorkflowConfig,
     _build_prediction_messages,
-    _team_matches_text,
     append_prediction_snapshots,
     build_prediction_snapshot_rows,
     format_step_summary,
     run_daily_lol_workflow,
-    select_market_candidates,
 )
 from lol_bets.inference.team import InsufficientRosterHistoryError
-from oracle_bets_core.markets import MarketQuote
 from oracle_bets_core.pd import pd
 
 EXPECTED_WIN_PROBABILITY = 0.6
-EXPECTED_MARKET_PRICE = 0.55
 EXPECTED_TOTAL_KILLS = 27.5
 
 
@@ -225,16 +221,6 @@ def _snapshot_rows() -> list[dict]:
         team_b_win=0.4,
         probability_source="calibrated",
         prop_values={"total_kills": 27.5},
-        quotes=[
-            MarketQuote(
-                source="polymarket",
-                market_id="1",
-                question="Will T1 beat Gen.G in League of Legends?",
-                outcome="T1",
-                implied_probability=0.55,
-                liquidity=1500,
-            )
-        ],
     )
 
 
@@ -245,7 +231,6 @@ def test_snapshot_rows_cover_both_selections_and_props():
     assert {r["selection"] for r in winner_rows} == {"T1", "Gen.G"}
     t1_row = next(r for r in winner_rows if r["selection"] == "T1")
     assert t1_row["model_value"] == EXPECTED_WIN_PROBABILITY
-    assert t1_row["poly_price"] == EXPECTED_MARKET_PRICE
     prop_rows = [r for r in rows if r["market"] == "total_kills_mean"]
     assert len(prop_rows) == 1
     assert prop_rows[0]["model_value"] == EXPECTED_TOTAL_KILLS
@@ -262,36 +247,3 @@ def test_snapshot_append_is_idempotent_per_day(tmp_path):
     keys = ["run_date", "team_a", "team_b", "start_utc", "market", "selection"]
     assert not stored.duplicated(subset=keys).any()
     assert len(stored) == len(rows)
-
-
-# ── conservative market matching ────────────────────────────────────────── #
-
-
-def test_short_team_tokens_do_not_match_generic_english():
-    assert not _team_matches_text("Team WE", "Will we see a new champion in LoL?")
-    assert _team_matches_text("Team WE", "Will Team WE beat LNG Esports?")
-
-
-def test_all_informative_tokens_must_match():
-    assert not _team_matches_text(
-        "Bilibili Gaming", "Will Gaming fans watch the finals?"
-    )
-    assert _team_matches_text(
-        "Bilibili Gaming", "Will Bilibili Gaming win the LPL split?"
-    )
-
-
-def test_market_candidates_reject_stopword_false_positives():
-    quotes = [
-        MarketQuote(
-            source="polymarket",
-            market_id="1",
-            question="Will we get a new League of Legends champion?",
-            outcome="Yes",
-            implied_probability=0.5,
-        )
-    ]
-
-    out = select_market_candidates(quotes, team_a="Team WE", team_b="LNG Esports")
-
-    assert out == []

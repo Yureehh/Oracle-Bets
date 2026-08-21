@@ -29,7 +29,7 @@ from oracle_bets_core.pd import pd
 from lol_bets.inference.team_resolver import team_name_variants
 
 _EXPECTED_WINNER_ROWS = 2
-LOL_RESOLUTION_RULE_TERMS = ("liquipedia leagueoflegends",)
+LOL_RESOLUTION_RULE_TERMS = ("liquipedia", "leagueoflegends", "gol.gg")
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence

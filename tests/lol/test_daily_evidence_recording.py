@@ -99,7 +99,7 @@ def test_manual_map_state_rejects_conflicts_and_nonsequential_maps(tmp_path):
         )
 
 
-def test_daily_bridge_records_complete_chain_and_honest_no_bet(tmp_path):
+def test_daily_bridge_records_predictions_without_inventing_market_evidence(tmp_path):
     store = EvidenceStore(tmp_path / "evidence.db")
     schedule = pd.DataFrame(
         [
@@ -133,10 +133,6 @@ def test_daily_bridge_records_complete_chain_and_honest_no_bet(tmp_path):
             "drivers": ["Team rating strength pushed the model toward T1"],
             "lineup_ready": True,
             "roster_ready": True,
-            "poly_market_id": "market-1",
-            "poly_price": 0.54,
-            "poly_question": "Will T1 beat Gen.G?",
-            "poly_url": "https://polymarket.com/event/test",
         }
     ]
 
@@ -159,12 +155,8 @@ def test_daily_bridge_records_complete_chain_and_honest_no_bet(tmp_path):
     assert json.loads(prediction["payload_json"])["drivers"] == [
         "Team rating strength pushed the model toward T1"
     ]
-    market = store.list(EvidenceTable.MARKET_CANDIDATES)[0]
-    assert market["match_status"] == "display_only"
-    proposal = store.list(EvidenceTable.PROPOSALS)[0]
-    assert proposal["state"] == "rejected"
-    assert proposal["rejection_reason"] == "executable_order_book_unavailable"
-    assert proposal["market_snapshot_id"] is None
+    assert store.count(EvidenceTable.MARKET_CANDIDATES) == 0
+    assert store.count(EvidenceTable.PROPOSALS) == 0
     assert store.count(EvidenceTable.PAPER_POSITIONS) == 0
 
 
@@ -553,7 +545,6 @@ def test_daily_bridge_is_idempotent_for_same_run(tmp_path):
         "selection": "T1",
         "model_value": 0.61,
         "probability_source": "calibrated",
-        "poly_market_id": None,
     }
     arguments = {
         "store": store,
@@ -567,7 +558,7 @@ def test_daily_bridge_is_idempotent_for_same_run(tmp_path):
     assert record_daily_evidence(**arguments) == record_daily_evidence(**arguments)
     assert store.count(EvidenceTable.RUNS) == 1
     assert store.count(EvidenceTable.PREDICTIONS) == 1
-    assert store.count(EvidenceTable.PROPOSALS) == 1
+    assert store.count(EvidenceTable.PROPOSALS) == 0
 
 
 def test_fixture_change_appends_replacements_and_superseding_corrections(tmp_path):
@@ -605,7 +596,6 @@ def test_fixture_change_appends_replacements_and_superseding_corrections(tmp_pat
             "probability_source": "calibrated",
             "lineup_ready": True,
             "roster_ready": True,
-            "poly_market_id": None,
         }
 
     first_start = "2026-07-27T10:00:00Z"
@@ -629,12 +619,11 @@ def test_fixture_change_appends_replacements_and_superseding_corrections(tmp_pat
 
     assert store.count(EvidenceTable.FIXTURES) == TWO_VERSIONS
     assert store.count(EvidenceTable.PREDICTIONS) == TWO_VERSIONS
-    assert store.count(EvidenceTable.PROPOSALS) == TWO_VERSIONS
+    assert store.count(EvidenceTable.PROPOSALS) == 0
     corrections = store.list(EvidenceTable.CORRECTIONS)
     assert {row["target_table"] for row in corrections} == {
         "fixtures",
         "predictions",
-        "proposals",
     }
     assert all(row["replacement_id"] for row in corrections)
     fixture_correction = next(
@@ -672,7 +661,6 @@ def test_restricted_fixture_expires_old_decisions_without_fabricating_replacemen
         "probability_source": "calibrated",
         "lineup_ready": True,
         "roster_ready": True,
-        "poly_market_id": None,
     }
     record_daily_evidence(
         store=store,
@@ -699,8 +687,5 @@ def test_restricted_fixture_expires_old_decisions_without_fabricating_replacemen
     prediction_correction = next(
         row for row in corrections if row["target_table"] == "predictions"
     )
-    proposal_correction = next(
-        row for row in corrections if row["target_table"] == "proposals"
-    )
     assert prediction_correction["replacement_id"] is None
-    assert proposal_correction["replacement_id"] is None
+    assert not any(row["target_table"] == "proposals" for row in corrections)

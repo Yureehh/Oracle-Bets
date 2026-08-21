@@ -53,6 +53,7 @@ uses wallets, or moves funds.
 | `lol build-series` | Reconstruct deterministic complete BO1/BO3/BO5 series, write one frozen prematch row per accepted series plus the next-map shadow dataset, and write an explicit rejection manifest. Run after ingestion and before Winner V2 training. | None. |
 | `lol validate-winner-model` | Fail-closed validation of the promoted direct-series bundle: actionability, ten-member ensemble, direct rating families, train/serve parity, canonical swap contract, and forbidden-feature absence. | `--format table|json`. |
 | `lol market-check` | Public, read-only Gamma/CLOB check. Reports typed match, token orientation, minimum shares, hypothetical cost, executable odds, and isolated token failures. Two observations use one shared 45-second wait. | `--match-key <pandascore-key>` checks that fixture's supported typed market. |
+| `lol market-review` | Review one or more exact owner-selected Polymarket LoL event URLs. The default writes one read-only JSON/Markdown report pair; `--publish` also records eligible paper proposals for the Gateway bot. It never places orders. | One or more canonical event URLs; `--publish`; `--format table|json`. |
 | `lol market-watch` | Write one JSON/Markdown pair and append read-only series-winner price/book observations for timing/CLV research. Intended for an hourly scheduler; never creates a proposal. | `--format table|json`. |
 | `lol train` | Routine refit with reviewed parameters; retrains weights and calibrators, registers an immutable candidate, and may auto-promote only a healthy non-inferior non-Optuna V2 bundle. It does not run Optuna. | `--targets all|series_winner|next_map_winner|props|<names>`, `--feature-set full|compact|selected`, `--max-features N`, report-only feature selection, and calibration/split options. |
 | `lol retune` | Explicit Optuna research search. Writes isolated tuning reports and artifacts; never updates reviewed parameters or champion automatically. | `--targets`, `--feature-set`, `--max-features`. |
@@ -70,6 +71,8 @@ uv run oracle-bets lol build-series
 uv run oracle-bets lol validate-winner-model
 uv run oracle-bets lol schedule --days 2
 uv run oracle-bets lol market-check --match-key <pandascore-key>
+uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL>
+uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL> --publish
 uv run oracle-bets lol market-watch
 
 # Routine retraining: no Optuna

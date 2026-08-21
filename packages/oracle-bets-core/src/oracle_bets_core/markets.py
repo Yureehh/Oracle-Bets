@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import unquote, urlsplit
 
 import requests
 
@@ -22,6 +23,9 @@ _MIN_OBSERVATION_SECONDS = 30
 _MAX_OBSERVATION_SECONDS = 60
 _MAX_SEARCH_PAGES = 20
 _EXPECTED_BINARY_OUTCOMES = 2
+_MIN_EVENT_PATH_PARTS = 2
+_POLYMARKET_HOSTS = frozenset({"polymarket.com", "www.polymarket.com"})
+_EVENT_SLUG_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 
 
 class MarketDataError(ValueError):
@@ -38,32 +42,6 @@ class SupportedMarketType(StrEnum):
     MAP_WINNER = "map_winner"
     SERIES_WINNER = "series_winner"
     SERIES_TOTAL_MAPS = "series_total_maps"
-
-
-@dataclass(frozen=True)
-class MarketQuote:
-    """Backward-compatible normalized display quote used by daily reports."""
-
-    source: str
-    market_id: str
-    question: str
-    outcome: str
-    price: float | None = None
-    implied_probability: float | None = None
-    liquidity: float | None = None
-    volume: float | None = None
-    url: str | None = None
-    token_id: str | None = None
-    event_id: str | None = None
-
-
-class MarketAdapter(Protocol):
-    """Read-only display-quote source adapter."""
-
-    source: str
-
-    def search(self, query: str, *, limit: int = 25) -> list[MarketQuote]:
-        """Return normalized quotes matching ``query``."""
 
 
 @dataclass(frozen=True)
@@ -103,6 +81,41 @@ class PolymarketMarket:
         return f"https://polymarket.com/event/{self.slug}"
 
 
+@dataclass(frozen=True)
+class PolymarketEvent:
+    """One exact Gamma event loaded from a user-supplied Polymarket URL."""
+
+    event_id: str
+    title: str
+    slug: str
+    url: str
+    markets: tuple[PolymarketMarket, ...]
+
+
+def polymarket_event_slug(url: str) -> str:
+    """Extract a strict event slug without accepting lookalike hosts or guessing."""
+    parsed = urlsplit(url.strip())
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in _POLYMARKET_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise MarketDataError("Expected a canonical HTTPS polymarket.com event URL")
+    parts = [
+        unquote(part).strip().casefold() for part in parsed.path.split("/") if part
+    ]
+    if len(parts) < _MIN_EVENT_PATH_PARTS or parts[0] not in {"event", "esports"}:
+        raise MarketDataError("Polymarket URL does not identify an event")
+    slug = parts[-1]
+    if not _EVENT_SLUG_PATTERN.fullmatch(slug):
+        raise MarketDataError("Polymarket event slug is malformed")
+    return slug
+
+
 class PolymarketGammaAdapter:
     """Read-only adapter for the current Gamma ``/public-search`` endpoint."""
 
@@ -118,14 +131,6 @@ class PolymarketGammaAdapter:
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
         self.timeout = timeout
-
-    def search(self, query: str, *, limit: int = 25) -> list[MarketQuote]:
-        """Return legacy display quotes without treating them as fill prices."""
-        return [
-            quote
-            for market in self.search_markets(query, limit=limit)
-            for quote in self._quotes_from_normalized_market(market)
-        ]
 
     def search_markets(
         self,
@@ -164,6 +169,44 @@ class PolymarketGammaAdapter:
                     break
             page += 1
         return markets
+
+    def event(self, url: str) -> PolymarketEvent:
+        """Load one exact event by slug; never fall back to fuzzy search."""
+        slug = polymarket_event_slug(url)
+        response = self.session.get(
+            f"{self.base_url}/events/slug/{slug}",
+            timeout=self.timeout,
+        )
+        try:
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as error:
+            raise MarketReadError("Polymarket Gamma event request failed.") from error
+        if not isinstance(payload, dict):
+            raise MarketDataError("Gamma event response must be an object")
+        raw_markets = payload.get("markets")
+        if not isinstance(raw_markets, list) or not all(
+            isinstance(market, dict) for market in raw_markets
+        ):
+            raise MarketDataError("Gamma event markets must be object records")
+        markets: list[PolymarketMarket] = []
+        for raw_market in raw_markets:
+            try:
+                markets.append(self._market_from_payload(raw_market, event=payload))
+            except MarketDataError:
+                continue
+        if not markets:
+            raise MarketDataError("Gamma event contains no orientation-safe markets")
+        event_slug = _required_text(payload.get("slug") or slug, "Gamma event slug")
+        if event_slug.casefold() != slug:
+            raise MarketDataError("Gamma event slug does not match the requested URL")
+        return PolymarketEvent(
+            event_id=_required_text(payload.get("id"), "Gamma event id"),
+            title=_required_text(payload.get("title"), "Gamma event title"),
+            slug=event_slug,
+            url=url.strip(),
+            markets=tuple(markets),
+        )
 
     def _search_page(
         self,
@@ -289,65 +332,6 @@ class PolymarketGammaAdapter:
                 field="volume",
             ),
         )
-
-    def _quotes_from_normalized_market(
-        self,
-        market: PolymarketMarket,
-    ) -> list[MarketQuote]:
-        return [
-            MarketQuote(
-                source=self.source,
-                market_id=market.market_id,
-                question=market.question,
-                outcome=outcome.name,
-                price=(
-                    float(outcome.displayed_price)
-                    if outcome.displayed_price is not None
-                    else None
-                ),
-                implied_probability=(
-                    float(outcome.displayed_price)
-                    if outcome.displayed_price is not None
-                    else None
-                ),
-                liquidity=(
-                    float(market.liquidity) if market.liquidity is not None else None
-                ),
-                volume=float(market.volume) if market.volume is not None else None,
-                url=market.url,
-                token_id=outcome.token_id,
-                event_id=market.event_id,
-            )
-            for outcome in market.outcomes
-        ]
-
-    def _quotes_from_market(self, market: dict[str, Any]) -> list[MarketQuote]:
-        """Normalize a legacy raw market without asserting token orientation."""
-        outcomes = _coerce_list(market.get("outcomes"))
-        prices = _coerce_list(market.get("outcomePrices"))
-        tokens = _coerce_list(market.get("clobTokenIds"))
-        quotes: list[MarketQuote] = []
-        for index, outcome in enumerate(outcomes):
-            price = _coerce_float(prices[index] if index < len(prices) else None)
-            quotes.append(
-                MarketQuote(
-                    source=self.source,
-                    market_id=str(market.get("id") or market.get("conditionId") or ""),
-                    question=str(market.get("question") or ""),
-                    outcome=str(outcome),
-                    price=price,
-                    implied_probability=price,
-                    liquidity=_coerce_float(market.get("liquidity")),
-                    volume=_coerce_float(market.get("volume")),
-                    url=(
-                        f"https://polymarket.com/event/{market['slug']}"
-                        if market.get("slug")
-                        else None
-                    ),
-                    token_id=(str(tokens[index]) if index < len(tokens) else None),
-                )
-            )
-        return quotes
 
 
 @dataclass(frozen=True)
@@ -1197,13 +1181,6 @@ def _aliases_match_text(aliases: tuple[str, ...], text: str) -> bool:
         bool(alias_tokens) and set(alias_tokens) <= text_tokens
         for alias_tokens in (_text_tokens(alias) for alias in aliases)
     )
-
-
-def _coerce_float(value: Any) -> float | None:
-    try:
-        return None if value is None else float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _coerce_list(value: Any) -> list[Any]:

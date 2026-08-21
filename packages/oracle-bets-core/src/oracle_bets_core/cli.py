@@ -50,6 +50,17 @@ def _add_lol_commands(sub) -> None:
         help="Verify public read-only Polymarket discovery and CLOB data",
     )
     market_check.add_argument("--match-key", default=None)
+    market_review = lol_sub.add_parser(
+        "market-review",
+        help="Review exact owner-selected Polymarket LoL event URLs",
+    )
+    market_review.add_argument("urls", nargs="+")
+    market_review.add_argument(
+        "--publish",
+        action="store_true",
+        help="Persist eligible proposals for the Discord Gateway bot",
+    )
+    market_review.add_argument("--format", choices=["table", "json"], default="table")
     market_watch = lol_sub.add_parser(
         "market-watch",
         help="Record one hourly read-only series-winner market observation",
@@ -411,6 +422,29 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
         return 0 if report.ok else 2
     if args.action == "market-check":
         return _check_lol_markets(args.match_key)
+    if args.action == "market-review":
+        import json
+
+        from lol_bets.operations.manual_market import review_polymarket_events
+
+        result = review_polymarket_events(args.urls, publish=args.publish)
+        if args.format == "json":
+            sys.stdout.write(
+                json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n"
+            )
+        else:
+            sys.stdout.write(
+                f"Reviewed {result.fixtures} fixture(s); "
+                f"{result.predictions} prediction(s); "
+                f"{result.actionable_proposals} actionable proposal(s).\n"
+                f"JSON: {result.report_paths[0]}\n"
+                f"Markdown: {result.report_paths[1]}\n"
+            )
+            for failure in result.failures:
+                sys.stdout.write(
+                    f"- {failure['url']}: {failure['reason']} ({failure['detail']})\n"
+                )
+        return 0 if result.ok else 2
     if args.action == "market-watch":
         import json
 
