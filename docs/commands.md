@@ -48,7 +48,7 @@ uses wallets, or moves funds.
 | `lol ingest` | Refresh the public source, then run routine `research_all_supported` ingestion; writes raw/interim/processed data and manifests. Does not train or tune. | None. |
 | `lol reconcile-history` | Destructive full reconciliation of retained source history after source/schema changes; writes data artifacts. Does not train or tune. | None. |
 | `lol sync-identities` | Rebuild canonical player/team/league/series/map identity evidence from retained raw data. Writes evidence. | None. |
-| `lol schedule` | Fetch and print PandaScore fixtures only; does not write the schedule or train. | `--days N`, `--leagues LCK,LEC`. |
+| `lol schedule` | Fetch PandaScore fixtures, persist the normalized snapshot for later exact-link roster enrichment, and print confirmed-team fixtures in the selected leagues. Provider `TBD`/blank rows stay out of the owner view. It does not train or contact Polymarket. | `--days N`, `--leagues LCK,LEC`. |
 | `lol validate-data` | Read-only validation of generated supervised tables and feature contracts. | None. |
 | `lol build-series` | Reconstruct deterministic complete BO1/BO3/BO5 series, write one frozen prematch row per accepted series plus the optional next-map shadow dataset, and write an explicit rejection manifest. Run after ingestion and before Winner V2 training. | None. |
 | `lol validate-winner-model` | Fail-closed validation of the promoted direct-series bundle: actionability, ten-member ensemble, direct rating families, train/serve parity, canonical swap contract, and forbidden-feature absence. | `--format table|json`. |
@@ -288,9 +288,24 @@ requires regenerating those artifacts.
 
 ## launchd and recovery
 
-Supported macOS templates and installation commands are in `ops/README.md`.
-Only the Gateway-bot template remains; data refresh, studies, market reviews,
-and monthly audits are owner-triggered.
+The only retained macOS service template is
+`ops/launchd/com.oracle-bets.discord-bot.plist.example`; data refresh, studies,
+market reviews, and monthly audits remain owner-triggered. Copy the template,
+replace its absolute repository and `uv` paths, then install it:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp ops/launchd/com.oracle-bets.discord-bot.plist.example \
+  "$HOME/Library/LaunchAgents/com.oracle-bets.discord-bot.plist"
+plutil -lint "$HOME/Library/LaunchAgents/com.oracle-bets.discord-bot.plist"
+launchctl bootstrap "gui/$(id -u)" \
+  "$HOME/Library/LaunchAgents/com.oracle-bets.discord-bot.plist"
+```
+
+Inspect it with `launchctl print`; restart with `launchctl kickstart -k`; unload
+with `launchctl bootout` before replacing the plist. Keep secrets only in the
+ignored mode-`0600` `.env`. The example sends stdout/stderr to `/dev/null`;
+application logs already rotate inside `logs/lol/`.
 
 For disaster recovery, back up `data/state/` first, remove only generated data,
 models, reports, and logs, then follow this explicit rebuild sequence:

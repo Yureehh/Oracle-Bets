@@ -45,7 +45,8 @@ Generated state has explicit ownership:
 - `data/state/oracle_bets.db`: canonical append-only operational evidence;
 - `data/state/model-registry/lol/`: immutable reviewed model bundles;
 - `reports/lol/`: deterministic review artifacts;
-- `logs/lol/oracle-bets.log`: bounded rotating runtime log.
+- `logs/lol/oracle-bets.log`: bounded rotating runtime log (10 MiB plus five
+  backups by default).
 
 The registry is not a duplicate model folder. The model workspace may be
 rebuilt; the registry preserves the exact checksummed bundle that was reviewed
@@ -63,10 +64,11 @@ reviewed historical identity merges. Unknown identity or a similar name never
 justifies fabricated history. `import_columns.json` is the source allowlist;
 new CSV fields are candidates rather than automatic features.
 
-Defaults live under `config/lol/hyperparameters/defaults/`. Reviewed production
-parameters live under `hyperparameters/tuned/`. Routine training requires the
-reviewed files and never starts Optuna. A research study stays isolated until
-the owner reviews it and explicitly promotes its parameters.
+Search priors live in
+`config/lol/hyperparameters/default_models_parameters.json`. Reviewed
+production parameters live under `hyperparameters/tuned/`. Routine training
+requires the reviewed files and never starts Optuna. A research study stays
+isolated until the owner reviews it and explicitly promotes its parameters.
 
 Secrets belong only in the ignored mode-`0600` `.env`:
 
@@ -192,7 +194,7 @@ prices are never substituted for executable quotes.
 
 Only a prematch series-winner selection may become paper-actionable. It must:
 
-- be the independent model's point favorite at 52.5% or higher;
+- be the independent model's point favorite at 57.5% or higher;
 - produce at least 5% expected edge using its conservative probability and the
   worse executable quote;
 - start 24–48 hours later;
@@ -202,7 +204,14 @@ Only a prematch series-winner selection may become paper-actionable. It must:
 A model/market gap of at least 20 percentage points, or a full-model favorite
 that the rating baseline prices at 45% or below, is quarantined rather than
 treated as a dream upset. Polymarket favorite status is irrelevant. Paper stake
-is a flat one unit; quarter-Kelly is counterfactual evidence only.
+is a flat one unit; quarter-Kelly is counterfactual evidence only. There is no
+arbitrary minimum market-odds gate: a short price still has to clear the same
+model-favorite, uncertainty, timing, anomaly, and 5% conservative-edge rules.
+
+The original 52.5% point gate was raised after the sealed V2 holdout showed
+sub-50% favorite accuracy in both the 52.5–55% and 55–57.5% actionable bands.
+The conservative bound may still cross 50%, so a close independent-model edge
+is not rejected merely because uncertainty spans an even matchup.
 
 Every exact-link review returns the independent direct-series price, a separate
 Map 1 research price, and game-length/kills/towers point means. Props need an
@@ -272,12 +281,13 @@ suite covers the repository at roughly 67% overall, with materially weaker
 coverage in Discord interaction recovery, live match inference, and several
 rating implementations.
 
-Safe simplifications completed in the current product cutover are limited to
-behavioral duplication and obsolete target requirements: matchup assembly is
-shared by series and Map 1 inference, unused serving state was removed, and the
-experimental next-map target was removed from normal training and registry
-requirements. Broad file merging or line-count-driven rewriting would increase
-prediction and evidence risk immediately before paper testing.
+Safe simplifications completed in the current product cutover remove duplicated
+directory documentation, unused generic prediction contracts, an unintegrated
+outcome recorder, and the superseded map-derived series calculator. Matchup
+assembly is shared by series and Map 1 inference, unused serving state was
+removed, and the experimental next-map target was removed from normal training
+and registry requirements. The owner-facing documentation is intentionally
+limited to this design, the command runbook, and the roadmap.
 
 The remaining cleanup is deliberately staged:
 

@@ -79,26 +79,12 @@ target/
 # Jupyter NB Checkpoints
 .ipynb_checkpoints/
 
-# Generated data/artifact trees. Keep folder READMEs visible.
+# Generated data/artifact trees. Runtime commands create these directories.
 /data/*
-!/data/README.md
-!/data/lol/
-/data/lol/*
-!/data/lol/README.md
-!/data/lol/**/
-!/data/lol/**/README.md
 !/data/state/
-!/data/state/README.md
-!/data/state/archives/
-!/data/state/archives/legacy-ledger/
-!/data/state/archives/legacy-ledger/README.md
-!/data/state/archives/legacy-ledger/manifest.json
 /data/state/backups/
 /data/state/model-registry/
 /data/state/discord-bot.lock
-
-/data/lol/raw/oracles_elixir
-/data/lol/raw/oracles_elixir_cache/
 
 # Production rating hyperparameters are reviewed, tracked inputs.
 /artifacts/
@@ -129,35 +115,16 @@ poetry
 catboost_info/
 
 # Model outputs (generated files)
-/models/*
-!/models/README.md
-!/models/lol/
-/models/lol/*
-!/models/lol/README.md
-!/models/lol/**/
-/models/lol/**/*
-!/models/lol/**/README.md
+/models/
 
 # Site packages
 site-packages/
 
 # Reports and docs build output
-/reports/*
-!/reports/README.md
-!/reports/lol/
-/reports/lol/*
-!/reports/lol/README.md
-!/reports/lol/**/
-/reports/lol/**/*
-!/reports/lol/**/README.md
+/reports/
 
 # Logs
-/logs/*
-!/logs/.gitkeep
-!/logs/README.md
-!/logs/lol/
-/logs/lol/*
-!/logs/lol/README.md
+/logs/
 
 # Site folder
 site/

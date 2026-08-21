@@ -9,7 +9,7 @@
 | Done | P0 | Direct-series model family | Rating logistic baseline, ten week-block LightGBM members, held-out blend/calibration/bound |
 | Done | P0 | Fail-closed serving health | Direct ratings, parity, symmetry contract, forbidden fields, bundle actionability |
 | Done | P0 | Immutable serving artifact ownership | History refresh writes league-rating inputs under processed data; only candidate promotion writes serving bundles |
-| Done | P0 | Winner-only paper policy | Model favorite, 52.5%, 5% conservative edge, 48–24h, disagreement and attribution quarantines |
+| Done | P0 | Winner-only paper policy | Model favorite, 57.5% sealed-evidence floor, 5% conservative edge, 48–24h, disagreement and attribution quarantines |
 | Done | P0 | Safe owner acceptance | Fresh two-book re-quote plus separate 120-second Confirm; flat one-unit evidence |
 | Done | P0 | Market contract safety | Resolution source and token orientation required; failures isolated per token; no trading surface |
 | Done | P0 | Exact owner-selected market review | Canonical Polymarket event URLs use exact slug lookup, typed series contracts, executable CLOB quotes, one report pair, and explicit `--publish` |
