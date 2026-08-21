@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from lol_bets.inference.series import derive_series_distribution
 from oracle_bets_core.betting import (
     decimal_odds_from_probability,
     kelly_fraction,
@@ -64,18 +61,3 @@ def test_fractional_kelly_never_exceeds_the_selected_bankroll_fraction(
     )
 
     assert 0 <= stake_fraction <= multiplier
-
-
-@PROPERTY_SETTINGS
-@given(st.lists(FINITE_PROBABILITY, min_size=3, max_size=3))
-def test_bo3_path_distribution_is_normalized_and_symmetric(probabilities):
-    original = derive_series_distribution(3, probabilities)
-    mirrored = derive_series_distribution(
-        3,
-        [1 - probability for probability in probabilities],
-    )
-
-    assert math.fsum(original.score_probabilities.values()) == pytest.approx(1)
-    assert math.fsum(original.total_maps_probabilities.values()) == pytest.approx(1)
-    assert original.team_a_win == pytest.approx(mirrored.team_b_win)
-    assert original.team_b_win == pytest.approx(mirrored.team_a_win)

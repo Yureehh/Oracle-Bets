@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -37,17 +36,3 @@ class ArtifactHealth:
         ]
         msg = f"Artifact health check failed for {self.module_id}: " + "; ".join(failed)
         raise RuntimeError(msg)
-
-
-class PredictionModule(Protocol):
-    """Minimal surface every sport/e-sport prediction module should expose."""
-
-    @property
-    def id(self) -> str:
-        """Stable module identifier."""
-
-    def artifact_health(self) -> ArtifactHealth:
-        """Return required-artifact health without mutating state."""
-
-    def predict_match(self, *args: Any, **kwargs: Any) -> Any:
-        """Predict a match outcome."""
