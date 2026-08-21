@@ -22,16 +22,17 @@
 | Done | P0 | Experimental next-map tuning review | Independent study required; bootstrap and cohorts cluster by series; it is not required by normal training or promotion |
 | Blocked | P0 | First next-map Optuna study | Run `20260814T005027_980518Z` improved aggregate log loss by 2.72% but improvement was not statistically proven; ECE, calibration intercept, and multiple cohorts failed; parameters were not promoted |
 | Done | P0 | Holdout exposure disclosure | Reviews record date window/label hash and flag overlapping evidence; reused evidence is never described as fresh confirmation |
-| Now | P0 | Clean V2 rebuild and manual first promotion | Review/promote the superior direct-series parameters, run the five-target fixed-parameter full-feature build, then promote only if structural, aggregate, and actionable hard gates pass |
-| Next | P1 | Accumulate prematch paper evidence | At least 200 manually settled signals with positive lower-95% ROI and CLV plus healthy calibration |
+| Done | P0 | Clean V2 rebuild and manual first promotion | Champion `lol-20260821T131348_905412Z` passed structural, aggregate, actionable, checksum, symmetry, lineage, and train/serve gates; calibration intercept remains a paper warning |
+| Now | P1 | Accumulate owner-selected prematch paper evidence | Submit exact Polymarket links, use only gated series-winner proposals, and collect at least 200 manually settled signals with positive lower-95% ROI and CLV plus healthy calibration |
 | Later | P2 | Reactive evidence sufficiency | Separate 200-series-clustered gate; no martingale or overlapping prematch exposure |
 | Later | P2 | Provider-backed settlement | Explicit opt-in only after identity/rule/conflict/correction proof |
 | Later | P3 | Portfolio sizing | Correlation-aware exposure before any real-money sizing claim |
 | Later | P3 | Counter-Strike / real-sport adapters | Only after LoL has credible sealed and settled evidence |
 
-The repository is not proven profitable. The legacy champion remains
-non-actionable and proposal publication stays disabled until a complete healthy
-V2 bundle exists. The next-map study remains experimental and cannot delay the
-direct-series paper workflow.
+The repository is not proven profitable. A complete healthy direct-series V2
+bundle is now actionable, while the legacy champion remains quarantined.
+Proposal publication is enabled only through the deterministic series-winner
+gates. The next-map study remains experimental and cannot delay the direct-series
+paper workflow.
 Real-money consideration remains blocked until every evidence gate is met;
 individual predictions can always lose.
