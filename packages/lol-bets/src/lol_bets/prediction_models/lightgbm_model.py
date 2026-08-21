@@ -389,7 +389,6 @@ class LightGBMModel(GradientBoostingModel):
                 "problem_type",
                 "feature_set",
                 "max_features",
-                "feature_schema_fingerprint",
             )
             if any(metadata.get(key) != current[key] for key in identity_keys):
                 logger.info(
@@ -397,6 +396,22 @@ class LightGBMModel(GradientBoostingModel):
                     self.model_name,
                 )
                 return None
+            schema_matches = (
+                metadata.get("feature_schema_fingerprint")
+                == current["feature_schema_fingerprint"]
+            )
+            if not schema_matches and not self.allow_hparam_schema_drift:
+                logger.info(
+                    "Ignoring cached hyperparameters for %s: feature schema changed.",
+                    self.model_name,
+                )
+                return None
+            if not schema_matches:
+                logger.warning(
+                    "Reusing reviewed hyperparameters for shadow model %s across "
+                    "feature-schema drift; retune before treating it as actionable.",
+                    self.model_name,
+                )
             if metadata != current:
                 logger.info(
                     "Reusing reviewed hyperparameters for %s across non-schema run settings.",

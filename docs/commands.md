@@ -105,6 +105,13 @@ The daily workflow refreshes the public cache before ingestion. Retraining updat
 model weights/calibrators on newer data using fixed reviewed hyperparameters.
 Retuning searches hyperparameters and carries greater overfitting risk.
 
+`feature-set` controls columns, not historical row coverage. The normal default
+uses all eligible history, forces the direct-series model to its full feature
+contract, and keeps diagnostic map/prop models on their reviewed compact
+contracts. Do not pass `--feature-set full` merely to request all historical
+data. Map/prop parameters may cross schema drift only while those targets remain
+research-only, and the run records that warning.
+
 The source adapter mirrors Drive's public **Download all** behavior through its
 anonymous bulk-export endpoint. That endpoint is undocumented and may change;
 the adapter therefore trusts only Google Storage archive URLs, extracts only

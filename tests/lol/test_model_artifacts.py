@@ -216,6 +216,31 @@ def test_lightgbm_hyperparameter_cache_requires_matching_metadata(
     assert _lightgbm_model(feature_set="selected")._maybe_load_cached_hparams() is None
 
 
+def test_shadow_model_may_reuse_reviewed_parameters_across_schema_drift(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(lightgbm_model, "TUNED_LIGHTGBM_HYPERPARAMETERS", tmp_path)
+    original = _lightgbm_model(
+        feature_set="compact",
+        team_data=pd.DataFrame(columns=["old_feature"]),
+    )
+    params = {"boosting_type": "gbdt", "learning_rate": EXPECTED_LEARNING_RATE}
+    original.store_best_hyperparameters(params, score=EXPECTED_VALIDATION_SCORE)
+
+    strict = _lightgbm_model(
+        feature_set="compact",
+        team_data=pd.DataFrame(columns=["new_feature"]),
+    )
+    shadow = _lightgbm_model(
+        feature_set="compact",
+        team_data=pd.DataFrame(columns=["new_feature"]),
+        allow_hparam_schema_drift=True,
+    )
+
+    assert strict._maybe_load_cached_hparams() is None
+    assert shadow._maybe_load_cached_hparams() == params
+
+
 def test_lightgbm_hyperparameter_cache_ignores_legacy_raw_params(tmp_path, monkeypatch):
     monkeypatch.setattr(lightgbm_model, "TUNED_LIGHTGBM_HYPERPARAMETERS", tmp_path)
     model = _lightgbm_model()

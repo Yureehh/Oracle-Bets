@@ -745,6 +745,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     feature_set: TrainingFeatureSet = "full"
     max_features: int = DEFAULT_SELECTED_MAX_FEATURES
     force_retune: bool = False
+    allow_hparam_schema_drift: bool = False
     calibration: CalibrationMode = "auto"
     calibration_method: CalibrationMethod = "auto"
     calibration_size: float = CALIBRATION_SIZE

@@ -147,6 +147,10 @@ is disclosed as a warning, never presented as fresh confirmation.
 Among valid candidates, the system promotes the best supported aggregate and
 actionable probability model; recency breaks ties but cannot excuse a material
 regression. Shadow prop quality cannot block a better series-winner model.
+Reviewed map/prop parameters may be reused across a changed input-column schema
+only because those targets are non-actionable; the training manifest and logs
+flag that compatibility exception. Direct series and next-map targets retain an
+exact feature-schema parameter contract.
 
 Routine retraining and retuning are different:
 

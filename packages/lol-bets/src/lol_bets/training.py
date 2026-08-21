@@ -377,6 +377,7 @@ def initialize_and_train_model(
         force_retune=force_retune,
         feature_set=feature_set,
         max_features=max_features,
+        allow_hparam_schema_drift=cfg.dataset == "map",
         calibration=calibration,
         calibration_method=calibration_method,
         calibration_size=calibration_size,
@@ -492,6 +493,10 @@ def train_models(  # noqa: PLR0915
         "parameter_source": parameter_source,
         "tuning_run_id": tuning_run_id,
         "parameter_provenance": _parameter_provenance_by_target(),
+        "shadow_hparameter_policy": (
+            "reviewed map and prop parameters may cross feature-schema drift; "
+            "these targets remain non-actionable"
+        ),
         "feature_set_by_target": {
             cfg.target_name: _feature_set_for_config(cfg, feature_set)
             for cfg in selected_models
