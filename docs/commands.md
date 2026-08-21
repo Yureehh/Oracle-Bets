@@ -124,7 +124,7 @@ closed without replacing the previous cache.
 | --- | --- |
 | `model status [--registry PATH]` | Read champion and registry health. |
 | `model list [--format table|json] [--registry PATH]` | List immutable candidates. |
-| `model review <model-id> [--format table|json]` | Show manifest, evidence, gates, and artifacts. |
+| `model review <model-id> [--format table|json] [--refresh]` | Show manifest, evidence, gates, and artifacts. `--refresh` replays the immutable sealed rows under the stored policy after a review-policy change; it never retrains or promotes. |
 | `model register-run <run-id|latest>` | Confirm an automatically registered training run. A complete normal LoL bundle includes direct series, diagnostic map, three shadow props, their calibrators/uncertainty, and shared rating lookups. Experimental next-map is optional. |
 | `model register-current <id> --code-version <sha> --metric name=value [...]` | Freeze the current complete inference tree as a manual candidate; optional `--target`, `--random-seed`, `--registry`. |
 | `model promote <id> --reason <text>` | Explicitly move the champion pointer after owner review. |

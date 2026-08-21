@@ -150,6 +150,11 @@ def _add_research_operation_commands(sub) -> None:  # noqa: PLR0915
     review.add_argument("model_id")
     review.add_argument("--registry", default=None)
     review.add_argument("--format", choices=["table", "json"], default="table")
+    review.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Replay the immutable candidate under its existing review policy",
+    )
     register_run = model_sub.add_parser(
         "register-run", help="Confirm an automatically registered training run"
     )
@@ -869,8 +874,10 @@ def _main_model(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR
     from lol_bets.operations.models import (
         ModelRegistry,
         ModelRegistryError,
+        PromotionPolicy,
         load_candidate_review,
         register_current_candidate,
+        review_candidate_on_sealed_rows,
     )
 
     from oracle_bets_core.paths import MODEL_REGISTRY_DIR
@@ -904,9 +911,20 @@ def _main_model(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR
             if not manifests:
                 sys.stderr.write(f"Unknown model candidate: {args.model_id}\n")
                 return 2
-            manifests[0]["promotion_review"] = load_candidate_review(
-                registry, args.model_id
-            )
+            review_payload = load_candidate_review(registry, args.model_id)
+            if args.refresh:
+                policy = PromotionPolicy(
+                    (review_payload or {}).get("policy", PromotionPolicy.ROUTINE.value)
+                )
+                review_candidate_on_sealed_rows(
+                    registry,
+                    args.model_id,
+                    policy=policy,
+                    automatic=False,
+                    reviewed_at=datetime.now(UTC),
+                )
+                review_payload = load_candidate_review(registry, args.model_id)
+            manifests[0]["promotion_review"] = review_payload
         if args.format == "json":
             sys.stdout.write(json.dumps(manifests, indent=2, sort_keys=True) + "\n")
         else:

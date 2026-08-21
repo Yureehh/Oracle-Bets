@@ -24,6 +24,7 @@ def test_parser_exposes_required_operational_commands():
         ["lol", "market-check"],
         ["lol", "market-check", "--match-key", "pandascore:123"],
         ["model", "status"],
+        ["model", "review", "candidate-1", "--refresh", "--format", "json"],
         ["model", "promote", "candidate-1", "--reason", "gate passed"],
         ["model", "rollback", "candidate-1", "--reason", "owner review"],
         [
