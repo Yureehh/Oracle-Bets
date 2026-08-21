@@ -1002,16 +1002,6 @@ class MatchPredictor:
         pred = model.predict(X)
         return float(pred[0]) if len(pred) else float("nan")
 
-    def prop_residual_summary(self, model_name: str) -> dict[str, Any]:
-        summary = getattr(self, f"{model_name}_residual_summary", None)
-        if not summary:
-            msg = (
-                f"{model_name} residual summary not loaded. Train that prop model "
-                "with validation before pricing over/under lines."
-            )
-            raise RuntimeError(msg)
-        return summary
-
     # ── end-to-end API ──────────────────────────────────────────────────── #
 
     def calculate_team_and_player_stats(

@@ -79,8 +79,6 @@ EVIDENCE_DB: Final = PRODUCT_STATE_DIR / "oracle_bets.db"
 BACKUPS_DIR: Final = PRODUCT_STATE_DIR / "backups"
 EXPORTS_DIR: Final = PRODUCT_STATE_DIR / "exports"
 MODEL_REGISTRY_DIR: Final = PRODUCT_STATE_DIR / "model-registry" / "lol"
-LEGACY_LEDGER_DB: Final = SUITE_ROOT / "data" / "ledger.db"
-LEGACY_LEDGER_ARCHIVE_DIR: Final = PRODUCT_STATE_DIR / "archives" / "legacy-ledger"
 
 DATA_DIR: Final = _scoped_dir("data")
 CONFIG_DIR: Final = _scoped_dir("config")

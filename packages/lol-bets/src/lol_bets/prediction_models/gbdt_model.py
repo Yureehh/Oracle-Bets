@@ -84,7 +84,6 @@ LOW_STD_THRESHOLD = 0.03  # coefficient of variation threshold (less aggressive)
 HIGH_CORR_THRESHOLD = 0.95  # Pearson correlation threshold (keep more features)
 MAX_MISSING_FRAC = 0.40  # drop features missing >40% on TRAIN
 RANDOM_STATE = 42
-MIN_SHAPE_FOR_CORR = 2  # min numeric cols to run high-corr pruning
 MIN_TEMPORAL_SPLITS = 3
 MIN_CALIBRATION_SPLITS = 6
 WINNER_V2_MODEL_NAMES = frozenset(
@@ -1087,31 +1086,6 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         if drop:
             logger.info("Dropped exact-constant numeric columns: %d", len(drop))
         return df, drop
-
-    def drop_highly_correlated_features(
-        self, df: pd.DataFrame, threshold: float = HIGH_CORR_THRESHOLD
-    ) -> tuple[pd.DataFrame, list[str]]:
-        """Greedy drop among highly-correlated numeric features (Pearson)."""
-        df = df.copy()
-        num = df.select_dtypes("number")
-        if num.shape[1] < MIN_SHAPE_FOR_CORR:
-            return df, []
-        corr = num.corr().abs()
-        upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
-        to_drop: set[str] = set()
-        for col in upper.columns:
-            if col in to_drop:
-                continue
-            hits = [idx for idx in upper.index if upper.loc[idx, col] > threshold]
-            to_drop.update(hits)
-        df = df.drop(columns=list(to_drop), errors="ignore")
-        if to_drop:
-            logger.info(
-                "Dropped highly-correlated columns (>|%.2f|): %d",
-                threshold,
-                len(to_drop),
-            )
-        return df, list(to_drop)
 
     # ─────────────────────── Grouped, stratified splits ────────────────────── #
 

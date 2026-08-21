@@ -34,13 +34,6 @@ def training_leagues() -> list[str]:
     return selected_leagues(load_product_config().leagues.training_profile)
 
 
-def prediction_leagues() -> list[str]:
-    """Return the configured prediction profile before actionability exclusions."""
-    from oracle_bets_core.config import load_product_config
-
-    return selected_leagues(load_product_config().leagues.prediction_profile)
-
-
 def actionable_leagues() -> list[str]:
     """Return leagues allowed to produce paper proposals."""
     from oracle_bets_core.config import load_product_config
