@@ -10,8 +10,9 @@ from oracle_bets_core.betting import expected_edge, kelly_fraction
 from oracle_bets_core.league_selection import actionable_leagues
 
 MINIMUM_CONSERVATIVE_EDGE = 0.05
-MINIMUM_FAVORITE_PROBABILITY = 0.525
-MINIMUM_DECIMAL_ODDS = 1.5
+# The sealed V2 holdout was unreliable below 57.5% in the actionable cohort.
+# This is a paper-strategy gate, not a model feature or calibration transform.
+MINIMUM_FAVORITE_PROBABILITY = 0.575
 MINIMUM_ENTRY_HOURS = 24.0
 MAXIMUM_ENTRY_HOURS = 48.0
 MAXIMUM_MODEL_MARKET_DISAGREEMENT = 0.20
@@ -149,8 +150,6 @@ def _blocked_reason(value: ActionGateInput) -> str | None:  # noqa: PLR0911, PLR
         return "unsupported_market"
     if not value.quote_valid or value.decimal_odds <= 1:
         return "invalid_quote"
-    if value.decimal_odds < MINIMUM_DECIMAL_ODDS:
-        return "odds_below_1.50"
     if not 0 <= value.probability_lower <= value.probability <= 1:
         return "invalid_probability"
     if not value.is_model_favorite:

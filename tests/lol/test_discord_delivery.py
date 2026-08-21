@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from oracle_bets_discord.bot import (
     _publication_intent,
     _publication_marker,
     _recover_message_id,
+    _report_for_run,
     _send_or_recover,
     _settlement_message,
     _unpublished_actionable_rows,
@@ -130,6 +132,18 @@ def test_manual_review_publication_filters_completed_requests():
     ]
 
     assert _unpublished_review_rows(requests, {"r1": 10}) == [requests[1]]
+
+
+def test_proposal_can_find_report_from_manual_market_review(tmp_path, monkeypatch):
+    report_dir = tmp_path / "market_reviews"
+    report_dir.mkdir()
+    report = report_dir / "20260821T120000Z.json"
+    report.write_text(json.dumps({"evidence_run_id": "run-1"}), encoding="utf-8")
+    markdown = report.with_suffix(".md")
+    markdown.write_text("# Review", encoding="utf-8")
+    monkeypatch.setattr("oracle_bets_discord.bot.REPORTS_DIR", tmp_path)
+
+    assert _report_for_run("run-1") == markdown
 
 
 def test_publication_intent_is_durable_before_send_and_marker_is_stable():

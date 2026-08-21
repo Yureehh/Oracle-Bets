@@ -93,6 +93,7 @@ def test_reportable_schedule_excludes_empty_teams_and_equal_esports():
         [
             {"league": "Equal eSports Cup", "team_a": "A", "team_b": "B"},
             {"league": "LCK", "team_a": "", "team_b": "T1"},
+            {"league": "LCK", "team_a": "TBD", "team_b": "T1"},
             {
                 "league": "LCK",
                 "team_a": "T1",
@@ -108,6 +109,7 @@ def test_reportable_schedule_excludes_empty_teams_and_equal_esports():
     assert visible[["team_a", "team_b"]].values.tolist() == [["T1", "Gen.G"]]
     assert [item["reason"] for item in excluded] == [
         "excluded league",
+        "teams not yet determined",
         "teams not yet determined",
         "fixture is not currently playable",
     ]

@@ -106,6 +106,7 @@ LEGACY_COLUMN_RENAMES = {
     "Start (UTC)": "start_utc",
     "Best Of": "best_of",
 }
+UNRESOLVED_TEAM_NAMES = frozenset({"", "tba", "tbd", "to be determined"})
 
 load_dotenv()
 
@@ -120,6 +121,12 @@ def _clean_text(value: Any) -> str:
     except (TypeError, ValueError):
         pass
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def resolved_team_name(value: Any) -> str:
+    """Return a displayable team name, or an empty string for provider placeholders."""
+    name = _clean_text(value)
+    return "" if name.casefold() in UNRESOLVED_TEAM_NAMES else name
 
 
 def _match_key(match_id: Any, team_a: str, team_b: str, start_utc: Any) -> str:

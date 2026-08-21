@@ -6,6 +6,7 @@ from oracle_bets_core.operations.paper import (
 )
 
 EXPECTED_EDGE = 0.18
+EXPECTED_SHORT_ODDS_EDGE = 0.1175
 
 
 def _gate(**overrides):
@@ -45,7 +46,7 @@ def test_edge_below_five_percent_is_no_edge():
 
 def test_conservative_bound_may_cross_fifty_when_executable_edge_is_real():
     decision = _gate(
-        probability=0.55,
+        probability=0.58,
         probability_lower=0.48,
         decimal_odds=2.30,
         market_probability=1 / 2.30,
@@ -56,7 +57,7 @@ def test_conservative_bound_may_cross_fifty_when_executable_edge_is_real():
 
 def test_g2_navi_style_extreme_disagreement_is_quarantined_not_hardcoded():
     decision = _gate(
-        probability=0.55,
+        probability=0.58,
         probability_lower=0.52,
         decimal_odds=4.0,
         market_probability=0.25,
@@ -64,6 +65,18 @@ def test_g2_navi_style_extreme_disagreement_is_quarantined_not_hardcoded():
 
     assert decision.state is ActionState.BLOCKED
     assert decision.reason == "model_market_disagreement_quarantine"
+
+
+def test_weak_point_favorite_is_blocked_even_when_market_odds_are_long():
+    decision = _gate(
+        probability=0.57,
+        probability_lower=0.48,
+        decimal_odds=2.30,
+        market_probability=1 / 2.30,
+    )
+
+    assert decision.state is ActionState.BLOCKED
+    assert decision.reason == "favorite_probability_below_threshold"
 
 
 def test_lcp_cblol_and_unknown_rosters_are_blocked():
@@ -125,8 +138,8 @@ def test_daily_exposure_cap_includes_existing_paper_positions():
     assert [item.proposal_id for item in selected] == ["a"]
 
 
-def test_short_odds_below_one_point_five_are_blocked():
+def test_short_odds_are_allowed_when_the_conservative_edge_is_real():
     decision = _gate(decimal_odds=1.49, probability=0.8, probability_lower=0.75)
 
-    assert decision.state is ActionState.BLOCKED
-    assert decision.reason == "odds_below_1.50"
+    assert decision.state is ActionState.PAPER_ACTIONABLE
+    assert decision.conservative_edge == EXPECTED_SHORT_ODDS_EDGE

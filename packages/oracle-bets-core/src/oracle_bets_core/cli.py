@@ -41,7 +41,7 @@ def _add_lol_commands(sub) -> None:
     )
     schedule = lol_sub.add_parser(
         "schedule",
-        help="Fetch and print upcoming LoL matches without writing data",
+        help="Fetch, save, and print upcoming LoL matches",
     )
     schedule.add_argument("--days", type=int, default=14)
     schedule.add_argument("--leagues", default=None)
@@ -776,14 +776,18 @@ def _required_selected_market(markets, selected_market_id):
 
 
 def _print_lol_schedule(args: argparse.Namespace) -> None:
-    from lol_bets.data_generation.ingestion.schedule import fetch_and_store_schedule
+    from lol_bets.data_generation.ingestion.schedule import (
+        fetch_and_store_schedule,
+        resolved_team_name,
+    )
 
     from oracle_bets_core.league_selection import actionable_leagues
+    from oracle_bets_core.paths import SCHEDULE
 
     schedule = fetch_and_store_schedule(
         window_days=args.days,
         leagues=args.leagues or ",".join(actionable_leagues()),
-        save_path=None,
+        save_path=SCHEDULE,
     )
     if schedule.empty:
         sys.stdout.write("No upcoming matches found.\n")
@@ -791,8 +795,14 @@ def _print_lol_schedule(args: argparse.Namespace) -> None:
     display = schedule[
         ["start_utc", "league", "team_a", "team_b", "best_of", "status"]
     ].copy()
-    team_a = display.pop("team_a").replace("", "TBD").fillna("TBD")
-    team_b = display.pop("team_b").replace("", "TBD").fillna("TBD")
+    display["team_a"] = display["team_a"].map(resolved_team_name)
+    display["team_b"] = display["team_b"].map(resolved_team_name)
+    display = display[display["team_a"].ne("") & display["team_b"].ne("")].copy()
+    if display.empty:
+        sys.stdout.write("No upcoming matches with confirmed teams found.\n")
+        return
+    team_a = display.pop("team_a")
+    team_b = display.pop("team_b")
     display["match"] = team_a + " vs " + team_b
     display["best_of"] = "BO" + (
         display["best_of"].astype("Int64").astype(str).replace("<NA>", "?")

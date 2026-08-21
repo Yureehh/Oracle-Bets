@@ -57,6 +57,7 @@ from lol_bets.data_generation.ingestion.schedule import (
     PandaScoreLineupRefresher,
     PandaScoreSchedule,
     fetch_and_store_schedule,
+    resolved_team_name,
 )
 from lol_bets.data_generation.ingestion.source import (
     inspect_oracle_source,
@@ -387,8 +388,8 @@ def split_reportable_schedule(
     visible_rows: list[Any] = []
     excluded: list[dict[str, Any]] = []
     for index, row in schedule_df.iterrows():
-        team_a = str(row.get("team_a") or "").strip()
-        team_b = str(row.get("team_b") or "").strip()
+        team_a = resolved_team_name(row.get("team_a"))
+        team_b = resolved_team_name(row.get("team_b"))
         league = str(row.get("league") or "").strip()
         reason = None
         if league in EXCLUDED_DAILY_LEAGUES:

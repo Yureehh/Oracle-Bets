@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from lol_bets.operations.models import CandidateManifest, ModelRegistry
 from oracle_bets_core.cli import _market_check_fixture_rows, build_parser, main
+from oracle_bets_core.paths import SCHEDULE
+from oracle_bets_core.pd import pd
 
 NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
 BEST_OF_THREE = 3
@@ -61,6 +63,45 @@ def test_parser_exposes_required_operational_commands():
 def test_removed_automatic_reconciliation_command_is_rejected():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["paper", "reconcile"])
+
+
+def test_schedule_command_persists_fixture_evidence(monkeypatch, capsys):
+    captured = {}
+
+    def fetch(**kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame(
+            [
+                {
+                    "start_utc": NOW,
+                    "league": "LCK",
+                    "team_a": "T1",
+                    "team_b": "Gen.G",
+                    "best_of": 3,
+                    "status": "not_started",
+                },
+                {
+                    "start_utc": NOW,
+                    "league": "LCK",
+                    "team_a": "TBD",
+                    "team_b": "T1",
+                    "best_of": 5,
+                    "status": "not_started",
+                },
+            ]
+        )
+
+    monkeypatch.setattr(
+        "lol_bets.data_generation.ingestion.schedule.fetch_and_store_schedule",
+        fetch,
+    )
+
+    assert main(["lol", "schedule", "--days", "7"]) == 0
+    assert captured["save_path"] == SCHEDULE
+    output = capsys.readouterr().out
+    assert "Upcoming LoL schedule: 1 matches" in output
+    assert "T1 vs Gen.G" in output
+    assert "TBD" not in output
 
 
 @pytest.mark.parametrize("action", ["reconcile-history", "train"])

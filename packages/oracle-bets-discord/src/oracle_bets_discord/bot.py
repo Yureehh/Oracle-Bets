@@ -944,7 +944,12 @@ def _safe_review_report(value: Any) -> Path | None:
 def _report_for_run(run_id: str) -> Path | None:
     import json
 
-    for path in sorted((REPORTS_DIR / "daily").glob("*.json"), reverse=True):
+    reports = [
+        path
+        for directory in ("market_reviews", "daily")
+        for path in (REPORTS_DIR / directory).glob("*.json")
+    ]
+    for path in sorted(reports, reverse=True):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
