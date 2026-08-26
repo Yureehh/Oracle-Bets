@@ -39,7 +39,9 @@ from oracle_bets_core.paths import (
     PROCESSED_PLAYERS,
     PROCESSED_TEAMS,
     QUARANTINED_RAW_DATA,
+    RAW_CURRENT_POINTER,
     RAW_DATA,
+    RAW_GENERATIONS_DIR,
     TRAINING_COMPACT_PLAYER_CONFIG,
     TRAINING_COMPACT_TEAM_CONFIG,
     TRAINING_PLAYER_CONFIG,
@@ -71,9 +73,10 @@ from lol_bets.data_generation.feature_engineering.ratings_features.trueskill imp
 from lol_bets.data_generation.ingestion.history import (
     HistoryRefreshMode,
     SourceHistoryError,
+    current_history_data_path,
     merge_history,
+    publish_history_snapshot,
     refresh_years,
-    write_history_manifest,
 )
 from lol_bets.data_generation.ingestion.oracles_elixir import (
     OraclesElixir,
@@ -83,6 +86,7 @@ from lol_bets.data_generation.ingestion.quality import (
     quarantine_oracles_elixir_data,
     write_quality_report,
 )
+from lol_bets.data_generation.ingestion.source import source_snapshot_id
 from lol_bets.prediction_models.feature_contract import default_feature_registry
 
 if TYPE_CHECKING:
@@ -176,8 +180,13 @@ class DataGenerator:
                 raise DataGeneratorError(msg)
             incoming = incoming.drop_duplicates().reset_index(drop=True)
             existing = (
-                pd.read_parquet(RAW_DATA)
-                if RAW_DATA.exists()
+                pd.read_parquet(
+                    current_history_data_path(
+                        RAW_DATA,
+                        pointer_path=RAW_CURRENT_POINTER,
+                    )
+                )
+                if RAW_DATA.exists() or RAW_CURRENT_POINTER.exists()
                 else pd.DataFrame(columns=incoming.columns)
             )
             raw, manifest = merge_history(
@@ -185,14 +194,21 @@ class DataGenerator:
                 incoming,
                 mode=self.history_mode,
                 refreshed_at=dt.datetime.now(dt.UTC),
+                source_snapshot_id=source_snapshot_id(self.oracle.local_data_dir),
             )
-            write_history_manifest(manifest, HISTORY_REFRESH_MANIFEST)
             _dbl(
                 f"History refresh ({self.history_mode.value}) produced "
                 f"{len(raw):,} rows: +{manifest.added_rows:,}, "
                 f"updated {manifest.updated_rows:,}."
             )
-            safe_store_df_as_parquet(raw, RAW_DATA, [logger, data_pipeline_logger])
+            publish_history_snapshot(
+                raw,
+                manifest,
+                raw_path=RAW_DATA,
+                manifest_path=HISTORY_REFRESH_MANIFEST,
+                generations_dir=RAW_GENERATIONS_DIR,
+                pointer_path=RAW_CURRENT_POINTER,
+            )
             return raw
         except (OraclesElixirError, SourceHistoryError) as exc:
             msg = f"Oracle Elixir ingest failed: {exc}"

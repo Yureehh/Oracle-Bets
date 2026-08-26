@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from oracle_bets_core.logger import logger
 from oracle_bets_core.pd import pd
 
 from lol_bets.data_generation.ingestion.quality import schema_fingerprint
@@ -39,6 +44,8 @@ class HistoryManifest:
     updated_rows: int
     unchanged_rows: int
     removed_rows: int
+    source_snapshot_id: str | None = None
+    snapshot_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +60,8 @@ class HistoryManifest:
             "updated_rows": self.updated_rows,
             "unchanged_rows": self.unchanged_rows,
             "removed_rows": self.removed_rows,
+            "source_snapshot_id": self.source_snapshot_id,
+            "snapshot_id": self.snapshot_id,
         }
 
 
@@ -154,6 +163,7 @@ def merge_history(
     *,
     mode: HistoryRefreshMode,
     refreshed_at: datetime,
+    source_snapshot_id: str | None = None,
 ) -> tuple[pd.DataFrame, HistoryManifest]:
     """Reconcile one provider refresh using stable game-row identities."""
     if not isinstance(mode, HistoryRefreshMode):
@@ -207,6 +217,7 @@ def merge_history(
         updated_rows=len(updated),
         unchanged_rows=len(unchanged),
         removed_rows=removed_rows,
+        source_snapshot_id=source_snapshot_id,
     )
     return merged, manifest
 
@@ -223,3 +234,199 @@ def write_history_manifest(
     )
     temporary.replace(path)
     return path
+
+
+def publish_history_snapshot(
+    data: pd.DataFrame,
+    manifest: HistoryManifest,
+    *,
+    raw_path: str | Path,
+    manifest_path: str | Path,
+    generations_dir: str | Path,
+    pointer_path: str | Path,
+) -> str:
+    """
+    Publish one immutable history generation and atomically advance its pointer.
+
+    Readers must resolve ``pointer_path`` through :func:`read_history_snapshot`.
+    Legacy ``raw_path`` and ``manifest_path`` are maintained as atomic symlinks
+    for older integrations, but never participate in generation construction.
+    """
+    if data.empty:
+        raise SourceHistoryError("Cannot publish an empty history snapshot")
+    root = Path(generations_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    previous_snapshot_id = _current_snapshot_id(Path(pointer_path))
+    snapshot_id = _snapshot_id(data, manifest)
+    generation = root / snapshot_id
+    if generation.exists():
+        raise SourceHistoryError(f"History generation already exists: {snapshot_id}")
+    temporary = Path(tempfile.mkdtemp(prefix=f".{snapshot_id}.", dir=root))
+    published = False
+    try:
+        data_file = temporary / "raw_data.parquet"
+        data.to_parquet(data_file, index=False)
+        data_sha256 = _sha256_file(data_file)
+        generation_manifest = manifest.to_dict() | {
+            "schema_version": 1,
+            "snapshot_id": snapshot_id,
+            "data_file": "raw_data.parquet",
+            "data_sha256": data_sha256,
+        }
+        _atomic_json(temporary / "manifest.json", generation_manifest)
+        temporary.replace(generation)
+        published = True
+
+        pointer = {
+            "schema_version": 1,
+            "snapshot_id": snapshot_id,
+            "generation": snapshot_id,
+            "data_file": f"generations/{snapshot_id}/raw_data.parquet",
+            "manifest_file": f"generations/{snapshot_id}/manifest.json",
+        }
+        _atomic_json(Path(pointer_path), pointer)
+        _atomic_symlink(generation / "raw_data.parquet", Path(raw_path))
+        _atomic_symlink(generation / "manifest.json", Path(manifest_path))
+        _prune_generations(root, {snapshot_id, previous_snapshot_id})
+    except Exception:
+        if temporary.exists():
+            _remove_tree(temporary)
+        if published:
+            try:
+                current = json.loads(Path(pointer_path).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, TypeError):
+                current = {}
+            if current.get("snapshot_id") != snapshot_id:
+                _remove_tree(generation)
+        raise
+    return snapshot_id
+
+
+def read_history_snapshot(
+    *,
+    pointer_path: str | Path,
+    root: str | Path | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Resolve and verify the one current history generation."""
+    pointer_file = Path(pointer_path)
+    try:
+        pointer = json.loads(pointer_file.read_text(encoding="utf-8"))
+        snapshot_id = str(pointer["snapshot_id"])
+        data_rel = Path(str(pointer["data_file"]))
+        manifest_rel = Path(str(pointer["manifest_file"]))
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise SourceHistoryError("Current history pointer is malformed") from error
+    base = Path(root) if root is not None else pointer_file.parent
+    if (
+        not re.fullmatch(r"history-[a-f0-9]{24}", snapshot_id)
+        or data_rel.is_absolute()
+        or manifest_rel.is_absolute()
+        or ".." in data_rel.parts
+        or ".." in manifest_rel.parts
+    ):
+        raise SourceHistoryError("Current history pointer contains unsafe paths")
+    expected_prefix = Path("generations") / snapshot_id
+    if (
+        data_rel != expected_prefix / "raw_data.parquet"
+        or manifest_rel != expected_prefix / "manifest.json"
+    ):
+        raise SourceHistoryError("Current history pointer contains mixed paths")
+    data_path = base / data_rel
+    manifest_path = base / manifest_rel
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError) as error:
+        raise SourceHistoryError("Current history manifest is unreadable") from error
+    if manifest.get("snapshot_id") != snapshot_id:
+        raise SourceHistoryError("Current history pointer and manifest disagree")
+    if not data_path.is_file():
+        raise SourceHistoryError("Current history data file is missing")
+    expected_hash = manifest.get("data_sha256")
+    if not isinstance(expected_hash, str) or _sha256_file(data_path) != expected_hash:
+        raise SourceHistoryError("Current history data checksum does not match")
+    return data_path, manifest
+
+
+def current_history_data_path(
+    raw_path: str | Path,
+    *,
+    pointer_path: str | Path,
+) -> Path:
+    """Return the verified current data file, or the legacy path at bootstrap."""
+    pointer = Path(pointer_path)
+    if pointer.is_file():
+        data_path, _ = read_history_snapshot(pointer_path=pointer, root=pointer.parent)
+        return data_path
+    return Path(raw_path)
+
+
+def _snapshot_id(data: pd.DataFrame, manifest: HistoryManifest) -> str:
+    digest = hashlib.sha256()
+    digest.update(json.dumps(manifest.to_dict(), sort_keys=True, default=str).encode())
+    digest.update("|".join(map(str, data.columns)).encode())
+    digest.update(str(data.shape).encode())
+    return f"history-{digest.hexdigest()[:24]}"
+
+
+def _current_snapshot_id(pointer: Path) -> str | None:
+    try:
+        value = json.loads(pointer.read_text(encoding="utf-8")).get("snapshot_id")
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    snapshot_id = str(value or "")
+    return snapshot_id if re.fullmatch(r"history-[a-f0-9]{24}", snapshot_id) else None
+
+
+def _prune_generations(root: Path, keep: set[str | None]) -> None:
+    for generation in root.iterdir():
+        if generation.name.startswith(".") or generation.name in keep:
+            continue
+        try:
+            if generation.is_symlink():
+                generation.unlink()
+            else:
+                _remove_tree(generation)
+        except OSError as error:
+            logger.warning(
+                "Could not remove old history generation %s: %s", generation, error
+            )
+
+
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_symlink(target: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    temporary.unlink(missing_ok=True)
+    temporary.symlink_to(target.resolve())
+    temporary.replace(destination)
+
+
+def _remove_tree(path: Path) -> None:
+    for child in path.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            _remove_tree(child)
+        else:
+            child.unlink(missing_ok=True)
+    path.rmdir()

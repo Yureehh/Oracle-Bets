@@ -28,6 +28,7 @@ from oracle_bets_core.paths import (
     EVIDENCE_DB,
     INTERIM_PLAYER_DATA,
     MODEL_REGISTRY_DIR,
+    RAW_CURRENT_POINTER,
     RAW_DATA,
     REPORTS_DIR,
     SCHEDULE,
@@ -46,6 +47,7 @@ from oracle_bets_discord.predictions.lol import (
     outcome_probability_source,
 )
 
+from lol_bets.data_generation.ingestion.history import current_history_data_path
 from lol_bets.data_generation.ingestion.schedule import (
     PandaScoreLineupRefresher,
     PandaScoreSchedule,
@@ -1066,7 +1068,12 @@ def _run_mutating_steps(
     def _sync_identities() -> str:
         result = sync_history_identity_graph(
             store,
-            pd.read_parquet(RAW_DATA),
+            pd.read_parquet(
+                current_history_data_path(
+                    RAW_DATA,
+                    pointer_path=RAW_CURRENT_POINTER,
+                )
+            ),
             observed_at=dt.datetime.now(dt.UTC),
         )
         return (
@@ -1180,7 +1187,10 @@ def _train_triggered_candidate(
             "retune, fixed-parameter rebuild, review, and manual first promotion"
         )
     history = pd.read_parquet(
-        RAW_DATA,
+        current_history_data_path(
+            RAW_DATA,
+            pointer_path=RAW_CURRENT_POINTER,
+        ),
         columns=["gameid", "date", "league", "datacompleteness"],
     )
     evaluation = evaluate_training_triggers_from_history(

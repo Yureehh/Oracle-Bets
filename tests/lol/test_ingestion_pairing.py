@@ -144,22 +144,6 @@ def test_enrich_opponent_metrics_pairs_players_by_position():
     assert blue_top["opponentplayername"] == "T2-top"
 
 
-def test_remove_buggy_games_drops_invalid_full_game_before_split():
-    rows = _full_raw_game("good") + _full_raw_game("bad")
-    raw = pd.DataFrame(rows)
-    raw = raw[
-        ~(
-            (raw["gameid"] == "bad")
-            & (raw["position"] == "sup")
-            & (raw["side"] == "Red")
-        )
-    ]
-
-    cleaned = OraclesElixir._remove_buggy_games(raw)
-
-    assert set(cleaned["gameid"]) == {"good"}
-
-
 def test_subset_data_renames_first_pick_for_team_rows():
     raw = pd.DataFrame(
         [

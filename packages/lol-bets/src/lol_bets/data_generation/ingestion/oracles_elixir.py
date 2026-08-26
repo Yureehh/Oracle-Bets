@@ -28,7 +28,6 @@ from oracle_bets_core.pd import pd
 from lol_bets.data_generation.ingestion.quality import (
     SOURCE_COLUMN_RENAMES,
     normalize_result,
-    quarantine_oracles_elixir_data,
 )
 from lol_bets.data_generation.ingestion.source import oracle_source_directory
 
@@ -402,25 +401,6 @@ class OraclesElixir:
             raise OraclesElixirError(msg)
         return df
 
-    @classmethod
-    def _remove_buggy_games(cls, df: pd.DataFrame) -> pd.DataFrame:
-        """Drop automatically detected bad games."""
-        cleaned, _, report = quarantine_oracles_elixir_data(df)
-        bad_games = set(report.game_issues) - {"__missing_gameid__"}
-        if not bad_games and not report.exact_duplicate_rows:
-            return df
-        logger.info(
-            "Removed %d buggy games and merged %d exact duplicates.",
-            len(bad_games),
-            report.exact_duplicate_rows,
-        )
-        data_pipeline_logger.info(
-            "Removed %d buggy games and merged %d exact duplicates.",
-            len(bad_games),
-            report.exact_duplicate_rows,
-        )
-        return cleaned
-
     @staticmethod
     def subset_data(
         oracles_elixir_data: pd.DataFrame,
@@ -660,6 +640,9 @@ class OraclesElixir:
     ) -> pd.DataFrame:
         """
         Clean the Oracle Elixir data according to the specified *split_on* key.
+
+        The pipeline owns the raw quality gate; callers must pass its accepted
+        frame so team and player splits cannot quarantine the same game twice.
         Raises OraclesElixirError if *split_on* is not 'player' or 'team'.
         """
         logger.info("Cleaning data for %ss...", split_on)
@@ -670,7 +653,6 @@ class OraclesElixir:
             .pipe(self.remove_null_games)
             .pipe(self.drop_unknown_entities)
             .pipe(self.replace_team_names)
-            .pipe(self._remove_buggy_games)
             .pipe(self.sort_data, split_on)
             .pipe(self.fill_null_team_ids)
             .pipe(self.fill_null_patch_value)

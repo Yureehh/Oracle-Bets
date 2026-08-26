@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import zipfile
 from dataclasses import dataclass
@@ -14,10 +15,13 @@ from lol_bets.data_generation.ingestion.source import (
     OracleSourceReadinessError,
     OracleSourceRefreshError,
     inspect_oracle_source,
+    oracle_source_directory,
     refresh_oracle_source,
 )
 
 NOW = datetime(2026, 8, 10, 10, tzinfo=UTC)
+POINTER_WRITE_CALL = 2
+EXPECTED_GENERATIONS = 2
 
 
 @dataclass
@@ -251,6 +255,159 @@ def test_source_refresh_rejects_untrusted_export_archive_url(tmp_path):
             session=session,
             now=NOW,
         )
+
+
+def test_source_refresh_pointer_is_atomic_and_generation_is_immutable(tmp_path):
+    header = b"gameid,date,league\n"
+    session = _Session(
+        {
+            PUBLIC_DRIVE_FILE_IDS[year]: _Source(
+                header + f"game-{year},{year}-08-09T12:00:00Z,LCK\n".encode() * 40,
+                f"{year}_LoL_esports_match_data_from_OraclesElixir.csv",
+            )
+            for year in (2024, 2025, 2026)
+        }
+    )
+    refresh_oracle_source(tmp_path, session=session, now=NOW, sleeper=lambda _: None)
+    pointer = (tmp_path / "current.json").read_text()
+    readiness = inspect_oracle_source(
+        tmp_path, now=NOW, stability_seconds=0, minimum_bytes=1
+    )
+    assert readiness.ready
+    assert readiness.snapshot_id in pointer
+    assert len(list((tmp_path / "generations").iterdir())) == 1
+
+
+def test_source_generation_rejects_manifest_path_escape(tmp_path):
+    header = b"gameid,date,league\n"
+    sources = {
+        PUBLIC_DRIVE_FILE_IDS[2026]: _Source(
+            header + b"game-2026,2026-08-09T12:00:00Z,LCK\n" * 40,
+            "2026_LoL_esports_match_data_from_OraclesElixir.csv",
+        )
+    }
+    refresh_oracle_source(
+        tmp_path,
+        required_years=(2026,),
+        session=_Session(sources),
+        now=NOW,
+        sleeper=lambda _: None,
+    )
+    generation = next((tmp_path / "generations").iterdir())
+    manifest_path = generation / "source_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["filename"] = "../outside.csv"
+    manifest_path.write_text(json.dumps(manifest))
+
+    report = inspect_oracle_source(
+        tmp_path,
+        required_years=(2026,),
+        now=NOW,
+        stability_seconds=0,
+        minimum_bytes=1,
+    )
+
+    assert report.issues == ("current_source_pointer_invalid",)
+
+
+def test_source_refresh_advances_pointer_without_mutating_prior_generation(
+    tmp_path, monkeypatch
+):
+    header = b"gameid,date,league\n"
+    first_sources = {
+        PUBLIC_DRIVE_FILE_IDS[year]: _Source(
+            header + f"game-{year},2026-08-09T12:00:00Z,LCK\n".encode() * 40,
+            f"{year}_LoL_esports_match_data_from_OraclesElixir.csv",
+        )
+        for year in (2024, 2025, 2026)
+    }
+    second_sources = {
+        key: _Source(source.content + b"refresh\n", source.filename)
+        for key, source in first_sources.items()
+    }
+    refresh_oracle_source(
+        tmp_path,
+        session=_Session(first_sources),
+        now=NOW,
+        sleeper=lambda _: None,
+    )
+    first_pointer = (tmp_path / "current.json").read_text()
+    first_generation = next((tmp_path / "generations").iterdir())
+
+    refresh_oracle_source(
+        tmp_path,
+        session=_Session(second_sources),
+        now=NOW,
+        sleeper=lambda _: None,
+    )
+
+    second_pointer = (tmp_path / "current.json").read_text()
+    generations = list((tmp_path / "generations").iterdir())
+    assert first_pointer != second_pointer
+    assert len(generations) == EXPECTED_GENERATIONS
+    assert first_generation.is_dir()
+    assert (first_generation / "source_manifest.json").is_file()
+    monkeypatch.setenv("ORACLES_ELIXIR_LOCAL_DIR", str(tmp_path))
+    assert oracle_source_directory() == next(
+        generation for generation in generations if generation != first_generation
+    )
+    second_generation = oracle_source_directory()
+    third_sources = {
+        key: _Source(source.content + b"third\n", source.filename)
+        for key, source in second_sources.items()
+    }
+    refresh_oracle_source(
+        tmp_path,
+        session=_Session(third_sources),
+        now=NOW,
+        sleeper=lambda _: None,
+    )
+    retained = set((tmp_path / "generations").iterdir())
+    assert len(retained) == EXPECTED_GENERATIONS
+    assert first_generation not in retained
+    assert second_generation in retained
+
+
+def test_source_refresh_pointer_failure_keeps_previous_generation(
+    tmp_path, monkeypatch
+):
+    header = b"gameid,date,league\n"
+    sources = {
+        PUBLIC_DRIVE_FILE_IDS[year]: _Source(
+            header + f"game-{year},{year}-08-09T12:00:00Z,LCK\n".encode() * 40,
+            f"{year}_LoL_esports_match_data_from_OraclesElixir.csv",
+        )
+        for year in (2024, 2025, 2026)
+    }
+    refresh_oracle_source(
+        tmp_path,
+        session=_Session(sources),
+        now=NOW,
+        sleeper=lambda _: None,
+    )
+    before = (tmp_path / "current.json").read_text()
+    import lol_bets.data_generation.ingestion.source as source_module
+
+    calls = 0
+    original = source_module._atomic_json
+
+    def fail_pointer(path, payload):
+        nonlocal calls
+        calls += 1
+        if calls == POINTER_WRITE_CALL:
+            raise OSError("injected pointer failure")
+        return original(path, payload)
+
+    monkeypatch.setattr(source_module, "_atomic_json", fail_pointer)
+    with pytest.raises(OracleSourceRefreshError, match="pointer"):
+        refresh_oracle_source(
+            tmp_path,
+            session=_Session(sources),
+            now=NOW,
+            sleeper=lambda _: None,
+        )
+    assert (tmp_path / "current.json").read_text() == before
+    assert len(list((tmp_path / "generations").iterdir())) == 1
 
 
 def test_source_refresh_refuses_to_write_through_symlink(tmp_path):

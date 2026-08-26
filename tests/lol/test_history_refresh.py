@@ -8,6 +8,8 @@ from lol_bets.data_generation.ingestion.history import (
     HistoryRefreshMode,
     SourceHistoryError,
     merge_history,
+    publish_history_snapshot,
+    read_history_snapshot,
     refresh_years,
     write_history_manifest,
 )
@@ -15,6 +17,7 @@ from oracle_bets_core.cli import build_parser
 from oracle_bets_core.pd import pd
 
 NOW = datetime(2026, 7, 26, 8, 15, tzinfo=UTC)
+POINTER_WRITE_CALL = 2
 
 
 def _row(game_id, *, result, kills=10):
@@ -182,3 +185,122 @@ def test_history_manifest_write_is_machine_readable(tmp_path):
     assert payload["mode"] == "incremental"
     assert payload["refreshed_at"] == "2026-07-26T08:15:00Z"
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_history_snapshot_publishes_pointer_and_verifies_content(tmp_path):
+    existing = pd.DataFrame([_row("g1", result=0)])
+    merged, manifest = merge_history(
+        pd.DataFrame(columns=existing.columns),
+        existing,
+        mode=HistoryRefreshMode.FULL,
+        refreshed_at=NOW,
+        source_snapshot_id="source-0123456789abcdef01234567",
+    )
+    raw_path = tmp_path / "raw_data.parquet"
+    manifest_path = tmp_path / "history.json"
+    pointer_path = tmp_path / "current.json"
+    snapshot_id = publish_history_snapshot(
+        merged,
+        manifest,
+        raw_path=raw_path,
+        manifest_path=manifest_path,
+        generations_dir=tmp_path / "generations",
+        pointer_path=pointer_path,
+    )
+
+    data_path, payload = read_history_snapshot(pointer_path=pointer_path)
+    assert payload["snapshot_id"] == snapshot_id
+    assert payload["source_snapshot_id"] == "source-0123456789abcdef01234567"
+    assert pd.read_parquet(data_path).equals(merged)
+    data_path.write_bytes(data_path.read_bytes() + b"corrupt")
+    with pytest.raises(SourceHistoryError, match="checksum"):
+        read_history_snapshot(pointer_path=pointer_path)
+
+
+def test_history_snapshot_pointer_failure_keeps_previous_generation(
+    tmp_path, monkeypatch
+):
+    existing = pd.DataFrame([_row("g1", result=0)])
+    merged, _ = merge_history(
+        pd.DataFrame(columns=existing.columns),
+        existing,
+        mode=HistoryRefreshMode.FULL,
+        refreshed_at=NOW,
+    )
+    initial_manifest = merge_history(
+        pd.DataFrame(columns=existing.columns),
+        existing,
+        mode=HistoryRefreshMode.FULL,
+        refreshed_at=NOW,
+    )[1]
+    publish_history_snapshot(
+        merged,
+        initial_manifest,
+        raw_path=tmp_path / "raw_data.parquet",
+        manifest_path=tmp_path / "history.json",
+        generations_dir=tmp_path / "generations",
+        pointer_path=tmp_path / "current.json",
+    )
+    before = (tmp_path / "current.json").read_text()
+    calls = 0
+    original = __import__(
+        "lol_bets.data_generation.ingestion.history", fromlist=["_atomic_json"]
+    )._atomic_json
+
+    def fail_pointer(path, payload):
+        nonlocal calls
+        calls += 1
+        if calls == POINTER_WRITE_CALL:
+            raise OSError("injected pointer failure")
+        return original(path, payload)
+
+    monkeypatch.setattr(
+        "lol_bets.data_generation.ingestion.history._atomic_json", fail_pointer
+    )
+    changed = existing.assign(result=[1])
+    changed_manifest = merge_history(
+        pd.DataFrame(columns=existing.columns),
+        changed,
+        mode=HistoryRefreshMode.FULL,
+        refreshed_at=NOW.replace(hour=9),
+    )[1]
+    with pytest.raises(OSError, match="pointer"):
+        publish_history_snapshot(
+            changed,
+            changed_manifest,
+            raw_path=tmp_path / "raw_data.parquet",
+            manifest_path=tmp_path / "history.json",
+            generations_dir=tmp_path / "generations",
+            pointer_path=tmp_path / "current.json",
+        )
+    assert (tmp_path / "current.json").read_text() == before
+    data_path, _ = read_history_snapshot(pointer_path=tmp_path / "current.json")
+    assert pd.read_parquet(data_path).equals(merged)
+    assert len(list((tmp_path / "generations").iterdir())) == 1
+
+
+def test_history_snapshot_retains_current_and_previous_generations(tmp_path):
+    pointer = tmp_path / "current.json"
+    generations = tmp_path / "generations"
+    published = []
+    for hour, result in ((8, 0), (9, 1), (10, 0)):
+        data = pd.DataFrame([_row("g1", result=result, kills=hour)])
+        _, manifest = merge_history(
+            pd.DataFrame(columns=data.columns),
+            data,
+            mode=HistoryRefreshMode.FULL,
+            refreshed_at=NOW.replace(hour=hour),
+        )
+        published.append(
+            publish_history_snapshot(
+                data,
+                manifest,
+                raw_path=tmp_path / "raw_data.parquet",
+                manifest_path=tmp_path / "history.json",
+                generations_dir=generations,
+                pointer_path=pointer,
+            )
+        )
+
+    retained = {path.name for path in generations.iterdir()}
+    assert retained == set(published[-2:])

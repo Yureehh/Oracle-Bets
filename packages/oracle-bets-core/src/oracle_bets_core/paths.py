@@ -90,6 +90,8 @@ LOGS_DIR: Final = _scoped_dir("logs")
 # Data sub-directories
 # --------------------------------------------------------------------------- #
 RAW_DIR: Final = DATA_DIR / "raw"
+RAW_GENERATIONS_DIR: Final = RAW_DIR / "generations"
+RAW_CURRENT_POINTER: Final = RAW_DIR / "current.json"
 INTERIM_DIR: Final = DATA_DIR / "interim"
 QUARANTINE_DIR: Final = INTERIM_DIR / "quarantine"
 PROCESSED_DIR: Final = DATA_DIR / "processed"
@@ -342,6 +344,7 @@ HISTORY_REFRESH_MANIFEST: Final = EXTRAS_DIR / "history_refresh.json"
 _directories: list[Path] = [
     DATA_DIR,
     RAW_DIR,
+    RAW_GENERATIONS_DIR,
     INTERIM_DIR,
     QUARANTINE_DIR,
     PROCESSED_DIR,

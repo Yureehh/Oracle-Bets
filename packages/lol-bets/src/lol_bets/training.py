@@ -40,6 +40,7 @@ from oracle_bets_core.paths import (
     RATING_HYPERPARAMETER_PROVENANCE,
     RATING_LEAGUE_ELO,
     RATING_TEAM_LEAGUES_MAPPING,
+    RAW_CURRENT_POINTER,
     RAW_DATA,
     REPORTS_DIR,
     SERIES_MANIFEST,
@@ -53,6 +54,10 @@ from oracle_bets_core.paths import (
 )
 from oracle_bets_core.pd import pd
 
+from lol_bets.data_generation.ingestion.history import (
+    current_history_data_path,
+    read_history_snapshot,
+)
 from lol_bets.data_generation.ingestion.quality import normalize_result
 from lol_bets.module import LoLBetsModule
 from lol_bets.operations.provenance import (
@@ -478,7 +483,16 @@ def train_models(  # noqa: PLR0915
     )
     trained: list[str] = []
     failed: list[str] = []
-    dataset_fingerprint = _sha256_file(RAW_DATA)
+    history_path = current_history_data_path(
+        RAW_DATA,
+        pointer_path=RAW_CURRENT_POINTER,
+    )
+    history_manifest = (
+        read_history_snapshot(pointer_path=RAW_CURRENT_POINTER)[1]
+        if RAW_CURRENT_POINTER.is_file()
+        else {}
+    )
+    dataset_fingerprint = _sha256_file(history_path)
     parameter_source, tuning_run_id = _parameter_provenance()
     base_manifest = {
         "schema_version": 1,
@@ -503,6 +517,8 @@ def train_models(  # noqa: PLR0915
         },
         "code_version": repository.revision,
         "worktree_clean": repository.clean,
+        "history_snapshot_id": history_manifest.get("snapshot_id"),
+        "source_snapshot_id": history_manifest.get("source_snapshot_id"),
     }
 
     logger.info(
@@ -1364,6 +1380,10 @@ def _register_training_candidate(
 
     from lol_bets.operations.models import ModelRegistry, register_current_candidate
 
+    history_path = current_history_data_path(
+        RAW_DATA,
+        pointer_path=RAW_CURRENT_POINTER,
+    )
     summary = json.loads((report_root / "summary.json").read_text(encoding="utf-8"))
     metrics = {
         f"{model['target']}.{name}": float(value)
@@ -1406,7 +1426,7 @@ def _register_training_candidate(
         created_at=dt.datetime.now(dt.UTC),
         model_root=staging_root,
         training_paths=(
-            RAW_DATA,
+            history_path,
             TRAINING_TEAM_DATA,
             TRAINING_PLAYER_DATA,
             SERIES_MANIFEST,

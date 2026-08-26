@@ -337,15 +337,21 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
     if args.action == "sync-identities":
         from datetime import UTC, datetime
 
+        from lol_bets.data_generation.ingestion.history import current_history_data_path
         from lol_bets.operations.identity import sync_history_identity_graph
 
         from oracle_bets_core.evidence import EvidenceStore
-        from oracle_bets_core.paths import EVIDENCE_DB, RAW_DATA
+        from oracle_bets_core.paths import EVIDENCE_DB, RAW_CURRENT_POINTER, RAW_DATA
         from oracle_bets_core.pd import pd
 
         result = sync_history_identity_graph(
             EvidenceStore(EVIDENCE_DB),
-            pd.read_parquet(RAW_DATA),
+            pd.read_parquet(
+                current_history_data_path(
+                    RAW_DATA,
+                    pointer_path=RAW_CURRENT_POINTER,
+                )
+            ),
             observed_at=datetime.now(UTC),
         )
         sys.stdout.write(

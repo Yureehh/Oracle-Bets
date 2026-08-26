@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 SOURCE_FILE_SUFFIX = "_LoL_esports_match_data_from_OraclesElixir.csv"
 SOURCE_CACHE_DIRECTORY = RAW_DATA.parent / "oracles_elixir_cache"
 SOURCE_MANIFEST = "source_manifest.json"
+SOURCE_GENERATIONS_DIRECTORY = "generations"
+SOURCE_CURRENT_POINTER = "current.json"
 PUBLIC_DRIVE_FILE_IDS = {
     2024: "1IjIEhLc9n8eLKeY-yh_YigKVWbhgGBsN",  # pragma: allowlist secret
     2025: "1v6LRphp2kYciU4SXp0PCjEMuev1bDejc",  # pragma: allowlist secret
@@ -78,6 +80,7 @@ class OracleSourceReadiness:
     files: tuple[OracleSourceFile, ...]
     current_year_max_match_at: datetime | None
     issues: tuple[str, ...]
+    snapshot_id: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -104,6 +107,7 @@ class OracleSourceReadiness:
                 else None
             ),
             "issues": list(self.issues),
+            "snapshot_id": self.snapshot_id,
         }
 
 
@@ -123,11 +127,82 @@ class OracleSourceRefresh:
 
 def oracle_source_directory() -> Path:
     """Return the managed cache, or an explicit owner-provided local source."""
+    return _resolve_source_directory(managed_oracle_source_directory())
+
+
+def managed_oracle_source_directory() -> Path:
+    """Return the stable source root that owns generations and its pointer."""
     configured = os.getenv("ORACLES_ELIXIR_LOCAL_DIR")
     return Path(configured).expanduser() if configured else SOURCE_CACHE_DIRECTORY
 
 
-def refresh_oracle_source(
+def source_snapshot_id(source_directory: str | Path) -> str | None:
+    """Return the immutable source generation used by one reader."""
+    manifest = Path(source_directory) / SOURCE_MANIFEST
+    if not manifest.is_file():
+        return None
+    try:
+        value = json.loads(manifest.read_text(encoding="utf-8")).get("snapshot_id")
+    except (OSError, json.JSONDecodeError, TypeError) as error:
+        raise OracleSourceReadinessError(
+            "source generation manifest is malformed"
+        ) from error
+    if value is None:
+        return None
+    snapshot = str(value)
+    if not re.fullmatch(r"source-[a-f0-9]{24}", snapshot):
+        raise OracleSourceReadinessError("source generation manifest has an invalid ID")
+    return snapshot
+
+
+def _resolve_source_directory(root: Path) -> Path:
+    pointer = root / SOURCE_CURRENT_POINTER
+    if not pointer.is_file():
+        return root
+    try:
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+        generation = str(payload["generation"])
+        snapshot_id = str(payload["snapshot_id"])
+        if generation != snapshot_id or not re.fullmatch(
+            r"source-[a-f0-9]{24}", generation
+        ):
+            raise ValueError("invalid source generation identifier")  # noqa: TRY301
+        directory = root / SOURCE_GENERATIONS_DIRECTORY / generation
+        manifest = json.loads((directory / SOURCE_MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise OracleSourceReadinessError(
+            "current Oracle's Elixir source pointer is malformed"
+        ) from error
+    if manifest.get("snapshot_id") != snapshot_id:
+        raise OracleSourceReadinessError("source pointer and manifest disagree")
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        raise OracleSourceReadinessError("source generation manifest has no files")
+    for item in files:
+        if not isinstance(item, dict):
+            raise OracleSourceReadinessError("source generation manifest is malformed")
+        filename = str(item.get("filename", ""))
+        try:
+            expected_filename = f"{int(item['year'])}{SOURCE_FILE_SUFFIX}"
+        except (KeyError, TypeError, ValueError) as error:
+            raise OracleSourceReadinessError(
+                "source generation manifest has an invalid year"
+            ) from error
+        expected = item.get("sha256")
+        path = directory / filename
+        if (
+            filename != expected_filename
+            or PurePosixPath(filename).name != filename
+            or not isinstance(expected, str)
+            or not path.is_file()
+        ):
+            raise OracleSourceReadinessError("source generation is incomplete")
+        if _sha256_file(path) != expected:
+            raise OracleSourceReadinessError("source generation checksum mismatch")
+    return directory
+
+
+def refresh_oracle_source(  # noqa: PLR0912, PLR0915
     source_directory: str | Path | None = None,
     *,
     required_years: Sequence[int] | None = None,
@@ -136,7 +211,11 @@ def refresh_oracle_source(
     sleeper: Callable[[float], None] = time.sleep,
 ) -> OracleSourceRefresh:
     """Refresh required files through Drive's anonymous bulk-export service."""
-    root = Path(source_directory) if source_directory else oracle_source_directory()
+    root = (
+        Path(source_directory)
+        if source_directory
+        else managed_oracle_source_directory()
+    )
     cloud_storage = Path.home() / "Library" / "CloudStorage"
     if root.is_symlink() or root.resolve().is_relative_to(cloud_storage):
         raise OracleSourceRefreshError(
@@ -158,6 +237,10 @@ def refresh_oracle_source(
     owns_session = session is None
     staged: list[tuple[Path, Path, dict[str, Any], datetime]] = []
     archives: list[Path] = []
+    generation: Path | None = None
+    staging_root: Path | None = None
+    published = False
+    previous_snapshot_id = _current_source_snapshot_id(root)
     try:
         export_key = _public_export_key(client)
         export_job_id = _start_public_export(client, export_key, years)
@@ -168,17 +251,48 @@ def refresh_oracle_source(
             sleeper=sleeper,
         )
         archives = _download_export_archives(client, root, archive_urls)
-        staged = _stage_source_files(root, archives, years)
+        generations = root / SOURCE_GENERATIONS_DIRECTORY
+        generations.mkdir(parents=True, exist_ok=True)
+        staging_root = Path(tempfile.mkdtemp(prefix=".source-", dir=generations))
+        staged = _stage_source_files(staging_root, archives, years)
         for temporary, destination, _metadata, remote_modified_at in staged:
             temporary.replace(destination)
             timestamp = remote_modified_at.timestamp()
             os.utime(destination, (timestamp, timestamp))
         files = tuple(metadata for _, _, metadata, _ in staged)
+        digest = hashlib.sha256(
+            json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
+        generation = generations / f"source-{digest}"
         _write_source_manifest(
-            root / SOURCE_MANIFEST,
+            staging_root / SOURCE_MANIFEST,
             downloaded_at,
             export_job_id,
             files,
+            snapshot_id=generation.name,
+        )
+        if generation.exists():
+            _remove_tree(staging_root)
+            staging_root = None
+        else:
+            staging_root.replace(generation)
+        published = True
+        _atomic_json(
+            root / SOURCE_CURRENT_POINTER,
+            {
+                "schema_version": 1,
+                "snapshot_id": generation.name,
+                "generation": generation.name,
+                "manifest_file": f"{SOURCE_GENERATIONS_DIRECTORY}/{generation.name}/{SOURCE_MANIFEST}",
+            },
+        )
+        _atomic_symlink(generation / SOURCE_MANIFEST, root / SOURCE_MANIFEST)
+        for metadata in files:
+            filename = str(metadata["filename"])
+            _atomic_symlink(generation / filename, root / filename)
+        _prune_source_generations(
+            generations,
+            {generation.name, previous_snapshot_id},
         )
     except (
         KeyError,
@@ -196,6 +310,17 @@ def refresh_oracle_source(
             temporary.unlink(missing_ok=True)
         for archive in archives:
             archive.unlink(missing_ok=True)
+        if staging_root is not None and staging_root.exists():
+            _remove_tree(staging_root)
+        if published and generation is not None:
+            try:
+                current = json.loads(
+                    (root / SOURCE_CURRENT_POINTER).read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError, TypeError):
+                current = {}
+            if current.get("snapshot_id") != generation.name:
+                _remove_tree(generation)
         if owns_session:
             client.close()
 
@@ -433,6 +558,8 @@ def _write_source_manifest(
     downloaded_at: datetime,
     export_job_id: str,
     files: tuple[dict[str, object], ...],
+    *,
+    snapshot_id: str | None = None,
 ) -> None:
     payload = {
         "schema_version": 2,
@@ -441,9 +568,9 @@ def _write_source_manifest(
         "export_job_id": export_job_id,
         "files": list(files),
     }
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    temporary.replace(path)
+    if snapshot_id is not None:
+        payload["snapshot_id"] = snapshot_id
+    _atomic_json(path, payload)
 
 
 def inspect_oracle_source(  # noqa: PLR0912
@@ -460,20 +587,51 @@ def inspect_oracle_source(  # noqa: PLR0912
     """Inspect required local files without modifying or downloading source data."""
     checked_at = (now or datetime.now(UTC)).astimezone(UTC)
     years = tuple(required_years or range(checked_at.year - 2, checked_at.year + 1))
-    root = Path(source_directory) if source_directory else oracle_source_directory()
+    root = (
+        Path(source_directory)
+        if source_directory
+        else managed_oracle_source_directory()
+    )
+    requested_root = root
+    snapshot_id: str | None = None
+    try:
+        pointer = root / SOURCE_CURRENT_POINTER
+        if pointer.is_file():
+            payload = json.loads(pointer.read_text(encoding="utf-8"))
+            snapshot_id = str(payload["snapshot_id"])
+            root = _resolve_source_directory(root)
+    except (
+        OSError,
+        OracleSourceReadinessError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return OracleSourceReadiness(
+            str(requested_root),
+            requested_root.is_symlink(),
+            years,
+            checked_at,
+            (),
+            None,
+            ("current_source_pointer_invalid",),
+            None,
+        )
     if maximum_current_year_age <= timedelta(0):
         raise ValueError("maximum_current_year_age must be positive")
     if minimum_bytes <= 0 or stability_seconds < 0:
         raise ValueError("source size and stability thresholds are invalid")
     if not root.is_dir():
         return OracleSourceReadiness(
-            str(root),
-            root.is_symlink(),
+            str(requested_root),
+            requested_root.is_symlink(),
             years,
             checked_at,
             (),
             None,
             ("source_directory_missing",),
+            snapshot_id,
         )
 
     first_stats: dict[int, tuple[int, int]] = {}
@@ -525,13 +683,14 @@ def inspect_oracle_source(  # noqa: PLR0912
         issues.append("current_season_rows_missing")
 
     return OracleSourceReadiness(
-        source_directory=str(root),
-        source_is_symlink=root.is_symlink(),
+        source_directory=str(requested_root),
+        source_is_symlink=requested_root.is_symlink(),
         required_years=years,
         checked_at=checked_at,
         files=tuple(files),
         current_year_max_match_at=maximum_match_at,
         issues=tuple(dict.fromkeys(issues)),
+        snapshot_id=snapshot_id,
     )
 
 
@@ -563,3 +722,67 @@ def _maximum_match_datetime(path: Path) -> datetime | None:
             return maximum
     except OSError:
         return None
+
+
+def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_symlink(target: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    temporary.unlink(missing_ok=True)
+    temporary.symlink_to(target.resolve())
+    temporary.replace(destination)
+
+
+def _remove_tree(path: Path) -> None:
+    for child in path.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            _remove_tree(child)
+        else:
+            child.unlink(missing_ok=True)
+    path.rmdir()
+
+
+def _current_source_snapshot_id(root: Path) -> str | None:
+    try:
+        value = json.loads(
+            (root / SOURCE_CURRENT_POINTER).read_text(encoding="utf-8")
+        ).get("snapshot_id")
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    snapshot_id = str(value or "")
+    return snapshot_id if re.fullmatch(r"source-[a-f0-9]{24}", snapshot_id) else None
+
+
+def _prune_source_generations(root: Path, keep: set[str | None]) -> None:
+    for generation in root.iterdir():
+        if generation.name.startswith(".") or generation.name in keep:
+            continue
+        try:
+            if generation.is_symlink():
+                generation.unlink()
+            else:
+                _remove_tree(generation)
+        except OSError as error:
+            logger.warning(
+                "Could not remove old source generation %s: %s", generation, error
+            )
+
+
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
