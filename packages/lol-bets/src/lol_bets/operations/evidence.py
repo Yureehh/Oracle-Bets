@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.evidence.identity import EntityType, canonical_identity_id
 from oracle_bets_core.operations import daily_run_key
-from oracle_bets_core.operations.paper import RESEARCH_PROP_TARGETS
 from oracle_bets_core.paths import (
     GAMELENGTH_PREDICTION_MODEL_PATH,
     GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
@@ -28,6 +27,8 @@ from oracle_bets_core.pd import pd
 
 from lol_bets.operations.identity import sync_schedule_identity_graph
 from lol_bets.operations.models import ModelRegistry
+
+RESEARCH_PROP_TARGETS = frozenset({"gamelength", "total_kills", "total_towers"})
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -117,7 +118,7 @@ def record_daily_evidence(
         upper = float(row.get("probability_upper", point))
         prediction_id = _id(
             "prediction",
-            f"{run_id}|{fixture_id}|{selection_id}|prematch",
+            f"{run_id}|{fixture_id}|{row.get('market')}|{selection_id}|prematch",
         )
         prediction_warnings: list[str] = []
         if not row.get("uncertainty_method") or (lower == point and upper == point):
@@ -147,12 +148,18 @@ def record_daily_evidence(
                 "warnings_json": prediction_warnings,
                 "idempotency_key": prediction_id,
                 "payload_json": {
+                    "target": row.get("market"),
                     "probability_source": row.get("probability_source"),
                     "uncertainty_method": row.get("uncertainty_method"),
                     "uncertainty_confidence": row.get("uncertainty_confidence"),
                     "uncertainty_sample_count": row.get("uncertainty_sample_count"),
                     "drivers": list(row.get("drivers") or []),
                     "paired_distribution": row.get("paired_distribution"),
+                    "rating_baseline_probability": row.get(
+                        "rating_baseline_probability"
+                    ),
+                    "full_model_probability": row.get("full_model_probability"),
+                    "blend_weight": row.get("blend_weight"),
                     "lineup_ready": row.get("lineup_ready") is True,
                     "roster_ready": row.get("roster_ready") is True,
                     "team_a_roster_state": row.get("team_a_roster_state"),
@@ -176,6 +183,7 @@ def record_daily_evidence(
             schedule=schedule,
             actions=market_actions,
             created_at=scheduled_for,
+            model_ids=model_ids,
         )
     _supersede_fixture_dependents(
         store,
@@ -193,66 +201,100 @@ def _record_typed_market_actions(
     schedule: pd.DataFrame,
     actions: Sequence[dict[str, Any]],
     created_at: datetime,
+    model_ids: dict[str, str],
 ) -> None:
     fixture_ids = {
         _optional_text(row.get("match_key")): fixtures.get(_fixture_lookup_key(row))
         for _, row in schedule.iterrows()
     }
-    fixture_starts = {
-        _optional_text(row.get("match_key")): row.get("start_utc")
-        for _, row in schedule.iterrows()
+    predictions_by_selection = {}
+    existing_prediction_ids: set[str] = set()
+    for row in store.list(EvidenceTable.PREDICTIONS):
+        existing_prediction_ids.add(str(row["id"]))
+        if str(row["run_id"]) != run_id:
+            continue
+        payload = json.loads(row["payload_json"])
+        predictions_by_selection[
+            (
+                str(row["fixture_id"]),
+                str(payload.get("target") or "winner"),
+                str(row["selection_id"]),
+            )
+        ] = str(row["id"])
+    existing_candidate_ids = {
+        str(row["id"]) for row in store.list(EvidenceTable.MARKET_CANDIDATES)
     }
-    predictions_by_selection = {
-        (str(row["fixture_id"]), str(row["selection_id"])): str(row["id"])
-        for row in store.list(EvidenceTable.PREDICTIONS)
-        if str(row["run_id"]) == run_id
-    }
+    all_records: list[tuple[EvidenceTable, dict[str, Any]]] = []
     for action in actions:
         if not action.get("token_id"):
             continue
         fixture_id = fixture_ids.get(_optional_text(action.get("fixture_key")))
         if fixture_id is None:
             continue
-        proposal_id = str(action["proposal_id"])
+        target = str(action.get("target") or "unknown")
         prediction_id = predictions_by_selection.get(
-            (fixture_id, _identity_id(str(action["selection"])))
+            (fixture_id, target, _identity_id(str(action["selection"])))
         )
-        if prediction_id is None:
-            raise RuntimeError(
-                "Typed market action has no canonical prediction for selection: "
-                f"{action['selection']}"
+        if prediction_id is None and action.get("probability") is not None:
+            prediction = _action_prediction_record(
+                run_id=run_id,
+                fixture_id=fixture_id,
+                model_ids=model_ids,
+                action=action,
+                created_at=created_at,
             )
-        records: list[tuple[EvidenceTable, dict[str, Any]]] = []
+            if str(prediction["id"]) not in existing_prediction_ids:
+                all_records.append((EvidenceTable.PREDICTIONS, prediction))
+                existing_prediction_ids.add(str(prediction["id"]))
         candidate_id = _id(
             "market",
             f"{run_id}|{action['market_id']}|{action['token_id']}",
         )
-        records.append(
-            (
-                EvidenceTable.MARKET_CANDIDATES,
-                {
-                    "id": candidate_id,
-                    "run_id": run_id,
-                    "fixture_id": fixture_id,
-                    "provider": "polymarket",
-                    "provider_market_id": action["market_id"],
-                    "provider_selection_id": action["token_id"],
-                    "discovered_at": created_at,
-                    "match_status": "typed_exact",
-                    "rejection_reason": None,
-                    "idempotency_key": candidate_id,
-                    "payload_json": {
-                        "target": action["target"],
-                        "selection": action["selection"],
-                        "url": action.get("market_url"),
-                        "resolution_source": action.get("resolution_source"),
-                        "gate_state": action.get("state"),
-                        "gate_reason": action.get("reason"),
+        if candidate_id not in existing_candidate_ids:
+            all_records.append(
+                (
+                    EvidenceTable.MARKET_CANDIDATES,
+                    {
+                        "id": candidate_id,
+                        "run_id": run_id,
+                        "fixture_id": fixture_id,
+                        "provider": action.get("provider") or "polymarket",
+                        "provider_market_id": action["market_id"],
+                        "provider_selection_id": action["token_id"],
+                        "discovered_at": created_at,
+                        "match_status": (
+                            "owner_entered"
+                            if action.get("quote_basis") == "owner_entered"
+                            else "not_comparable"
+                            if action.get("hard_blocks")
+                            else "typed_exact"
+                        ),
+                        "rejection_reason": ",".join(action.get("hard_blocks") or [])
+                        or None,
+                        "idempotency_key": candidate_id,
+                        "payload_json": {
+                            "target": action["target"],
+                            "selection": action["selection"],
+                            "url": action.get("market_url"),
+                            "resolution_source": action.get("resolution_source"),
+                            "gate_state": action.get("state"),
+                            "gate_reason": action.get("reason"),
+                            "hard_blocks": list(action.get("hard_blocks") or []),
+                            "warnings": list(action.get("warnings") or []),
+                            "probability": action.get("probability"),
+                            "probability_lower": action.get("probability_lower"),
+                            "decimal_odds": action.get("decimal_odds"),
+                            "strategy_version": action.get("strategy_version"),
+                            "probability_source": action.get("probability_source"),
+                            "correlation_rank": action.get("correlation_rank"),
+                            "line": action.get("line"),
+                            "game_number": action.get("game_number"),
+                            "quote_basis": action.get("quote_basis") or "public_book",
+                        },
                     },
-                },
+                )
             )
-        )
-        snapshot_ids: list[tuple[str, float]] = []
+            existing_candidate_ids.add(candidate_id)
         for observation in action["observations"]:
             snapshot_id = _id(
                 "snapshot",
@@ -260,8 +302,7 @@ def _record_typed_market_actions(
                 f"{observation['observed_at']}|{observation['book_hash']}",
             )
             observation_odds = float(observation["decimal_odds"] or 0.0)
-            snapshot_ids.append((snapshot_id, observation_odds))
-            records.append(
+            all_records.append(
                 (
                     EvidenceTable.MARKET_SNAPSHOTS,
                     {
@@ -274,12 +315,15 @@ def _record_typed_market_actions(
                         # Paper units are normalized, not USDC; exact quote cost
                         # remains in the snapshot payload.
                         "available_stake_units": str(action.get("stake_units") or 0.0),
-                        "book_json": observation["book"],
+                        "book_json": observation.get("depth")
+                        or observation.get("book")
+                        or {},
                         "idempotency_key": snapshot_id,
                         "payload_json": {
                             "book_hash": observation["book_hash"],
                             "complete": observation["complete"],
-                            "quote_basis": "minimum_order_shares",
+                            "quote_basis": action.get("quote_basis")
+                            or "minimum_order_shares",
                             "minimum_order_size": observation.get("minimum_order_size"),
                             "requested_shares": observation.get("requested_shares"),
                             "filled_shares": observation.get("filled_shares"),
@@ -288,78 +332,59 @@ def _record_typed_market_actions(
                     },
                 )
             )
-        worse_snapshot_id = (
-            min(snapshot_ids, key=lambda item: item[1])[0] if snapshot_ids else None
-        )
-        state = str(action["state"])
-        if state == "paper_actionable":
-            records.append(
-                (
-                    EvidenceTable.PROPOSALS,
-                    {
-                        "id": proposal_id,
-                        "run_id": run_id,
-                        "prediction_id": prediction_id,
-                        "market_snapshot_id": worse_snapshot_id,
-                        "created_at": created_at,
-                        "state": state,
-                        "rejection_reason": action.get("reason"),
-                        "ruleset_version": "independent-winner-v2",
-                        "strategy": "flat_one_unit_series_favorite",
-                        "stake_units": "1.0",
-                        "idempotency_key": proposal_id,
-                        "payload_json": {
-                            "target": action["target"],
-                            "probability": action.get("probability"),
-                            "probability_lower": action.get("probability_lower"),
-                            "odds": action.get("decimal_odds"),
-                            "conservative_edge": action.get("conservative_edge"),
-                            "strategy_version": "independent-winner-v2",
-                            "rating_baseline_probability": action.get(
-                                "rating_baseline_probability"
-                            ),
-                            "full_model_probability": action.get(
-                                "full_model_probability"
-                            ),
-                            "roster_ready": action.get("roster_ready") is True,
-                            "uncertainty_available": (
-                                action.get("uncertainty_available") is True
-                            ),
-                            "attribution_stable": (
-                                action.get("attribution_stable") is True
-                            ),
-                            "is_model_favorite": (
-                                action.get("is_model_favorite") is True
-                            ),
-                            "counterfactual_quarter_kelly_units": action.get(
-                                "counterfactual_quarter_kelly_units"
-                            ),
-                            "expires_at": (
-                                _as_utc(
-                                    action.get("start_time")
-                                    or fixture_starts.get(
-                                        _optional_text(action.get("fixture_key"))
-                                    )
-                                )
-                                - timedelta(hours=24)
-                            ).isoformat(),
-                            "read_only": True,
-                            "resolution_source": action.get("resolution_source"),
-                            "provider_selection_id": action.get("token_id"),
-                        },
-                    },
-                )
-            )
-        # Predictions, candidates, and proposals are the canonical owner-decision
-        # graph for this daily run. A same-day rerun may observe different books;
-        # retain the original decision terms while appending its new snapshots.
-        new_records = [
-            (table, values)
-            for table, values in records
-            if table is EvidenceTable.MARKET_SNAPSHOTS
-            or store.get(table, str(values["id"])) is None
-        ]
-        store.append_transaction(new_records)
+    # One dependency-ordered transaction avoids one SQLite round-trip per outcome.
+    store.append_transaction(all_records)
+
+
+def _action_prediction_record(
+    *,
+    run_id: str,
+    fixture_id: str,
+    model_ids: dict[str, str],
+    action: dict[str, Any],
+    created_at: datetime,
+) -> dict[str, Any]:
+    """Build one derived/experimental probability used by a reviewed contract."""
+    target = str(action["target"])
+    selection_id = _identity_id(str(action["selection"]))
+    game_number = action.get("game_number")
+    line = action.get("line")
+    prediction_id = _id(
+        "prediction",
+        f"{run_id}|{fixture_id}|{target}|{game_number}|{line}|{selection_id}|prematch",
+    )
+    point = float(action["probability"])
+    lower = float(action.get("probability_lower", point))
+    return {
+        "id": prediction_id,
+        "run_id": run_id,
+        "fixture_id": fixture_id,
+        "model_version_id": model_ids[_action_model_target(target)],
+        "selection_id": selection_id,
+        "mode": "prematch",
+        "created_at": created_at,
+        "probability_point": str(point),
+        "probability_lower": str(lower),
+        "probability_upper": str(point),
+        "warnings_json": list(action.get("warnings") or []),
+        "idempotency_key": prediction_id,
+        "payload_json": {
+            "target": target,
+            "strategy_version": action.get("strategy_version"),
+            "probability_source": action.get("probability_source"),
+            "game_number": game_number,
+            "line": line,
+        },
+    }
+
+
+def _action_model_target(target: str) -> str:
+    return {
+        "series_winner": "series_winner",
+        "gamelength_mean": "gamelength",
+        "total_kills_mean": "total_kills",
+        "total_towers_mean": "total_towers",
+    }.get(target, "map_win")
 
 
 def _record_daily_step_events(
@@ -547,22 +572,16 @@ def _supersede_fixture_dependents(
     if not fixture_supersessions:
         return
     predictions = list(store.list(EvidenceTable.PREDICTIONS))
-    proposals = list(store.list(EvidenceTable.PROPOSALS))
     candidates = list(store.list(EvidenceTable.MARKET_CANDIDATES))
-    approvals = list(store.list(EvidenceTable.APPROVALS))
-    positions = list(store.list(EvidenceTable.PAPER_POSITIONS))
     corrected = {
         table: _corrected_target_ids(store, table)
         for table in (
             EvidenceTable.PREDICTIONS,
             EvidenceTable.MARKET_CANDIDATES,
-            EvidenceTable.PROPOSALS,
-            EvidenceTable.APPROVALS,
-            EvidenceTable.PAPER_POSITIONS,
         )
     }
     for old_fixture_id, new_fixture_id in fixture_supersessions.items():
-        prediction_replacements = _supersede_predictions(
+        _supersede_predictions(
             store,
             predictions,
             old_fixture_id=old_fixture_id,
@@ -578,22 +597,6 @@ def _supersede_fixture_dependents(
             created_at=created_at,
             corrected_ids=corrected[EvidenceTable.MARKET_CANDIDATES],
         )
-        proposal_replacements = _supersede_proposals(
-            store,
-            proposals,
-            prediction_replacements=prediction_replacements,
-            created_at=created_at,
-            corrected_ids=corrected[EvidenceTable.PROPOSALS],
-        )
-        _supersede_approval_and_position_records(
-            store,
-            approvals=approvals,
-            positions=positions,
-            proposal_replacements=proposal_replacements,
-            created_at=created_at,
-            corrected_approval_ids=corrected[EvidenceTable.APPROVALS],
-            corrected_position_ids=corrected[EvidenceTable.PAPER_POSITIONS],
-        )
 
 
 def _supersede_predictions(
@@ -604,19 +607,17 @@ def _supersede_predictions(
     new_fixture_id: str,
     created_at: datetime,
     corrected_ids: set[str],
-) -> dict[str, str | None]:
+) -> None:
     new_by_key = {
         (str(row["selection_id"]), str(row["mode"])): str(row["id"])
         for row in predictions
         if row["fixture_id"] == new_fixture_id
     }
-    replacements: dict[str, str | None] = {}
     for row in predictions:
         old_id = str(row["id"])
         if row["fixture_id"] != old_fixture_id or old_id in corrected_ids:
             continue
         replacement = new_by_key.get((str(row["selection_id"]), str(row["mode"])))
-        replacements[old_id] = replacement
         _append_correction(
             store,
             target_table=EvidenceTable.PREDICTIONS,
@@ -629,7 +630,6 @@ def _supersede_predictions(
                 "new_fixture_id": new_fixture_id,
             },
         )
-    return replacements
 
 
 def _supersede_market_candidates(
@@ -673,84 +673,6 @@ def _supersede_market_candidates(
                 "new_fixture_id": new_fixture_id,
             },
         )
-
-
-def _supersede_proposals(
-    store: EvidenceStore,
-    proposals: list[dict[str, Any]],
-    *,
-    prediction_replacements: dict[str, str | None],
-    created_at: datetime,
-    corrected_ids: set[str],
-) -> dict[str, str | None]:
-    new_by_prediction = {str(row["prediction_id"]): str(row["id"]) for row in proposals}
-    replacements: dict[str, str | None] = {}
-    for row in proposals:
-        old_id = str(row["id"])
-        old_prediction_id = str(row["prediction_id"])
-        if old_prediction_id not in prediction_replacements or old_id in corrected_ids:
-            continue
-        new_prediction_id = prediction_replacements[old_prediction_id]
-        replacement = (
-            new_by_prediction.get(new_prediction_id)
-            if new_prediction_id is not None
-            else None
-        )
-        replacements[old_id] = replacement
-        _append_correction(
-            store,
-            target_table=EvidenceTable.PROPOSALS,
-            target_id=old_id,
-            replacement_id=replacement,
-            created_at=created_at,
-            reason="fixture_change_expired_proposal",
-            payload={"replacement_prediction_id": new_prediction_id},
-        )
-    return replacements
-
-
-def _supersede_approval_and_position_records(
-    store: EvidenceStore,
-    *,
-    approvals: list[dict[str, Any]],
-    positions: list[dict[str, Any]],
-    proposal_replacements: dict[str, str | None],
-    created_at: datetime,
-    corrected_approval_ids: set[str],
-    corrected_position_ids: set[str],
-) -> None:
-    for row in approvals:
-        record_id = str(row["id"])
-        proposal_id = str(row["proposal_id"])
-        if (
-            proposal_id in proposal_replacements
-            and record_id not in corrected_approval_ids
-        ):
-            _append_correction(
-                store,
-                target_table=EvidenceTable.APPROVALS,
-                target_id=record_id,
-                replacement_id=None,
-                created_at=created_at,
-                reason="approved_proposal_expired_after_fixture_change",
-                payload={"replacement_proposal_id": proposal_replacements[proposal_id]},
-            )
-    for row in positions:
-        record_id = str(row["id"])
-        proposal_id = str(row["proposal_id"])
-        if (
-            proposal_id in proposal_replacements
-            and record_id not in corrected_position_ids
-        ):
-            _append_correction(
-                store,
-                target_table=EvidenceTable.PAPER_POSITIONS,
-                target_id=record_id,
-                replacement_id=None,
-                created_at=created_at,
-                reason="paper_position_fixture_change_requires_review",
-                payload={"replacement_proposal_id": proposal_replacements[proposal_id]},
-            )
 
 
 def _append_correction(

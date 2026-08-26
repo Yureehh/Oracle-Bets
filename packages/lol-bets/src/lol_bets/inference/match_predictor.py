@@ -380,7 +380,7 @@ class MatchPredictor:
         except Exception as error:
             raise RuntimeError(
                 "Direct series-winner artifacts are unavailable; the quarantined "
-                "legacy map-derived series model cannot serve proposals."
+                "legacy map-derived series model cannot serve owner reviews."
             ) from error
         try:
             self.series_winner_calibrator = load_model(

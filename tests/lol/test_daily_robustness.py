@@ -63,11 +63,6 @@ class _FakePredictor:
         return 13.1
 
 
-class _FakeMarketSearch:
-    def search(self, _query: str, **_kwargs):
-        return []
-
-
 def test_insufficient_roster_history_is_reported_separately(monkeypatch):
     import lol_bets.daily as daily_module
 
@@ -79,9 +74,8 @@ def test_insufficient_roster_history_is_reported_separately(monkeypatch):
     )
     messages, details = _build_prediction_messages(
         _future_schedule(),
-        cfg=DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        cfg=DailyWorkflowConfig(dry_run=True),
         predictor_factory=_FakePredictor,
-        market_search_factory=_FakeMarketSearch,
     )
 
     assert details[0]["status"] == "insufficient_history"
@@ -101,9 +95,8 @@ def test_excluded_league_is_not_predicted_or_reported(monkeypatch):
 
     messages, details = _build_prediction_messages(
         schedule,
-        cfg=DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        cfg=DailyWorkflowConfig(dry_run=True),
         predictor_factory=_FakePredictor,
-        market_search_factory=_FakeMarketSearch,
     )
 
     assert messages == []
@@ -124,10 +117,9 @@ def test_schedule_fetch_failure_yields_failed_step_not_crash(tmp_path, monkeypat
         raise RuntimeError(msg)
 
     result = run_daily_lol_workflow(
-        DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        DailyWorkflowConfig(dry_run=True),
         schedule_fetcher=broken_fetcher,
         predictor_factory=_FakePredictor,
-        market_search_factory=_FakeMarketSearch,
     )
 
     assert not result.ok
@@ -170,11 +162,10 @@ def test_reconcile_and_ingest_precede_schedule_fetch(tmp_path, monkeypatch):
         raise AssertionError(msg)
 
     result = run_daily_lol_workflow(
-        DailyWorkflowConfig(dry_run=False, skip_market_search=True),
+        DailyWorkflowConfig(dry_run=False),
         schedule_fetcher=broken_fetcher,
         data_generator_factory=data_generator_factory,
         predictor_factory=_FakePredictor,
-        market_search_factory=_FakeMarketSearch,
     )
 
     assert not result.ok

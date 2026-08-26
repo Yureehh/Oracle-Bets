@@ -29,7 +29,7 @@ from oracle_bets_core.paths import (
 from oracle_bets_core.pd import pd
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Collection
 
 _MAX_ROUTINE_RELATIVE_DEGRADATION = 0.01
 _MIN_RETUNE_RELATIVE_IMPROVEMENT = 0.01
@@ -116,38 +116,12 @@ class TrainingTriggerState:
             raise ValueError("evaluated_at cannot precede last_candidate_at")
 
 
-def should_train_candidate(
-    state: TrainingTriggerState,
-    *,
-    valid_map_threshold: int = 50,
-    major_map_threshold: int = 20,
-    maximum_age: timedelta = timedelta(days=30),
-) -> bool:
-    """Return whether any confirmed candidate-training trigger has fired."""
-    if valid_map_threshold <= 0 or major_map_threshold <= 0:
-        raise ValueError("map thresholds must be positive")
-    if maximum_age <= timedelta(0):
-        raise ValueError("maximum_age must be positive")
-    return (
-        state.new_valid_maps >= valid_map_threshold
-        or state.new_major_maps >= major_map_threshold
-        or state.evaluated_at - state.last_candidate_at >= maximum_age
-    )
-
-
 @dataclass(frozen=True)
 class TrainingTriggerEvaluation:
     state: TrainingTriggerState
     triggered: bool
     reasons: tuple[str, ...]
     candidate_id: str
-
-
-@dataclass(frozen=True)
-class CandidateTrainingResult:
-    evaluation: TrainingTriggerEvaluation
-    trained: bool
-    registered_model_id: str | None
 
 
 def evaluate_training_triggers_from_history(
@@ -199,24 +173,6 @@ def evaluate_training_triggers_from_history(
         triggered=bool(reasons),
         reasons=tuple(reasons),
         candidate_id=candidate_id,
-    )
-
-
-def orchestrate_candidate_training(
-    evaluation: TrainingTriggerEvaluation,
-    *,
-    train_candidate: Callable[[], None],
-    register_candidate: Callable[[str], None],
-) -> CandidateTrainingResult:
-    """Train and immutably register only when an evidence trigger fired."""
-    if not evaluation.triggered:
-        return CandidateTrainingResult(evaluation, False, None)
-    train_candidate()
-    register_candidate(evaluation.candidate_id)
-    return CandidateTrainingResult(
-        evaluation,
-        True,
-        evaluation.candidate_id,
     )
 
 
@@ -946,7 +902,7 @@ class ModelRegistry:
         return state
 
     def is_actionable(self, model_id: str) -> bool:
-        """Return whether a healthy model may create owner-actionable proposals."""
+        """Return whether a healthy model may support owner-facing reviews."""
         return (
             self.verify_bundle(model_id)
             and self.actionability(model_id).get("status") == "actionable"
@@ -959,7 +915,7 @@ class ModelRegistry:
         quarantined_at: datetime,
         reason: str,
     ) -> None:
-        """Fail closed for proposal creation while preserving diagnostic serving."""
+        """Disable owner-facing use while preserving diagnostic serving."""
         _require_utc(quarantined_at, field="quarantined_at")
         reason = reason.strip()
         if not reason:

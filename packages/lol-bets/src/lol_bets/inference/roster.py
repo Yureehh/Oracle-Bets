@@ -6,13 +6,17 @@ import hashlib
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from oracle_bets_core.pd import pd
 
 EXPECTED_STARTERS = 5
 SERIES_COMPLETION_BUFFER = timedelta(hours=6)
 EXPECTED_ROLES = ("top", "jng", "mid", "bot", "sup")
+HIGH_CONFIDENCE_MAPS = 5
+HIGH_CONFIDENCE_SHARE = 0.8
+MEDIUM_CONFIDENCE_MAPS = 3
+MEDIUM_CONFIDENCE_SHARE = 0.6
 
 
 class RosterGateState(StrEnum):
@@ -41,19 +45,31 @@ class RosterGateEvidence:
 
 @dataclass(frozen=True)
 class HistoricalRosterEvidence:
-    """Exact pre-fixture lineup repeated across the latest completed series."""
+    """Best-known role lineup from the latest ten pre-fixture maps."""
 
     roster: dict[str, str]
-    series_ids: tuple[str, ...]
-    series_dates: tuple[str, ...]
+    source_map_ids: tuple[str, ...]
+    source_dates: tuple[str, ...]
+    appearance_shares: dict[str, float]
+    alternates: dict[str, tuple[str, ...]]
+    substitutions: dict[str, tuple[str, ...]]
+    confidence: str
     evidence_hash: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "source": "historical_three_series",
+            "source": "historical_last_ten_maps",
             "roster": dict(self.roster),
-            "series_ids": list(self.series_ids),
-            "series_dates": list(self.series_dates),
+            "source_map_ids": list(self.source_map_ids),
+            "source_dates": list(self.source_dates),
+            "appearance_shares": dict(self.appearance_shares),
+            "alternates": {
+                role: list(names) for role, names in self.alternates.items()
+            },
+            "substitutions": {
+                role: list(map_ids) for role, map_ids in self.substitutions.items()
+            },
+            "confidence": self.confidence,
             "evidence_hash": self.evidence_hash,
         }
 
@@ -208,17 +224,17 @@ def completed_series_with_roster(
     return consecutive
 
 
-def infer_historical_roster(  # noqa: PLR0911, PLR0912, PLR0915
+def infer_historical_roster(
     history: pd.DataFrame,
     *,
     team_id: str,
     team_name: str,
     before: Any,
-    required_completed_series: int = 3,
+    map_limit: int = 10,
 ) -> HistoricalRosterEvidence | None:
-    """Infer an exact role-mapped five from the latest consecutive series."""
-    if required_completed_series <= 0:
-        raise ValueError("required_completed_series must be positive")
+    """Infer each role by frequency in the latest maps, breaking ties by recency."""
+    if map_limit <= 0:
+        raise ValueError("map_limit must be positive")
     required = {
         "date",
         "gameid",
@@ -249,94 +265,71 @@ def infer_historical_roster(  # noqa: PLR0911, PLR0912, PLR0915
     if frame.empty:
         return None
 
-    maps: list[dict[str, Any]] = []
-    for gameid, game_rows in frame.groupby("gameid", sort=False):
-        role_rows = game_rows[["position", "playername"]].drop_duplicates()
-        role_counts = role_rows["position"].value_counts()
-        valid_roles = set(role_rows["position"]) == set(EXPECTED_ROLES)
-        unique_roles = bool((role_counts == 1).all())
-        players = role_rows["playername"].astype(str).str.strip()
-        unique_players = (
-            len(players) == EXPECTED_STARTERS and players.nunique() == EXPECTED_STARTERS
+    map_dates = frame.groupby("gameid", sort=False)["date"].max().sort_values()
+    selected_map_dates = map_dates.tail(map_limit)
+    raw_map_ids = tuple(selected_map_dates.index)
+    map_ids = tuple(str(value) for value in raw_map_ids)
+    if not raw_map_ids:
+        return None
+    selected = frame[frame["gameid"].isin(raw_map_ids)].copy()
+    selected["playername"] = selected["playername"].astype(str).str.strip()
+    selected = selected[selected["playername"].ne("")]
+    roster: dict[str, str] = {}
+    shares: dict[str, float] = {}
+    alternates: dict[str, tuple[str, ...]] = {}
+    substitutions: dict[str, tuple[str, ...]] = {}
+    for role in EXPECTED_ROLES:
+        role_rows = selected[selected["position"].eq(role)].sort_values("date")
+        if role_rows.empty:
+            return None
+        appearances = role_rows.groupby("playername")["gameid"].nunique()
+        latest = role_rows.groupby("playername")["date"].max()
+        ranked = sorted(
+            appearances.index,
+            key=lambda player: (int(appearances[player]), latest[player], player),
+            reverse=True,
         )
-        roster = (
-            {
-                role: str(
-                    role_rows.loc[role_rows["position"].eq(role), "playername"].iloc[0]
-                ).strip()
-                for role in EXPECTED_ROLES
-            }
-            if valid_roles and unique_roles and unique_players
-            else None
+        chosen = str(ranked[0])
+        roster[role] = chosen
+        shares[role] = round(int(appearances[chosen]) / len(map_ids), 6)
+        alternates[role] = tuple(str(player) for player in ranked[1:])
+        substitutions[role] = tuple(
+            str(gameid)
+            for gameid in raw_map_ids
+            if chosen
+            not in set(role_rows.loc[role_rows["gameid"].eq(gameid), "playername"])
         )
-        game_number = pd.to_numeric(game_rows["game"], errors="coerce").min()
-        maps.append(
-            {
-                "gameid": str(gameid),
-                "date": game_rows["date"].min(),
-                "game": int(game_number) if pd.notna(game_number) else 0,
-                "roster": roster,
-            }
-        )
-    map_frame = pd.DataFrame(maps).sort_values(["date", "game"], kind="mergesort")
-    previous_game = map_frame["game"].shift()
-    gap = map_frame["date"].diff()
-    map_frame["new_series"] = (
-        map_frame["game"].eq(1)
-        | map_frame["game"].le(previous_game)
-        | gap.gt(pd.Timedelta(SERIES_COMPLETION_BUFFER))
+    if len(set(roster.values())) != EXPECTED_STARTERS:
+        return None
+    minimum_share = min(shares.values())
+    confidence = (
+        "high"
+        if len(map_ids) >= HIGH_CONFIDENCE_MAPS
+        and minimum_share >= HIGH_CONFIDENCE_SHARE
+        else "medium"
+        if len(map_ids) >= MEDIUM_CONFIDENCE_MAPS
+        and minimum_share >= MEDIUM_CONFIDENCE_SHARE
+        else "low"
     )
-    map_frame["series_number"] = map_frame["new_series"].cumsum()
-    completed_before = cutoff - pd.Timedelta(SERIES_COMPLETION_BUFFER)
-    completed = [
-        series
-        for _, series in map_frame.groupby("series_number", sort=True)
-        if series["date"].max() <= completed_before
-    ]
-    selected = completed[-required_completed_series:]
-    if len(selected) != required_completed_series:
-        return None
-
-    expected_key: tuple[tuple[str, str], ...] | None = None
-    series_ids: list[str] = []
-    series_dates: list[str] = []
-    roster: dict[str, str] | None = None
-    for series in selected:
-        rosters = list(series["roster"])
-        if any(item is None for item in rosters):
-            return None
-        keys = {
-            tuple((role, str(item[role]).casefold()) for role in EXPECTED_ROLES)
-            for item in rosters
-        }
-        if len(keys) != 1:
-            return None
-        key = next(iter(keys))
-        if expected_key is not None and key != expected_key:
-            return None
-        expected_key = key
-        roster = dict(rosters[0])
-        gameids = tuple(sorted(series["gameid"].astype(str)))
-        identity = hashlib.sha256("|".join(gameids).encode()).hexdigest()[:16]
-        series_ids.append(f"series-{identity}")
-        series_date = pd.Timestamp(series["date"].max())
-        isoformat = getattr(series_date, "isoformat", None)
-        if pd.isna(series_date) or not callable(isoformat):
-            return None
-        series_dates.append(str(isoformat()))
-    if roster is None:
-        return None
+    source_dates = tuple(
+        cast("pd.Timestamp", pd.Timestamp(selected_map_dates.loc[gameid])).isoformat()
+        for gameid in raw_map_ids
+    )
     payload = "|".join(
         (
             team_id or team_name.casefold(),
             *(f"{role}:{roster[role].casefold()}" for role in EXPECTED_ROLES),
-            *series_ids,
+            *map_ids,
         )
     )
     return HistoricalRosterEvidence(
         roster=roster,
-        series_ids=tuple(series_ids),
-        series_dates=tuple(series_dates),
+        source_map_ids=map_ids,
+        source_dates=source_dates,
+        appearance_shares=shares,
+        alternates=alternates,
+        substitutions=substitutions,
+        confidence=confidence,
         evidence_hash=(
             "historical-roster-" + hashlib.sha256(payload.encode()).hexdigest()[:20]
         ),

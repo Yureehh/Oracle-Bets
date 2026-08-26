@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from lol_bets.inference.roster import (
     EXPECTED_ROLES,
     HistoricalRosterEvidence,
@@ -107,7 +108,7 @@ def test_completed_series_counter_requires_consecutive_exact_lineups():
     )
 
 
-def test_historical_fallback_requires_same_role_mapped_five_for_latest_three_series():
+def test_historical_fallback_selects_most_frequent_players_from_last_ten_maps():
     inferred = infer_historical_roster(
         _roster_history(),
         team_id="team-1",
@@ -117,12 +118,14 @@ def test_historical_fallback_requires_same_role_mapped_five_for_latest_three_ser
 
     assert isinstance(inferred, HistoricalRosterEvidence)
     assert inferred.roster == dict(zip(EXPECTED_ROLES, NEW, strict=True))
-    assert len(inferred.series_ids) == REQUIRED_STABLE_SERIES
-    assert len(inferred.series_dates) == REQUIRED_STABLE_SERIES
+    expected_maps = 6
+    assert len(inferred.source_map_ids) == expected_maps
+    assert all(share == 1.0 for share in inferred.appearance_shares.values())
+    assert inferred.confidence == "high"
     assert inferred.evidence_hash.startswith("historical-roster-")
 
 
-def test_historical_fallback_rejects_change_missing_series_and_bad_roles():
+def test_historical_fallback_handles_substitutions_and_role_conflicts():
     history = _roster_history()
     changed = history.copy()
     changed.loc[
@@ -140,9 +143,37 @@ def test_historical_fallback_rejects_change_missing_series_and_bad_roles():
         "team_name": "T1",
         "before": datetime(2026, 7, 5, tzinfo=UTC),
     }
-    assert infer_historical_roster(changed, **kwargs) is None
-    assert infer_historical_roster(_roster_history(2), **kwargs) is None
-    assert infer_historical_roster(duplicate_role, **kwargs) is None
+    changed_result = infer_historical_roster(changed, **kwargs)
+    short_result = infer_historical_roster(_roster_history(2), **kwargs)
+    conflict_result = infer_historical_roster(duplicate_role, **kwargs)
+    assert changed_result is not None
+    assert changed_result.roster["top"] == "new-top"
+    assert changed_result.confidence in {"high", "medium"}
+    assert short_result is not None
+    assert short_result.confidence == "medium"
+    assert conflict_result is not None
+    assert conflict_result.confidence in {"high", "medium", "low"}
+
+
+def test_historical_fallback_breaks_frequency_ties_by_most_recent_appearance():
+    history = _roster_history(series_count=5)
+    top_rows = history["position"].eq("top")
+    top_indices = history.loc[top_rows].sort_values("date").index
+    history.loc[top_indices[:5], "playername"] = "older-top"
+    history.loc[top_indices[5:], "playername"] = "newer-top"
+
+    inferred = infer_historical_roster(
+        history,
+        team_id="team-1",
+        team_name="T1",
+        before=datetime(2026, 7, 8, tzinfo=UTC),
+    )
+
+    assert inferred is not None
+    assert inferred.roster["top"] == "newer-top"
+    assert inferred.appearance_shares["top"] == pytest.approx(0.5)
+    assert inferred.alternates["top"] == ("older-top",)
+    assert len(inferred.substitutions["top"]) == len(inferred.source_map_ids) // 2
 
 
 def test_historical_fallback_does_not_mix_a_reused_team_name():

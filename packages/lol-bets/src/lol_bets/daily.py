@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import time
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
@@ -19,18 +18,12 @@ from oracle_bets_core.league_selection import (
     selected_leagues,
 )
 from oracle_bets_core.logger import logger
-from oracle_bets_core.markets import (
-    PolymarketClobClient,
-    PolymarketGammaAdapter,
-    PolymarketMarket,
-)
 from oracle_bets_core.operations import (
     EvidenceWorkflowJournal,
     WorkflowStep,
     daily_run_key,
     run_workflow,
 )
-from oracle_bets_core.operations.paper_evidence import daily_position_exposure
 from oracle_bets_core.paths import (
     EVIDENCE_DB,
     INTERIM_PLAYER_DATA,
@@ -76,13 +69,11 @@ from lol_bets.inference.roster import (
 from lol_bets.inference.team import InsufficientRosterHistoryError, Team
 from lol_bets.inference.team_resolver import (
     TeamResolutionError,
-    canonical_team_name,
     resolve_team_name,
 )
 from lol_bets.module import LoLBetsModule
 from lol_bets.operations.evidence import record_daily_evidence
 from lol_bets.operations.identity import sync_history_identity_graph
-from lol_bets.operations.market_actions import evaluate_daily_market_actions
 from lol_bets.operations.models import (
     ModelRegistry,
     evaluate_training_triggers_from_history,
@@ -129,12 +120,6 @@ class Predictor(Protocol):
     ) -> float: ...
 
 
-class MarketSearch(Protocol):
-    def search_markets(
-        self, query: str, *, limit: int = 25
-    ) -> list[PolymarketMarket]: ...
-
-
 @dataclass(frozen=True)
 class DailyWorkflowConfig:
     """Runtime options for the daily LoL workflow."""
@@ -144,12 +129,9 @@ class DailyWorkflowConfig:
     delivery_mode: str | None = None
     dry_run: bool = False
     skip_retrain: bool = False
-    skip_market_search: bool = False
     targets: str = "all"
     feature_set: str = "compact"
     max_features: int = 120
-    ai_review: bool = True
-    openai_model: str = "gpt-5.6-luna"
 
 
 def _resolve_daily_config(
@@ -159,7 +141,6 @@ def _resolve_daily_config(
     return replace(
         cfg,
         leagues=cfg.leagues or ",".join(actionable_leagues()),
-        openai_model=os.getenv("OPENAI_MODEL") or cfg.openai_model,
         delivery_mode=resolve_delivery_mode(cfg.delivery_mode).value,
     )
 
@@ -218,12 +199,6 @@ class DailyWorkflowResult:
         return all(step.ok for step in self.steps)
 
 
-@dataclass(frozen=True)
-class TypedMarketDiscovery:
-    markets: dict[str, tuple[PolymarketMarket, ...]]
-    failures: dict[str, str]
-
-
 def utc_day_window(
     *,
     now: dt.datetime | None = None,
@@ -258,37 +233,25 @@ def cadence_reminders(
     """Return one combined advisory reminder for today's Rome-local cadence."""
     if now.tzinfo is None:
         raise ValueError("reminder clock must include a timezone")
-    local_zone = ZoneInfo(timezone)
-    local_date = now.astimezone(local_zone).date()
-
-    def local_midnight(value: dt.date) -> str:
-        return dt.datetime.combine(value, dt.time(), tzinfo=local_zone).isoformat()
+    local_date = now.astimezone(ZoneInfo(timezone)).date()
 
     triggers: list[str] = []
     commands: list[str] = []
     if local_date.weekday() == MONDAY:
-        previous_monday = local_date - dt.timedelta(days=7)
         triggers.append("monday")
         commands.extend(
             [
-                "uv run oracle-bets paper list --state open",
+                "uv run oracle-bets bet list --state open",
                 "uv run oracle-bets health system",
-                (
-                    "uv run oracle-bets paper performance --since "
-                    f"{local_midnight(previous_monday)}"
-                ),
+                "uv run oracle-bets bet performance --mode paper",
             ]
         )
     if local_date.weekday() == THURSDAY:
-        current_monday = local_date - dt.timedelta(days=3)
         triggers.append("thursday")
         commands.extend(
             [
-                "uv run oracle-bets paper list --state open",
-                (
-                    "uv run oracle-bets paper performance --since "
-                    f"{local_midnight(current_monday)}"
-                ),
+                "uv run oracle-bets bet list --state open",
+                "uv run oracle-bets bet performance --mode paper",
                 "uv run oracle-bets lol market-check",
             ]
         )
@@ -303,10 +266,7 @@ def cadence_reminders(
                     "uv run oracle-bets audit monthly --period "
                     f"{previous_month.strftime('%Y-%m')}"
                 ),
-                (
-                    "uv run oracle-bets paper performance --since "
-                    f"{local_midnight(previous_month)}"
-                ),
+                "uv run oracle-bets bet performance --mode paper",
             ]
         )
     if not triggers:
@@ -333,23 +293,23 @@ def format_cadence_reminders(reminders: Sequence[dict[str, Any]]) -> str:
 
 
 def _open_position_summary(store: EvidenceStore) -> dict[str, Any]:
-    """Read open paper positions without ever mutating or settling them."""
-    from oracle_bets_core.operations.paper_evidence import count_open_positions
+    """Read open tracked bets without ever mutating or settling them."""
+    from oracle_bets_core.operations.bets import count_open_bets
 
     try:
-        count = count_open_positions(store)
+        count = count_open_bets(store)
     except Exception as exc:
-        logger.warning("Open paper-position count unavailable: %s", exc)
+        logger.warning("Open bet count unavailable: %s", exc)
         return {"available": False, "count": None}
     return {"available": True, "count": count}
 
 
 def _format_open_position_summary(summary: dict[str, Any]) -> str:
     if not summary.get("available"):
-        return "**Open paper positions:** unavailable; inspect with `paper list`."
+        return "**Open bets:** unavailable; inspect with `bet list`."
     return (
-        f"**Open paper positions: {summary['count']}** — settle only through the "
-        "owner bot controls or `uv run oracle-bets paper settle --help`."
+        f"**Open bets: {summary['count']}** — settle only through the "
+        "owner bot controls or `uv run oracle-bets bet settle --help`."
     )
 
 
@@ -519,7 +479,7 @@ def _resolve_fixture_roster(
     return ResolvedFixtureRoster(
         dict(evidence.roster),
         True,
-        "historical_three_series",
+        "historical_last_ten_maps",
         evidence,
     )
 
@@ -667,6 +627,14 @@ def build_match_prediction_message(  # noqa: PLR0915
         emergency_substitute=bool(row.get("team_b_emergency_substitute", False)),
     )
     roster_ready = team_a_roster_gate.actionable and team_b_roster_gate.actionable
+    roster_confidences = [
+        resolution.evidence.confidence
+        if resolution.evidence
+        else ("high" if resolution.ready else "unknown")
+        for resolution in (team_a_resolution, team_b_resolution)
+    ]
+    row["team_a_roster_confidence"] = roster_confidences[0]
+    row["team_b_roster_confidence"] = roster_confidences[1]
     prediction = predictor.predict_match(
         team_a,
         team_b,
@@ -689,11 +657,11 @@ def build_match_prediction_message(  # noqa: PLR0915
     warnings: list[str] = []
     if not lineup_ready:
         warnings.append(
-            "Expected lineup is incomplete or unknown; this prediction is shadow-only."
+            "Expected lineup is incomplete or unknown; roster confidence is unknown."
         )
     elif not roster_ready:
         warnings.append(
-            "An expected roster is not yet stable; this prediction is shadow-only "
+            "Roster evidence is uncertain; review it before accepting a paper ticket "
             f"({team_a_name}: {team_a_roster_gate.state}, "
             f"{team_a_roster_gate.completed_series}/"
             f"{team_a_roster_gate.required_completed_series} completed series; "
@@ -706,14 +674,9 @@ def build_match_prediction_message(  # noqa: PLR0915
             "Series calibration artifact is missing; raw model probability is being used."
         )
     if not uncertainty_method:
-        warnings.append(
-            "Held-out probability uncertainty is unavailable; the point estimate "
-            "cannot be considered action-ready."
-        )
+        warnings.append("Held-out probability uncertainty is unavailable.")
     if not drivers:
-        warnings.append(
-            "Local model drivers are unavailable; the prediction is shadow-only."
-        )
+        warnings.append("Local model drivers are unavailable.")
 
     output = format_winner_market_output(
         blue_team_name=team_a_name,
@@ -784,6 +747,11 @@ def build_match_prediction_message(  # noqa: PLR0915
                 full_model_team_a=(
                     float(full_model_a) if full_model_a is not None else None
                 ),
+                blend_weight=(
+                    float(prediction["blend_weight"])
+                    if prediction.get("blend_weight") is not None
+                    else None
+                ),
                 team_a_roster_gate=team_a_roster_gate,
                 team_b_roster_gate=team_b_roster_gate,
                 prop_values=prop_values,
@@ -830,6 +798,7 @@ def build_prediction_snapshot_rows(
     driver_attribution: Sequence[dict[str, Any]] = (),
     rating_baseline_team_a: float | None = None,
     full_model_team_a: float | None = None,
+    blend_weight: float | None = None,
     team_a_roster_gate: RosterGateDecision | None = None,
     team_b_roster_gate: RosterGateDecision | None = None,
     lineup_ready: bool = False,
@@ -868,6 +837,8 @@ def build_prediction_snapshot_rows(
         "lineup_refresh_error": row.get("lineup_refresh_error"),
         "team_a_roster_evidence": row.get("team_a_roster_evidence"),
         "team_b_roster_evidence": row.get("team_b_roster_evidence"),
+        "team_a_roster_confidence": row.get("team_a_roster_confidence"),
+        "team_b_roster_confidence": row.get("team_b_roster_confidence"),
         "match_type": match_type,
         "probability_source": probability_source,
         "uncertainty_method": uncertainty_method,
@@ -949,6 +920,7 @@ def build_prediction_snapshot_rows(
                         else None
                     )
                 ),
+                "blend_weight": blend_weight,
                 "strategy_version": "independent-winner-v2",
                 "model_target": "series_winner",
                 "attribution_stable": (
@@ -1260,20 +1232,12 @@ def _format_unmatched_teams_message(
     return "\n".join(lines)
 
 
-def _build_prediction_messages(  # noqa: PLR0912, PLR0915
+def _build_prediction_messages(
     schedule: pd.DataFrame,
     *,
     cfg: DailyWorkflowConfig,
     predictor_factory: Callable[[], Predictor] | None,
-    market_search_factory: Callable[[], MarketSearch],
     snapshot_sink: list[dict[str, Any]] | None = None,
-    market_review_sink: list[dict[str, Any]] | None = None,
-    market_action_sink: list[dict[str, Any]] | None = None,
-    clob_client_factory: Callable[[], Any] = PolymarketClobClient,
-    market_sleeper: Callable[[float], None] = time.sleep,
-    market_run_key: str | None = None,
-    existing_exposure_units: float = 0.0,
-    typed_markets_override: (dict[str, tuple[PolymarketMarket, ...]] | None) = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     schedule = _actionable_schedule(schedule)
     if schedule.empty:
@@ -1297,16 +1261,6 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
                 )
             raise
 
-    typed_markets: dict[str, tuple[PolymarketMarket, ...]] = {}
-    typed_market_failures: dict[str, str] = {}
-    market_search = None
-    if typed_markets_override is not None:
-        typed_markets = typed_markets_override
-    elif not cfg.skip_market_search:
-        market_search = market_search_factory()
-        discovery = _discover_typed_markets(schedule, market_search)
-        typed_markets = discovery.markets
-        typed_market_failures = discovery.failures
     messages: list[str] = []
     details: list[dict[str, Any]] = []
     unmatched: dict[str, tuple[str, ...]] = {}
@@ -1382,140 +1336,7 @@ def _build_prediction_messages(  # noqa: PLR0912, PLR0915
         messages.append(
             f"Prediction unavailable for {len(failures)} fixture(s); see the daily report artifact."
         )
-    if typed_markets and snapshot_sink is not None:
-        try:
-            registry = ModelRegistry(MODEL_REGISTRY_DIR)
-            champion_id = registry.champion_id()
-            model_actionable = bool(champion_id and registry.is_actionable(champion_id))
-            market_evaluation = evaluate_daily_market_actions(
-                schedule=schedule,
-                snapshot_rows=snapshot_sink,
-                markets=typed_markets,
-                clob_client=clob_client_factory(),
-                model_healthy=model_actionable,
-                existing_exposure_units=existing_exposure_units,
-                run_key=market_run_key,
-                sleeper=market_sleeper,
-            )
-            reviews = tuple(
-                (
-                    review
-                    | {
-                        "state": "blocked",
-                        "reason": "market_read_failed",
-                        "detail": typed_market_failures[review["fixture_key"]],
-                    }
-                )
-                if review["fixture_key"] in typed_market_failures
-                else review
-                for review in market_evaluation.reviews
-            )
-            if market_review_sink is not None:
-                market_review_sink.extend(reviews)
-            if market_action_sink is not None:
-                market_action_sink.extend(market_evaluation.actions)
-            messages.extend(_format_market_quote_messages(market_evaluation.actions))
-            if typed_market_failures:
-                messages.append(
-                    "Polymarket discovery unavailable for "
-                    f"{len(typed_market_failures)} fixture(s); see the daily report."
-                )
-        except Exception as exc:
-            logger.warning("Executable Polymarket comparison unavailable: %s", exc)
-            if market_action_sink is not None:
-                market_action_sink.append(
-                    {
-                        "state": "blocked",
-                        "reason": "market_read_failed",
-                        "detail": str(exc),
-                    }
-                )
     return messages, details
-
-
-def _format_market_quote_messages(
-    actions: Sequence[dict[str, Any]],
-) -> list[str]:
-    """Show every matched outcome quote, including blocked and no-edge rows."""
-    by_fixture: dict[str, list[dict[str, Any]]] = {}
-    for action in actions:
-        by_fixture.setdefault(str(action.get("fixture_key") or "unknown"), []).append(
-            action
-        )
-    messages: list[str] = []
-    for fixture_actions in by_fixture.values():
-        first = fixture_actions[0]
-        lines = [
-            f"**Polymarket · {first.get('team_a')} vs {first.get('team_b')} (read-only)**"
-        ]
-        for action in fixture_actions:
-            target = str(action.get("target") or "market")
-            if action.get("game_number"):
-                target += f" game {action['game_number']}"
-            if action.get("total_line") is not None:
-                target += f" {action['total_line']}"
-            odds = action.get("decimal_odds")
-            if odds is None:
-                lines.append(
-                    f"- {action.get('selection')} · {target}: unavailable "
-                    f"({action.get('reason') or 'invalid_quote'})"
-                )
-                continue
-            edge = action.get("conservative_edge")
-            edge_text = (
-                f", {float(edge) * 100:.1f}% conservative edge"
-                if edge is not None
-                else ""
-            )
-            lines.append(
-                f"- {action.get('selection')} · {target}: {float(odds):.3f} odds"
-                f"{edge_text} · {action.get('state')}"
-            )
-        messages.append("\n".join(lines))
-    return messages
-
-
-def _discover_typed_markets(
-    schedule: pd.DataFrame,
-    market_search: MarketSearch,
-) -> TypedMarketDiscovery:
-    """Find only open supported markets using one exact query per fixture."""
-    if schedule.empty:
-        return TypedMarketDiscovery({}, {})
-    supported_types = {"child_moneyline", "moneyline", "totals"}
-    discovered: dict[str, tuple[PolymarketMarket, ...]] = {}
-    failures: dict[str, str] = {}
-    for _, row in schedule.iterrows():
-        team_a = str(row.get("team_a") or "").strip()
-        team_b = str(row.get("team_b") or "").strip()
-        fixture_key = str(row.get("match_key") or f"{team_a}:{team_b}").strip()
-        if not team_a or not team_b:
-            discovered[fixture_key] = ()
-            continue
-        try:
-            markets = market_search.search_markets(
-                f"{canonical_team_name(team_a)} {canonical_team_name(team_b)}",
-                limit=100,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Typed Polymarket discovery unavailable for %s vs %s: %s",
-                team_a,
-                team_b,
-                exc,
-            )
-            discovered[fixture_key] = ()
-            failures[fixture_key] = type(exc).__name__
-            continue
-        discovered[fixture_key] = tuple(
-            market
-            for market in markets
-            if market.active
-            and not market.closed
-            and market.accepting_orders
-            and market.sports_market_type in supported_types
-        )
-    return TypedMarketDiscovery(discovered, failures)
 
 
 def write_daily_report(
@@ -1738,12 +1559,9 @@ def run_daily_lol_workflow(  # noqa: PLR0915
     module_factory: Callable[[], LoLBetsModule] = LoLBetsModule,
     predictor_factory: Callable[[], Predictor] | None = None,
     lineup_refresher_factory: (Callable[[], PandaScoreLineupRefresher] | None) = None,
-    market_search_factory: Callable[[], MarketSearch] = PolymarketGammaAdapter,
-    clob_client_factory: Callable[[], Any] = PolymarketClobClient,
-    market_sleeper: Callable[[float], None] = time.sleep,
     series_builder_fn: Callable[[], dict[str, Any]] = build_series_artifacts,
 ) -> DailyWorkflowResult:
-    """Run the daily LoL workflow; the Gateway bot publishes saved evidence."""
+    """Run data, model, schedule, and report maintenance without market review."""
     cfg = _resolve_daily_config(config)
     delivery_mode = DiscordDeliveryMode(str(cfg.delivery_mode))
     steps: list[DailyStepResult] = []
@@ -1829,21 +1647,7 @@ def run_daily_lol_workflow(  # noqa: PLR0915
             reportable_schedule,
             cfg=cfg,
             predictor_factory=predictor_factory,
-            market_search_factory=market_search_factory,
             snapshot_sink=snapshot_rows,
-            market_review_sink=market_reviews,
-            market_action_sink=market_actions,
-            clob_client_factory=clob_client_factory,
-            market_sleeper=market_sleeper,
-            market_run_key=daily_run_key(
-                "lol",
-                scheduled_for=scheduled_for,
-                config=effective_config,
-            ),
-            existing_exposure_units=daily_position_exposure(
-                EvidenceStore(EVIDENCE_DB),
-                at=run_now,
-            ),
         )
         messages.extend(prediction_messages)
 
@@ -1872,16 +1676,6 @@ def run_daily_lol_workflow(  # noqa: PLR0915
 
     messages[0] = format_step_summary(steps)
 
-    from lol_bets.operations.review import format_advisory_review, review_proposals
-
-    advisory = review_proposals(
-        market_actions,
-        enabled=cfg.ai_review and bool(os.getenv("OPENAI_API_KEY")),
-        model=cfg.openai_model,
-    )
-    advisory_message = format_advisory_review(advisory)
-    if advisory_message:
-        messages.append(advisory_message)
     reminders = cadence_reminders(run_now)
     reminder_message = format_cadence_reminders(reminders)
     if reminder_message:
@@ -1895,7 +1689,7 @@ def run_daily_lol_workflow(  # noqa: PLR0915
             DailyStepResult(
                 "discord",
                 True,
-                "Gateway publication enabled; owner controls poll canonical evidence",
+                "Gateway owner console enabled; open `/oracle` for interactive review",
             )
         )
         messages[0] = format_step_summary(steps)
@@ -1906,7 +1700,7 @@ def run_daily_lol_workflow(  # noqa: PLR0915
         excluded_fixtures=excluded_fixtures,
         prediction_details=prediction_details,
         messages=messages,
-        advisory_review=advisory.to_dict(),
+        advisory_review=None,
         market_reviews=market_reviews,
         market_actions=market_actions,
         prediction_snapshots=snapshot_rows,

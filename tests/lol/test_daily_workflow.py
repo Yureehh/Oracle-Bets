@@ -152,7 +152,7 @@ def test_expected_lineup_is_used_only_when_all_roles_are_unambiguous():
     assert not missing_ready
 
 
-def test_empty_provider_lineup_uses_exact_three_series_history(monkeypatch):
+def test_empty_provider_lineup_uses_last_ten_map_history(monkeypatch):
     import lol_bets.daily as daily_module
 
     roles = ("top", "jng", "mid", "bot", "sup")
@@ -182,10 +182,10 @@ def test_empty_provider_lineup_uses_exact_three_series_history(monkeypatch):
     resolved = _resolve_fixture_roster(row, team="a")
 
     assert resolved.ready
-    assert resolved.source == "historical_three_series"
+    assert resolved.source == "historical_last_ten_maps"
     assert resolved.roster == {role: f"player-{role}" for role in roles}
     assert resolved.evidence is not None
-    assert len(resolved.evidence.series_ids) == EXPECTED_STABLE_SERIES
+    assert len(resolved.evidence.source_map_ids) == EXPECTED_STABLE_SERIES * 2
 
 
 def test_partial_provider_lineup_never_uses_historical_fallback(monkeypatch):
@@ -284,7 +284,6 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
         data_generator_factory=data_generator_factory,
         train_fn=train_fn,
         predictor_factory=_FakePredictor,
-        market_search_factory=_FakeMarketSearch,
     )
 
     assert result.ok
@@ -392,10 +391,9 @@ def test_daily_defaults_to_operational_leagues_and_hides_academy(
         )
 
     result = run_daily_lol_workflow(
-        DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        DailyWorkflowConfig(dry_run=True),
         schedule_fetcher=schedule_fetcher,
         predictor_factory=_FakePredictor,
-        market_search_factory=_FakeMarketSearch,
     )
 
     assert {"LCK", "LIT"}.issubset(set(captured["leagues"].split(",")))
@@ -431,12 +429,10 @@ def test_daily_explicit_league_filter_overrides_operational_profile(
     result = run_daily_lol_workflow(
         DailyWorkflowConfig(
             dry_run=True,
-            skip_market_search=True,
             leagues="LCK",
         ),
         schedule_fetcher=schedule_fetcher,
         predictor_factory=_FakePredictor,
-        market_search_factory=_FakeMarketSearch,
     )
 
     assert result.schedule["league"].tolist() == ["LCK"]
@@ -463,11 +459,10 @@ def test_daily_refreshes_match_detail_before_filtering(monkeypatch):
 
     monkeypatch.delenv("PANDASCORE_API_KEY", raising=False)
     result = daily_module.run_daily_lol_workflow(
-        DailyWorkflowConfig(dry_run=True, skip_market_search=True),
+        DailyWorkflowConfig(dry_run=True),
         schedule_fetcher=schedule_fetcher,
         lineup_refresher_factory=_Refresher,
         predictor_factory=_FakePredictor,
-        market_search_factory=_FakeMarketSearch,
     )
 
     assert called["refresh"]

@@ -9,14 +9,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from oracle_bets_core.evidence import EvidenceTable
 from oracle_bets_core.paths import IMPORT_COLUMNS
 from oracle_bets_core.pd import pd
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from oracle_bets_core.evidence import EvidenceStore
 
 EXPECTED_RAW_COLUMNS = frozenset(
     {
@@ -289,33 +287,3 @@ def write_quality_report(
     )
     temporary.replace(path)
     return path
-
-
-def persist_quality_report(
-    store: EvidenceStore,
-    report: DataQualityReport,
-    *,
-    run_id: str,
-) -> str:
-    """Append a quality manifest to the run's permanent source evidence."""
-    observed_at = datetime.fromisoformat(report.generated_at)
-    snapshot_key = hashlib.sha256(
-        f"{run_id}|{report.source}|{report.schema_fingerprint}".encode()
-    ).hexdigest()
-    snapshot_id = f"source-quality:{snapshot_key[:24]}"
-    return store.append(
-        EvidenceTable.SOURCE_SNAPSHOTS,
-        {
-            "id": snapshot_id,
-            "run_id": run_id,
-            "provider": report.source,
-            "source_type": "data_quality_report",
-            "observed_at": observed_at,
-            "source_uri": None,
-            "schema_fingerprint": report.schema_fingerprint,
-            "idempotency_key": (
-                f"source-quality:{run_id}:{report.source}:{report.schema_fingerprint}"
-            ),
-            "payload_json": report.to_dict(),
-        },
-    )

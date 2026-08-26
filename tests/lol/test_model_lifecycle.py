@@ -13,18 +13,15 @@ from lol_bets.operations.models import (
     ModelRegistryError,
     PromotionEvidence,
     PromotionPolicy,
-    TrainingTriggerState,
     _clustered_binary_log_losses,
     _cohort_replay_losses,
     _target_drift_review,
     evaluate_promotion,
     evaluate_training_triggers_from_history,
-    orchestrate_candidate_training,
     paired_bootstrap_improvement,
     register_current_candidate,
     resolve_serving_artifact,
     review_candidate_on_sealed_rows,
-    should_train_candidate,
 )
 from oracle_bets_core.pd import pd
 
@@ -294,29 +291,7 @@ def test_shadow_prop_regression_does_not_block_winner_promotion():
     assert decision.safety_failures == ()
 
 
-@pytest.mark.parametrize(
-    ("valid_maps", "major_maps", "last_days", "expected"),
-    [
-        (50, 0, 1, True),
-        (0, 20, 1, True),
-        (0, 0, 31, True),
-        (49, 19, 29, False),
-    ],
-)
-def test_candidate_training_triggers_are_explicit(
-    valid_maps, major_maps, last_days, expected
-):
-    state = TrainingTriggerState(
-        new_valid_maps=valid_maps,
-        new_major_maps=major_maps,
-        last_candidate_at=NOW - timedelta(days=last_days),
-        evaluated_at=NOW,
-    )
-
-    assert should_train_candidate(state) is expected
-
-
-def test_history_evidence_drives_training_and_immutable_registration(tmp_path):
+def test_history_evidence_drives_training_trigger(tmp_path):
     registry = ModelRegistry(tmp_path / "registry")
     history = pd.DataFrame(
         [
@@ -335,22 +310,12 @@ def test_history_evidence_drives_training_and_immutable_registration(tmp_path):
         evaluated_at=NOW,
         major_leagues={"LCK"},
     )
-    calls = []
-
-    result = orchestrate_candidate_training(
-        evaluation,
-        train_candidate=lambda: calls.append("trained"),
-        register_candidate=lambda model_id: calls.append(model_id),
-    )
-
     assert evaluation.triggered
     assert "new_valid_maps" in evaluation.reasons
     assert "new_major_maps" in evaluation.reasons
-    assert result.trained
-    assert calls == ["trained", evaluation.candidate_id]
 
 
-def test_untriggered_evidence_neither_trains_nor_registers(tmp_path):
+def test_recent_history_does_not_trigger_training(tmp_path):
     registry = ModelRegistry(tmp_path / "registry")
     candidate = registry.candidates / "candidate-existing"
     candidate.mkdir()
@@ -374,18 +339,7 @@ def test_untriggered_evidence_neither_trains_nor_registers(tmp_path):
         major_leagues={"LCK"},
     )
 
-    def _must_not_register(model_id):
-        pytest.fail(f"must not register {model_id}")
-
-    result = orchestrate_candidate_training(
-        evaluation,
-        train_candidate=lambda: pytest.fail("must not train"),
-        register_candidate=_must_not_register,
-    )
-
     assert not evaluation.triggered
-    assert not result.trained
-    assert result.registered_model_id is None
 
 
 def _manifest(model_id="candidate-1", *, target="map_win"):

@@ -6,14 +6,12 @@ import pytest
 from lol_bets import pipeline
 from lol_bets.data_generation.ingestion.quality import (
     SourceSchemaError,
-    persist_quality_report,
     quarantine_oracles_elixir_data,
     schema_fingerprint,
     source_column_reconciliation,
     write_quality_report,
 )
 from lol_bets.pipeline import DataGenerator
-from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.pd import pd
 
 POSITIONS = ["top", "jng", "mid", "bot", "sup"]
@@ -179,29 +177,6 @@ def test_quality_report_is_machine_readable_and_atomic(tmp_path):
     assert payload["schema_fingerprint"] == report.schema_fingerprint
     assert payload["column_reconciliation"]
     assert not list(tmp_path.glob("*.tmp"))
-
-
-def test_quality_report_persists_as_a_source_snapshot(tmp_path):
-    store = EvidenceStore(tmp_path / "evidence.db")
-    store.initialize_schema()
-    store.append(
-        EvidenceTable.RUNS,
-        {
-            "id": "run-1",
-            "run_type": "ingest_lol",
-            "started_at": pd.Timestamp("2026-07-26T08:15:00Z").to_pydatetime(),
-            "status": "started",
-            "idempotency_key": "run-1",
-            "payload_json": {},
-        },
-    )
-    _, _, report = quarantine_oracles_elixir_data(pd.DataFrame(_game("g1")))
-
-    snapshot_id = persist_quality_report(store, report, run_id="run-1")
-
-    snapshot = store.get(EvidenceTable.SOURCE_SNAPSHOTS, snapshot_id)
-    assert snapshot["provider"] == "oracles_elixir"
-    assert snapshot["schema_fingerprint"] == report.schema_fingerprint
 
 
 def test_data_generator_applies_quality_gate_before_entity_cleaning(

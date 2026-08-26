@@ -70,6 +70,29 @@ def _flatten_config_values(value):
         yield value
 
 
+def test_every_tracked_config_is_valid_json():
+    for path in (ROOT / "config").rglob("*.json"):
+        assert json.loads(path.read_text()) is not None, path
+
+
+def test_product_league_profiles_and_read_only_market_are_consistent():
+    product = json.loads((ROOT / "config/product/product.json").read_text())
+    league_config = json.loads(
+        (ROOT / "config/lol/data_ingestion/considered_leagues.json").read_text()
+    )
+    profiles = league_config["profiles"]
+    training_profile = product["leagues"]["training_profile"]
+    prediction_profile = product["leagues"]["prediction_profile"]
+    exclusions = set(product["leagues"]["actionable_exclusions"])
+
+    assert product["market"] == {"read_only": True}
+    assert product["timezone"] == "Europe/Rome"
+    assert training_profile in profiles
+    assert prediction_profile in profiles
+    assert exclusions <= set(profiles[prediction_profile])
+    assert set(profiles[prediction_profile]) <= set(profiles[training_profile])
+
+
 def test_training_configs_do_not_use_deprecated_feature_families():
     forbidden = ("atakhan", "_std")
 

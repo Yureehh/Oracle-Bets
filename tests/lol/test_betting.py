@@ -1,6 +1,5 @@
 import pytest
 from oracle_bets_core.betting import (
-    build_edge_signal,
     decimal_odds_from_probability,
     expected_edge,
     kelly_fraction,
@@ -14,7 +13,6 @@ MARKET_ODDS = 2.1
 MODEL_PROBABILITY = 0.55
 EXPECTED_EDGE = 0.155
 EXPECTED_HALF_KELLY = 0.0705
-EXPECTED_IMPLIED = 0.4762
 PROP_MEAN = 27.5
 PROP_LINE = 26.5
 PROP_SIGMA = 2.0
@@ -27,16 +25,6 @@ def test_betting_math_for_positive_edge():
     assert (
         round(kelly_fraction(MARKET_ODDS, MODEL_PROBABILITY), 4) == EXPECTED_HALF_KELLY
     )
-
-
-def test_edge_signal_contains_half_kelly():
-    signal = build_edge_signal(
-        model_probability=MODEL_PROBABILITY, market_odds=MARKET_ODDS
-    )
-
-    assert round(signal.implied_probability, 4) == EXPECTED_IMPLIED
-    assert round(signal.edge, 3) == EXPECTED_EDGE
-    assert round(signal.half_kelly_fraction, 4) == EXPECTED_HALF_KELLY
 
 
 def test_over_under_pricing_uses_residual_distribution():
