@@ -17,6 +17,8 @@ The repository contains no automated betting, wallet, signing, private-key,
 order-submission, or fund-movement path. Counter-Strike and real sports are
 future architecture concerns, not active implementations.
 
-Read the [system design and operating decisions](system.md), use the
-[command runbook](commands.md), and check the [roadmap](roadmap.md) before any
-model promotion or paper proposal.
+Start with the [command runbook](commands.md): its **Order of use** section is
+the canonical CLI and Discord guide from setup through review, confirmation,
+settlement, and performance. Read the [system design and operating
+decisions](system.md) for why the pipeline works this way, and check the
+[roadmap](roadmap.md) before changing strategy or promoting a model.

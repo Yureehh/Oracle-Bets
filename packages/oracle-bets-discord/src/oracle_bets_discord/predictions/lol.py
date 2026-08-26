@@ -5,10 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from oracle_bets_core.betting import (
-    OverUnderSignal,
-    decimal_odds_from_probability,
-)
+from oracle_bets_core.betting import decimal_odds_from_probability
 from oracle_bets_core.pd import pd
 
 from oracle_bets_discord.formatting import (
@@ -287,89 +284,5 @@ def format_research_forecasts(
         lines.append("- Prop over/under probabilities require an explicit market line.")
     if len(lines) == 1:
         return ""
-    lines.append("These forecasts cannot create paper proposals.")
+    lines.append("These forecasts do not record bets.")
     return "\n".join(lines)
-
-
-def _format_prop_line(label: str, signal: OverUnderSignal) -> str:
-    lines = [
-        f"{label} {signal.line:g}",
-        f"- Over: {_pct(signal.over_probability)} | fair {signal.over_fair_odds:.2f}",
-        f"- Under: {_pct(signal.under_probability)} | fair {signal.under_fair_odds:.2f}",
-    ]
-    if signal.over_edge is not None or signal.under_edge is not None:
-        over_edge = (
-            f"{signal.over_edge * 100:+.1f}%" if signal.over_edge is not None else "n/a"
-        )
-        under_edge = (
-            f"{signal.under_edge * 100:+.1f}%"
-            if signal.under_edge is not None
-            else "n/a"
-        )
-        lines.append(f"- Edge: Over {over_edge} | Under {under_edge}")
-    if (
-        signal.over_half_kelly_fraction is not None
-        or signal.under_half_kelly_fraction is not None
-    ):
-        over_stake = (
-            f"{signal.over_half_kelly_fraction * 100:.1f}%"
-            if signal.over_half_kelly_fraction is not None
-            else "n/a"
-        )
-        under_stake = (
-            f"{signal.under_half_kelly_fraction * 100:.1f}%"
-            if signal.under_half_kelly_fraction is not None
-            else "n/a"
-        )
-        lines.append(f"- Half-Kelly: Over {over_stake} | Under {under_stake}")
-    return "\n".join(lines)
-
-
-def _format_manual_research_note(
-    blue_team_name: str, red_team_name: str, line_signals: dict[str, OverUnderSignal]
-) -> str:
-    _ = blue_team_name, red_team_name
-    if not any(
-        (signal.over_edge or 0) > 0 or (signal.under_edge or 0) > 0
-        for signal in line_signals.values()
-    ):
-        return ""
-    return (
-        "\n\nPaper research only. Record any real owner decision manually in "
-        "canonical evidence; Oracle Bets never places a bet."
-    )
-
-
-def format_prop_market_output(
-    *,
-    blue_team_name: str,
-    red_team_name: str,
-    gamelength: float,
-    total_kills: float,
-    total_towers: float,
-    line_signals: dict[str, OverUnderSignal],
-    calibration_sources: dict[str, str],
-    warnings: list[str],
-    notes: list[str] | None = None,
-) -> str:
-    output = (
-        f"**LoL Props: {blue_team_name} vs {red_team_name}**\n\n"
-        f"- Length: **{gamelength:.1f}m**\n"
-        f"- Kills: **{total_kills:.1f}**\n"
-        f"- Towers: **{total_towers:.1f}**\n"
-    )
-    for label, signal in line_signals.items():
-        output += "\n" + _format_prop_line(label, signal)
-    output += _format_manual_research_note(
-        blue_team_name,
-        red_team_name,
-        line_signals,
-    )
-    if calibration_sources:
-        sources = " | ".join(
-            f"{label}: {source}" for label, source in calibration_sources.items()
-        )
-        output += f"\n\n- Probability source: {sources}"
-    output += f"\n\nConfidence: **{confidence_label(warnings)}**"
-    output += format_warnings([*warnings, *(notes or [])])
-    return output

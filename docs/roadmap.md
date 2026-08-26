@@ -1,38 +1,53 @@
-# Roadmap and status board
+# Roadmap and status
 
-| Status | Priority | Capability | Next gate |
-| --- | --- | --- | --- |
-| Done | P0 | Legacy champion containment | Champion quarantined; undecided legacy proposals corrected/expired |
-| Done | P0 | Winner V2 preprocessing correctness | Signed deltas retained, stale opponent deltas overwritten, production correlation/CV pruning removed |
-| Done | P0 | Direct historical series reconstruction | Sequential BO1/3/5 rules, frozen Map-1 features, rejection manifest |
-| Done | P0 | Feature lineage and temporal partitions | Source/availability/swap/eligibility lineage; timestamp- and series-atomic 60/10/10/5/15 lifecycle |
-| Done | P0 | Direct-series model family | Rating logistic baseline, ten week-block LightGBM members, held-out blend/calibration/bound |
-| Done | P0 | Fail-closed serving health | Direct ratings, parity, symmetry contract, forbidden fields, bundle actionability |
-| Done | P0 | Immutable serving artifact ownership | History refresh writes league-rating inputs under processed data; only candidate promotion writes serving bundles |
-| Done | P0 | Winner-only paper policy | Model favorite, 57.5% sealed-evidence floor, 5% conservative edge, 48–24h, disagreement and attribution quarantines |
-| Done | P0 | Safe owner acceptance | Fresh two-book re-quote plus separate 120-second Confirm; flat one-unit evidence |
-| Done | P0 | Market contract safety | Resolution source and token orientation required; failures isolated per token; no trading surface |
-| Done | P0 | Exact owner-selected market review | Canonical Polymarket event URLs use exact slug lookup, typed series contracts, executable CLOB quotes, one report pair, and explicit `--publish` |
-| Done | P0 | Gateway-only delivery | Durable send intent, history recovery, process lock; no webhook duplication path |
-| Done | P1 | Manual owner settlement | Win/Loss/Push/Void with source reference; no automatic reconciliation |
-| Done | P2 | Read-only timing observer | Hourly evidence/report snapshots; provisional 48–24h policy |
-| Done | P2 | Experimental next-map dataset/model | Frozen prematch plus manually sourced map state; shadow-only and excluded from the normal bundle |
-| Review | P0 | Latest series-winner Optuna study | Run `20260821T112810_829000Z` improved aggregate and actionable log loss versus its rating baseline; hard performance gates passed, while calibration-intercept, holdout-reuse, and small non-actionable cohort findings remain explicit paper-mode warnings |
-| Done | P0 | Calibration-safe tuning selection | Unsafe slope/intercept candidates cannot win calibration selection merely through lower log loss |
-| Done | P0 | Experimental next-map tuning review | Independent study required; bootstrap and cohorts cluster by series; it is not required by normal training or promotion |
-| Blocked | P0 | First next-map Optuna study | Run `20260814T005027_980518Z` improved aggregate log loss by 2.72% but improvement was not statistically proven; ECE, calibration intercept, and multiple cohorts failed; parameters were not promoted |
-| Done | P0 | Holdout exposure disclosure | Reviews record date window/label hash and flag overlapping evidence; reused evidence is never described as fresh confirmation |
-| Done | P0 | Clean V2 rebuild and manual first promotion | Champion `lol-20260821T131348_905412Z` passed structural, aggregate, actionable, checksum, symmetry, lineage, and train/serve gates; calibration intercept remains a paper warning |
-| Now | P1 | Accumulate owner-selected prematch paper evidence | Submit exact Polymarket links, use only gated series-winner proposals, and collect at least 200 manually settled signals with positive lower-95% ROI and CLV plus healthy calibration |
-| Later | P2 | Reactive evidence sufficiency | Separate 200-series-clustered gate; no martingale or overlapping prematch exposure |
-| Later | P2 | Provider-backed settlement | Explicit opt-in only after identity/rule/conflict/correction proof |
-| Later | P3 | Portfolio sizing | Correlation-aware exposure before any real-money sizing claim |
-| Later | P3 | Counter-Strike / real-sport adapters | Only after LoL has credible sealed and settled evidence |
+## Ready now
 
-The repository is not proven profitable. A complete healthy direct-series V2
-bundle is now actionable, while the legacy champion remains quarantined.
-Proposal publication is enabled only through the deterministic series-winner
-gates. The next-map study remains experimental and cannot delay the direct-series
-paper workflow.
-Real-money consideration remains blocked until every evidence gate is met;
-individual predictions can always lose.
+- Independent symmetric direct-series champion plus experimental prematch map,
+  legal BO3/BO5 totals, handicaps, and scalar prop forecasts.
+- Owner-selected one/two-link review for Polymarket and Thunderpick.
+- Public read-only Polymarket metadata/books; no unsupported-contract book
+  fan-out; no Thunderpick automation.
+- Exact-semantic provider comparison with model probability, fair odds, implied
+  probability, EV, and best provider.
+- Compact Discord/Markdown output and detailed normalized JSON evidence.
+- One owner-only `/oracle` console: Review Markets, Record Bet, Open Bets,
+  Closed Bets, Schedule, Performance, and Health.
+- Unified append-only paper/real ledger with manual settlement and per-currency
+  performance.
+- No proposals, automatic acceptance, automatic settlement, betting, wallet,
+  signing, bookmaker login, scraping, or fund movement.
+
+## Current work: accumulate evidence
+
+The product is operational research software, not a proven profitable system.
+The owner should review selected fixtures, record every actual paper decision
+including negative-EV discretion, settle it from an official source, and inspect
+calibration, CLV where available, and ROI by target/provider/league.
+
+Real-money sizing or recommendations remain blocked until at least 200 settled
+model-backed paper bets show healthy calibration, positive CLV, cohort stability,
+and a positive lower-95% fixture-clustered ROI. Recent wins or losses must not
+change thresholds or models ad hoc.
+
+## Next
+
+1. Accumulate enough settled evidence to compare direct series, prematch map,
+   derived totals/handicaps, and calibrated props separately.
+2. Add a deliberate settlement-correction event before considering any
+   provider-assisted result lookup. Settlement remains manual by default.
+3. Add controlled closing-price capture for CLV only after the manual ledger has
+   enough entries to justify the operational cost.
+4. Improve Discord integration testing at the interaction boundary, including
+   fixture selection, confirmation expiry, pagination, and restart behavior.
+5. Add correlation-aware portfolio research before any real-money exposure
+   recommendation.
+
+## Later
+
+- Draft-aware map research with timestamped champions, bans, sides, patch,
+  player identities, source references, exact swap symmetry, and a separate
+  evidence cohort.
+- Reactive next-map research using frozen prematch features plus manually
+  sourced series state; no martingale or loss chasing.
+- Counter-Strike and real-sport adapters only after LoL paper evidence is
+  credible.

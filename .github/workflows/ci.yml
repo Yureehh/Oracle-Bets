@@ -35,7 +35,7 @@ jobs:
       - name: Verify dependency lock
         run: uv lock --check
       - name: Install exact dependencies
-        run: uv sync --frozen --extra dev
+        run: uv sync --frozen --extra dev --extra discord-bot
       - name: Lint Python
         run: uv run ruff check packages tests
       - name: Verify Python formatting
@@ -51,6 +51,8 @@ jobs:
         run: uv run pytest -q
       - name: Compile packages
         run: uv run python -m compileall -q packages
+      - name: Smoke-test optional Discord package
+        run: uv run python -c "import discord; import oracle_bets_discord.bot"
       - name: Exercise evidence backup and restore
         run: |
           evidence_dir="$(mktemp -d)"

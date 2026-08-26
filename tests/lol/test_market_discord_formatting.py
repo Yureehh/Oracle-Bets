@@ -1,33 +1,9 @@
-from oracle_bets_core.betting import price_over_under
 from oracle_bets_discord.predictions.lol import (
-    format_prop_market_output,
     format_research_forecasts,
     format_winner_market_output,
 )
 
 DISCORD_MESSAGE_LIMIT = 2000
-
-
-def test_prop_output_explains_line_pricing_and_confidence():
-    signal = price_over_under(mean=27.4, line=26.5, sigma=2.5, over_odds=1.85)
-    output = format_prop_market_output(
-        blue_team_name="Team WE",
-        red_team_name="LNG Esports",
-        gamelength=31.8,
-        total_kills=27.4,
-        total_towers=12.9,
-        line_signals={"Kills": signal},
-        calibration_sources={"Kills": "prop calibrator (empirical_global)"},
-        warnings=[],
-    )
-
-    assert "Kills: **27.4**" in output
-    assert "fair" in output
-    assert "Edge" in output
-    assert "Half-Kelly" in output
-    assert "Probability source" in output
-    assert "Confidence" in output
-    assert "Paper research only" in output
 
 
 def test_winner_output_is_compact_and_betting_focused():
@@ -85,7 +61,7 @@ def test_research_forecasts_show_map_one_and_prop_means_without_action_language(
     assert "Kills 27.5" in output
     assert "Towers 12.1" in output
     assert "require an explicit market line" in output
-    assert "cannot create paper proposals" in output
+    assert "do not record bets" in output
 
 
 def test_side_note_does_not_lower_confidence_tier():

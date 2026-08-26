@@ -1,33 +1,24 @@
 import asyncio
-import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from oracle_bets_core.evidence.settlement import SettlementResult
+from oracle_bets_core.evidence import EvidenceStore
 from oracle_bets_discord.bot import (
+    HUB_BUTTON_LAYOUT,
     _acquire_instance_lock,
     _is_owner,
-    _proposal_message,
-    _publication_intent,
-    _publication_marker,
-    _recover_message_id,
-    _report_for_run,
-    _send_or_recover,
-    _settlement_message,
-    _unpublished_actionable_rows,
-    _unpublished_open_position_rows,
-    _unpublished_review_rows,
+    _performance_result,
 )
 from oracle_bets_discord.delivery import (
     DiscordDeliveryMode,
     check_gateway_access,
     resolve_delivery_mode,
 )
-from oracle_bets_discord.formatting import DELIVERY_TARGET, split_message
+from oracle_bets_discord.ui.charts import performance_png
+from oracle_bets_discord.ui.presentation import health_message, schedule_pages
 
-EXPECTED_READ_CALLS = 3
-EXPECTED_HISTORY_LIMIT = 100
-RECOVERED_MESSAGE_ID = 2
+EXPECTED_READ_CALLS = 2
 
 
 def test_delivery_mode_is_explicit_and_gateway_prevents_webhook_duplication():
@@ -54,56 +45,7 @@ def test_explicit_empty_environment_does_not_fall_back_to_process_environment(
     monkeypatch,
 ):
     monkeypatch.setenv("DISCORD_DELIVERY_MODE", "gateway")
-
     assert resolve_delivery_mode(None, {}) is DiscordDeliveryMode.OFF
-
-
-def test_message_splitter_preserves_content_and_limits_parts():
-    content = "A" * 1800 + "\n\n" + "B" * 1800 + "\n\nfinal"
-    parts = split_message(content)
-
-    assert all(len(part) <= DELIVERY_TARGET for part in parts)
-    assert "".join(parts) == content
-
-
-def test_proposal_message_is_bounded_and_contains_only_review_facts():
-    message = _proposal_message(
-        {
-            "proposal_id": "proposal-1",
-            "run_id": "daily-1",
-            "league": "LCK",
-            "team_a": "T1",
-            "team_b": "Gen.G",
-            "target": "series_winner",
-            "selection_id": "series_winner:::T1",
-            "probability_point": "0.61",
-            "stake_units": "1",
-            "payload": {"odds": 2.0, "conservative_edge": 0.12},
-        }
-    )
-
-    assert len(message) <= DELIVERY_TARGET
-    assert "Paper proposal" in message
-    assert "wallet" not in message.casefold()
-
-
-def test_open_settlement_message_is_bounded_and_has_owner_choices():
-    message = _settlement_message(
-        {
-            "position_id": "position-1",
-            "league": "LCK",
-            "team_a": "T1",
-            "team_b": "Gen.G",
-            "selection_id": "T1",
-            "decimal_odds": "2.0",
-            "stake_units": "1",
-            "state": "open",
-        }
-    )
-
-    assert len(message) <= DELIVERY_TARGET
-    assert all(result.value.title() in message for result in SettlementResult)
-    assert "LLM" not in message
 
 
 def test_discord_controls_reject_non_owner_identity():
@@ -111,171 +53,76 @@ def test_discord_controls_reject_non_owner_identity():
     assert not _is_owner(41, 42)
 
 
-def test_discord_publication_selects_only_unpublished_live_controls():
-    pending = [
-        {"proposal_id": "p1", "gate_state": "paper_actionable"},
-        {"proposal_id": "p2", "gate_state": "blocked"},
-        {"proposal_id": "p3", "gate_state": "research_only"},
-    ]
-    open_positions = [{"position_id": "open-1"}, {"position_id": "open-2"}]
-
-    assert _unpublished_actionable_rows(pending, {"p1": 10}) == [pending[2]]
-    assert _unpublished_open_position_rows(open_positions, {"open-2": 20}) == [
-        open_positions[0]
-    ]
-
-
-def test_manual_review_publication_filters_completed_requests():
-    requests = [
-        {"review_id": "r1", "run_id": "run-1"},
-        {"review_id": "r2", "run_id": "run-2"},
-    ]
-
-    assert _unpublished_review_rows(requests, {"r1": 10}) == [requests[1]]
-
-
-def test_proposal_can_find_report_from_manual_market_review(tmp_path, monkeypatch):
-    report_dir = tmp_path / "market_reviews"
-    report_dir.mkdir()
-    report = report_dir / "20260821T120000Z.json"
-    report.write_text(json.dumps({"evidence_run_id": "run-1"}), encoding="utf-8")
-    markdown = report.with_suffix(".md")
-    markdown.write_text("# Review", encoding="utf-8")
-    monkeypatch.setattr("oracle_bets_discord.bot.REPORTS_DIR", tmp_path)
-
-    assert _report_for_run("run-1") == markdown
-
-
-def test_publication_intent_is_durable_before_send_and_marker_is_stable():
-    class Store:
-        def __init__(self):
-            self.rows = []
-
-        def append(self, table, row):
-            self.rows.append((table, row))
-
-        def get(self, table, record_id):
-            del table, record_id
-
-    store = Store()
-    row = {"proposal_id": "proposal-1", "run_id": "daily-1"}
-
-    intent = _publication_intent(store, row, kind="proposal")
-
-    assert store.rows[0][1]["event_type"] == "discord_proposal_publish_intent"
-    assert store.rows[0][1]["status"] == "pending"
-    assert intent["marker"] == _publication_marker("proposal", "proposal-1")
-    assert intent["marker"] in _proposal_message(row, marker=intent["marker"])
-
-    long_row = row | {"league": "L" * 3000}
-    bounded = _proposal_message(long_row, marker=intent["marker"])
-    assert len(bounded) <= DELIVERY_TARGET
-    assert bounded.endswith(intent["marker"])
-
-
 def test_gateway_process_lock_rejects_second_instance(tmp_path):
-    first = _acquire_instance_lock(tmp_path / "discord.lock")
+    lock_path = tmp_path / "discord.lock"
+    first = _acquire_instance_lock(lock_path)
     try:
-        with pytest.raises(RuntimeError, match="already running"):
-            _acquire_instance_lock(tmp_path / "discord.lock")
+        assert lock_path.read_text().strip().isdigit()
+        with pytest.raises(RuntimeError, match="launchctl bootout"):
+            _acquire_instance_lock(lock_path)
     finally:
         first.close()
 
 
-def test_gateway_recovers_a_marked_message_without_resending():
-    class Channel:
-        async def history(self, **kwargs):
-            assert kwargs["limit"] == EXPECTED_HISTORY_LIMIT
-            for row in (
-                SimpleNamespace(
-                    id=1, content="unrelated", author=SimpleNamespace(id=7)
-                ),
-                SimpleNamespace(
-                    id=9,
-                    content="copied [oracle-ref:proposal:abc]",
-                    author=SimpleNamespace(id=8),
-                ),
-                SimpleNamespace(
-                    id=2,
-                    content="card [oracle-ref:proposal:abc]",
-                    author=SimpleNamespace(id=7),
-                ),
-            ):
-                yield row
-
-    recovered = asyncio.run(
-        _recover_message_id(
-            Channel(),
-            marker="[oracle-ref:proposal:abc]",
-            after="2026-08-10T10:00:00+00:00",
-            author_id=7,
-        )
+def test_owner_console_button_rows_match_manual_workflow():
+    assert HUB_BUTTON_LAYOUT == (
+        ("Review Markets", "Record Bet", "Open Bets", "Closed Bets"),
+        ("Schedule", "Performance", "Health"),
     )
 
-    assert recovered == RECOVERED_MESSAGE_ID
+
+def test_schedule_pages_use_short_utc_time_then_league_bo_and_teams():
+    pages = schedule_pages(
+        [
+            {
+                "start_utc": "2026-08-22 11:00:00+00:00",
+                "league": "LCK",
+                "best_of": 3,
+                "team_a": "DN SOOPers",
+                "team_b": "Kiwoom DRX",
+            }
+        ]
+    )
+    assert pages == [
+        "**Upcoming actionable fixtures (UTC)**\n"
+        "2026-08-22:11:00 · LCK · BO3 · **DN SOOPers vs Kiwoom DRX**"
+    ]
 
 
-def test_gateway_send_then_crash_recovers_without_duplicate():
+def test_health_message_is_sectioned_and_human_readable(monkeypatch):
+    monkeypatch.setattr(
+        "lol_bets.module.LoLBetsModule.artifact_health",
+        lambda _self: SimpleNamespace(ok=True),
+    )
+    monkeypatch.setattr(
+        "oracle_bets_core.markets.PolymarketGammaAdapter.search_markets",
+        lambda _self, _query, limit: [object()] if limit == 1 else [],
+    )
+
     class Store:
-        def __init__(self):
-            self.events = {}
+        @staticmethod
+        def integrity_check():
+            return "ok"
 
-        def get(self, _table, record_id):
-            return self.events.get(record_id)
+    class Registry:
+        @staticmethod
+        def champion_id():
+            return "lol-champion"
 
-        def append(self, _table, row):
-            self.events[row["id"]] = row
+        @staticmethod
+        def is_actionable(_champion):
+            return True
 
-    class Channel:
-        def __init__(self):
-            self.messages = []
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.bets.count_open_bets", lambda _store: 0
+    )
+    message = health_message(Store(), Registry())
 
-        async def history(self, **_kwargs):
-            for message in self.messages:
-                yield message
-
-    store = Store()
-    channel = Channel()
-    row = {"proposal_id": "proposal-1", "run_id": "daily-1"}
-    sends = 0
-
-    async def scenario():
-        nonlocal sends
-        first_intent = _publication_intent(store, row, kind="proposal")
-
-        async def send():
-            nonlocal sends
-            sends += 1
-            message = SimpleNamespace(
-                id=42,
-                content=_proposal_message(row, marker=first_intent["marker"]),
-                author=SimpleNamespace(id=7),
-            )
-            channel.messages.append(message)
-            return message
-
-        first = await _send_or_recover(
-            channel,
-            marker=first_intent["marker"],
-            after=first_intent["intent_at"],
-            author_id=7,
-            send=send,
-        )
-        restarted_intent = _publication_intent(store, row, kind="proposal")
-        second = await _send_or_recover(
-            channel,
-            marker=restarted_intent["marker"],
-            after=restarted_intent["intent_at"],
-            author_id=7,
-            send=send,
-        )
-        return first, second
-
-    first, second = asyncio.run(scenario())
-
-    assert first == (42, True)
-    assert second == (42, False)
-    assert sends == 1
+    assert "**Oracle Bets · System Health**" in message
+    assert "🟢 **All systems operational**" in message
+    assert "**Serving model**" in message
+    assert "**Evidence**" in message
+    assert "Thunderpick: 📝 Manual lines only" in message
 
 
 def test_live_doctor_uses_read_only_discord_requests():
@@ -297,16 +144,56 @@ def test_live_doctor_uses_read_only_discord_requests():
             self.calls.append((url, kwargs))
             if url.endswith("/users/@me"):
                 return Response({"username": "Oracle"})
-            if url.endswith("/messages"):
-                return Response([])
             return Response({"name": "paper-bets"})
 
     session = Session()
     result = check_gateway_access("token", "123", session=session)
 
-    assert result == {
-        "bot": "Oracle",
-        "channel": "paper-bets",
-        "history_readable": "yes",
-    }
+    assert result["bot"] == "Oracle"
+    assert result["channel"] == "paper-bets"
     assert len(session.calls) == EXPECTED_READ_CALLS
+
+
+def test_performance_returns_immediately_without_settled_bets(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    store.initialize_schema()
+
+    image, summary = performance_png([], mode="paper")
+
+    assert image == b""
+    assert summary["settled_bets"] == 0
+    assert not list(tmp_path.glob("*.png"))
+
+
+def test_performance_failure_becomes_visible_message(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("renderer exploded")
+
+    monkeypatch.setattr("oracle_bets_discord.ui.performance.performance_png", fail)
+    monkeypatch.setattr(
+        "oracle_bets_discord.ui.performance.performance_rows",
+        lambda *_args, **_kwargs: [object()],
+    )
+    monkeypatch.setattr(
+        "oracle_bets_discord.ui.performance.summarize_bets",
+        lambda *_args, **_kwargs: {"settled": 1},
+    )
+    monkeypatch.setattr(
+        "oracle_bets_discord.bot.logger.exception", lambda *_args, **_kwargs: None
+    )
+
+    image, message = asyncio.run(
+        _performance_result(object(), mode="paper", since=None)
+    )
+
+    assert image is None
+    assert "Performance chart failed" in message
+    assert "renderer exploded" not in message
+
+
+def test_discord_runtime_has_no_background_publisher_or_markers():
+    from oracle_bets_discord import bot
+
+    assert not hasattr(bot, "_publication_marker")
+    assert not hasattr(bot, "_send_or_recover")
+    assert "oracle-ref" not in Path(bot.__file__).read_text()

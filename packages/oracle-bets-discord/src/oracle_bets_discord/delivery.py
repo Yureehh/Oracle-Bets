@@ -55,17 +55,10 @@ def check_gateway_access(
         f"{DISCORD_API}/channels/{channel_id}", headers=headers, timeout=15
     )
     channel.raise_for_status()
-    history = http.get(
-        f"{DISCORD_API}/channels/{channel_id}/messages",
-        headers=headers,
-        params={"limit": 1},
-        timeout=15,
-    )
-    history.raise_for_status()
     return {
         "bot": str(user.json().get("username") or user.json().get("id") or "unknown"),
         "channel": str(
             channel.json().get("name") or channel.json().get("id") or channel_id
         ),
-        "history_readable": "yes",
+        "channel_accessible": "yes",
     }

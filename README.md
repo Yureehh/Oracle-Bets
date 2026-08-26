@@ -9,9 +9,11 @@ cache, generates chronological team/player features and ratings, reconstructs
 complete historical series, and normally trains five targets. The actionable
 Winner V2 model is a direct, symmetric series-winner model with a rating
 baseline, ten week-block LightGBM members, held-out calibration, and a
-conservative probability bound. Upcoming PandaScore fixtures are compared
-read-only with Polymarket, recorded in JSON/Markdown evidence, and delivered by
-one owner-only Discord Gateway bot.
+conservative probability bound. The owner submits exact Polymarket event links;
+the system inventories their contracts, compares independent probabilities with
+one current public quote per supported outcome, records compact JSON/Markdown
+evidence, and serves a unified paper/real tracking ledger through one owner-only
+Discord Gateway bot. Thunderpick lines are entered manually and never scraped.
 
 There is no automated betting, wallet, signing, private-key, order-submission,
 or fund-movement code.
@@ -33,26 +35,36 @@ export DISCORD_TOKEN="..."
 export DISCORD_CHANNEL_ID="..."
 export DISCORD_OWNER_USER_ID="..."
 export DISCORD_DELIVERY_MODE="gateway"
-# Optional advisory service:
-export OPENAI_API_KEY="..."
 ```
 
-## Owner workflow
+## First data setup
 
 ```bash
 uv run oracle-bets lol ingest
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol build-series
-uv run oracle-bets lol schedule --days 7
-uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL>
-uv run oracle-bets lol market-review <POLYMARKET_EVENT_URL> --publish
 ```
 
-The source refresh is built into ingestion. `market-review` uses only the exact
-owner-selected event links and is read-only; `--publish` queues a compact
-Discord review with the full report attached and records a separate interactive
-proposal only when every deterministic series-winner gate passes. Map 1 and
-scalar props remain clearly research-only. It still cannot place an order.
+These data commands are not needed before every paper review. For the normal
+owner flow, keep the Gateway bot running and use either Discord or the CLI:
+
+```bash
+uv run oracle-bets discord run
+uv run oracle-bets lol schedule --days 14
+uv run oracle-bets lol market-review "<URL1> <URL2>"
+uv run oracle-bets bet list --state open --mode paper
+```
+
+The source refresh is built into ingestion. `market-review` uses only one or two
+exact owner-selected Polymarket/Thunderpick links. Polymarket is read-only;
+Thunderpick is link-plus-manual-lines. The review compares independent series,
+experimental map/derived, and calibrated prop probabilities where compatible.
+Unsupported specials are counted in the compact report and preserved in JSON.
+
+Run `uv run oracle-bets discord run`, then use the owner-only `/oracle` hub. The
+first row contains Review Markets, Record Bet, Open Bets, and Closed Bets; the
+second contains Schedule, Performance, and Health. Every paper or real entry is
+owner-confirmed and settlement is manual.
 
 ## Explicit research retuning
 
@@ -98,13 +110,15 @@ uv run mkdocs build --strict
 uv run oracle-bets lol health
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol validate-winner-model
+uv run oracle-bets lol validate-market-strategies
 uv run oracle-bets lol market-check
 uv run oracle-bets evidence health
-uv run oracle-bets daily lol --dry-run --no-ai-review
+uv run oracle-bets daily lol --dry-run
 uv run oracle-bets discord doctor
 ```
 
-Read the [documentation](docs/index.md) and [command reference](docs/commands.md).
+Start with the [ordered CLI and Discord usage guide](docs/commands.md), then read
+the [system documentation](docs/index.md).
 
 Historical data is supplied by [Oracle's Elixir](https://www.oracleselixir.com).
 This is research software, not financial advice; betting can lose money.
