@@ -12,6 +12,8 @@ from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.evidence.identity import EntityType, canonical_identity_id
 from oracle_bets_core.pd import pd
 
+from lol_bets.inference.team_resolver import canonical_team_name
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -55,6 +57,21 @@ def sync_schedule_identity_graph(
                 },
             )
         for side in ("a", "b"):
+            team_id = _text(row.get(f"team_{side}_id"))
+            team_name = canonical_team_name(_text(row.get(f"team_{side}")))
+            if team_name:
+                _add_identity(
+                    identities,
+                    links,
+                    entity_type=EntityType.TEAM,
+                    provider="pandascore",
+                    provider_entity_id=team_id or team_name,
+                    canonical_name=team_name,
+                    classification="professional_team",
+                    created_at=observed_at,
+                    payload={"source_match_key": _text(row.get("match_key"))},
+                    identity_id_override=canonical_team_identity_id(team_name),
+                )
             for player in _lineup(row.get(f"team_{side}_lineup_json")):
                 provider_player_id = _text(player.get("provider_player_id"))
                 name = _text(player.get("name"))
@@ -142,10 +159,19 @@ def _history_people_teams_and_leagues(
                 entity_type=entity_type,
                 provider="oracles_elixir",
                 provider_entity_id=str(provider_id),
-                canonical_name=str(first[name_column]),
+                canonical_name=(
+                    canonical_team_name(str(first[name_column]))
+                    if entity_type is EntityType.TEAM
+                    else str(first[name_column])
+                ),
                 classification=classification,
                 created_at=_timestamp(first["date"]),
                 payload={},
+                identity_id_override=(
+                    canonical_team_identity_id(str(first[name_column]))
+                    if entity_type is EntityType.TEAM
+                    else None
+                ),
             )
     leagues = history[history["league"].notna()].sort_values(
         "date",
@@ -173,8 +199,8 @@ def _historical_map_rows(history: pd.DataFrame) -> pd.DataFrame:
             .drop_duplicates(subset=["teamid"])
             .sort_values("teamid", kind="mergesort")
         )
-        team_ids = tuple(teams["teamid"].astype(str))
         team_names = tuple(teams["teamname"].fillna("").astype(str))
+        team_ids = tuple(canonical_team_identity_id(name) for name in team_names)
         maps.append(
             {
                 "gameid": str(game_id),
@@ -297,12 +323,10 @@ def _add_identity(
     classification: str,
     created_at: datetime,
     payload: dict[str, Any],
+    identity_id_override: str | None = None,
 ) -> None:
-    identity_id = canonical_identity_id(
-        "lol",
-        entity_type,
-        provider,
-        provider_entity_id,
+    identity_id = identity_id_override or canonical_identity_id(
+        "lol", entity_type, provider, provider_entity_id
     )
     identities.setdefault(
         identity_id,
@@ -338,6 +362,16 @@ def _add_identity(
     )
 
 
+def canonical_team_identity_id(name: str) -> str:
+    """Return the one internal team identity shared by every provider."""
+    canonical = canonical_team_name(name).strip()
+    if not canonical:
+        raise ValueError("team name cannot be empty")
+    return canonical_identity_id(
+        "lol", EntityType.TEAM, "canonical", canonical.casefold()
+    )
+
+
 def _sync_records(
     store: EvidenceStore,
     identities: Iterable[dict[str, Any]],
@@ -356,8 +390,12 @@ def _sync_records(
         row for row in identity_rows if row["id"] not in existing_identities
     ]
     new_links = [row for row in link_rows if row["id"] not in existing_links]
-    store.append_many(EvidenceTable.IDENTITIES, new_identities)
-    store.append_many(EvidenceTable.PROVIDER_LINKS, new_links)
+    store.append_transaction(
+        [
+            *((EvidenceTable.IDENTITIES, row) for row in new_identities),
+            *((EvidenceTable.PROVIDER_LINKS, row) for row in new_links),
+        ]
+    )
     return IdentityGraphSyncResult(
         discovered_identities=len(identity_rows),
         discovered_links=len(link_rows),

@@ -25,7 +25,11 @@ from oracle_bets_core.paths import (
 )
 from oracle_bets_core.pd import pd
 
-from lol_bets.operations.identity import sync_schedule_identity_graph
+from lol_bets.inference.team_resolver import canonical_team_name
+from lol_bets.operations.identity import (
+    canonical_team_identity_id,
+    sync_schedule_identity_graph,
+)
 from lol_bets.operations.models import ModelRegistry
 
 RESEARCH_PROP_TARGETS = frozenset({"gamelength", "total_kills", "total_towers"})
@@ -112,7 +116,7 @@ def record_daily_evidence(
         fixture_id = fixtures.get(_fixture_lookup_key(row))
         if fixture_id is None:
             continue
-        selection_id = _identity_id(str(row["selection"]))
+        selection_id = _selection_id(str(row["selection"]), str(row.get("market")))
         point = float(row["model_value"])
         lower = float(row.get("probability_lower", point))
         upper = float(row.get("probability_upper", point))
@@ -233,7 +237,7 @@ def _record_typed_market_actions(
             continue
         target = str(action.get("target") or "unknown")
         prediction_id = predictions_by_selection.get(
-            (fixture_id, target, _identity_id(str(action["selection"])))
+            (fixture_id, target, _selection_id(str(action["selection"]), target))
         )
         if prediction_id is None and action.get("probability") is not None:
             prediction = _action_prediction_record(
@@ -346,7 +350,7 @@ def _action_prediction_record(
 ) -> dict[str, Any]:
     """Build one derived/experimental probability used by a reviewed contract."""
     target = str(action["target"])
-    selection_id = _identity_id(str(action["selection"]))
+    selection_id = _selection_id(str(action["selection"]), target)
     game_number = action.get("game_number")
     line = action.get("line")
     prediction_id = _id(
@@ -482,12 +486,12 @@ def _record_fixtures(
     prior_fixtures = list(store.list(EvidenceTable.FIXTURES))
     corrected_fixture_ids = _corrected_target_ids(store, EvidenceTable.FIXTURES)
     for _, row in schedule.iterrows():
-        team_a = str(row.get("team_a") or "").strip()
-        team_b = str(row.get("team_b") or "").strip()
+        team_a = canonical_team_name(str(row.get("team_a") or ""))
+        team_b = canonical_team_name(str(row.get("team_b") or ""))
         if not team_a or not team_b:
             continue
         for name in (team_a, team_b):
-            identity_id = _identity_id(name)
+            identity_id = _team_identity_id(name)
             _append_if_missing(
                 store,
                 EvidenceTable.IDENTITIES,
@@ -514,8 +518,8 @@ def _record_fixtures(
                 "run_id": run_id,
                 "sport": "lol",
                 "competition_id": str(row.get("league") or "unknown"),
-                "team_a_identity_id": _identity_id(team_a),
-                "team_b_identity_id": _identity_id(team_b),
+                "team_a_identity_id": _team_identity_id(team_a),
+                "team_b_identity_id": _team_identity_id(team_b),
                 "start_time": _as_utc(row["start_utc"]),
                 "best_of": int(row.get("best_of") or 1),
                 "status": str(row.get("status") or "scheduled"),
@@ -876,15 +880,21 @@ def _fixture_lookup_key(row: Any) -> str:
     return "|".join(
         (
             str(row.get("league") or "unknown"),
-            str(row.get("team_a") or "").casefold(),
-            str(row.get("team_b") or "").casefold(),
+            canonical_team_name(str(row.get("team_a") or "")).casefold(),
+            canonical_team_name(str(row.get("team_b") or "")).casefold(),
             _as_utc(row.get("start_utc")).isoformat(),
         )
     )
 
 
-def _identity_id(name: str) -> str:
-    return _id("team", name.casefold())
+def _team_identity_id(name: str) -> str:
+    return canonical_team_identity_id(name)
+
+
+def _selection_id(name: str, target: str) -> str:
+    if target in {"winner", "map_winner", "series_winner"}:
+        return _team_identity_id(name)
+    return _id("selection", name.casefold())
 
 
 def _id(prefix: str, value: str) -> str:

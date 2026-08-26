@@ -17,6 +17,7 @@ EXPECTED_REPORT_FILES = 2
 REPORT_SCHEMA_VERSION = 4
 EXPECTED_COMPARISONS = 2
 BEST_ODDS = 1.9
+BEST_OF_FIVE = 5
 URL = "https://polymarket.com/esports/league-of-legends/lpl/lol-we-tes-2026-08-22"
 
 
@@ -53,6 +54,30 @@ def _event() -> PolymarketEvent:
     )
 
 
+def _approved_schedule(
+    path,
+    *,
+    start="2026-08-22T20:00:00Z",
+    best_of=3,
+):
+    schedule = pd.DataFrame(
+        [
+            {
+                "match_key": "pandascore:approved",
+                "provider": "pandascore",
+                "provider_match_id": "approved",
+                "league": "LPL",
+                "team_a": "Team WE",
+                "team_b": "Top Esports",
+                "start_utc": start,
+                "best_of": best_of,
+                "status": "not_started",
+            }
+        ]
+    )
+    schedule.to_parquet(path)
+
+
 class _Gamma:
     def __init__(self):
         self.calls = []
@@ -66,7 +91,9 @@ def test_manual_review_uses_exact_event_and_writes_one_report_pair(
     tmp_path, monkeypatch
 ):
     gamma = _Gamma()
-    monkeypatch.setattr(manual_market, "SCHEDULE", tmp_path / "missing.parquet")
+    schedule_path = tmp_path / "schedule.parquet"
+    _approved_schedule(schedule_path)
+    monkeypatch.setattr(manual_market, "SCHEDULE", schedule_path)
 
     def fake_build(schedule, **kwargs):
         kwargs["snapshot_sink"].extend(
@@ -103,10 +130,69 @@ def test_manual_review_uses_exact_event_and_writes_one_report_pair(
     assert "## Contract inventory" not in markdown
 
 
-def test_manual_review_persists_evidence_without_queueing_discord(
+def test_market_only_metadata_is_inventory_without_model_inference(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(manual_market, "SCHEDULE", tmp_path / "missing.parquet")
+    monkeypatch.setattr(
+        manual_market,
+        "_build_prediction_messages",
+        lambda *_args, **_kwargs: pytest.fail(
+            "market metadata must not authorize inference"
+        ),
+    )
+
+    result = manual_market.review_polymarket_events(
+        [URL],
+        gamma=_Gamma(),
+        report_dir=tmp_path / "reports",
+        now=NOW,
+    )
+
+    assert result.fixtures == result.predictions == 0
+    assert result.failures[0]["reason"] == "approved_fixture_required"
+    report = json.loads(result.report_paths[0].read_text())
+    assert report["provider_results"][0]["contract_count"] == 1
+
+
+def test_approved_schedule_remains_authoritative_for_inference(tmp_path, monkeypatch):
+    schedule_path = tmp_path / "schedule.parquet"
+    _approved_schedule(
+        schedule_path,
+        start="2026-08-22T20:30:00Z",
+        best_of=5,
+    )
+    monkeypatch.setattr(manual_market, "SCHEDULE", schedule_path)
+    captured = {}
+
+    def fake_build(schedule, **_kwargs):
+        captured.update(schedule.iloc[0].to_dict())
+        return [], [{"status": "predicted"}]
+
+    monkeypatch.setattr(manual_market, "_build_prediction_messages", fake_build)
+    monkeypatch.setattr(
+        manual_market, "record_daily_evidence", lambda **_kwargs: "run-1"
+    )
+
+    manual_market.review_polymarket_events(
+        [URL],
+        gamma=_Gamma(),
+        clob_client_factory=lambda: object(),
+        report_dir=tmp_path / "reports",
+        now=NOW,
+    )
+
+    assert captured["provider"] == "pandascore"
+    assert pd.Timestamp(captured["start_utc"]) == pd.Timestamp("2026-08-22T20:30:00Z")
+    assert captured["best_of"] == BEST_OF_FIVE
+
+
+def test_manual_review_persists_evidence_without_queueing_discord(
+    tmp_path, monkeypatch
+):
+    schedule_path = tmp_path / "schedule.parquet"
+    _approved_schedule(schedule_path)
+    monkeypatch.setattr(manual_market, "SCHEDULE", schedule_path)
     monkeypatch.setattr(
         manual_market,
         "_build_prediction_messages",

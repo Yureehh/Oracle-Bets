@@ -118,6 +118,7 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
     events: list[PolymarketEvent] = []
     rows: list[dict[str, Any]] = []
     thunderpick_urls: list[str] = []
+    unapproved_polymarket_urls: list[str] = []
     stored_schedule = _load_stored_schedule()
     markets_by_fixture: dict[str, tuple[PolymarketMarket, ...]] = {}
     provider_started = time.perf_counter()
@@ -140,14 +141,18 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
             continue
         try:
             event = adapter.event(url)
+            events.append(event)
             row = _fixture_row(event, league=league)
-            row = _enrich_from_stored_schedule(row, stored_schedule)
+            approved_row = _enrich_from_stored_schedule(row, stored_schedule)
+            if approved_row is None:
+                unapproved_polymarket_urls.append(url)
+                continue
+            row = approved_row
         except Exception as exc:
             failures.append(
                 {"url": url, "reason": type(exc).__name__, "detail": str(exc)}
             )
             continue
-        events.append(event)
         start = cast("pd.Timestamp", pd.Timestamp(row["start_utc"]))
         reviewed_timestamp = cast("pd.Timestamp", pd.Timestamp(reviewed_at))
         if row["status"] != "not_started" or start <= reviewed_timestamp:
@@ -176,6 +181,14 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
             )
         ):
             pass
+        elif not rows and events:
+            failures.append(
+                {
+                    "url": thunderpick_urls[0],
+                    "reason": "fixture_mismatch",
+                    "detail": "A provider link failed to resolve an approved fixture; no model inference was run.",
+                }
+            )
         elif not rows:
             if selected_fixture is not None:
                 rows.append(selected_fixture)
@@ -201,6 +214,18 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         manual_lines = tuple(
             line | {"url": line.get("url") or thunderpick_urls[0]}
             for line in manual_lines
+        )
+    if unapproved_polymarket_urls and not thunderpick_urls:
+        failures.extend(
+            {
+                "url": url,
+                "reason": "approved_fixture_required",
+                "detail": (
+                    "market metadata cannot authorize model inference; "
+                    "fetch and approve the matching PandaScore fixture first"
+                ),
+            }
+            for url in unapproved_polymarket_urls
         )
     fixture_resolution_seconds = time.perf_counter() - provider_started
 
@@ -424,10 +449,10 @@ def _load_stored_schedule() -> pd.DataFrame:
 
 def _enrich_from_stored_schedule(
     row: dict[str, Any], schedule: pd.DataFrame
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Prefer exact PandaScore fixture/lineup facts when the owner fetched schedule."""
     if schedule.empty:
-        return row
+        return None
     target_start = cast("pd.Timestamp", pd.Timestamp(row["start_utc"]))
     target_teams = {
         canonical_team_name(str(row["team_a"])).casefold(),
@@ -450,18 +475,9 @@ def _enrich_from_stored_schedule(
         ):
             candidates.append(candidate)
     if len(candidates) != 1:
-        return row
+        return None
     enriched = candidates[0].to_dict()
-    for field in (
-        "league",
-        "team_a",
-        "team_b",
-        "start_utc",
-        "best_of",
-        "status",
-        "market_query",
-        "polymarket_event_url",
-    ):
+    for field in ("market_query", "polymarket_event_url"):
         enriched[field] = row[field]
     enriched["fixture_version"] = fixture_version(enriched)
     return enriched

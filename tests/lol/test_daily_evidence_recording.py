@@ -7,6 +7,7 @@ import pytest
 from lol_bets.daily import DailyStepResult
 from lol_bets.operations import evidence as evidence_module
 from lol_bets.operations.evidence import record_daily_evidence
+from lol_bets.operations.identity import canonical_team_identity_id
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.pd import pd
 
@@ -113,6 +114,9 @@ def test_review_evidence_records_forecasts_quotes_but_never_legacy_proposals(tmp
     assert store.count(EvidenceTable.MARKET_CANDIDATES) == 1
     assert store.count(EvidenceTable.MARKET_SNAPSHOTS) == 1
     assert store.count(EvidenceTable.PROPOSALS) == 0
+    fixture = store.list(EvidenceTable.FIXTURES)[0]
+    assert fixture["team_a_identity_id"] == canonical_team_identity_id("T1")
+    assert fixture["team_b_identity_id"] == canonical_team_identity_id("Gen.G")
     candidate = store.list(EvidenceTable.MARKET_CANDIDATES)[0]
     assert json.loads(candidate["payload_json"])["decimal_odds"] == EXPECTED_ODDS
 

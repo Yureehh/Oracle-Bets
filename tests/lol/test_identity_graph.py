@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 
 from lol_bets.operations.identity import (
+    canonical_team_identity_id,
     sync_history_identity_graph,
     sync_schedule_identity_graph,
 )
@@ -125,3 +126,32 @@ def test_cli_exposes_identity_graph_sync():
 
     assert args.domain == "lol"
     assert args.action == "sync-identities"
+
+
+def test_history_and_schedule_share_canonical_team_identity(tmp_path):
+    store = EvidenceStore(tmp_path / "identity.db")
+    sync_history_identity_graph(store, _history(), observed_at=NOW)
+    sync_schedule_identity_graph(
+        store,
+        pd.DataFrame(
+            [
+                {
+                    "match_key": "pandascore:1",
+                    "team_a": "T1",
+                    "team_a_id": "team-a",
+                    "team_b": "Gen.G",
+                    "team_b_id": "team-b",
+                }
+            ]
+        ),
+        observed_at=NOW,
+    )
+    teams = {
+        row["id"]
+        for row in store.list(EvidenceTable.IDENTITIES)
+        if row["entity_type"] == "team"
+    }
+    assert teams == {
+        canonical_team_identity_id("T1"),
+        canonical_team_identity_id("Gen.G"),
+    }
