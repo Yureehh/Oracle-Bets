@@ -35,7 +35,7 @@ def training_leagues() -> list[str]:
 
 
 def actionable_leagues() -> list[str]:
-    """Return leagues allowed to produce paper proposals."""
+    """Return leagues allowed in owner-facing market reviews."""
     from oracle_bets_core.config import load_product_config
 
     product = load_product_config()

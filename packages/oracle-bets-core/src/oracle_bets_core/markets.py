@@ -6,10 +6,12 @@ import json
 import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from threading import Lock, Thread
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlsplit
 
@@ -19,13 +21,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
 _DEFAULT_MATCH_TOLERANCE = timedelta(hours=6)
-_MIN_OBSERVATION_SECONDS = 30
-_MAX_OBSERVATION_SECONDS = 60
 _MAX_SEARCH_PAGES = 20
 _EXPECTED_BINARY_OUTCOMES = 2
 _MIN_EVENT_PATH_PARTS = 2
 _POLYMARKET_HOSTS = frozenset({"polymarket.com", "www.polymarket.com"})
 _EVENT_SLUG_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+_BOOK_CAPTURE_GUARD = Lock()
 
 
 class MarketDataError(ValueError):
@@ -90,6 +91,16 @@ class PolymarketEvent:
     slug: str
     url: str
     markets: tuple[PolymarketMarket, ...]
+    market_failures: tuple[PolymarketMarketFailure, ...] = ()
+
+
+@dataclass(frozen=True)
+class PolymarketMarketFailure:
+    """One provider contract that could not be interpreted without guessing."""
+
+    market_id: str
+    question: str
+    reason: str
 
 
 def polymarket_event_slug(url: str) -> str:
@@ -190,13 +201,30 @@ class PolymarketGammaAdapter:
         ):
             raise MarketDataError("Gamma event markets must be object records")
         markets: list[PolymarketMarket] = []
+        market_failures: list[PolymarketMarketFailure] = []
         for raw_market in raw_markets:
             try:
                 markets.append(self._market_from_payload(raw_market, event=payload))
-            except MarketDataError:
-                continue
+            except MarketDataError as error:
+                market_failures.append(
+                    PolymarketMarketFailure(
+                        market_id=str(
+                            raw_market.get("id")
+                            or raw_market.get("conditionId")
+                            or "unknown"
+                        ),
+                        question=str(raw_market.get("question") or "unknown"),
+                        reason=str(error),
+                    )
+                )
         if not markets:
-            raise MarketDataError("Gamma event contains no orientation-safe markets")
+            details = "; ".join(
+                f"{failure.market_id}: {failure.reason}" for failure in market_failures
+            )
+            raise MarketDataError(
+                "Gamma event contains no orientation-safe markets"
+                + (f" ({details})" if details else "")
+            )
         event_slug = _required_text(payload.get("slug") or slug, "Gamma event slug")
         if event_slug.casefold() != slug:
             raise MarketDataError("Gamma event slug does not match the requested URL")
@@ -206,6 +234,7 @@ class PolymarketGammaAdapter:
             slug=event_slug,
             url=url.strip(),
             markets=tuple(markets),
+            market_failures=tuple(market_failures),
         )
 
     def _search_page(
@@ -602,6 +631,7 @@ class OrderBook:
     tick_size: Decimal
     negative_risk: bool
     last_trade_price: Decimal | None
+    timestamp_warning: str | None = None
 
     @classmethod
     def from_payload(
@@ -649,13 +679,19 @@ class OrderBook:
         if minimum_order_size <= 0 or tick_size <= 0:
             raise MarketDataError("CLOB order constraints must be positive")
 
+        try:
+            timestamp = _optional_clob_timestamp(payload.get("timestamp"))
+            timestamp_warning = None
+        except MarketDataError:
+            timestamp = None
+            timestamp_warning = "provider_timestamp_malformed"
         return cls(
             condition_id=_required_text(
                 payload.get("market") or payload.get("condition_id"),
                 "CLOB condition id",
             ),
             token_id=token_id,
-            timestamp=_optional_clob_timestamp(payload.get("timestamp")),
+            timestamp=timestamp,
             book_hash=_required_text(payload.get("hash"), "CLOB book hash"),
             bids=bids,
             asks=asks,
@@ -666,6 +702,7 @@ class OrderBook:
                 payload.get("last_trade_price") or payload.get("lastTradePrice"),
                 field="last trade price",
             ),
+            timestamp_warning=timestamp_warning,
         )
 
 
@@ -682,9 +719,6 @@ class ExpectedFill:
     worst_price: Decimal | None
     complete: bool
     decimal_odds: float | None
-    requested_risk: Decimal | None = None
-    filled_risk: Decimal | None = None
-    unfilled_risk: Decimal | None = None
 
 
 def walk_buy_book(
@@ -723,45 +757,6 @@ def walk_buy_book(
     )
 
 
-def walk_buy_book_by_risk(
-    book: OrderBook,
-    intended_risk_amount: Decimal | str | float,
-) -> ExpectedFill:
-    """Walk asks until the intended currency risk is completely executable."""
-    intended = _required_decimal(intended_risk_amount, field="intended risk amount")
-    if intended <= 0:
-        raise ValueError("intended risk amount must be positive")
-    remaining_risk = intended
-    filled_shares = Decimal(0)
-    cost = Decimal(0)
-    worst_price: Decimal | None = None
-    for level in book.asks:
-        if remaining_risk <= 0:
-            break
-        level_cost = level.size * level.price
-        level_spend = min(remaining_risk, level_cost)
-        filled_shares += level_spend / level.price
-        cost += level_spend
-        remaining_risk -= level_spend
-        worst_price = level.price
-    average = cost / filled_shares if filled_shares else None
-    complete = remaining_risk == 0 and filled_shares >= book.minimum_order_size
-    return ExpectedFill(
-        token_id=book.token_id,
-        requested_shares=filled_shares,
-        filled_shares=filled_shares,
-        unfilled_shares=Decimal(0),
-        total_cost=cost,
-        average_price=average,
-        worst_price=worst_price,
-        complete=complete,
-        decimal_odds=float(filled_shares / cost) if cost else None,
-        requested_risk=intended,
-        filled_risk=cost,
-        unfilled_risk=remaining_risk,
-    )
-
-
 class OrderBookClient(Protocol):
     """Read-only order-book provider surface used by observation capture."""
 
@@ -790,186 +785,134 @@ class BookCaptureFailure:
 
 
 @dataclass(frozen=True)
-class MinimumOrderBookBatch:
-    """Two-observation minimum-share quotes and isolated token failures."""
+class CurrentOrderBookBatch:
+    """One current minimum-share quote per token with isolated failures/warnings."""
 
-    observations: dict[str, tuple[BookObservation, BookObservation]]
+    observations: dict[str, BookObservation]
     failures: dict[str, BookCaptureFailure]
+    warnings: dict[str, tuple[str, ...]]
 
 
-def capture_order_book_pair(
-    client: OrderBookClient,
-    *,
-    token_id: str,
-    requested_shares: Decimal | str | float | None = None,
-    intended_risk_amount: Decimal | str | float | None = None,
-    interval_seconds: int = 45,
-    sleeper: Callable[[float], None] = time.sleep,
-    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-    maximum_book_age_seconds: int = 120,
-) -> tuple[BookObservation, BookObservation]:
-    """Capture the two confirmed 30–60 second-spaced executable books."""
-    captured = capture_order_book_batch(
-        client,
-        token_ids=(token_id,),
-        requested_shares=requested_shares,
-        intended_risk_amount=intended_risk_amount,
-        interval_seconds=interval_seconds,
-        sleeper=sleeper,
-        clock=clock,
-        maximum_book_age_seconds=maximum_book_age_seconds,
-    )
-    return captured[token_id]
-
-
-def capture_order_book_batch(
+def capture_current_order_books(  # noqa: PLR0915
     client: OrderBookClient,
     *,
     token_ids: Sequence[str],
-    requested_shares: Decimal | str | float | None = None,
-    intended_risk_amount: Decimal | str | float | None = None,
-    interval_seconds: int = 45,
-    sleeper: Callable[[float], None] = time.sleep,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     maximum_book_age_seconds: int = 120,
-) -> dict[str, tuple[BookObservation, BookObservation]]:
-    """Capture every first book, wait once, then capture every second book."""
-    if not _MIN_OBSERVATION_SECONDS <= interval_seconds <= _MAX_OBSERVATION_SECONDS:
-        raise ValueError("book observation interval must be between 30 and 60 seconds")
-    if (requested_shares is None) == (intended_risk_amount is None):
-        raise ValueError(
-            "provide exactly one of requested_shares or intended_risk_amount"
-        )
-    if maximum_book_age_seconds <= 0:
-        raise ValueError("maximum_book_age_seconds must be positive")
+    batch_timeout_seconds: float = 20.0,
+) -> CurrentOrderBookBatch:
+    """Quote each outcome once at its current reported minimum share size."""
+    if maximum_book_age_seconds <= 0 or batch_timeout_seconds <= 0:
+        raise ValueError("book age and batch timeout must be positive")
     unique_tokens = tuple(
         dict.fromkeys(_required_text(item, "CLOB token id") for item in token_ids)
     )
-    if not unique_tokens:
-        return {}
-    observations: dict[str, list[BookObservation]] = {
-        token: [] for token in unique_tokens
-    }
-    for sequence in (1, 2):
-        for token_id in unique_tokens:
-            book = client.get_order_book(token_id)
-            observed_at = clock()
-            _validate_book_observation(
-                book,
-                observed_at=observed_at,
-                maximum_book_age_seconds=maximum_book_age_seconds,
-            )
-            if intended_risk_amount is not None:
-                fill = walk_buy_book_by_risk(book, intended_risk_amount)
-            else:
-                assert requested_shares is not None
-                fill = walk_buy_book(book, requested_shares)
-            observations[token_id].append(
-                BookObservation(
-                    sequence_number=sequence,
-                    observed_at=observed_at,
-                    book=book,
-                    fill=fill,
-                )
-            )
-        if sequence == 1:
-            sleeper(interval_seconds)
-    return {token: (items[0], items[1]) for token, items in observations.items()}
-
-
-def capture_minimum_order_book_batch(
-    client: OrderBookClient,
-    *,
-    token_ids: Sequence[str],
-    interval_seconds: int = 45,
-    sleeper: Callable[[float], None] = time.sleep,
-    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-    maximum_book_age_seconds: int = 120,
-) -> MinimumOrderBookBatch:
-    """Quote each token at the larger minimum share size across two books."""
-    if not _MIN_OBSERVATION_SECONDS <= interval_seconds <= _MAX_OBSERVATION_SECONDS:
-        raise ValueError("book observation interval must be between 30 and 60 seconds")
-    if maximum_book_age_seconds <= 0:
-        raise ValueError("maximum_book_age_seconds must be positive")
-    unique_tokens = tuple(
-        dict.fromkeys(_required_text(item, "CLOB token id") for item in token_ids)
-    )
-    if not unique_tokens:
-        return MinimumOrderBookBatch(observations={}, failures={})
-
-    captured: dict[str, list[tuple[datetime, OrderBook]]] = {
-        token: [] for token in unique_tokens
-    }
+    observations: dict[str, BookObservation] = {}
     failures: dict[str, BookCaptureFailure] = {}
-    for sequence in (1, 2):
-        active_tokens = (
-            unique_tokens
-            if sequence == 1
-            else tuple(token for token in unique_tokens if token not in failures)
-        )
-        for token_id in active_tokens:
-            try:
-                book = client.get_order_book(token_id)
-                observed_at = clock()
-                _validate_book_observation(
-                    book,
-                    observed_at=observed_at,
-                    maximum_book_age_seconds=maximum_book_age_seconds,
+    warnings: dict[str, tuple[str, ...]] = {}
+    if not _BOOK_CAPTURE_GUARD.acquire(blocking=False):
+        return CurrentOrderBookBatch(
+            observations,
+            {
+                token_id: BookCaptureFailure(
+                    token_id,
+                    "book_batch_in_progress",
+                    "A prior order-book batch is still completing.",
+                    1,
                 )
-                captured[token_id].append((observed_at, book))
+                for token_id in unique_tokens
+            },
+            warnings,
+        )
+
+    def capture(token_id: str) -> tuple[str, BookObservation, tuple[str, ...]]:
+        book = client.get_order_book(token_id)
+        observed_at = clock()
+        _require_utc_observation(observed_at)
+        fill = walk_buy_book(book, book.minimum_order_size)
+        if not fill.complete:
+            reason = "empty_order_book" if not book.asks else "insufficient_depth"
+            raise MarketDataError(
+                f"{reason}: minimum executable size {book.minimum_order_size} "
+                "shares was unavailable"
+            )
+        book_warnings: list[str] = []
+        if book.timestamp_warning:
+            book_warnings.append(book.timestamp_warning)
+        elif book.timestamp is None:
+            book_warnings.append("provider_timestamp_missing")
+        elif (
+            abs((observed_at - book.timestamp).total_seconds())
+            > maximum_book_age_seconds
+        ):
+            book_warnings.append("provider_timestamp_old")
+        return (
+            token_id,
+            BookObservation(1, observed_at, book, fill),
+            tuple(book_warnings),
+        )
+
+    executor = ThreadPoolExecutor(max_workers=min(8, len(unique_tokens) or 1))
+    unfinished = set()
+    release_deferred = False
+    try:
+        futures = {
+            executor.submit(capture, token_id): token_id for token_id in unique_tokens
+        }
+        done, unfinished = wait(futures, timeout=batch_timeout_seconds)
+        for future in done:
+            token_id = futures[future]
+            try:
+                captured_token, observation, book_warnings = future.result()
+                observations[captured_token] = observation
+                warnings[captured_token] = book_warnings
             except Exception as error:  # provider failures must remain token-local
+                normalized = str(error).casefold()
+                if "empty_order_book" in normalized:
+                    failures[token_id] = BookCaptureFailure(
+                        token_id, "empty_order_book", str(error), 1
+                    )
+                    continue
+                if "insufficient_depth" in normalized:
+                    failures[token_id] = BookCaptureFailure(
+                        token_id, "insufficient_depth", str(error), 1
+                    )
+                    continue
                 failures[token_id] = _book_capture_failure(
                     token_id,
                     error,
-                    sequence_number=sequence,
+                    sequence_number=1,
                 )
-        if sequence == 1 and any(captured.values()):
-            sleeper(interval_seconds)
-
-    observations: dict[str, tuple[BookObservation, BookObservation]] = {}
-    for token_id, items in captured.items():
-        if token_id in failures or len(items) != _EXPECTED_BINARY_OUTCOMES:
-            continue
-        requested_shares = max(book.minimum_order_size for _, book in items)
-        first, second = items
-        pair = (
-            BookObservation(
-                1, first[0], first[1], walk_buy_book(first[1], requested_shares)
-            ),
-            BookObservation(
-                2, second[0], second[1], walk_buy_book(second[1], requested_shares)
-            ),
-        )
-        observations[token_id] = pair
-        if not all(observation.fill.complete for observation in pair):
-            reason = (
-                "empty_order_book"
-                if any(not observation.book.asks for observation in pair)
-                else "insufficient_depth"
-            )
+        for future in unfinished:
+            token_id = futures[future]
+            future.cancel()
             failures[token_id] = BookCaptureFailure(
-                token_id=token_id,
-                reason=reason,
-                detail=(
-                    f"minimum executable size {requested_shares} shares was not "
-                    "available in both observations"
-                ),
+                token_id,
+                "book_timeout",
+                f"Order book was not available within {batch_timeout_seconds:g}s.",
+                1,
             )
-    return MinimumOrderBookBatch(observations=observations, failures=failures)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+        if unfinished:
+
+            def release_after_workers() -> None:
+                wait(unfinished)
+                _BOOK_CAPTURE_GUARD.release()
+
+            try:
+                Thread(target=release_after_workers, daemon=True).start()
+                release_deferred = True
+            except RuntimeError:
+                pass
+        if not release_deferred:
+            _BOOK_CAPTURE_GUARD.release()
+    return CurrentOrderBookBatch(observations, failures, warnings)
 
 
-def _validate_book_observation(
-    book: OrderBook,
-    *,
-    observed_at: datetime,
-    maximum_book_age_seconds: int,
-) -> None:
+def _require_utc_observation(observed_at: datetime) -> None:
     if observed_at.tzinfo is None or observed_at.utcoffset() != timedelta(0):
         raise ValueError("book observation clock must return UTC")
-    if book.timestamp is None:
-        raise MarketDataError("CLOB order book timestamp is missing")
-    if abs((observed_at - book.timestamp).total_seconds()) > maximum_book_age_seconds:
-        raise MarketDataError("CLOB order book is stale")
 
 
 def _book_capture_failure(
@@ -998,20 +941,6 @@ def _book_capture_failure(
         reason=reason,
         detail=detail,
         sequence_number=sequence_number,
-    )
-
-
-def confirmed_executable_fill(
-    observations: tuple[BookObservation, BookObservation],
-) -> ExpectedFill:
-    """Return the worse average price only when both observations fully fill."""
-    if len(observations) != _EXPECTED_BINARY_OUTCOMES or not all(
-        item.fill.complete for item in observations
-    ):
-        raise MarketDataError("both order-book observations require complete depth")
-    return max(
-        (item.fill for item in observations),
-        key=lambda fill: fill.average_price or Decimal(1),
     )
 
 
@@ -1061,7 +990,6 @@ class PolymarketClobClient:
                     payload,
                     expected_token_id=token_id,
                 )
-                _require_book_timestamp(book)
             except (requests.RequestException, ValueError, MarketDataError) as error:
                 if attempt == self.attempts:
                     if isinstance(error, MarketDataError):

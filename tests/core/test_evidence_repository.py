@@ -11,10 +11,11 @@ from oracle_bets_core.evidence import (
     EvidenceStore,
     EvidenceTable,
 )
+from oracle_bets_core.evidence.schema import SCHEMA_SQL
 
 NOW = datetime(2026, 7, 26, 8, 15, tzinfo=UTC)
 BATCH_SIZE = 3
-EVIDENCE_SCHEMA_VERSION = 4
+EVIDENCE_SCHEMA_VERSION = 5
 
 
 @pytest.fixture
@@ -54,6 +55,8 @@ def test_schema_has_separate_append_only_record_tables(evidence_store):
         "approvals",
         "paper_positions",
         "settlements",
+        "bets",
+        "bet_events",
         "corrections",
     }
 
@@ -67,19 +70,43 @@ def test_schema_has_separate_append_only_record_tables(evidence_store):
 
 
 def test_schema_upgrade_records_auditable_transactional_migration(tmp_path):
-    store = EvidenceStore(tmp_path / "migration.db")
-    store.initialize_schema()
-    with store.connection() as conn:
-        conn.execute("UPDATE evidence_schema_version SET version = 3")
+    path = tmp_path / "migration.db"
+    legacy_schema = SCHEMA_SQL.replace(
+        "'settlements', 'bets', 'bet_events', 'corrections'",
+        "'settlements', 'corrections'",
+    )
+    with sqlite3.connect(path) as conn:
+        conn.executescript(legacy_schema)
+        conn.execute("DROP TABLE bet_events")
+        conn.execute("DROP TABLE bets")
+        conn.execute(
+            "INSERT INTO evidence_schema_version VALUES (4, '2026-01-01T00:00:00Z')"
+        )
 
+    store = EvidenceStore(path)
     store.initialize_schema()
 
     assert store.schema_version() == EVIDENCE_SCHEMA_VERSION
     with store.connection(read_only=True) as conn:
-        row = conn.execute(
-            "SELECT from_version, to_version FROM evidence_schema_migrations"
-        ).fetchone()
-    assert tuple(row) == (3, 4)
+        rows = conn.execute(
+            "SELECT from_version, to_version FROM evidence_schema_migrations "
+            "ORDER BY from_version"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [(4, 5)]
+    assert {"bets", "bet_events"} <= store.table_names()
+    store.append(
+        EvidenceTable.CORRECTIONS,
+        {
+            "id": "bet-correction",
+            "target_table": "bets",
+            "target_id": "bet-1",
+            "created_at": NOW,
+            "reason": "Migration supports unified-ledger corrections.",
+            "replacement_id": None,
+            "idempotency_key": "bet-correction",
+            "payload_json": {},
+        },
+    )
 
 
 def test_schema_upgrade_creates_tables_missing_from_older_additive_schema(tmp_path):
@@ -250,6 +277,28 @@ def test_correction_appends_without_mutating_target(evidence_store):
         evidence_store.get(EvidenceTable.CORRECTIONS, "correction-1")["target_id"]
         == "run-1"
     )
+
+
+@pytest.mark.parametrize("target_table", ["bets", "bet_events"])
+def test_unified_ledger_rows_can_receive_append_only_corrections(
+    evidence_store, target_table
+):
+    correction_id = f"correction-{target_table}"
+    evidence_store.append(
+        EvidenceTable.CORRECTIONS,
+        {
+            "id": correction_id,
+            "target_table": target_table,
+            "target_id": f"{target_table}-1",
+            "created_at": NOW,
+            "reason": "Owner supplied corrected audit metadata.",
+            "replacement_id": None,
+            "idempotency_key": correction_id,
+            "payload_json": {},
+        },
+    )
+
+    assert evidence_store.get(EvidenceTable.CORRECTIONS, correction_id) is not None
 
 
 def test_append_many_is_atomic_and_idempotent(evidence_store):

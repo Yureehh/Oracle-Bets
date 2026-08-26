@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 EVIDENCE_TABLES = (
     "runs",
@@ -20,6 +20,8 @@ EVIDENCE_TABLES = (
     "approvals",
     "paper_positions",
     "settlements",
+    "bets",
+    "bet_events",
     "corrections",
 )
 
@@ -242,6 +244,41 @@ CREATE TABLE IF NOT EXISTS settlements (
     content_hash TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bets (
+    id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL,
+    fixture_id TEXT NOT NULL REFERENCES fixtures(id),
+    market_candidate_id TEXT REFERENCES market_candidates(id),
+    mode TEXT NOT NULL CHECK (mode IN ('paper', 'real')),
+    provider TEXT NOT NULL,
+    target TEXT NOT NULL,
+    selection TEXT NOT NULL,
+    opened_at TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    bankroll_before TEXT NOT NULL CHECK (CAST(bankroll_before AS REAL) > 0),
+    stake_percent TEXT NOT NULL CHECK (
+        CAST(stake_percent AS REAL) > 0 AND CAST(stake_percent AS REAL) <= 100
+    ),
+    stake_amount TEXT NOT NULL CHECK (CAST(stake_amount AS REAL) > 0),
+    accepted_odds TEXT NOT NULL CHECK (CAST(accepted_odds AS REAL) > 1),
+    evidence_classification TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    content_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bet_events (
+    id TEXT PRIMARY KEY,
+    bet_id TEXT NOT NULL REFERENCES bets(id),
+    event_at TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    content_hash TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS corrections (
     id TEXT PRIMARY KEY,
     target_table TEXT NOT NULL,
@@ -256,7 +293,7 @@ CREATE TABLE IF NOT EXISTS corrections (
         'runs', 'run_events', 'source_snapshots', 'identities', 'provider_links',
         'fixtures', 'model_versions', 'predictions', 'forecasts', 'market_candidates',
         'market_snapshots', 'proposals', 'approvals', 'paper_positions',
-        'settlements', 'corrections'
+        'settlements', 'bets', 'bet_events', 'corrections'
     ))
 );
 
@@ -271,6 +308,9 @@ CREATE INDEX IF NOT EXISTS idx_market_snapshots_candidate ON market_snapshots(ma
 CREATE INDEX IF NOT EXISTS idx_proposals_prediction ON proposals(prediction_id);
 CREATE INDEX IF NOT EXISTS idx_positions_proposal ON paper_positions(proposal_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_settlements_position ON settlements(paper_position_id);
+CREATE INDEX IF NOT EXISTS idx_bets_opened_at ON bets(opened_at);
+CREATE INDEX IF NOT EXISTS idx_bets_mode ON bets(mode);
+CREATE INDEX IF NOT EXISTS idx_bet_events_bet ON bet_events(bet_id, event_at);
 CREATE INDEX IF NOT EXISTS idx_corrections_target ON corrections(target_table, target_id);
 """
 

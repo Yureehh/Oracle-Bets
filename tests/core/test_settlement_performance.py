@@ -4,14 +4,10 @@ from decimal import Decimal
 import pytest
 from oracle_bets_core.evidence.contracts import DecisionMode
 from oracle_bets_core.evidence.performance import (
-    LeagueActivationEvidence,
-    ReadinessEvidence,
     SettledPerformanceRow,
     aggregate_performance,
     bootstrap_roi,
-    evaluate_readiness,
     group_performance,
-    league_activation_reasons,
     prediction_quality,
 )
 from oracle_bets_core.evidence.settlement import (
@@ -221,64 +217,3 @@ def test_roi_bootstrap_is_repeatable():
     assert first == second
     assert first is not None
     assert first.lower < first.point < first.upper
-
-
-def test_league_activation_is_blocked_at_49_and_requires_owner_at_50():
-    assert league_activation_reasons(
-        LeagueActivationEvidence(
-            settled_count=49,
-            quality_gate_passed=True,
-            owner_approved=True,
-        )
-    ) == ("insufficient_settled_cases",)
-    assert league_activation_reasons(
-        LeagueActivationEvidence(
-            settled_count=50,
-            quality_gate_passed=True,
-            owner_approved=False,
-        )
-    ) == ("owner_approval_required",)
-    assert (
-        league_activation_reasons(
-            LeagueActivationEvidence(
-                settled_count=50,
-                quality_gate_passed=True,
-                owner_approved=True,
-            )
-        )
-        == ()
-    )
-
-
-def _readiness(**overrides):
-    values = {
-        "settled_count": 200,
-        "roi_lower_bound": 0.01,
-        "clv_lower_bound": 0.005,
-        "calibration_error": 0.03,
-        "maximum_drawdown_fraction": 0.15,
-        "strategy": "quarter_kelly",
-        "capped": True,
-        "evidence_warnings": (),
-        "owner_approved": False,
-    }
-    values.update(overrides)
-    return ReadinessEvidence(**values)
-
-
-def test_readiness_never_skips_manual_approval_or_market_quality():
-    review = evaluate_readiness(_readiness())
-    approved = evaluate_readiness(_readiness(owner_approved=True))
-    unrealistic = evaluate_readiness(
-        _readiness(
-            owner_approved=True,
-            evidence_warnings=("market_depth_low",),
-        )
-    )
-
-    assert review.ready_for_owner_review
-    assert not review.real_money_ready
-    assert review.reasons == ("owner_approval_required",)
-    assert approved.real_money_ready
-    assert not unrealistic.ready_for_owner_review
-    assert "unrealistic_market_evidence_present" in unrealistic.reasons

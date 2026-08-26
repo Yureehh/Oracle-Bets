@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -12,15 +13,11 @@ from oracle_bets_core.markets import (
     PolymarketClobClient,
     PolymarketGammaAdapter,
     SupportedMarketType,
-    capture_minimum_order_book_batch,
-    capture_order_book_batch,
-    capture_order_book_pair,
-    confirmed_executable_fill,
+    capture_current_order_books,
     match_market,
     polymarket_event_slug,
     select_best_market,
     walk_buy_book,
-    walk_buy_book_by_risk,
 )
 
 START = datetime(2026, 7, 27, 12, tzinfo=UTC)
@@ -152,6 +149,27 @@ def test_exact_event_url_loads_by_slug_without_fuzzy_search():
     assert event.event_id == "event-1"
     assert event.markets[0].outcomes[0].token_id == T1_ASSET_ID
     assert session.calls[0][0].endswith("/events/slug/lol-t1-geng-2026-08-21")
+
+
+def test_exact_event_retains_contract_parse_failures():
+    malformed = _market(tokens='["only-one-token"]')
+    malformed["id"] = "malformed-market"
+    session = _EventSession(
+        {
+            "id": "event-1",
+            "slug": "lol-t1-geng-2026-08-21",
+            "title": "T1 vs Gen.G",
+            "markets": [_market(), malformed],
+        }
+    )
+
+    event = PolymarketGammaAdapter(session=session).event(
+        "https://polymarket.com/esports/league-of-legends/lck/lol-t1-geng-2026-08-21"
+    )
+
+    assert len(event.markets) == 1
+    assert event.market_failures[0].market_id == "malformed-market"
+    assert "token IDs" in event.market_failures[0].reason
 
 
 @pytest.mark.parametrize(
@@ -521,18 +539,6 @@ def test_order_book_walk_uses_best_asks_and_reports_partial_depth():
     assert partial.unfilled_shares == Decimal(10)
 
 
-def test_order_book_walk_by_risk_spends_exact_intended_amount():
-    book = OrderBook.from_payload(_book_payload(), expected_token_id=T1_ASSET_ID)
-
-    fill = walk_buy_book_by_risk(book, Decimal(10))
-
-    assert fill.complete
-    assert fill.requested_risk == Decimal(10)
-    assert fill.total_cost == Decimal(10)
-    assert fill.filled_shares == Decimal("15.9375")
-    assert fill.decimal_odds == pytest.approx(1.59375)
-
-
 def test_crossed_or_malformed_order_book_is_rejected():
     with pytest.raises(MarketDataError, match="crossed"):
         OrderBook.from_payload(
@@ -562,122 +568,44 @@ class _BookClient:
         )
 
 
-def test_two_book_observations_are_separate_and_size_aware():
+def test_current_book_capture_quotes_each_token_once_at_provider_minimum():
     client = _BookClient()
-    sleeps = []
-    times = iter((START, START + timedelta(seconds=45)))
-
-    observations = capture_order_book_pair(
+    result = capture_current_order_books(
         client,
-        token_id=T1_ASSET_ID,
-        requested_shares=Decimal(25),
-        interval_seconds=45,
-        sleeper=sleeps.append,
-        clock=lambda: next(times),
+        token_ids=(T1_ASSET_ID, T1_ASSET_ID, "asset-geng"),
+        clock=lambda: START,
     )
 
-    assert [item.sequence_number for item in observations] == [1, 2]
-    assert [item.book.book_hash for item in observations] == ["hash-1", "hash-2"]
-    assert all(item.fill.complete for item in observations)
-    assert sleeps == [45]
-
-
-def test_two_risk_observations_use_worse_complete_executable_price():
-    client = _BookClient()
-    sleeps = []
-    times = iter((START, START + timedelta(seconds=45)))
-
-    observations = capture_order_book_pair(
-        client,
-        token_id=T1_ASSET_ID,
-        intended_risk_amount=Decimal(10),
-        interval_seconds=45,
-        sleeper=sleeps.append,
-        clock=lambda: next(times),
-    )
-    confirmed = confirmed_executable_fill(observations)
-
-    assert confirmed.complete
-    assert confirmed.total_cost == Decimal(10)
-    assert sleeps == [45]
-
-
-def test_batch_book_capture_waits_once_for_all_tokens():
-    client = _BookClient()
-    sleeps = []
-    times = iter(
-        (
-            START,
-            START,
-            START + timedelta(seconds=45),
-            START + timedelta(seconds=45),
-        )
-    )
-
-    observations = capture_order_book_batch(
-        client,
-        token_ids=(T1_ASSET_ID, "asset-geng"),
-        intended_risk_amount=Decimal(10),
-        sleeper=sleeps.append,
-        clock=lambda: next(times),
-    )
-
-    assert set(observations) == {T1_ASSET_ID, "asset-geng"}
-    assert client.calls == len(observations) * 2
-    assert sleeps == [45]
-    assert all(
-        confirmed_executable_fill(pair).complete for pair in observations.values()
-    )
-
-
-class _ChangingMinimumBookClient:
-    def __init__(self):
-        self.calls: dict[str, int] = {}
-
-    def get_order_book(self, token_id):
-        call = self.calls.get(token_id, 0) + 1
-        self.calls[token_id] = call
-        minimum = "5" if call == 1 else "7"
-        return OrderBook.from_payload(
-            _book_payload(
-                asset_id=token_id,
-                hash=f"{token_id}-{call}",
-                min_order_size=minimum,
-                bids=[{"price": "0.40", "size": "20"}],
-                asks=[{"price": "0.50", "size": "20"}],
-            ),
-            expected_token_id=token_id,
-        )
-
-
-def test_minimum_order_batch_uses_larger_minimum_from_both_observations():
-    client = _ChangingMinimumBookClient()
-    sleeps = []
-    times = iter((START, START + timedelta(seconds=45)))
-
-    result = capture_minimum_order_book_batch(
-        client,
-        token_ids=(T1_ASSET_ID,),
-        sleeper=sleeps.append,
-        clock=lambda: next(times),
-    )
-
-    pair = result.observations[T1_ASSET_ID]
+    assert set(result.observations) == {T1_ASSET_ID, "asset-geng"}
     assert not result.failures
-    assert sleeps == [45]
-    assert {item.fill.requested_shares for item in pair} == {Decimal(7)}
-    assert {item.fill.total_cost for item in pair} == {Decimal("3.50")}
-    assert {item.book.minimum_order_size for item in pair} == {
-        Decimal(5),
-        Decimal(7),
-    }
+    assert client.calls == len(result.observations)
+    assert all(item.sequence_number == 1 for item in result.observations.values())
+    assert all(
+        item.fill.requested_shares == item.book.minimum_order_size
+        for item in result.observations.values()
+    )
 
 
-def test_minimum_order_batch_isolates_unavailable_and_partial_tokens():
-    class SelectiveClient(_ChangingMinimumBookClient):
+def test_current_book_capture_isolates_unavailable_partial_and_timestamp_warnings():
+    class SelectiveClient(_BookClient):
         def get_order_book(self, token_id):
             if token_id == UNAVAILABLE_ASSET_ID:
                 raise RuntimeError("provider unavailable")
+            if token_id == MISSING_ASSET_ID:
+                return OrderBook.from_payload(
+                    _book_payload(asset_id=token_id, timestamp=None),
+                    expected_token_id=token_id,
+                )
+            if token_id == STALE_ASSET_ID:
+                return OrderBook.from_payload(
+                    _book_payload(
+                        asset_id=token_id,
+                        timestamp=str(
+                            int((START - timedelta(minutes=10)).timestamp() * 1000)
+                        ),
+                    ),
+                    expected_token_id=token_id,
+                )
             book = super().get_order_book(token_id)
             if token_id == PARTIAL_ASSET_ID:
                 return OrderBook(
@@ -699,55 +627,49 @@ def test_minimum_order_batch_isolates_unavailable_and_partial_tokens():
                 )
             return book
 
-    client = SelectiveClient()
-    times = iter(
-        (
-            START,
-            START,
-            START + timedelta(seconds=45),
-            START + timedelta(seconds=45),
-        )
-    )
-
-    result = capture_minimum_order_book_batch(
-        client,
-        token_ids=(T1_ASSET_ID, UNAVAILABLE_ASSET_ID, PARTIAL_ASSET_ID),
-        sleeper=lambda _seconds: None,
-        clock=lambda: next(times),
+    result = capture_current_order_books(
+        SelectiveClient(),
+        token_ids=(
+            T1_ASSET_ID,
+            UNAVAILABLE_ASSET_ID,
+            PARTIAL_ASSET_ID,
+            MISSING_ASSET_ID,
+            STALE_ASSET_ID,
+        ),
+        clock=lambda: START,
     )
 
     assert T1_ASSET_ID in result.observations
     assert result.failures[UNAVAILABLE_ASSET_ID].reason == "book_unavailable"
     assert result.failures[PARTIAL_ASSET_ID].reason == "insufficient_depth"
-    assert result.observations[PARTIAL_ASSET_ID][0].fill.filled_shares == Decimal(2)
+    assert result.warnings[MISSING_ASSET_ID] == ("provider_timestamp_missing",)
+    assert result.warnings[STALE_ASSET_ID] == ("provider_timestamp_old",)
 
 
-def test_minimum_order_batch_distinguishes_missing_and_stale_timestamps():
-    missing = OrderBook.from_payload(
-        _book_payload(asset_id=MISSING_ASSET_ID, timestamp=None),
-        expected_token_id=MISSING_ASSET_ID,
-    )
-    stale = OrderBook.from_payload(
-        _book_payload(
-            asset_id=STALE_ASSET_ID,
-            timestamp=str(int((START - timedelta(minutes=10)).timestamp() * 1000)),
-        ),
-        expected_token_id=STALE_ASSET_ID,
-    )
-
-    class TimestampClient:
+def test_current_book_capture_returns_partial_results_at_batch_deadline():
+    class SlowClient(_BookClient):
         def get_order_book(self, token_id):
-            return missing if token_id == MISSING_ASSET_ID else stale
+            if token_id == UNAVAILABLE_ASSET_ID:
+                time.sleep(0.05)
+            return super().get_order_book(token_id)
 
-    result = capture_minimum_order_book_batch(
-        TimestampClient(),
-        token_ids=(MISSING_ASSET_ID, STALE_ASSET_ID),
-        sleeper=lambda _seconds: None,
+    result = capture_current_order_books(
+        SlowClient(),
+        token_ids=(T1_ASSET_ID, UNAVAILABLE_ASSET_ID),
         clock=lambda: START,
+        batch_timeout_seconds=0.01,
     )
 
-    assert result.failures[MISSING_ASSET_ID].reason == "missing_book_timestamp"
-    assert result.failures[STALE_ASSET_ID].reason == "stale_book"
+    assert T1_ASSET_ID in result.observations
+    assert result.failures[UNAVAILABLE_ASSET_ID].reason == "book_timeout"
+    overlapping = capture_current_order_books(
+        SlowClient(),
+        token_ids=(T1_ASSET_ID,),
+        clock=lambda: START,
+        batch_timeout_seconds=0.01,
+    )
+    assert overlapping.failures[T1_ASSET_ID].reason == "book_batch_in_progress"
+    time.sleep(0.06)
 
 
 def test_order_book_accepts_iso_timestamp():
@@ -790,7 +712,7 @@ def test_clob_client_retries_public_read_and_uses_short_cache():
     assert session.calls == MAX_RETRIES
 
 
-def test_clob_client_retries_transient_missing_timestamp_without_caching_it():
+def test_clob_client_preserves_an_otherwise_valid_missing_timestamp_book():
     class SchemaRetrySession:
         def __init__(self):
             self.calls = 0
@@ -812,8 +734,8 @@ def test_clob_client_retries_transient_missing_timestamp_without_caching_it():
 
     book = client.get_order_book(T1_ASSET_ID)
 
-    assert book.timestamp is not None
-    assert session.calls == EXPECTED_SCHEMA_RETRY_CALLS
+    assert book.timestamp is None
+    assert session.calls == 1
 
 
 def test_polymarket_clients_expose_read_methods_only():

@@ -7,18 +7,6 @@ from math import erf, sqrt
 
 
 @dataclass(frozen=True)
-class EdgeSignal:
-    """Decision-support output for a market quote."""
-
-    model_probability: float
-    implied_probability: float
-    fair_odds: float
-    market_odds: float
-    edge: float
-    half_kelly_fraction: float
-
-
-@dataclass(frozen=True)
 class OverUnderSignal:
     """Decision-support output for an over/under quote."""
 
@@ -84,25 +72,6 @@ def kelly_fraction(
     q = 1.0 - win_probability
     full = (b * win_probability - q) / b
     return max(0.0, full * fraction)
-
-
-def build_edge_signal(
-    *,
-    model_probability: float,
-    market_odds: float,
-    kelly_multiplier: float = 0.5,
-) -> EdgeSignal:
-    implied = probability_from_decimal_odds(market_odds)
-    return EdgeSignal(
-        model_probability=model_probability,
-        implied_probability=implied,
-        fair_odds=decimal_odds_from_probability(model_probability),
-        market_odds=market_odds,
-        edge=expected_edge(market_odds, model_probability),
-        half_kelly_fraction=kelly_fraction(
-            market_odds, model_probability, fraction=kelly_multiplier
-        ),
-    )
 
 
 def normal_cdf(value: float) -> float:

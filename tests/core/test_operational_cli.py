@@ -46,10 +46,10 @@ def test_parser_exposes_required_operational_commands():
         ["health", "system"],
         ["audit", "monthly", "--period", "2026-07"],
         [
-            "paper",
+            "bet",
             "settle",
-            "--position-id",
-            "position-1",
+            "--bet-id",
+            "bet-1",
             "--result",
             "win",
             "--source-reference",
@@ -324,45 +324,19 @@ def test_model_cli_promotes_checks_and_rolls_back_verified_bundles(
     assert "healthy" in capsys.readouterr().out
 
 
-def test_paper_settlement_dry_run_uses_recorded_position_terms(
-    capsys,
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        "oracle_bets_core.operations.paper_evidence.paper_show",
-        lambda *_args: {
-            "stake_units": "1",
-            "decimal_odds": "1.90",
-        },
-    )
-    code = main(
-        [
-            "paper",
-            "settle",
-            "--position-id",
-            "position-1",
-            "--result",
-            "win",
-            "--source-reference",
-            "provider-1",
-            "--settled-at",
-            NOW.isoformat(),
-            "--dry-run",
-        ]
-    )
-
-    assert code == 0
-    assert "PnL 0.90 units (dry run)" in capsys.readouterr().out
+def test_removed_paper_interface_is_rejected():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["paper", "list"])
 
 
-def test_paper_settlement_rejects_legacy_stake_and_odds_flags():
+def test_bet_settlement_rejects_legacy_stake_flag():
     with pytest.raises(SystemExit):
         build_parser().parse_args(
             [
-                "paper",
+                "bet",
                 "settle",
-                "--position-id",
-                "position-1",
+                "--bet-id",
+                "bet-1",
                 "--result",
                 "win",
                 "--source-reference",
@@ -371,6 +345,24 @@ def test_paper_settlement_rejects_legacy_stake_and_odds_flags():
                 "1",
             ]
         )
+
+
+def test_market_review_rejects_malformed_manual_lines_file(tmp_path, capsys):
+    manual_lines = tmp_path / "manual-lines.json"
+    manual_lines.write_text("{not-json", encoding="utf-8")
+
+    result = main(
+        [
+            "lol",
+            "market-review",
+            "https://thunderpick.io/en/esports/lol/team-a-vs-team-b",
+            "--manual-lines",
+            str(manual_lines),
+        ]
+    )
+
+    assert result == BLOCKED_EXIT
+    assert "Invalid --manual-lines file" in capsys.readouterr().err
 
 
 def test_system_health_and_monthly_audit_cli_record_reports(tmp_path, capsys):

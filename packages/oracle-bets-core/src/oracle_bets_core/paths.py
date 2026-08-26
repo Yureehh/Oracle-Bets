@@ -83,7 +83,6 @@ MODEL_REGISTRY_DIR: Final = PRODUCT_STATE_DIR / "model-registry" / "lol"
 DATA_DIR: Final = _scoped_dir("data")
 CONFIG_DIR: Final = _scoped_dir("config")
 MODELS_DIR: Final = _scoped_dir("models")
-NOTEBOOKS_DIR: Final = _scoped_dir("notebooks")
 REPORTS_DIR: Final = _scoped_dir("reports")
 LOGS_DIR: Final = _scoped_dir("logs")
 
@@ -350,16 +349,12 @@ _directories: list[Path] = [
     PROCESSED_PLAYERS_DIR,
     MODELS_DIR,
     REPORTS_DIR,
-    FIGURES_DIR,
-    INSIGHTS_DIR,
-    FEATURE_REPORTS_DIR,
     CONFIG_DIR,
     DATA_INGESTION_DIR,
     EXTRAS_DIR,
     TRAINING_AND_INPUT_COLS_DIR,
     HYPERPARAMETERS,
     TUNED_RATING_HYPERPARAMETERS,
-    NOTEBOOKS_DIR,
     LOGS_DIR,
 ]
 

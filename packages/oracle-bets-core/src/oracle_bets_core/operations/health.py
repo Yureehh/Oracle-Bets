@@ -270,7 +270,7 @@ def _fixture_freshness_check(
         (
             None
             if level is HealthLevel.OK
-            else "Refresh PandaScore fixtures and lineups; do not approve stale proposals."
+            else "Refresh PandaScore fixtures and lineups before reviewing markets."
         ),
     )
 
@@ -307,7 +307,7 @@ def _quality_checks(
             HealthLevel.NOT_ENOUGH_DATA,
             "No ingestion quality report exists.",
             {},
-            "Run ingestion and review its quality report before publishing decisions.",
+            "Run ingestion and review its quality report before using predictions.",
         )
         return [missing, missing_for("source_volume"), missing_for("source_schema")]
 

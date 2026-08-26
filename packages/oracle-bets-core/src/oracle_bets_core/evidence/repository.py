@@ -22,6 +22,8 @@ from oracle_bets_core.evidence.schema import (
 )
 from oracle_bets_core.paths import EVIDENCE_DB
 
+_BET_LEDGER_SCHEMA_VERSION = 5
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
 
@@ -50,6 +52,8 @@ class EvidenceTable(StrEnum):
     APPROVALS = "approvals"
     PAPER_POSITIONS = "paper_positions"
     SETTLEMENTS = "settlements"
+    BETS = "bets"
+    BET_EVENTS = "bet_events"
     CORRECTIONS = "corrections"
 
 
@@ -250,6 +254,39 @@ TABLE_COLUMNS: dict[EvidenceTable, frozenset[str]] = {
             "payload_json",
         }
     ),
+    EvidenceTable.BETS: frozenset(
+        {
+            "id",
+            "review_id",
+            "fixture_id",
+            "market_candidate_id",
+            "mode",
+            "provider",
+            "target",
+            "selection",
+            "opened_at",
+            "currency",
+            "bankroll_before",
+            "stake_percent",
+            "stake_amount",
+            "accepted_odds",
+            "evidence_classification",
+            "actor_id",
+            "idempotency_key",
+            "payload_json",
+        }
+    ),
+    EvidenceTable.BET_EVENTS: frozenset(
+        {
+            "id",
+            "bet_id",
+            "event_at",
+            "event_type",
+            "actor_id",
+            "idempotency_key",
+            "payload_json",
+        }
+    ),
     EvidenceTable.CORRECTIONS: frozenset(
         {
             "id",
@@ -383,6 +420,37 @@ class EvidenceStore:
     def _migrate_schema(conn: sqlite3.Connection, current: int) -> None:
         """Create additive schema objects, validate, and record each transition."""
         conn.executescript(SCHEMA_SQL)
+        if current < _BET_LEDGER_SCHEMA_VERSION:
+            conn.executescript(
+                """
+                DROP TRIGGER IF EXISTS prevent_corrections_update;
+                DROP TRIGGER IF EXISTS prevent_corrections_delete;
+                DROP INDEX IF EXISTS idx_corrections_target;
+                ALTER TABLE corrections RENAME TO corrections_before_v5;
+                CREATE TABLE corrections (
+                    id TEXT PRIMARY KEY,
+                    target_table TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    replacement_id TEXT,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+                    content_hash TEXT NOT NULL,
+                    CHECK (target_table IN (
+                        'runs', 'run_events', 'source_snapshots', 'identities',
+                        'provider_links', 'fixtures', 'model_versions', 'predictions',
+                        'forecasts', 'market_candidates', 'market_snapshots',
+                        'proposals', 'approvals', 'paper_positions', 'settlements',
+                        'bets', 'bet_events', 'corrections'
+                    ))
+                );
+                INSERT INTO corrections SELECT * FROM corrections_before_v5;
+                DROP TABLE corrections_before_v5;
+                CREATE INDEX idx_corrections_target
+                    ON corrections(target_table, target_id);
+                """
+            )
         existing_tables = {
             str(row[0])
             for row in conn.execute(
@@ -547,6 +615,22 @@ class EvidenceStore:
                 (record_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def get_many(
+        self, table: EvidenceTable, record_ids: Sequence[str]
+    ) -> Sequence[dict[str, Any]]:
+        """Return only the requested evidence rows without scanning the table."""
+        table = EvidenceTable(table)
+        ids = tuple(dict.fromkeys(str(value) for value in record_ids if value))
+        if not ids:
+            return []
+        placeholders = ", ".join("?" for _ in ids)
+        with self.connection(read_only=True) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table.value} WHERE id IN ({placeholders})",  # noqa: S608
+                ids,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list(self, table: EvidenceTable) -> Sequence[dict[str, Any]]:
         table = EvidenceTable(table)

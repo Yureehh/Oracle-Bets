@@ -34,10 +34,8 @@ load_dotenv()
 # --------------------------------------------------------------------------- #
 ISO_TIME_FMT: Final = "%Y-%m-%dT%H:%M:%S"
 DEFAULT_FORMAT: Final = "%(asctime)s | %(levelname)s | %(name)s: %(message)s"
-DEFAULT_LOG_MAX_BYTES: Final = 10 * 1024 * 1024
-DEFAULT_LOG_BACKUPS: Final = 5
-SCHEDULED_LOG_NAME: Final = "oracle-bets.log"
-_scheduled_file_handler: logging.Handler | None = None
+DEFAULT_LOG_MAX_BYTES: Final = 5 * 1024 * 1024
+DEFAULT_LOG_BACKUPS: Final = 3
 
 
 # --------------------------------------------------------------------------- #
@@ -49,10 +47,19 @@ class LOG_TOPIC(Enum):  # noqa: N801
 
     DATA_PIPELINE = "DataPipelineLogger"
     SCHEDULE_GENERATION = "ScheduleGenerationLogger"
+    DISCORD = "DiscordLogger"
     GENERAL = "GeneralLogger"
 
     def __str__(self) -> str:
         return self.value
+
+
+TOPIC_LOG_NAMES: Final = {
+    LOG_TOPIC.DATA_PIPELINE: "pipeline.log",
+    LOG_TOPIC.SCHEDULE_GENERATION: "schedule.log",
+    LOG_TOPIC.DISCORD: "discord.log",
+}
+_topic_file_handlers: dict[LOG_TOPIC, logging.Handler] = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -153,7 +160,7 @@ def instantiate_logger(
     topic: LOG_TOPIC, level: int | str = logging.INFO
 ) -> logging.Logger:
     """
-    Convenience helper – writes all application topics to one bounded file.
+    Write each persistent application topic to its own bounded file.
     """
     if isinstance(level, str):
         effective_level: int | str = level
@@ -163,7 +170,7 @@ def instantiate_logger(
         )
 
     log_to_file = _env_flag("ORACLE_BETS_LOG_TO_FILE", default=True)
-    if not log_to_file:
+    if not log_to_file or topic is LOG_TOPIC.GENERAL:
         return create_logger(topic, level=effective_level)
 
     lg = logging.getLogger(str(topic))
@@ -178,10 +185,10 @@ def instantiate_logger(
     lg.setLevel(level_value)
     lg.propagate = False
 
-    global _scheduled_file_handler  # noqa: PLW0603
-    if _scheduled_file_handler is None:
-        _scheduled_file_handler = _build_handler(
-            log_file=LOGS_DIR / SCHEDULED_LOG_NAME,
+    handler = _topic_file_handlers.get(topic)
+    if handler is None:
+        handler = _build_handler(
+            log_file=LOGS_DIR / TOPIC_LOG_NAMES[topic],
             fmt=DEFAULT_FORMAT,
             mode="a",
             max_bytes=_env_int(
@@ -193,7 +200,8 @@ def instantiate_logger(
                 default=DEFAULT_LOG_BACKUPS,
             ),
         )
-    lg.addHandler(_scheduled_file_handler)
+        _topic_file_handlers[topic] = handler
+    lg.addHandler(handler)
     return lg
 
 

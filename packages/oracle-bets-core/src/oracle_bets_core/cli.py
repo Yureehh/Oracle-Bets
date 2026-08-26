@@ -52,20 +52,14 @@ def _add_lol_commands(sub) -> None:
     market_check.add_argument("--match-key", default=None)
     market_review = lol_sub.add_parser(
         "market-review",
-        help="Review exact owner-selected Polymarket LoL event URLs",
+        help="Review one owner-selected Polymarket/Thunderpick LoL fixture",
     )
     market_review.add_argument("urls", nargs="+")
     market_review.add_argument(
-        "--publish",
-        action="store_true",
-        help="Persist eligible proposals for the Discord Gateway bot",
+        "--manual-lines",
+        help="JSON file containing owner-entered Thunderpick lines",
     )
     market_review.add_argument("--format", choices=["table", "json"], default="table")
-    market_watch = lol_sub.add_parser(
-        "market-watch",
-        help="Record one hourly read-only series-winner market observation",
-    )
-    market_watch.add_argument("--format", choices=["table", "json"], default="table")
     lol_sub.add_parser(
         "validate-data",
         help="Validate generated LoL training tables without model training",
@@ -79,6 +73,13 @@ def _add_lol_commands(sub) -> None:
         help="Validate the independent direct-series serving contract",
     )
     winner_validation.add_argument(
+        "--format", choices=["table", "json"], default="table"
+    )
+    market_validation = lol_sub.add_parser(
+        "validate-market-strategies",
+        help="Validate exact-link series, map, totals, and handicap contracts",
+    )
+    market_validation.add_argument(
         "--format", choices=["table", "json"], default="table"
     )
     train = lol_sub.add_parser("train", help="Train LoL prediction models")
@@ -196,57 +197,39 @@ def _add_research_operation_commands(sub) -> None:  # noqa: PLR0915
     )
     restore.add_argument("backup_path")
 
-    paper = sub.add_parser("paper", help="Paper-position operations")
-    paper_sub = paper.add_subparsers(dest="action", required=True)
-    listing = paper_sub.add_parser("list", help="List paper proposals and positions")
+    bet = sub.add_parser("bet", help="Owner-recorded paper and real bet evidence")
+    bet_sub = bet.add_subparsers(dest="action", required=True)
+    listing = bet_sub.add_parser("list", help="List unified bet records")
     listing.add_argument("--database", default=None)
-    listing.add_argument("--state", choices=["pending", "open", "settled"])
+    listing.add_argument("--state", choices=["open", "settled"])
+    listing.add_argument("--mode", choices=["paper", "real"])
+    listing.add_argument("--provider")
     listing.add_argument("--target")
-    listing.add_argument("--league")
     listing.add_argument("--format", choices=["table", "json"], default="table")
-    show = paper_sub.add_parser("show", help="Show one proposal or position")
-    show.add_argument("record_id")
+    show = bet_sub.add_parser("show", help="Show one bet and its lifecycle")
+    show.add_argument("bet_id")
     show.add_argument("--database", default=None)
     show.add_argument("--format", choices=["table", "json"], default="table")
-    quote = paper_sub.add_parser("quote-prop", help="Price a manual prop line")
-    quote.add_argument("--database", default=None)
-    quote.add_argument("--forecast-id", required=True)
-    quote.add_argument("--line", required=True, type=float)
-    quote.add_argument("--over-odds", required=True, type=float)
-    quote.add_argument("--under-odds", required=True, type=float)
-    quote.add_argument("--source", required=True)
-    decide = paper_sub.add_parser("decide", help="Accept or reject a paper proposal")
-    decide.add_argument("--database", default=None)
-    decide.add_argument("--proposal-id", required=True)
-    decide.add_argument("--decision", required=True, choices=["accept", "reject"])
-    decide.add_argument("--reason")
-    decide.add_argument("--actor-id", default="owner-cli")
-    decide.add_argument("--requote-token")
-    requote = paper_sub.add_parser(
-        "requote", help="Refresh executable odds and issue a 120-second confirmation"
+    record = bet_sub.add_parser("record", help="Record a manually placed bet")
+    record.add_argument("--database", default=None)
+    record.add_argument("--review-id", required=True)
+    record.add_argument("--market-id", required=True)
+    record.add_argument("--mode", required=True, choices=["paper", "real"])
+    record.add_argument("--currency", required=True)
+    record.add_argument("--bankroll-before", required=True)
+    record.add_argument("--stake-percent", required=True)
+    record.add_argument("--stake-amount")
+    record.add_argument("--accepted-odds", required=True)
+    record.add_argument("--reason", required=True)
+    record.add_argument("--actor-id", default="owner-cli")
+    record.add_argument("--opened-at")
+    record.add_argument(
+        "--idempotency-key",
+        help="Reuse only when retrying the same owner record action",
     )
-    requote.add_argument("proposal_id")
-    requote.add_argument("--database", default=None)
-    requote.add_argument("--format", choices=["table", "json"], default="table")
-    map_state = paper_sub.add_parser(
-        "record-map-state",
-        help="Record one owner-verified completed map for shadow research",
-    )
-    map_state.add_argument("--series-id", required=True)
-    map_state.add_argument("--map-number", type=int, required=True)
-    map_state.add_argument("--winner", required=True)
-    map_state.add_argument("--source-reference", required=True)
-    map_state.add_argument("--database", default=None)
-    expire = paper_sub.add_parser(
-        "expire", help="Invalidate undecided proposals from a strategy version"
-    )
-    expire.add_argument("--database", default=None)
-    expire.add_argument("--strategy-version", required=True)
-    expire.add_argument("--reason", required=True)
-    expire.add_argument("--actor-id", default="owner-cli")
-    settle = paper_sub.add_parser("settle", help="Record one owner-verified settlement")
+    settle = bet_sub.add_parser("settle", help="Record one owner-verified settlement")
     settle.add_argument("--database", default=None)
-    settle.add_argument("--position-id", required=True)
+    settle.add_argument("--bet-id", required=True)
     settle.add_argument(
         "--result",
         required=True,
@@ -256,20 +239,10 @@ def _add_research_operation_commands(sub) -> None:  # noqa: PLR0915
     settle.add_argument("--note")
     settle.add_argument("--actor-id", default="owner-cli")
     settle.add_argument("--settled-at", default=None)
-    settle.add_argument("--dry-run", action="store_true")
-    closing = paper_sub.add_parser(
-        "capture-closing",
-        help="Capture read-only pre-start Polymarket closing books",
-    )
-    closing.add_argument("--database", default=None)
-    closing.add_argument("--window-minutes", type=int, default=15)
-    closing.add_argument("--dry-run", action="store_true")
-    closing.add_argument("--format", choices=["table", "json"], default="table")
-    performance = paper_sub.add_parser("performance", help="Report paper performance")
+    settle.add_argument("--closing-odds")
+    performance = bet_sub.add_parser("performance", help="Report performance by mode")
     performance.add_argument("--database", default=None)
-    performance.add_argument("--since")
-    performance.add_argument("--target")
-    performance.add_argument("--league")
+    performance.add_argument("--mode", required=True, choices=["paper", "real"])
     performance.add_argument("--format", choices=["table", "json"], default="table")
 
 
@@ -293,7 +266,6 @@ def _add_delivery_commands(sub) -> None:
         default=None,
     )
     daily_lol.add_argument("--skip-retrain", action="store_true")
-    daily_lol.add_argument("--skip-market-search", action="store_true")
     daily_lol.add_argument("--targets", default="all")
     daily_lol.add_argument(
         "--feature-set",
@@ -301,13 +273,6 @@ def _add_delivery_commands(sub) -> None:
         default="compact",
     )
     daily_lol.add_argument("--max-features", type=int, default=120)
-    daily_lol.add_argument(
-        "--ai-review",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use one optional bounded advisory review when OPENAI_API_KEY exists",
-    )
-    daily_lol.add_argument("--openai-model", default="gpt-5.6-luna")
     discord = sub.add_parser("discord", help="Discord delivery operations")
     discord_sub = discord.add_subparsers(dest="action", required=True)
     doctor = discord_sub.add_parser("doctor", help="Validate Discord configuration")
@@ -427,12 +392,50 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
         return 0 if report.ok else 2
     if args.action == "market-check":
         return _check_lol_markets(args.match_key)
+    if args.action == "validate-market-strategies":
+        import json
+
+        from lol_bets.operations.market_validation import validate_market_strategies
+
+        report = validate_market_strategies()
+        if args.format == "json":
+            sys.stdout.write(
+                json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n"
+            )
+        else:
+            status = "READY" if report.ok else "BLOCKED"
+            sys.stdout.write(f"LoL market strategies: {status}\n")
+            for name, passed in report.checks.items():
+                sys.stdout.write(f"- {'OK' if passed else 'FAILED'}: {name}\n")
+            sys.stdout.write(
+                "- Experimental: " + ", ".join(report.experimental_strategies) + "\n"
+            )
+            for strategy, metrics in report.derived_backtest_metrics.items():
+                sys.stdout.write(
+                    f"- Held-out {strategy}: log_loss={metrics['log_loss']:.4f}, "
+                    f"brier={metrics['brier']:.4f}, accuracy={metrics['accuracy']:.1%}\n"
+                )
+        return 0 if report.ok else 2
     if args.action == "market-review":
         import json
 
         from lol_bets.operations.manual_market import review_polymarket_events
 
-        result = review_polymarket_events(args.urls, publish=args.publish)
+        manual_lines = []
+        if args.manual_lines:
+            from pathlib import Path
+
+            try:
+                manual_lines = json.loads(
+                    Path(args.manual_lines).read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as error:
+                sys.stderr.write(f"Invalid --manual-lines file: {error}\n")
+                return 2
+            if not isinstance(manual_lines, list):
+                sys.stderr.write("--manual-lines must contain a JSON list.\n")
+                return 2
+        result = review_polymarket_events(args.urls, manual_lines=manual_lines)
         if args.format == "json":
             sys.stdout.write(
                 json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n"
@@ -441,7 +444,7 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
             sys.stdout.write(
                 f"Reviewed {result.fixtures} fixture(s); "
                 f"{result.predictions} prediction(s); "
-                f"{result.actionable_proposals} actionable proposal(s).\n"
+                f"{result.comparisons} supported comparison(s).\n"
                 f"JSON: {result.report_paths[0]}\n"
                 f"Markdown: {result.report_paths[1]}\n"
             )
@@ -449,24 +452,9 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
                 sys.stdout.write(
                     f"- {failure['url']}: {failure['reason']} ({failure['detail']})\n"
                 )
+            for ignored in result.ignored_links:
+                sys.stdout.write(f"- Ignored: {ignored['detail']}\n")
         return 0 if result.ok else 2
-    if args.action == "market-watch":
-        import json
-
-        from lol_bets.operations.market_watch import observe_winner_markets
-
-        report = observe_winner_markets()
-        if args.format == "json":
-            sys.stdout.write(
-                json.dumps(report, indent=2, sort_keys=True, default=str) + "\n"
-            )
-        else:
-            sys.stdout.write(
-                f"Recorded {len(report['observations'])} winner market(s); "
-                f"{len(report['failures'])} failure(s).\n"
-                f"JSON: {report['json_report']}\nMarkdown: {report['markdown_report']}\n"
-            )
-        return 0
     if args.action == "promote-tuning":
         from lol_bets.training import promote_tuning_run
 
@@ -573,8 +561,7 @@ def _check_lol_markets(match_key: str | None) -> int:  # noqa: PLR0915
         PolymarketClobClient,
         PolymarketGammaAdapter,
         SupportedMarketType,
-        capture_minimum_order_book_batch,
-        confirmed_executable_fill,
+        capture_current_order_books,
         select_best_market,
     )
     from oracle_bets_core.paths import REPORTS_DIR, SCHEDULE
@@ -662,15 +649,15 @@ def _check_lol_markets(match_key: str | None) -> int:  # noqa: PLR0915
             )
         else:
             selected_market = _first_supported_market(supported)
-        batch = capture_minimum_order_book_batch(
+        batch = capture_current_order_books(
             PolymarketClobClient(),
             token_ids=tuple(outcome.token_id for outcome in selected_market.outcomes),
         )
         quotes = []
         for outcome in selected_market.outcomes:
-            pair = batch.observations.get(outcome.token_id)
+            observation = batch.observations.get(outcome.token_id)
             failure = batch.failures.get(outcome.token_id)
-            if failure is not None or pair is None:
+            if failure is not None or observation is None:
                 quotes.append(
                     {
                         "outcome": outcome.name,
@@ -683,7 +670,7 @@ def _check_lol_markets(match_key: str | None) -> int:  # noqa: PLR0915
                     }
                 )
                 continue
-            fill = confirmed_executable_fill(pair)
+            fill = observation.fill
             quotes.append(
                 {
                     "outcome": outcome.name,
@@ -692,19 +679,16 @@ def _check_lol_markets(match_key: str | None) -> int:  # noqa: PLR0915
                     "requested_shares": str(fill.requested_shares),
                     "hypothetical_cost": str(fill.total_cost),
                     "executable_decimal_odds": fill.decimal_odds,
-                    "minimum_order_sizes": [
-                        str(observation.book.minimum_order_size) for observation in pair
-                    ],
-                    "book_timestamps": [
-                        observation.book.timestamp for observation in pair
-                    ],
-                    "book_hashes": [observation.book.book_hash for observation in pair],
+                    "minimum_order_size": str(observation.book.minimum_order_size),
+                    "book_timestamp": observation.book.timestamp,
+                    "book_hash": observation.book.book_hash,
+                    "warnings": list(batch.warnings.get(outcome.token_id, ())),
                 }
             )
         result["clob"] = {
             "market_id": selected_market.market_id,
             "token_orientation_present": True,
-            "observation_interval_seconds": 45,
+            "observation_count": 1,
             "quote_basis": "minimum_order_shares",
             "outcomes": quotes,
         }
@@ -1073,143 +1057,74 @@ def _main_evidence(args: argparse.Namespace) -> int:
     return 0
 
 
-def _main_paper(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915
+def _main_bet(args: argparse.Namespace) -> int:
     import json
     from datetime import datetime
     from pathlib import Path
 
     from oracle_bets_core.evidence import EvidenceStore
-    from oracle_bets_core.evidence.settlement import SettlementResult
-    from oracle_bets_core.operations.paper_evidence import (
-        PaperEvidenceError,
-        capture_closing_snapshots,
-        decide_paper,
-        expire_proposals,
-        paper_rows,
-        paper_show,
+    from oracle_bets_core.operations.bets import (
+        BetEvidenceError,
+        list_bets,
         performance_summary,
-        quote_prop,
-        record_map_state,
-        requote_paper,
-        settle_paper,
+        record_bet,
+        settle_bet,
+        show_bet,
     )
     from oracle_bets_core.paths import EVIDENCE_DB
 
     store = EvidenceStore(Path(args.database) if args.database else EVIDENCE_DB)
     try:
         if args.action == "list":
-            result = paper_rows(
-                store, state=args.state, target=args.target, league=args.league
+            result = list_bets(
+                store,
+                state=args.state,
+                mode=args.mode,
+                provider=args.provider,
+                target=args.target,
             )
         elif args.action == "show":
-            result = paper_show(store, args.record_id)
-        elif args.action == "quote-prop":
-            proposal = quote_prop(
+            result = show_bet(store, args.bet_id)
+        elif args.action == "record":
+            bet_id = record_bet(
                 store,
-                forecast_id=args.forecast_id,
-                line=args.line,
-                over_odds=args.over_odds,
-                under_odds=args.under_odds,
-                source=args.source,
-            )
-            sys.stdout.write(f"Created research proposal {proposal}.\n")
-            return 0
-        elif args.action == "decide":
-            position = decide_paper(
-                store,
-                proposal_id=args.proposal_id,
-                decision=args.decision,
+                review_id=args.review_id,
+                market_id=args.market_id,
+                mode=args.mode,
+                currency=args.currency,
+                bankroll_before=args.bankroll_before,
+                stake_percent=args.stake_percent,
+                stake_amount=args.stake_amount,
+                accepted_odds=args.accepted_odds,
                 reason=args.reason,
                 actor_id=args.actor_id,
-                requote_token=args.requote_token,
+                opened_at=(
+                    datetime.fromisoformat(args.opened_at) if args.opened_at else None
+                ),
+                idempotency_key=args.idempotency_key,
             )
             sys.stdout.write(
-                f"Decision recorded{f'; opened {position}' if position else ''}.\n"
+                f"Recorded {args.mode} bet {bet_id}; no wager was placed.\n"
             )
-            return 0
-        elif args.action == "requote":
-            from lol_bets.operations.models import ModelRegistry
-
-            from oracle_bets_core.markets import PolymarketClobClient
-            from oracle_bets_core.paths import MODEL_REGISTRY_DIR
-
-            registry = ModelRegistry(MODEL_REGISTRY_DIR)
-            champion = registry.champion_id()
-            result = requote_paper(
-                store,
-                proposal_id=args.proposal_id,
-                client=PolymarketClobClient(),
-                model_healthy=bool(champion and registry.is_actionable(champion)),
-            )
-        elif args.action == "record-map-state":
-            snapshot_id = record_map_state(
-                store,
-                series_id=args.series_id,
-                map_number=args.map_number,
-                winner=args.winner,
-                source_reference=args.source_reference,
-            )
-            sys.stdout.write(f"Recorded shadow map state {snapshot_id}.\n")
-            return 0
-        elif args.action == "expire":
-            expired = expire_proposals(
-                store,
-                strategy_version=args.strategy_version,
-                reason=args.reason,
-                actor_id=args.actor_id,
-            )
-            sys.stdout.write(f"Expired {len(expired)} undecided proposal(s).\n")
             return 0
         elif args.action == "settle":
-            if args.dry_run:
-                from oracle_bets_core.evidence.settlement import (
-                    PositionTerms,
-                    settlement_pnl,
-                )
-
-                position = paper_show(store, args.position_id)
-                pnl = settlement_pnl(
-                    PositionTerms(
-                        args.position_id,
-                        position["stake_units"],
-                        position["decimal_odds"],
-                    ),
-                    SettlementResult(args.result),
-                )
-                sys.stdout.write(f"PnL {pnl} units (dry run); no evidence written.\n")
-                return 0
-            settled_at = (
-                datetime.fromisoformat(args.settled_at) if args.settled_at else None
-            )
-            settlement = settle_paper(
+            event_id = settle_bet(
                 store,
-                position_id=args.position_id,
-                result=SettlementResult(args.result),
+                bet_id=args.bet_id,
+                result=args.result,
                 source_reference=args.source_reference,
-                settled_at=settled_at,
                 actor_id=args.actor_id,
                 note=args.note,
+                settled_at=(
+                    datetime.fromisoformat(args.settled_at) if args.settled_at else None
+                ),
+                closing_odds=args.closing_odds,
             )
-            sys.stdout.write(f"Recorded settlement {settlement}.\n")
+            sys.stdout.write(f"Recorded settlement {event_id}.\n")
             return 0
-        elif args.action == "capture-closing":
-            from oracle_bets_core.markets import PolymarketClobClient
-
-            result = capture_closing_snapshots(
-                store,
-                client=PolymarketClobClient(),
-                window_minutes=args.window_minutes,
-                dry_run=args.dry_run,
-            )
         else:
-            since = datetime.fromisoformat(args.since) if args.since else None
-            result = performance_summary(
-                store,
-                since=since,
-                target=args.target,
-                league=args.league,
-            )
-    except (PaperEvidenceError, FileNotFoundError) as error:
+            result = performance_summary(store, mode=args.mode)
+    except (BetEvidenceError, FileNotFoundError) as error:
         sys.stderr.write(f"{error}\n")
         return 2
     if getattr(args, "format", "table") == "json":
@@ -1217,8 +1132,8 @@ def _main_paper(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR
     elif isinstance(result, list):
         for row in result:
             sys.stdout.write(
-                f"{row['state']:<8} {row['proposal_id']} "
-                f"{row['league']} {row['target']}\n"
+                f"{row['state']:<8} {row['mode']:<5} {row['id']} "
+                f"{row['provider']} {row['target']} {row['selection']}\n"
             )
     else:
         for key, value in result.items():
@@ -1238,12 +1153,9 @@ def _main_daily(args: argparse.Namespace) -> int:
             delivery_mode=args.discord_delivery_mode,
             dry_run=args.dry_run,
             skip_retrain=args.skip_retrain,
-            skip_market_search=args.skip_market_search,
             targets=args.targets,
             feature_set=args.feature_set,
             max_features=args.max_features,
-            ai_review=args.ai_review,
-            openai_model=args.openai_model,
         )
     )
     sys.stdout.write(f"Daily LoL workflow: {'OK' if result.ok else 'FAILED'}\n")
@@ -1406,7 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
         "lol": _main_lol,
         "model": _main_model,
         "evidence": _main_evidence,
-        "paper": _main_paper,
+        "bet": _main_bet,
         "daily": _main_daily,
         "discord": _main_discord,
         "health": _main_health,
