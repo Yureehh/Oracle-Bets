@@ -2325,7 +2325,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         *,
         require_safe_calibration: bool,
     ) -> dict[str, Any]:
-        """Choose on the selection split, rejecting unsafe Winner V2 calibration."""
+        """Choose on selection evidence; raw is the fail-safe identity fallback."""
         for candidate in candidates:
             metrics = candidate["metrics"]
             reasons: list[str] = []
@@ -2341,17 +2341,28 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             ):
                 reasons.append("calibration_intercept_above_0.10")
             candidate["selection_reasons"] = reasons
+            candidate["selection_safe"] = not reasons
             candidate["selection_eligible"] = not reasons
+            candidate["selection_fallback"] = False
 
-        eligible = (
-            [candidate for candidate in candidates if candidate["selection_eligible"]]
-            if require_safe_calibration
-            else candidates
-        )
+        eligible = candidates
+        if require_safe_calibration:
+            eligible = [
+                candidate for candidate in candidates if candidate["selection_safe"]
+            ]
+            if not eligible:
+                eligible = [
+                    candidate
+                    for candidate in candidates
+                    if candidate["method"] == "raw"
+                ]
+                for candidate in eligible:
+                    candidate["selection_eligible"] = True
+                    candidate["selection_fallback"] = True
         if not eligible:
             raise RuntimeError(
-                "No probability calibrator passed Winner V2 selection-split "
-                "slope/intercept gates."
+                "No safe fitted probability calibrator or raw identity fallback "
+                "was available on the Winner V2 selection split."
             )
         return min(
             eligible,

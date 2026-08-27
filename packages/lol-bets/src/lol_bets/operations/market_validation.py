@@ -43,6 +43,7 @@ class MarketStrategyValidationReport:
     derived_backtest_metrics: dict[str, dict[str, float]]
     derived_backtest_counts: dict[str, int]
     experimental_strategies: tuple[str, ...]
+    strategy_readiness: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,6 +60,7 @@ def validate_market_strategies(
     """Validate artifacts, sealed map metrics, legal BO paths, and series data."""
     checks: dict[str, bool] = {}
     failures: list[str] = []
+    readiness = _strategy_readiness_checks(checks, failures)
     checks["direct_series_model"] = validate_winner_model().ok
     try:
         resolved_model = _serving_path(outcome_model_path)
@@ -149,7 +151,33 @@ def validate_market_strategies(
             "series_totals_map_path_v1",
             "series_handicap_map_path_v1",
         ),
+        strategy_readiness=readiness or {},
     )
+
+
+def _strategy_readiness_checks(
+    checks: dict[str, bool], failures: list[str]
+) -> dict[str, Any]:
+    try:
+        readiness = ModelRegistry(MODEL_REGISTRY_DIR).strategy_readiness()
+        cells = readiness.get("cells") if readiness else None
+        checks["strategy_readiness_complete"] = bool(cells) and all(
+            isinstance(cell, dict)
+            and cell.get("state")
+            in {"recommendation_active", "exploration_only", "display_only"}
+            for cell in cells
+        )
+        checks["recommendations_are_direct_series_only"] = bool(cells) and all(
+            cell.get("target") == "series_winner"
+            for cell in cells
+            if cell.get("state") == "recommendation_active"
+        )
+        return readiness or {}
+    except Exception as error:
+        checks["strategy_readiness_complete"] = False
+        checks["recommendations_are_direct_series_only"] = False
+        failures.append(f"strategy_readiness:{type(error).__name__}")
+        return {}
 
 
 def _serving_path(path: Path) -> Path:

@@ -763,6 +763,55 @@ def test_first_v2_without_legacy_champion_runs_internal_baseline_review(
     assert review.evidence["winner_targets"]["series_winner"]["warnings"] == [
         "calibration_intercept_above_0.10"
     ]
+    readiness = review.evidence["strategy_readiness"]
+    assert readiness["model_health_is_separate"] is True
+    actionable = next(
+        cell
+        for cell in readiness["cells"]
+        if cell["target"] == "series_winner"
+        and cell["cohort"] == "actionable_tier1_plus_erls"
+    )
+    assert actionable["state"] == "recommendation_active"
+
+
+def test_champion_transition_activates_reviewed_readiness_once(tmp_path, monkeypatch):
+    registry = ModelRegistry(tmp_path / "registry")
+    candidate = registry.candidates / "candidate"
+    model = candidate / "SeriesWinnerPrediction_LightGBM"
+    model.mkdir(parents=True)
+    (model / "SeriesWinnerPrediction_LightGBM.pkl").write_bytes(b"model")
+    (candidate / "manifest.json").write_text(
+        json.dumps({"target": "complete_lol_bundle"}), encoding="utf-8"
+    )
+    readiness = {
+        "candidate_id": "candidate",
+        "schema_version": 1,
+        "policy_version": "lol-readiness-v1",
+        "cells": [],
+    }
+    reviews = registry.root / "reviews"
+    reviews.mkdir()
+    (reviews / "candidate.json").write_text(
+        json.dumps(
+            {
+                "status": "manual_review_required",
+                "reasons": [],
+                "evidence": {"strategy_readiness": readiness},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def bundle_is_valid(model_id):
+        return model_id == "candidate"
+
+    monkeypatch.setattr(registry, "verify_bundle", bundle_is_valid)
+
+    registry.promote("candidate", promoted_at=NOW, reason="reviewed")
+
+    assert registry.strategy_readiness()["candidate_id"] == "candidate"
+    history = registry.strategy_readiness_history_path.read_text().splitlines()
+    assert len(history) == 1
 
 
 def _register_replay_bundle(

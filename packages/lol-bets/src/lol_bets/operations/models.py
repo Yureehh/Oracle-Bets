@@ -498,6 +498,13 @@ def review_candidate_on_sealed_rows(
         for target, decision in decisions.items()
         for reason in decision.reasons
     )
+    report["strategy_readiness"] = _build_review_readiness(
+        registry.candidates / candidate_id,
+        candidate_id=candidate_id,
+        reviewed_at=reviewed_at,
+        series_report=report["sealed_rows"]["series_winner"],
+        blocked=bool(reasons),
+    )
     decision_report = {
         target: {
             "promote": decision.promote,
@@ -598,6 +605,13 @@ def _review_first_winner_v2_candidate(
         "winner_targets": winner_reports,
         "manual_promotion_required": True,
     }
+    evidence_report["strategy_readiness"] = _build_review_readiness(
+        root,
+        candidate_id=candidate_id,
+        reviewed_at=reviewed_at,
+        series_report=winner_reports.get("series_winner", {}),
+        blocked=bool(reasons),
+    )
 
     review = CandidateReview(
         candidate_id=candidate_id,
@@ -713,6 +727,12 @@ def _review_winner_target_against_rating_baseline(
         "operational_failures": list(operational_failures),
         "reasons": list(dict.fromkeys(reasons)),
         "warnings": warnings,
+        "readiness_cohorts": _series_readiness_cohorts(
+            labels,
+            actual,
+            baseline,
+            candidate,
+        ),
     }
     return list(dict.fromkeys(reasons)), _frame_fingerprint(labels), report
 
@@ -780,6 +800,10 @@ class ModelRegistry:
         self.actionability_path = self.root / "model_actionability.json"
         self.actionability_history_path = (
             self.root / "model_actionability_history.jsonl"
+        )
+        self.strategy_readiness_path = self.root / "strategy_readiness.json"
+        self.strategy_readiness_history_path = (
+            self.root / "strategy_readiness_history.jsonl"
         )
         self.candidates.mkdir(parents=True, exist_ok=True)
         self._recover_champion_transition()
@@ -907,6 +931,25 @@ class ModelRegistry:
             self.verify_bundle(model_id)
             and self.actionability(model_id).get("status") == "actionable"
         )
+
+    def strategy_readiness(self) -> dict[str, Any] | None:
+        """Return the active champion's separately reviewed strategy scope."""
+        if not self.strategy_readiness_path.is_file():
+            return None
+        try:
+            payload = json.loads(
+                self.strategy_readiness_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError, TypeError) as error:
+            raise ModelRegistryError(
+                "strategy readiness pointer is malformed"
+            ) from error
+        if (
+            not isinstance(payload, dict)
+            or payload.get("candidate_id") != self.champion_id()
+        ):
+            raise ModelRegistryError("strategy readiness does not match the champion")
+        return payload
 
     def quarantine(
         self,
@@ -1056,6 +1099,16 @@ class ModelRegistry:
                 raise ModelRegistryError(
                     "Winner V2 promotion requires a passing sealed-row review"
                 )
+            readiness = review.get("evidence", {}).get("strategy_readiness")
+            if (
+                not isinstance(readiness, dict)
+                or readiness.get("candidate_id") != model_id
+            ):
+                raise ModelRegistryError(
+                    "Winner V2 promotion requires reviewed strategy readiness"
+                )
+        else:
+            readiness = None
 
         previous = self.champion_id()
         pointer = {
@@ -1072,11 +1125,17 @@ class ModelRegistry:
         history["transition_id"] = hashlib.sha256(
             _stable_json(history).encode()
         ).hexdigest()[:24]
-        _atomic_write_json(
-            self.transition_path,
-            {"pointer": pointer, "history": history},
-        )
+        transition = {"pointer": pointer, "history": history}
+        if readiness is not None:
+            transition["strategy_readiness"] = readiness
+        _atomic_write_json(self.transition_path, transition)
         _atomic_write_json(self.champion_pointer, pointer)
+        if readiness is not None:
+            self._activate_strategy_readiness(
+                readiness,
+                transition_id=history["transition_id"],
+                activated_at=changed_at,
+            )
         self._append_champion_history(history)
         self.transition_path.unlink(missing_ok=True)
 
@@ -1089,6 +1148,7 @@ class ModelRegistry:
             history = transition["history"]
             model_id = str(pointer["model_id"])
             transition_id = str(history["transition_id"])
+            readiness = transition.get("strategy_readiness")
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
             raise ModelRegistryError("champion transition is malformed") from error
         if not self.verify_bundle(model_id):
@@ -1096,8 +1156,39 @@ class ModelRegistry:
                 f"pending champion transition bundle is unhealthy: {model_id}"
             )
         _atomic_write_json(self.champion_pointer, pointer)
+        if isinstance(readiness, dict):
+            self._activate_strategy_readiness(
+                readiness,
+                transition_id=transition_id,
+                activated_at=datetime.fromisoformat(str(pointer["selected_at"])),
+            )
         self._append_champion_history(history, transition_id=transition_id)
         self.transition_path.unlink(missing_ok=True)
+
+    def _activate_strategy_readiness(
+        self,
+        readiness: dict[str, Any],
+        *,
+        transition_id: str,
+        activated_at: datetime,
+    ) -> None:
+        payload = dict(readiness)
+        payload["activated_at"] = activated_at.isoformat()
+        payload["transition_id"] = transition_id
+        _atomic_write_json(self.strategy_readiness_path, payload)
+        if self.strategy_readiness_history_path.is_file():
+            for line in self.strategy_readiness_history_path.read_text(
+                encoding="utf-8"
+            ).splitlines():
+                try:
+                    if json.loads(line).get("transition_id") == transition_id:
+                        return
+                except json.JSONDecodeError:
+                    continue
+        with self.strategy_readiness_history_path.open("a", encoding="utf-8") as stream:
+            stream.write(_stable_json(payload) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def _append_champion_history(
         self,
@@ -1308,6 +1399,12 @@ def _replay_promotion_evidence(
                     }
                     for name, values in target_cohorts.items()
                 },
+                "readiness_cohorts": _series_readiness_cohorts(
+                    labels,
+                    actual,
+                    champion_prediction,
+                    candidate_prediction,
+                ),
             }
         else:
             champion_error = float(np.mean(np.abs(actual - champion_prediction)))
@@ -1582,6 +1679,79 @@ def _cohort_replay_losses(
             int(len(clustered)),
         )
     return results
+
+
+def _series_readiness_cohorts(
+    labels: pd.DataFrame,
+    actual: np.ndarray,
+    baseline: np.ndarray,
+    candidate: np.ndarray,
+) -> dict[str, dict[str, Any]]:
+    """Build only the finite owner-actionable series cohort lattice."""
+    from oracle_bets_core.league_selection import actionable_leagues
+
+    from lol_bets.operations.readiness import classification_cohort_evidence
+
+    if "gameid" not in labels or labels["gameid"].isna().any():
+        raise ValueError("series readiness requires unique fixture identities")
+    actionable = (
+        labels["actionable"].fillna(False).astype(bool).to_numpy()
+        if "actionable" in labels
+        else np.zeros(len(labels), dtype=bool)
+    )
+    masks = {"actionable_tier1_plus_erls": actionable}
+    if "league" in labels:
+        leagues = labels["league"].fillna("unknown").astype(str)
+        for league in actionable_leagues():
+            masks[f"league:{league}"] = actionable & leagues.eq(league).to_numpy()
+    evidence = classification_cohort_evidence(
+        actual,
+        baseline,
+        candidate,
+        labels["gameid"].astype(str).to_numpy(),
+        masks,
+    )
+    return {name: asdict(value) for name, value in evidence.items()}
+
+
+def _build_review_readiness(
+    root: Path,
+    *,
+    candidate_id: str,
+    reviewed_at: datetime,
+    series_report: dict[str, Any],
+    blocked: bool,
+) -> dict[str, Any]:
+    """Attach model readiness to a review without changing promotion health."""
+    from oracle_bets_core.league_selection import actionable_leagues
+
+    from lol_bets.operations.readiness import (
+        CohortEvidence,
+        build_readiness_artifact,
+    )
+
+    statuses = _bundle_evidence_status(root)
+    if blocked:
+        statuses["series_winner"] = "review_required"
+    raw_cohorts = series_report.get("readiness_cohorts")
+    if not isinstance(raw_cohorts, dict):
+        raw_cohorts = {}
+    cohorts = {
+        str(name): CohortEvidence(**payload)
+        for name, payload in raw_cohorts.items()
+        if isinstance(payload, dict)
+    }
+    preregistered = (
+        "actionable_tier1_plus_erls",
+        *(f"league:{league}" for league in actionable_leagues()),
+    )
+    return build_readiness_artifact(
+        candidate_id=candidate_id,
+        reviewed_at=reviewed_at,
+        target_statuses=statuses,
+        series_cohorts=cohorts,
+        preregistered_cohorts=preregistered,
+    )
 
 
 def _bundle_evidence_status(root: Path) -> dict[str, str]:

@@ -227,7 +227,7 @@ def test_winner_calibration_rejects_better_loss_when_slope_is_unsafe() -> None:
     assert candidates[1]["selection_eligible"] is True
 
 
-def test_winner_calibration_fails_when_no_candidate_is_safe() -> None:
+def test_winner_calibration_uses_raw_when_no_fitted_candidate_is_safe() -> None:
     candidates = [
         {
             "method": "raw",
@@ -240,7 +240,31 @@ def test_winner_calibration_fails_when_no_candidate_is_safe() -> None:
         }
     ]
 
-    with pytest.raises(RuntimeError, match="No probability calibrator passed"):
+    selected = GradientBoostingModel._select_probability_calibration_candidate(
+        candidates,
+        require_safe_calibration=True,
+    )
+
+    assert selected["method"] == "raw"
+    assert selected["selection_safe"] is False
+    assert selected["selection_eligible"] is True
+    assert selected["selection_fallback"] is True
+
+
+def test_winner_calibration_rejects_unsafe_fitted_candidate_without_raw() -> None:
+    candidates = [
+        {
+            "method": "isotonic",
+            "metrics": {
+                "log_loss": 0.50,
+                "brier": 0.19,
+                "calibration_slope": 1.3,
+                "calibration_intercept": 0.0,
+            },
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="raw identity fallback"):
         GradientBoostingModel._select_probability_calibration_candidate(
             candidates,
             require_safe_calibration=True,
