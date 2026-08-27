@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import tempfile
 from dataclasses import dataclass
@@ -17,6 +16,18 @@ from oracle_bets_core.logger import logger
 from oracle_bets_core.pd import pd
 
 from lol_bets.data_generation.ingestion.quality import schema_fingerprint
+from lol_bets.data_generation.ingestion.snapshot_io import (
+    atomic_json,
+)
+from lol_bets.data_generation.ingestion.snapshot_io import (
+    atomic_symlink as _atomic_symlink,
+)
+from lol_bets.data_generation.ingestion.snapshot_io import (
+    remove_tree as _remove_tree,
+)
+from lol_bets.data_generation.ingestion.snapshot_io import (
+    sha256_file as _sha256_file,
+)
 
 ROW_ID_COLUMNS = ("gameid", "side", "position")
 ENTITY_ID_COLUMNS = ("playerid", "teamid")
@@ -377,6 +388,10 @@ def _current_snapshot_id(pointer: Path) -> str | None:
     return snapshot_id if re.fullmatch(r"history-[a-f0-9]{24}", snapshot_id) else None
 
 
+def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    atomic_json(path, payload, default=str)
+
+
 def _prune_generations(root: Path, keep: set[str | None]) -> None:
     for generation in root.iterdir():
         if generation.name.startswith(".") or generation.name in keep:
@@ -390,43 +405,3 @@ def _prune_generations(root: Path, keep: set[str | None]) -> None:
             logger.warning(
                 "Could not remove old history generation %s: %s", generation, error
             )
-
-
-def _sha256_file(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(
-                json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
-            )
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _atomic_symlink(target: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    temporary.unlink(missing_ok=True)
-    temporary.symlink_to(target.resolve())
-    temporary.replace(destination)
-
-
-def _remove_tree(path: Path) -> None:
-    for child in path.iterdir():
-        if child.is_dir() and not child.is_symlink():
-            _remove_tree(child)
-        else:
-            child.unlink(missing_ok=True)
-    path.rmdir()

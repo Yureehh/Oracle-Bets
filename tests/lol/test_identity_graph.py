@@ -155,3 +155,18 @@ def test_history_and_schedule_share_canonical_team_identity(tmp_path):
         canonical_team_identity_id("T1"),
         canonical_team_identity_id("Gen.G"),
     }
+
+
+def test_history_sync_ignores_provider_team_ids_with_blank_names(tmp_path):
+    history = _history()
+    history.loc[history["teamid"] == "team-b", "teamname"] = "  "
+    store = EvidenceStore(tmp_path / "identity.db")
+
+    sync_history_identity_graph(store, history, observed_at=NOW)
+
+    teams = [
+        row
+        for row in store.list(EvidenceTable.IDENTITIES)
+        if row["entity_type"] == "team"
+    ]
+    assert [row["canonical_name"] for row in teams] == ["T1"]

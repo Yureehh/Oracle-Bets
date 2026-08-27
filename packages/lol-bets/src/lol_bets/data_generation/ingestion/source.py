@@ -21,6 +21,19 @@ import requests
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import RAW_DATA
 
+from lol_bets.data_generation.ingestion.snapshot_io import (
+    atomic_json as _atomic_json,
+)
+from lol_bets.data_generation.ingestion.snapshot_io import (
+    atomic_symlink as _atomic_symlink,
+)
+from lol_bets.data_generation.ingestion.snapshot_io import (
+    remove_tree as _remove_tree,
+)
+from lol_bets.data_generation.ingestion.snapshot_io import (
+    sha256_file as _sha256_file,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -724,39 +737,6 @@ def _maximum_match_datetime(path: Path) -> datetime | None:
         return None
 
 
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _atomic_symlink(target: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    temporary.unlink(missing_ok=True)
-    temporary.symlink_to(target.resolve())
-    temporary.replace(destination)
-
-
-def _remove_tree(path: Path) -> None:
-    for child in path.iterdir():
-        if child.is_dir() and not child.is_symlink():
-            _remove_tree(child)
-        else:
-            child.unlink(missing_ok=True)
-    path.rmdir()
-
-
 def _current_source_snapshot_id(root: Path) -> str | None:
     try:
         value = json.loads(
@@ -781,8 +761,3 @@ def _prune_source_generations(root: Path, keep: set[str | None]) -> None:
             logger.warning(
                 "Could not remove old source generation %s: %s", generation, error
             )
-
-
-def _sha256_file(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()

@@ -491,7 +491,7 @@ def _record_fixtures(
         if not team_a or not team_b:
             continue
         for name in (team_a, team_b):
-            identity_id = _team_identity_id(name)
+            identity_id = canonical_team_identity_id(name)
             _append_if_missing(
                 store,
                 EvidenceTable.IDENTITIES,
@@ -518,8 +518,8 @@ def _record_fixtures(
                 "run_id": run_id,
                 "sport": "lol",
                 "competition_id": str(row.get("league") or "unknown"),
-                "team_a_identity_id": _team_identity_id(team_a),
-                "team_b_identity_id": _team_identity_id(team_b),
+                "team_a_identity_id": canonical_team_identity_id(team_a),
+                "team_b_identity_id": canonical_team_identity_id(team_b),
                 "start_time": _as_utc(row["start_utc"]),
                 "best_of": int(row.get("best_of") or 1),
                 "status": str(row.get("status") or "scheduled"),
@@ -887,13 +887,9 @@ def _fixture_lookup_key(row: Any) -> str:
     )
 
 
-def _team_identity_id(name: str) -> str:
-    return canonical_team_identity_id(name)
-
-
 def _selection_id(name: str, target: str) -> str:
     if target in {"winner", "map_winner", "series_winner"}:
-        return _team_identity_id(name)
+        return canonical_team_identity_id(name)
     return _id("selection", name.casefold())
 
 

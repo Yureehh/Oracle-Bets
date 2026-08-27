@@ -483,16 +483,15 @@ def train_models(  # noqa: PLR0915
     )
     trained: list[str] = []
     failed: list[str] = []
-    history_path = current_history_data_path(
-        RAW_DATA,
-        pointer_path=RAW_CURRENT_POINTER,
-    )
-    history_manifest = (
-        read_history_snapshot(pointer_path=RAW_CURRENT_POINTER)[1]
-        if RAW_CURRENT_POINTER.is_file()
-        else {}
-    )
-    dataset_fingerprint = _sha256_file(history_path)
+    if RAW_CURRENT_POINTER.is_file():
+        history_path, history_manifest = read_history_snapshot(
+            pointer_path=RAW_CURRENT_POINTER
+        )
+        dataset_fingerprint = str(history_manifest["data_sha256"])
+    else:
+        history_path = RAW_DATA
+        history_manifest = {}
+        dataset_fingerprint = _sha256_file(history_path)
     parameter_source, tuning_run_id = _parameter_provenance()
     base_manifest = {
         "schema_version": 1,

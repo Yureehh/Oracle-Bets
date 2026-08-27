@@ -149,7 +149,9 @@ def _history_people_teams_and_leagues(
     )
     for id_column, name_column, entity_type, classification in entity_specs:
         available = history[
-            history[id_column].notna() & history[name_column].notna()
+            history[id_column].notna()
+            & history[name_column].notna()
+            & history[name_column].astype("string").str.strip().ne("")
         ].sort_values("date", kind="mergesort")
         for provider_id, rows in available.groupby(id_column, sort=False):
             first = rows.iloc[0]
@@ -195,7 +197,11 @@ def _historical_map_rows(history: pd.DataFrame) -> pd.DataFrame:
     maps: list[dict[str, Any]] = []
     for game_id, rows in history.groupby("gameid", sort=False):
         teams = (
-            rows[rows["teamid"].notna()][["teamid", "teamname"]]
+            rows[
+                rows["teamid"].notna()
+                & rows["teamname"].notna()
+                & rows["teamname"].astype("string").str.strip().ne("")
+            ][["teamid", "teamname"]]
             .drop_duplicates(subset=["teamid"])
             .sort_values("teamid", kind="mergesort")
         )
