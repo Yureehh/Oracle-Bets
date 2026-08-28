@@ -59,9 +59,14 @@ class ResetPlanResult:
 
 def default_reset_paths(root: Path = SUITE_ROOT) -> tuple[Path, ...]:
     """Return the finite generated-state allowlist for this repository."""
+    source_cache = RAW_DIR / "oracles_elixir_cache"
     return (
         RAW_GENERATIONS_DIR,
-        RAW_DIR / "oracles_elixir_cache",
+        source_cache / "generations",
+        source_cache / "current.json",
+        source_cache / "source_manifest.json",
+        *sorted(source_cache.glob("*.part")),
+        RAW_DIR / "current.json",
         INTERIM_DIR,
         PROCESSED_DIR,
         PRODUCT_STATE_DIR,
@@ -224,8 +229,7 @@ def apply_reset_plan(
                 shutil.rmtree(path)
             elif path.exists():
                 path.unlink()
-        for path in selected:
-            path.mkdir(parents=True, exist_ok=True)
+        _recreate_directories(selected, manifest["root_types"])
         store = EvidenceStore(evidence_database, lock_writes=False)
         store.initialize_schema()
         store.append(
@@ -275,6 +279,7 @@ def _build_manifest(
 ) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     roots: list[str] = []
+    root_types: list[str] = []
     volatile_sqlite_paths = {
         Path(f"{evidence_database}-wal").resolve(strict=False),
         Path(f"{evidence_database}-shm").resolve(strict=False),
@@ -284,6 +289,9 @@ def _build_manifest(
         _assert_safe_root(root, path)
         relative_root = path.relative_to(root).as_posix()
         roots.append(relative_root)
+        root_types.append(
+            "directory" if path.is_dir() else "file" if path.is_file() else "missing"
+        )
         if not path.exists():
             continue
         for item in (path, *sorted(path.rglob("*"))):
@@ -317,6 +325,7 @@ def _build_manifest(
         .relative_to(root)
         .as_posix(),
         "roots": roots,
+        "root_types": root_types,
         "entries": entries,
     }
 
@@ -401,6 +410,12 @@ def _assert_safe_root(root: Path, path: Path) -> None:
         raise ResetSafetyError(f"reset path escapes repository: {path}")
     if path.exists() and (path.is_symlink() or os.path.ismount(path)):
         raise ResetSafetyError(f"reset root is a symlink or mount point: {path}")
+
+
+def _recreate_directories(paths: tuple[Path, ...], kinds: list[str]) -> None:
+    for path, kind in zip(paths, kinds, strict=True):
+        if kind == "directory":
+            path.mkdir(parents=True, exist_ok=True)
 
 
 def _assert_gateway_stopped(lock_path: Path) -> None:
