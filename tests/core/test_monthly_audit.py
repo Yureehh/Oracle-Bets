@@ -12,6 +12,7 @@ from oracle_bets_core.operations.audit import (
 )
 
 NOW = datetime(2026, 7, 31, 22, tzinfo=UTC)
+AUDIT_SCHEMA_VERSION = 2
 
 
 def test_monthly_audit_records_owner_review_without_claiming_signoff(tmp_path):
@@ -35,6 +36,9 @@ def test_monthly_audit_records_owner_review_without_claiming_signoff(tmp_path):
     assert report.status == "owner_review_required"
     assert report.product_config_changed is None
     assert report.to_dict()["owner_signoff_required"] is True
+    assert report.to_dict()["schema_version"] == AUDIT_SCHEMA_VERSION
+    assert report.strategy_cohorts["enrolled"] == 0
+    assert report.bet_performance["paper"]["settled"] == 0
     assert store.get(EvidenceTable.RUNS, run_id)["run_type"] == "monthly_audit"
     assert store.count(EvidenceTable.SOURCE_SNAPSHOTS) == 1
     assert json_path.is_file()

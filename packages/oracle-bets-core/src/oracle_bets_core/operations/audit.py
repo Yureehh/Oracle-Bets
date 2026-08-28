@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
+from oracle_bets_core.operations.bets import cohort_coverage, performance_summary
 from oracle_bets_core.operations.health import (
     SystemHealthReport,
     evaluate_system_health,
@@ -35,6 +36,8 @@ _PERIOD_TIMESTAMP_COLUMNS: Mapping[EvidenceTable, str] = {
     EvidenceTable.APPROVALS: "created_at",
     EvidenceTable.PAPER_POSITIONS: "opened_at",
     EvidenceTable.SETTLEMENTS: "settled_at",
+    EvidenceTable.BETS: "opened_at",
+    EvidenceTable.BET_EVENTS: "event_at",
     EvidenceTable.CORRECTIONS: "created_at",
 }
 
@@ -50,12 +53,14 @@ class MonthlyAuditReport:
     period_activity: Mapping[str, int]
     health: SystemHealthReport
     prediction_coverage: Mapping[str, int | float | None]
+    strategy_cohorts: Mapping[str, Any]
+    bet_performance: Mapping[str, Any]
     accepted_risks: tuple[str, ...]
     review_checklist: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "period": self.period,
             "generated_at": _utc_text(self.generated_at),
             "status": self.status,
@@ -67,6 +72,8 @@ class MonthlyAuditReport:
             "period_activity": dict(self.period_activity),
             "health": self.health.to_dict(),
             "prediction_coverage": dict(self.prediction_coverage),
+            "strategy_cohorts": dict(self.strategy_cohorts),
+            "bet_performance": dict(self.bet_performance),
             "accepted_risks": list(self.accepted_risks),
             "review_checklist": list(self.review_checklist),
             "owner_signoff_required": True,
@@ -91,6 +98,11 @@ def build_monthly_audit(
     previous_hash = _latest_monthly_config_hash(store)
     health = evaluate_system_health(store, now=now)
     coverage = _prediction_coverage(store)
+    cohort_summaries = [
+        cohort_coverage(store, str(row["id"]))
+        for row in store.list(EvidenceTable.RUNS)
+        if row["run_type"] == "strategy_cohort"
+    ]
     status = "critical" if health.status == "critical" else "owner_review_required"
     return MonthlyAuditReport(
         period=period,
@@ -104,12 +116,23 @@ def build_monthly_audit(
         period_activity=_period_activity(store, start=start, end=end),
         health=health,
         prediction_coverage=coverage,
+        strategy_cohorts={
+            "enrolled": len(cohort_summaries),
+            "activation_evidence_complete": sum(
+                bool(item["activation_evidence_complete"]) for item in cohort_summaries
+            ),
+            "cohorts": cohort_summaries,
+        },
+        bet_performance={
+            mode: performance_summary(store, mode=mode) for mode in ("paper", "real")
+        },
         accepted_risks=_accepted_risks(config),
         review_checklist=(
             "Review every warning and critical health check.",
             "Review source volume, missingness, schema, quarantine, and identity conflicts.",
             "Compare shadow prediction quality by league, market, strategy, model, mode, and edge band.",
             "Review paper ROI, CLV, calibration, drawdown, and uncertainty; do not use point ROI alone.",
+            "Require 90% fixture review coverage and 100% recommendation result capture before activation review.",
             "Review all corrections, failed runs, stale proposals, and provider failures.",
             "Review new model candidates; promotion remains a separate owner-controlled decision.",
             "Create and verify a backup, then copy it to owner-controlled encrypted storage.",
@@ -223,6 +246,13 @@ Status: **{report.status}**. This report is not owner sign-off.
 - Tracked predictions: {report.prediction_coverage["tracked_predictions"]}
 - Resolved predictions: {report.prediction_coverage["resolved_predictions"]}
 - Resolution coverage: {report.prediction_coverage["resolution_fraction"]}
+
+## Strategy evidence
+
+- Enrolled cohorts: {report.strategy_cohorts["enrolled"]}
+- Cohorts with complete activation evidence: {report.strategy_cohorts["activation_evidence_complete"]}
+- Paper settled tickets: {report.bet_performance["paper"]["settled"]}
+- Real settled tickets: {report.bet_performance["real"]["settled"]}
 
 ## Accepted risks still in force
 

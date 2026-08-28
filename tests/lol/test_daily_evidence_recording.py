@@ -76,8 +76,38 @@ def _market_action(observed_at: datetime = NOW):
         "market_url": "https://polymarket.com/event/test",
         "warnings": [],
         "hard_blocks": [],
-        "state": "quoted",
-        "reason": None,
+        "state": "recommended",
+        "classification": "recommended",
+        "readiness": "recommendation_active",
+        "reason": "all_recommendation_gates_passed",
+        "reason_codes": ["all_recommendation_gates_passed"],
+        "policy_version": "lol-market-policy-v1",
+        "strategy_version": "series_direct_v2",
+        "probability_source": "direct_series_model",
+        "semantic_key": {
+            "version": 1,
+            "target": "series_winner",
+            "period": "series",
+            "selection": "t1",
+            "line": None,
+        },
+        "semantic_fingerprint": "semantic-1",
+        "sizing": {
+            "bankroll_fractions": {
+                "flat_1u": 0.01,
+                "full_kelly": 0.11,
+                "half_kelly": 0.055,
+                "quarter_kelly": 0.0275,
+            },
+            "stake_units": {
+                "flat_1u": 1.0,
+                "full_kelly": 11.0,
+                "half_kelly": 5.5,
+                "quarter_kelly": 2.75,
+            },
+            "selected_path": "full_kelly",
+        },
+        "correlation_group": "pandascore:1",
         "point_edge": 0.098,
         "stake_units": 0.0,
         "decimal_odds": 1.8,
@@ -118,7 +148,11 @@ def test_review_evidence_records_forecasts_quotes_but_never_legacy_proposals(tmp
     assert fixture["team_a_identity_id"] == canonical_team_identity_id("T1")
     assert fixture["team_b_identity_id"] == canonical_team_identity_id("Gen.G")
     candidate = store.list(EvidenceTable.MARKET_CANDIDATES)[0]
-    assert json.loads(candidate["payload_json"])["decimal_odds"] == EXPECTED_ODDS
+    payload = json.loads(candidate["payload_json"])
+    assert payload["decimal_odds"] == EXPECTED_ODDS
+    assert payload["classification"] == "recommended"
+    assert payload["semantic_fingerprint"] == "semantic-1"
+    assert payload["sizing"]["selected_path"] == "full_kelly"
 
 
 def test_same_review_is_idempotent_and_new_book_is_append_only(tmp_path):
