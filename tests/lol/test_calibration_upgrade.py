@@ -8,6 +8,7 @@ from lol_bets.prediction_models.gbdt_model import (
     ProbabilityCalibrator,
     ProbabilityUncertaintyModel,
     PropDistributionCalibrator,
+    conservative_probability_coverage,
 )
 from oracle_bets_core.paths import (
     GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
@@ -20,6 +21,8 @@ SEGMENT_FIT_ROWS = 100
 SEGMENT_SELECT_ROWS = 50
 PROBABILITY_THRESHOLD = 0.5
 UNCERTAINTY_SAMPLE_COUNT = 100
+MIN_UNCERTAINTY_WEEK_BLOCKS = 4
+MAX_COVERAGE_SHORTFALL = 0.02
 
 
 class DummyCalibratedModel(GradientBoostingModel):
@@ -298,14 +301,37 @@ def test_probability_uncertainty_uses_held_out_residual_intervals() -> None:
     probabilities = np.tile(np.array([0.3, 0.7]), 50)
     actual = np.tile(np.array([0, 1]), 50)
 
-    uncertainty = ProbabilityUncertaintyModel.fit(actual, probabilities)
+    uncertainty = ProbabilityUncertaintyModel.fit(
+        actual,
+        probabilities,
+        timestamps=pd.date_range("2026-01-01", periods=len(actual), freq="D"),
+    )
     lower, upper = uncertainty.interval(np.array([0.3, 0.7]))
 
     assert uncertainty.fit_split == "uncertainty_fit"
     assert uncertainty.sample_count == UNCERTAINTY_SAMPLE_COUNT
+    assert uncertainty.calibration_units > MIN_UNCERTAINTY_WEEK_BLOCKS
     assert np.all(lower <= probabilities[:2])
     assert np.all(upper >= probabilities[:2])
     assert np.all((upper - lower) > 0)
+
+
+def test_conservative_probability_requires_week_block_coverage() -> None:
+    dates = pd.date_range("2026-01-01", periods=70, freq="D")
+    metadata = pd.DataFrame({"date": dates, "actionable": True, "league": "LCK"})
+    actual = np.tile([0, 1], 35)
+
+    passing = conservative_probability_coverage(
+        actual, np.full(len(actual), 0.40), metadata
+    )
+    failing = conservative_probability_coverage(
+        actual, np.full(len(actual), 0.90), metadata
+    )
+
+    assert passing["passed"] is True
+    assert passing["cohorts"]["actionable"]["eligible"] is True
+    assert failing["passed"] is False
+    assert failing["cohorts"]["aggregate"]["shortfall"] > MAX_COVERAGE_SHORTFALL
 
 
 def test_metadata_probability_calibrator_skips_sparse_segments(

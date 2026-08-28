@@ -35,9 +35,12 @@ def test_probability_artifact_contract_requires_serving_methods():
         "Uncertainty",
         (),
         {
-            "version": 1,
+            "version": 2,
             "fit_split": "uncertainty_fit",
             "sample_count": 100,
+            "calibration_units": 10,
+            "method": "week_block_q10_plus_one_sided_calibration_bias",
+            "unit": "iso_week",
             "interval": staticmethod(lambda values: (values, values)),
         },
     )()
@@ -51,9 +54,38 @@ def test_probability_artifact_contract_requires_serving_methods():
         type(
             "MetadataOnlyUncertainty",
             (),
-            {"version": 1, "fit_split": "uncertainty_fit", "sample_count": 100},
+            {
+                "version": 2,
+                "fit_split": "uncertainty_fit",
+                "sample_count": 100,
+                "calibration_units": 10,
+            },
         )(),
     )
+
+
+def test_prop_evaluation_declares_baseline_lines_and_cohorts(tmp_path):
+    model = _lightgbm_model(
+        model_name="TotalKillsPrediction_LightGBM",
+        problem_type="regression",
+        artifact_root=tmp_path,
+        report_root=tmp_path,
+    )
+    model.regression_baseline_value_ = 25.0
+    model.store_prop_evaluation_report(
+        pd.Series([24.0, 26.0, 27.0]),
+        np.array([25.0, 25.5, 26.0]),
+        pd.DataFrame({"league": ["LCK"] * 3, "game": [1, 2, 3]}),
+    )
+
+    report = json.loads(model.insight_path("prop_evaluation_report.json").read_text())
+    assert report["constant_baseline"]["fit_split"] == "train"
+    assert report["line_semantics"] == {
+        "version": 1,
+        "supported": "half_lines_only",
+        "push_model": False,
+    }
+    assert report["cohort_dimensions"] == ["league", "map_number"]
 
 
 def test_feature_pipeline_adds_missing_columns_without_fragmentation_warning():

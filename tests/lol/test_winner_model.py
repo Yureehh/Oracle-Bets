@@ -105,9 +105,12 @@ class _ValidationCalibrator:
 
 
 class _ValidationUncertainty:
-    version = 1
+    version = 2
     fit_split = "uncertainty_fit"
     sample_count = 30
+    calibration_units = 4
+    method = "week_block_q10_plus_one_sided_calibration_bias"
+    unit = "iso_week"
 
     @staticmethod
     def interval(values):
@@ -204,6 +207,68 @@ def test_conservative_probability_uses_member_quantile() -> None:
         for probability in (0.58, 0.62, 0.70)
     ]
     assert conservative[0] == pytest.approx(np.quantile(expected_members, 0.1))
+
+
+def test_compact_schema_wins_when_development_loss_is_noninferior() -> None:
+    selected = WinnerLightGBMModel._choose_feature_schema(
+        {
+            "full": [0.60, 0.62, 0.61],
+            "compact": [0.603, 0.621, 0.609],
+        }
+    )
+
+    assert selected == "compact"
+
+
+def test_full_schema_wins_when_compact_materially_regresses() -> None:
+    selected = WinnerLightGBMModel._choose_feature_schema(
+        {
+            "full": [0.60, 0.62, 0.61],
+            "compact": [0.63, 0.64, 0.62],
+        }
+    )
+
+    assert selected == "full"
+
+
+def test_schema_selection_reads_only_development_partitions(tmp_path) -> None:
+    trainer = object.__new__(WinnerLightGBMModel)
+    trainer.fit_partition_metadata = {
+        "train": pd.DataFrame(
+            {"date": pd.to_datetime(["2026-01-01", "2026-01-08"], utc=True)},
+            index=[0, 1],
+        ),
+        "tune": pd.DataFrame(
+            {"date": pd.to_datetime(["2026-01-15", "2026-01-22"], utc=True)},
+            index=[2, 3],
+        ),
+        "test": pd.DataFrame(
+            {"date": pd.to_datetime(["2026-02-01"], utc=True)}, index=[99]
+        ),
+    }
+    trainer.insight_path = lambda name: tmp_path / name
+    observed = []
+
+    def schema_losses(schema, features, _target, _weeks, _blocks):
+        observed.append((schema, tuple(features.index)))
+        return [0.60, 0.61, 0.62]
+
+    trainer._development_schema_losses = schema_losses
+    selected = trainer.select_development_feature_schema(
+        pd.DataFrame({"signal": [1.0, 2.0]}, index=[0, 1]),
+        pd.Series([0, 1], index=[0, 1]),
+        pd.DataFrame({"signal": [3.0, 4.0]}, index=[2, 3]),
+        pd.Series([0, 1], index=[2, 3]),
+    )
+
+    assert selected == "compact"
+    assert observed == [("full", (0, 1, 2, 3)), ("compact", (0, 1, 2, 3))]
+    assert (
+        json.loads((tmp_path / "feature_schema_study.json").read_text())[
+            "final_test_used"
+        ]
+        is False
+    )
 
 
 def test_winner_validation_requires_ratings_parity_and_no_market_features(tmp_path):

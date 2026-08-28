@@ -13,6 +13,17 @@ from oracle_bets_core.pd import pd
 BO1_PHASE_SERIES = 20
 
 
+def _with_oof_close(manifest, probability=0.60):
+    output = manifest.copy()
+    output["close_series_probability"] = probability
+    output["close_series_source_model"] = "series-rating-oof-v1"
+    output["close_series_fold"] = "fold-2"
+    output["close_series_training_cutoff"] = output["date"] - pd.Timedelta(days=1)
+    output["close_series_forecast_at"] = output["date"] - pd.Timedelta(hours=1)
+    output["close_series_oof"] = True
+    return output
+
+
 def _series_rows(
     *,
     prefix: str,
@@ -159,7 +170,7 @@ def test_series_winner_tables_remove_all_live_series_state() -> None:
         ],
         ignore_index=True,
     )
-    manifest = reconstruct_series(teams).series
+    manifest = _with_oof_close(reconstruct_series(teams).series)
 
     winner_teams, winner_players = _series_winner_training_tables(
         manifest, teams, players
@@ -199,7 +210,7 @@ def test_series_tables_label_players_without_exported_team_ids() -> None:
         ],
         ignore_index=True,
     ).drop(columns=["teamid", "teamname"])
-    manifest = reconstruct_series(teams).series
+    manifest = _with_oof_close(reconstruct_series(teams).series)
 
     _, winner_players = _series_winner_training_tables(manifest, teams, players)
     _, next_players = _next_map_training_tables(manifest, teams, players)
@@ -231,7 +242,7 @@ def test_next_map_tables_retain_only_explicit_score_state() -> None:
         ],
         ignore_index=True,
     )
-    manifest = reconstruct_series(teams).series
+    manifest = _with_oof_close(reconstruct_series(teams).series)
 
     next_teams, _ = _next_map_training_tables(manifest, teams, players)
 
@@ -243,6 +254,58 @@ def test_next_map_tables_retain_only_explicit_score_state() -> None:
         "series_score_delta",
     }.issubset(next_teams.columns)
     assert sorted(next_teams["next_map_number"].unique()) == [2, 3]
+
+
+def test_next_map_close_boundary_includes_60_percent_and_excludes_above() -> None:
+    rows = _series_rows(
+        prefix="boundary",
+        winners=["a", "b", "a"],
+        start=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    teams = pd.DataFrame(rows)
+    teams["side"] = ["Blue", "Red"] * 3
+    players = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    **{column: [row[column]] * 5 for column in teams.columns},
+                    "position": ["top", "jng", "mid", "bot", "sup"],
+                }
+            )
+            for row in teams.to_dict(orient="records")
+        ],
+        ignore_index=True,
+    )
+    manifest = reconstruct_series(teams).series
+
+    included, _ = _next_map_training_tables(
+        _with_oof_close(manifest, 0.6000), teams, players
+    )
+    excluded, _ = _next_map_training_tables(
+        _with_oof_close(manifest, 0.6001), teams, players
+    )
+
+    assert not included.empty
+    assert excluded.empty
+
+
+def test_next_map_rejects_in_sample_close_membership() -> None:
+    manifest = pd.DataFrame(
+        [
+            {
+                "date": datetime(2026, 1, 2, tzinfo=UTC),
+                "close_series_probability": 0.55,
+                "close_series_source_model": "series-model",
+                "close_series_fold": "fold-1",
+                "close_series_training_cutoff": datetime(2026, 1, 2, tzinfo=UTC),
+                "close_series_forecast_at": datetime(2026, 1, 1, tzinfo=UTC),
+                "close_series_oof": True,
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="in-sample or mistimed"):
+        _next_map_training_tables(manifest, pd.DataFrame(), pd.DataFrame())
 
 
 def test_accepted_series_cannot_silently_lose_map_one_features() -> None:

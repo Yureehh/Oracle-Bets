@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import lightgbm as lgb
 import numpy as np
@@ -21,6 +21,9 @@ from lol_bets.prediction_models.gbdt_model import (
     MIN_CALIBRATION_SAMPLES,
 )
 from lol_bets.prediction_models.lightgbm_model import LightGBMModel
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 ENSEMBLE_MEMBERS = 10
 BLEND_GRID = np.linspace(0.0, 1.0, 21)
@@ -42,6 +45,19 @@ DIRECT_RATING_STATE_COLUMNS = (
     "delta_trueskill_sigma",
 )
 PROBABILITY_EPSILON = 1e-6
+FeatureSchema = Literal["full", "compact"]
+SCHEMA_NONINFERIORITY_MARGIN = 0.005
+SCHEMA_STUDY_PARAMS = {
+    "learning_rate": 0.05,
+    "num_leaves": 31,
+    "max_depth": 6,
+    "min_child_samples": 30,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.01,
+    "reg_lambda": 0.1,
+    "n_estimators": 500,
+}
 
 
 def is_direct_rating_feature(column: str) -> bool:
@@ -247,6 +263,113 @@ class WinnerLightGBMModel(LightGBMModel):
             baseline=baseline,
             members=tuple(members),
             rating_columns=rating_columns,
+        )
+
+    def select_development_feature_schema(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_tune: pd.DataFrame,
+        y_tune: pd.Series,
+    ) -> str:
+        """Freeze full versus compact using rolling development folds only."""
+        metadata = pd.concat(
+            [
+                self.fit_partition_metadata["train"],
+                self.fit_partition_metadata["tune"],
+            ]
+        )
+        features = pd.concat([X_train, X_tune]).sort_index()
+        target = pd.concat([y_train, y_tune]).loc[features.index]
+        dates = pd.to_datetime(metadata.loc[features.index, "date"], errors="coerce")
+        if dates.isna().any():
+            raise ValueError("feature-schema research requires complete dates")
+        weeks = dates.dt.strftime("%G-W%V")
+        unique_weeks = np.asarray(sorted(weeks.unique()))
+        if len(unique_weeks) < 4:  # noqa: PLR2004
+            raise ValueError("feature-schema research requires four historical weeks")
+        blocks = np.array_split(unique_weeks, 4)
+        schemas: tuple[FeatureSchema, ...] = ("full", "compact")
+        losses = {
+            schema: self._development_schema_losses(
+                schema,
+                features,
+                target,
+                weeks,
+                blocks,
+            )
+            for schema in schemas
+        }
+        selected = self._choose_feature_schema(losses)
+        self.insight_path("feature_schema_study.json").write_text(
+            json.dumps(
+                {
+                    "selection_split": "rolling_development_only",
+                    "final_test_used": False,
+                    "schemas": losses,
+                    "selected": selected,
+                    "compact_noninferiority_margin": SCHEMA_NONINFERIORITY_MARGIN,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return selected
+
+    def _development_schema_losses(
+        self,
+        schema: FeatureSchema,
+        features: pd.DataFrame,
+        target: pd.Series,
+        weeks: pd.Series,
+        blocks: list[np.ndarray],
+    ) -> list[float]:
+        original = self.feature_set
+        self.feature_set = schema
+        try:
+            selected = self._apply_feature_set_filter(features)
+        finally:
+            self.feature_set = original
+        losses: list[float] = []
+        for fold_index in range(1, len(blocks)):
+            train_mask = weeks.isin(set(np.concatenate(blocks[:fold_index])))
+            validation_mask = weeks.isin(set(blocks[fold_index]))
+            fold_train, pipeline = self._fit_feature_pipeline(
+                selected.loc[train_mask],
+                drop_missing_threshold=0.95,
+                drop_low_std_threshold=0.0,
+                drop_high_corr_threshold=1.0,
+            )
+            fold_validation = pipeline.transform(selected.loc[validation_mask])
+            model = self._fit_member(
+                SCHEMA_STUDY_PARAMS,
+                fold_train,
+                target.loc[train_mask],
+                fold_validation,
+                target.loc[validation_mask],
+                pipeline.categorical_features,
+                seed=RANDOM_STATE + fold_index,
+            )
+            probability = np.asarray(model.predict_proba(fold_validation))[:, 1]
+            losses.append(float(log_loss(target.loc[validation_mask], probability)))
+        return losses
+
+    @staticmethod
+    def _choose_feature_schema(
+        losses: Mapping[FeatureSchema, list[float]],
+    ) -> FeatureSchema:
+        if set(losses) != {"full", "compact"} or any(
+            not values or not np.all(np.isfinite(values)) for values in losses.values()
+        ):
+            raise ValueError("feature-schema study requires finite full/compact folds")
+        full = float(np.mean(losses["full"]))
+        compact = float(np.mean(losses["compact"]))
+        return (
+            "compact"
+            if compact <= full * (1 + SCHEMA_NONINFERIORITY_MARGIN)
+            else "full"
         )
 
     def _optimize_hyperparameters(

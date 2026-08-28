@@ -42,6 +42,17 @@ PREMATCH_SERIES_STATE_COLUMNS = frozenset(
 )
 BO3_WINS = 2
 BO5_WINS = 3
+CLOSE_SERIES_MAX_FAVORITE = 0.60
+CLOSE_SERIES_OOF_COLUMNS = frozenset(
+    {
+        "close_series_probability",
+        "close_series_source_model",
+        "close_series_fold",
+        "close_series_training_cutoff",
+        "close_series_forecast_at",
+        "close_series_oof",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -346,6 +357,7 @@ def _next_map_training_tables(
     teams: pd.DataFrame,
     players: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    manifest = _validated_close_series_manifest(manifest)
     team_frames: list[pd.DataFrame] = []
     player_frames: list[pd.DataFrame] = []
     for row in manifest.to_dict(orient="records"):
@@ -389,10 +401,46 @@ def _next_map_training_tables(
                 frame["series_score_delta"] = (
                     frame["series_wins_before"] - frame["series_losses_before"]
                 )
+                for column in CLOSE_SERIES_OOF_COLUMNS:
+                    frame[column] = row[column]
                 frame["result"] = (team_ids == target_winner).astype(int)
                 output.append(frame)
             score[target_winner] += 1
     return _concat_like(team_frames, teams), _concat_like(player_frames, players)
+
+
+def _validated_close_series_manifest(manifest: pd.DataFrame) -> pd.DataFrame:
+    """Accept only timestamped out-of-fold direct-series close labels."""
+    present = CLOSE_SERIES_OOF_COLUMNS & set(manifest.columns)
+    if not present:
+        return manifest.iloc[0:0].copy()
+    missing = CLOSE_SERIES_OOF_COLUMNS - set(manifest.columns)
+    if missing:
+        raise ValueError(f"close-series OOF evidence is incomplete: {sorted(missing)}")
+    rows = manifest.copy()
+    probability = pd.to_numeric(rows["close_series_probability"], errors="coerce")
+    forecast_at = pd.to_datetime(
+        rows["close_series_forecast_at"], errors="coerce", utc=True
+    )
+    cutoff = pd.to_datetime(
+        rows["close_series_training_cutoff"], errors="coerce", utc=True
+    )
+    fixture_at = pd.to_datetime(rows["date"], errors="coerce", utc=True)
+    valid = (
+        rows["close_series_oof"].eq(True)
+        & probability.between(0.0, 1.0, inclusive="both")
+        & forecast_at.notna()
+        & cutoff.notna()
+        & fixture_at.notna()
+        & cutoff.lt(forecast_at)
+        & forecast_at.le(fixture_at)
+        & rows["close_series_source_model"].astype(str).str.strip().ne("")
+        & rows["close_series_fold"].astype(str).str.strip().ne("")
+    )
+    if not valid.all():
+        raise ValueError("next-map training rejects in-sample or mistimed close labels")
+    favorite = probability.where(probability.ge(0.5), 1.0 - probability)
+    return rows.loc[favorite.le(CLOSE_SERIES_MAX_FAVORITE)].copy()
 
 
 def _team_ids_for_rows(

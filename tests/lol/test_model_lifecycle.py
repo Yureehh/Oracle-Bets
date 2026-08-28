@@ -99,9 +99,24 @@ class _IdentityPipeline:
 
 
 class _IdentityCalibrator:
+    version = 3
+
     def predict(self, values, metadata=None):
         del metadata
         return values
+
+
+class _IdentityUncertainty:
+    version = 2
+    fit_split = "uncertainty_fit"
+    sample_count = SEALED_ROWS
+    calibration_units = 10
+    method = "week_block_q10_plus_one_sided_calibration_bias"
+    unit = "iso_week"
+
+    @staticmethod
+    def interval(values):
+        return values, values
 
 
 class _ProbabilityModel:
@@ -120,6 +135,11 @@ class _ProbabilityModel:
 
     def rating_baseline_probability(self, frame):
         return self.predict_proba(frame)[:, 1]
+
+    @staticmethod
+    def conservative_probability(frame, calibrator=None, metadata=None):
+        del calibrator, metadata
+        return np.full(len(frame), 0.01)
 
 
 class _RegressionModel:
@@ -864,6 +884,10 @@ def _register_replay_bundle(
                 model_root / f"{name}_probability_calibrator.pkl", _IdentityCalibrator()
             )
             _pickle(
+                model_root / f"{name}_probability_uncertainty.pkl",
+                _IdentityUncertainty(),
+            )
+            _pickle(
                 model_root / f"{name}_outcome_matchup_schema.pkl",
                 {
                     "version": 1,
@@ -902,6 +926,7 @@ def _register_replay_bundle(
                     "league_tier": ["tier1"] * 80,
                     "actionable": [True] * 80,
                     "series_id": [f"series-{index // 2}" for index in range(80)],
+                    "date": pd.date_range("2026-01-01", periods=80, freq="D"),
                 }
             ).to_parquet(evaluation / "labels.parquet", index=False)
         evaluation = root / "_evaluation" / name

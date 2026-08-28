@@ -137,6 +137,7 @@ SERIES_WINNER_PLAYER_DATA: Final = (
 )
 NEXT_MAP_TEAM_DATA: Final = PROCESSED_SERIES_DIR / "next_map_teams.parquet"
 NEXT_MAP_PLAYER_DATA: Final = PROCESSED_SERIES_DIR / "next_map_players.parquet"
+CLOSE_SERIES_OOF: Final = PROCESSED_SERIES_DIR / "close_series_oof.parquet"
 PROCESSED_RATINGS_DIR: Final = PROCESSED_DIR / "ratings"
 RATING_LEAGUE_ELO: Final = PROCESSED_RATINGS_DIR / "league_elo.parquet"
 RATING_TEAM_LEAGUES_MAPPING: Final = (

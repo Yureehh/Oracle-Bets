@@ -117,6 +117,7 @@ def test_calibrator_health_accepts_probability_uncertainty(tmp_path):
         global_residual_lower=-0.05,
         global_residual_upper=0.05,
         sample_count=100,
+        calibration_units=10,
     )
     with path.open("wb") as f:
         pickle.dump(artifact, f)
@@ -127,12 +128,13 @@ def test_calibrator_health_accepts_probability_uncertainty(tmp_path):
         required_attrs={
             "bins",
             "confidence",
+            "calibration_units",
             "fit_split",
             "interval",
             "sample_count",
             "version",
         },
-        expected_version=1,
+        expected_version=2,
     )
 
     assert check.ok

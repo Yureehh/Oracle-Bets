@@ -76,7 +76,7 @@ from lol_bets.prediction_models.winner_model import WinnerLightGBMModel
 
 ProblemType = Literal["classification", "regression"]
 FeatureSelectionMethod = Literal["none", "importance", "cumulative", "report"]
-TrainingFeatureSet = Literal["full", "compact", "selected"]
+TrainingFeatureSet = Literal["full", "compact", "selected", "auto"]
 CalibrationMode = Literal["auto", "none"]
 CalibrationMethod = Literal["raw", "sigmoid", "isotonic", "auto"]
 MODEL_FILE_EXTENSION = "pkl"
@@ -444,8 +444,19 @@ def _feature_set_for_config(
     cfg: ModelConfig,
     requested: TrainingFeatureSet,
 ) -> TrainingFeatureSet:
-    """Use every eligible prematch feature for Winner V2 targets."""
-    return "full" if cfg.dataset in {"series", "next_map"} else requested
+    """Freeze the reviewed Winner research schema for routine training."""
+    if cfg.dataset not in {"series", "next_map"} or requested == "auto":
+        return requested
+    path = (
+        TUNED_LIGHTGBM_HYPERPARAMETERS / f"{_lightgbm_model_name(cfg.model_name)}.json"
+    )
+    try:
+        feature_set = json.loads(path.read_text(encoding="utf-8"))["metadata"][
+            "feature_set"
+        ]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+        return "full"
+    return feature_set if feature_set in {"full", "compact"} else "full"
 
 
 def train_models(  # noqa: PLR0915
@@ -594,6 +605,37 @@ def train_models(  # noqa: PLR0915
     _prune_training_reports(report_root.parent)
     logger.info("All model training tasks finished.\n")
     return report_root
+
+
+def run_research_studies(
+    *,
+    targets: str = "all",
+    include_next_map: bool = False,
+) -> dict[str, Path]:
+    """Run one isolated Optuna study per target; never review or promote it."""
+    selected = parse_training_targets(targets)
+    if targets.strip().casefold() == "all" and include_next_map:
+        selected = (*selected, *EXPERIMENTAL_MODEL_CONFIGS)
+    if not include_next_map and any(
+        config.target_name == "next_map_winner" for config in selected
+    ):
+        raise ValueError("next_map_winner requires --include-next-map")
+    if any(config.target_name == "next_map_winner" for config in selected):
+        from lol_bets.data_generation.close_series import (
+            build_close_series_oof_artifacts,
+        )
+
+        build_close_series_oof_artifacts()
+    reports: dict[str, Path] = {}
+    for config in selected:
+        reports[config.target_name] = train_models(
+            targets=config.target_name,
+            force_retune=True,
+            feature_set=(
+                "auto" if config.dataset in {"series", "next_map"} else "compact"
+            ),
+        )
+    return reports
 
 
 def _training_preflight() -> RepositoryProvenance:
@@ -950,14 +992,10 @@ def review_tuning_run(run_id: str) -> dict[str, object]:
         existing_reasons = evidence.get("reasons")
         if not isinstance(existing_reasons, list):
             raise ValueError("Winner tuning evidence has malformed reasons.")
-        existing_warnings = evidence.get("warnings")
-        if not isinstance(existing_warnings, list):
-            raise ValueError("Winner tuning evidence has malformed warnings.")
-        warnings = list(existing_warnings)
-        warnings.append("holdout_overlaps_previously_exposed_window")
-        evidence["warnings"] = list(dict.fromkeys(warnings))
-        if not existing_reasons:
-            evidence["status"] = "approved_with_warnings"
+        reasons = [str(reason) for reason in existing_reasons]
+        reasons.append("holdout_not_strictly_later_than_exposed_window")
+        evidence["reasons"] = list(dict.fromkeys(reasons))
+        evidence["status"] = "blocked"
     result: dict[str, object] = {
         "schema_version": TUNING_REVIEW_SCHEMA_VERSION,
         "run_id": run_id,
@@ -1009,28 +1047,14 @@ def _sealed_tuning_holdout(run_root: Path, *, target: str) -> dict[str, object]:
     current_max = _parse_utc_holdout_date(date_max)
     prior: list[tuple[dt.datetime, str]] = []
     runs_root = run_root.parent
-    for manifest_path in sorted(runs_root.glob("*/manifest.json")):
-        previous_root = manifest_path.parent
-        if previous_root == run_root:
-            continue
+    for review_path in sorted(runs_root.glob("*/tuning_review.json")):
+        previous_root = review_path.parent
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            requested = manifest.get("targets_requested")
-            expected_trained = WINNER_TUNING_MODELS[target].removesuffix("_LightGBM")
-            if (
-                manifest.get("status") != "completed"
-                or manifest.get("retune") is not True
-                or not isinstance(requested, list)
-                or target not in requested
-                or expected_trained not in (manifest.get("targets_trained") or [])
-            ):
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+            if review.get("target") != target:
                 continue
-            previous_split = json.loads(
-                (previous_root / model_name / "split_report.json").read_text(
-                    encoding="utf-8"
-                )
-            )["test"]
-            previous_max = _parse_utc_holdout_date(str(previous_split["date_max"]))
+            sealed = review["sealed_holdout"]
+            previous_max = _parse_utc_holdout_date(str(sealed["date_max"]))
             prior.append((previous_max, previous_root.name))
         except (
             FileNotFoundError,
@@ -1078,7 +1102,10 @@ def _winner_tuning_review_evidence(
         _cohort_replay_losses,
         evaluate_promotion,
     )
-    from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+    from lol_bets.prediction_models.gbdt_model import (
+        GradientBoostingModel,
+        conservative_probability_report,
+    )
 
     model_name = WINNER_TUNING_MODELS[target]
     artifact_root = run_root / "artifacts"
@@ -1110,7 +1137,10 @@ def _winner_tuning_review_evidence(
         actual.astype(int).tolist(), candidate.tolist()
     )
     operational_failures = _winner_parameter_failures(model, tuning_payload)
-    if not valid_probability_calibration_artifacts(calibrator, uncertainty):
+    probability_artifacts_valid = valid_probability_calibration_artifacts(
+        calibrator, uncertainty
+    )
+    if not probability_artifacts_valid:
         operational_failures.append("invalid_probability_calibration_artifacts")
     cluster_col = "series_id" if target == "next_map_winner" else None
     cluster_identity_source = None
@@ -1147,15 +1177,20 @@ def _winner_tuning_review_evidence(
         pd.Series(actual), candidate
     )
     reasons = list(decision.reasons)
-    warnings: list[str] = []
-    slope = calibration.get("calibration_slope")
-    intercept = calibration.get("calibration_intercept")
-    if slope is None or not (
-        MIN_CALIBRATION_REVIEW_SLOPE <= float(slope) <= MAX_CALIBRATION_REVIEW_SLOPE
-    ):
-        warnings.append("calibration_slope_outside_0.8_1.2")
-    if intercept is None or abs(float(intercept)) > MAX_CALIBRATION_REVIEW_INTERCEPT:
-        warnings.append("calibration_intercept_above_0.10")
+    warnings = _calibration_review_warnings(calibration)
+    conservative_report: dict[str, object] | None = None
+    if target == "series_winner" and probability_artifacts_valid:
+        conservative_report = conservative_probability_report(
+            model,
+            transformed,
+            pd.Series(actual),
+            calibrator,
+            uncertainty,
+            metadata,
+        )
+        coverage = conservative_report["coverage"]
+        if not isinstance(coverage, dict) or coverage.get("passed") is not True:
+            reasons.append("conservative_probability_coverage_failed")
     for cohort, (baseline_loss, candidate_loss, count) in sorted(
         evidence.cohort_log_loss.items()
     ):
@@ -1188,6 +1223,7 @@ def _winner_tuning_review_evidence(
             "ece": candidate_quality.calibration_error,
         },
         "calibration": calibration,
+        "conservative_probability": conservative_report,
         "relative_improvement": decision.relative_improvement,
         "confidence_lower_bound": decision.confidence_lower_bound,
         "cohorts": {
@@ -1195,6 +1231,19 @@ def _winner_tuning_review_evidence(
             for name, values in evidence.cohort_log_loss.items()
         },
     }
+
+
+def _calibration_review_warnings(calibration: dict[str, float]) -> list[str]:
+    warnings: list[str] = []
+    slope = calibration.get("calibration_slope")
+    intercept = calibration.get("calibration_intercept")
+    if slope is None or not (
+        MIN_CALIBRATION_REVIEW_SLOPE <= slope <= MAX_CALIBRATION_REVIEW_SLOPE
+    ):
+        warnings.append("calibration_slope_outside_0.8_1.2")
+    if intercept is None or abs(intercept) > MAX_CALIBRATION_REVIEW_INTERCEPT:
+        warnings.append("calibration_intercept_above_0.10")
+    return warnings
 
 
 _SYNTHETIC_NEXT_MAP_ID = re.compile(r"^(series-[0-9a-f]{24}):map-([2-9][0-9]*)$")

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -64,7 +65,7 @@ def test_routine_training_defaults_to_reviewed_compact_contract():
     assert args.feature_set == "compact"
 
 
-def test_winner_v2_targets_always_use_full_feature_contract():
+def test_winner_v2_targets_use_full_until_a_research_schema_is_reviewed():
     configs = {config.target_name: config for config in training.MODEL_CONFIGS}
 
     assert (
@@ -77,6 +78,56 @@ def test_winner_v2_targets_always_use_full_feature_contract():
     assert (
         training._feature_set_for_config(configs["gamelength"], "compact") == "compact"
     )
+
+
+def test_winner_retuning_selects_schema_inside_development_by_default():
+    args = build_parser().parse_args(["lol", "retune"])
+
+    assert args.feature_set == "auto"
+
+
+def test_research_command_runs_isolated_target_studies(monkeypatch):
+    calls = []
+
+    def record_study(**options):
+        calls.append(options)
+        return Path(f"/reports/{options['targets']}")
+
+    monkeypatch.setattr(training, "train_models", record_study)
+
+    reports = training.run_research_studies(targets="series_winner,total_kills")
+
+    assert list(reports) == ["series_winner", "total_kills"]
+    assert calls == [
+        {
+            "targets": "series_winner",
+            "force_retune": True,
+            "feature_set": "auto",
+        },
+        {
+            "targets": "total_kills",
+            "force_retune": True,
+            "feature_set": "compact",
+        },
+    ]
+
+
+def test_next_map_research_requires_explicit_opt_in():
+    with pytest.raises(ValueError, match="include-next-map"):
+        training.run_research_studies(targets="next_map_winner")
+
+
+def test_routine_winner_training_reuses_reviewed_schema(tmp_path, monkeypatch):
+    configs = {config.target_name: config for config in training.MODEL_CONFIGS}
+    model_name = "SeriesWinnerPrediction_LightGBM"
+    (tmp_path / f"{model_name}.json").write_text(
+        json.dumps({"metadata": {"feature_set": "compact"}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(training, "TUNED_LIGHTGBM_HYPERPARAMETERS", tmp_path)
+
+    selected = training._feature_set_for_config(configs["series_winner"], "compact")
+
+    assert selected == "compact"
 
 
 def test_routine_all_excludes_experimental_next_map_target():
@@ -702,6 +753,11 @@ class _ReviewWinnerModel:
         probability = frame["candidate_probability"].to_numpy(dtype=float)
         return np.column_stack([1.0 - probability, probability])
 
+    @staticmethod
+    def conservative_probability(frame, calibrator=None, metadata=None):
+        del calibrator, metadata
+        return np.full(len(frame), 0.01)
+
 
 class _ReviewCalibrator:
     version = 3
@@ -713,9 +769,12 @@ class _ReviewCalibrator:
 
 
 class _ReviewUncertainty:
-    version = 1
+    version = 2
     fit_split = "uncertainty_fit"
     sample_count = 100
+    calibration_units = 10
+    method = "week_block_q10_plus_one_sided_calibration_bias"
+    unit = "iso_week"
 
     @staticmethod
     def interval(values):
@@ -809,6 +868,7 @@ def test_review_winner_tuning_binds_model_parameters_and_artifacts(
             "actual": np.tile([0, 1], 50),
             "actionable": True,
             "league": "LCK",
+            "date": pd.date_range("2026-01-01", periods=100, freq="D"),
         }
     )
     monkeypatch.setattr(
@@ -974,7 +1034,15 @@ def test_tuning_holdout_must_follow_every_previously_exposed_row(
     date_min,
     expected_fresh,
 ):
-    _winner_review_run(tmp_path, run_id="previous")
+    previous = _winner_review_run(tmp_path, run_id="previous")
+    previous.joinpath("tuning_review.json").write_text(
+        json.dumps(
+            {
+                "target": "series_winner",
+                "sealed_holdout": {"date_max": "2026-07-31T00:00:00+00:00"},
+            }
+        )
+    )
     current = _winner_review_run(tmp_path, run_id="current")
     model_name = training.WINNER_TUNING_MODELS["series_winner"]
     current.joinpath(model_name, "split_report.json").write_text(
@@ -1001,6 +1069,26 @@ def test_legacy_naive_holdout_dates_are_interpreted_as_utc() -> None:
     parsed = training._parse_utc_holdout_date("2026-08-13T16:27:00")
 
     assert parsed.isoformat() == "2026-08-13T16:27:00+00:00"
+
+
+def test_modified_tuning_run_cannot_reuse_its_exposed_holdout(tmp_path) -> None:
+    run_root = _winner_review_run(tmp_path, run_id="modified")
+    run_root.joinpath("tuning_review.json").write_text(
+        json.dumps(
+            {
+                "target": "series_winner",
+                "sealed_holdout": {"date_max": "2026-07-31T00:00:00+00:00"},
+            }
+        )
+    )
+
+    holdout = training._sealed_tuning_holdout(
+        run_root,
+        target="series_winner",
+    )
+
+    assert holdout["fresh_for_promotion"] is False
+    assert holdout["latest_prior_run_id"] == "modified"
 
 
 def test_training_summary_combines_metrics_cards_and_top_features(tmp_path):

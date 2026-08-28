@@ -149,6 +149,7 @@ These are CLI-only operations:
 | `lol build-series` | Reconstruct BO1/3/5 direct-series rows. |
 | `lol train` | Retrain with reviewed fixed parameters. Never runs Optuna. |
 | `lol retune` | Explicit isolated Optuna research. Never auto-promotes. |
+| `lol research` | Run separate target studies; add `--include-next-map` only after OOF close-series labels exist. |
 | `lol review-tuning` | Review one tuning run on sealed evidence. |
 | `lol promote-tuning` | Promote reviewed parameter files, not model weights. |
 | `lol health` | Check current LoL data/model artifacts. |

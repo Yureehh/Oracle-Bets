@@ -634,7 +634,10 @@ def _review_winner_target_against_rating_baseline(
     bootstrap_samples: int,
 ) -> tuple[list[str], str, dict[str, Any]]:
     """Review one Winner V2 target without borrowing evidence from another."""
-    from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+    from lol_bets.prediction_models.gbdt_model import (
+        GradientBoostingModel,
+        conservative_probability_report,
+    )
 
     model_name = _EVALUATION_MODELS[target]
     evaluation = root / "_evaluation" / model_name
@@ -646,6 +649,9 @@ def _review_winner_target_against_rating_baseline(
     model = load_model(root / model_name / f"{model_name}.pkl")
     calibrator = load_model(
         root / model_name / f"{model_name}_probability_calibrator.pkl"
+    )
+    uncertainty = load_model(
+        root / model_name / f"{model_name}_probability_uncertainty.pkl"
     )
     transformed = pipeline.transform(raw.copy())
     baseline = np.asarray(model.rating_baseline_probability(transformed), dtype=float)
@@ -704,6 +710,18 @@ def _review_winner_target_against_rating_baseline(
         warnings.append("calibration_slope_outside_0.8_1.2")
     if intercept is None or abs(float(intercept)) > _MAX_ABSOLUTE_CALIBRATION_INTERCEPT:
         warnings.append("calibration_intercept_above_0.10")
+    conservative_report: dict[str, Any] | None = None
+    if target == "series_winner":
+        conservative_report = conservative_probability_report(
+            model,
+            transformed,
+            pd.Series(actual),
+            calibrator,
+            uncertainty,
+            metadata,
+        )
+        if conservative_report["coverage"]["passed"] is not True:
+            reasons.append("conservative_probability_coverage_failed")
     report = {
         "sealed_rows": len(labels),
         "bootstrap_unit": cluster_col or "series",
@@ -727,6 +745,7 @@ def _review_winner_target_against_rating_baseline(
         "operational_failures": list(operational_failures),
         "reasons": list(dict.fromkeys(reasons)),
         "warnings": warnings,
+        "conservative_probability": conservative_report,
         "readiness_cohorts": _series_readiness_cohorts(
             labels,
             actual,
@@ -1757,10 +1776,34 @@ def _build_review_readiness(
 def _bundle_evidence_status(root: Path) -> dict[str, str]:
     summary_path = root / "_evaluation" / "summary.json"
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
-    return {
+    statuses = {
         str(model["target"]): str(model["evidence_status"])
         for model in payload["models"]
     }
+    for target in ("gamelength", "total_kills", "total_towers"):
+        model_name = _EVALUATION_MODELS[target]
+        report_path = root / "_evaluation" / model_name / "prop_evaluation_report.json"
+        calibrator_path = root / model_name / f"{model_name}_prop_calibrator.pkl"
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            baseline = report["constant_baseline"]
+            semantics = report["line_semantics"]
+            dimensions = set(report["cohort_dimensions"])
+            contract_ready = bool(
+                baseline.get("fit_split") == "train"
+                and isinstance(baseline.get("metrics"), dict)
+                and semantics.get("version") == 1
+                and semantics.get("supported")
+                in {"continuous_threshold", "half_lines_only"}
+                and semantics.get("push_model") is False
+                and {"league", "map_number"}.issubset(dimensions)
+                and calibrator_path.is_file()
+            )
+        except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError):
+            contract_ready = False
+        if not contract_ready:
+            statuses[target] = "review_required"
+    return statuses
 
 
 def _candidate_operational_failures(root: Path) -> list[str]:  # noqa: PLR0912

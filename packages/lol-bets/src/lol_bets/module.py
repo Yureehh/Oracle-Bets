@@ -275,12 +275,13 @@ class LoLBetsModule:
                 required_attrs={
                     "bins",
                     "confidence",
+                    "calibration_units",
                     "fit_split",
                     "interval",
                     "sample_count",
                     "version",
                 },
-                expected_version=1,
+                expected_version=2,
             ),
             _check_file("direct series winner model", SERIES_WINNER_MODEL_PATH),
             _check_file(

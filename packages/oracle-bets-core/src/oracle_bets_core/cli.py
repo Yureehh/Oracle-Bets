@@ -94,8 +94,8 @@ def _add_lol_commands(sub) -> None:
     )
     retune.add_argument(
         "--feature-set",
-        choices=["full", "compact", "selected"],
-        default="compact",
+        choices=["auto", "full", "compact", "selected"],
+        default="auto",
     )
     retune.add_argument("--max-features", type=int, default=120)
     promote_tuning = lol_sub.add_parser(
@@ -109,6 +109,12 @@ def _add_lol_commands(sub) -> None:
     )
     review_tuning.add_argument("run_id")
     review_tuning.add_argument("--format", choices=["table", "json"], default="table")
+    research = lol_sub.add_parser(
+        "research",
+        help="Run isolated target studies without promoting parameters or models",
+    )
+    research.add_argument("--targets", default="all")
+    research.add_argument("--include-next-map", action="store_true")
 
 
 def _add_train_arguments(train) -> None:
@@ -486,7 +492,7 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
                 f"Tuning review: {report['status']}\nReasons: {reason_text or 'none'}\n"
             )
         return 0 if report["status"] == "approved" else 2
-    if args.action in {"train", "retune"}:
+    if args.action in {"train", "retune", "research"}:
         from lol_bets.data_generation.ingestion.source import (
             OracleSourceReadinessError,
             require_oracle_source_ready,
@@ -497,7 +503,10 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
         except OracleSourceReadinessError as error:
             sys.stderr.write(f"{error}\n")
             return 2
-        _train_lol(args)
+        if args.action == "research":
+            _research_lol(args)
+        else:
+            _train_lol(args)
         return 0
     return 1
 
@@ -864,6 +873,17 @@ def _train_lol(args: argparse.Namespace) -> None:
         )
     report_root = train_models(**options)
     sys.stdout.write(f"Training report: {report_root}\n")
+
+
+def _research_lol(args: argparse.Namespace) -> None:
+    from lol_bets.training import run_research_studies
+
+    reports = run_research_studies(
+        targets=args.targets,
+        include_next_map=args.include_next_map,
+    )
+    for target, report in reports.items():
+        sys.stdout.write(f"{target}: {report}\n")
 
 
 def _main_model(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915

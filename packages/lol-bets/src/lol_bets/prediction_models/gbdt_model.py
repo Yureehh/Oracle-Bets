@@ -23,7 +23,6 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from itertools import pairwise
-from statistics import NormalDist
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -70,7 +69,7 @@ if TYPE_CHECKING:
 
 # Feature selection method type
 FeatureSelectionMethod = Literal["none", "importance", "cumulative", "report"]
-TrainingFeatureSet = Literal["full", "compact", "selected"]
+TrainingFeatureSet = Literal["full", "compact", "selected", "auto"]
 CalibrationMode = Literal["auto", "none"]
 CalibrationMethod = Literal["raw", "sigmoid", "isotonic", "auto"]
 
@@ -96,6 +95,9 @@ DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
 MIN_CALIBRATION_SAMPLES = 40
 MIN_UNCERTAINTY_SAMPLES = 30
 MIN_UNCERTAINTY_BIN_SAMPLES = 20
+MIN_UNCERTAINTY_WEEK_BLOCKS = 4
+CONSERVATIVE_COVERAGE_TARGET = 0.90
+MAX_CONSERVATIVE_COVERAGE_SHORTFALL = 0.02
 MIN_SEGMENT_SIGMOID_SAMPLES = 80
 MIN_SEGMENT_ISOTONIC_SAMPLES = 150
 MIN_PROP_COHORT_SIZE = 30
@@ -103,6 +105,7 @@ PROBABILITY_EPSILON = 1e-6
 CALIBRATION_BINS = 10
 CALIBRATION_SEGMENT_SHRINKAGE = 120
 CALIBRATION_VERSION = 3
+PROBABILITY_UNCERTAINTY_VERSION = 2
 MIN_CALIBRATION_SLOPE = 0.8
 MAX_CALIBRATION_SLOPE = 1.2
 MAX_ABSOLUTE_CALIBRATION_INTERCEPT = 0.10
@@ -253,11 +256,13 @@ class ProbabilityUncertaintyModel:
     global_residual_lower: float
     global_residual_upper: float
     sample_count: int
+    calibration_units: int
     confidence: float = 0.90
     bins: tuple[ProbabilityResidualBand, ...] = ()
-    method: str = "held_out_calibration_residual_mean"
+    method: str = "week_block_q10_plus_one_sided_calibration_bias"
     fit_split: str = "uncertainty_fit"
-    version: int = 1
+    unit: str = "iso_week"
+    version: int = PROBABILITY_UNCERTAINTY_VERSION
 
     @classmethod
     def fit(
@@ -265,10 +270,11 @@ class ProbabilityUncertaintyModel:
         y_true: pd.Series | np.ndarray,
         probabilities: np.ndarray,
         *,
+        timestamps: pd.Series | np.ndarray,
         confidence: float = 0.90,
         bin_count: int = 5,
     ) -> ProbabilityUncertaintyModel:
-        """Fit mean-residual intervals on a dedicated temporal holdout."""
+        """Fit one-sided week-block calibration-bias bounds on a temporal holdout."""
         if not 0 < confidence < 1:
             raise ValueError("confidence must be between 0 and 1")
         if bin_count < 1:
@@ -278,9 +284,12 @@ class ProbabilityUncertaintyModel:
             {
                 "actual": pd.to_numeric(pd.Series(y_true), errors="coerce").to_numpy(),
                 "probability": np.asarray(probabilities, dtype=float),
+                "timestamp": pd.to_datetime(
+                    pd.Series(timestamps), errors="coerce", utc=True
+                ).to_numpy(),
             }
         ).replace([np.inf, -np.inf], np.nan)
-        frame = frame.dropna(subset=["actual", "probability"])
+        frame = frame.dropna(subset=["actual", "probability", "timestamp"])
         frame = frame[
             frame["actual"].isin([0, 1])
             & frame["probability"].between(0.0, 1.0, inclusive="both")
@@ -292,9 +301,15 @@ class ProbabilityUncertaintyModel:
             )
 
         frame["residual"] = frame["actual"] - frame["probability"]
-        z_score = NormalDist().inv_cdf((1.0 + confidence) / 2.0)
-        global_lower, global_upper = cls._mean_residual_interval(
-            frame["residual"].to_numpy(dtype=float), z_score
+        frame["week"] = frame["timestamp"].dt.strftime("%G-W%V")
+        weekly_residuals = frame.groupby("week", sort=True)["residual"].mean()
+        if len(weekly_residuals) < MIN_UNCERTAINTY_WEEK_BLOCKS:
+            raise ValueError(
+                "Probability uncertainty requires at least "
+                f"{MIN_UNCERTAINTY_WEEK_BLOCKS} held-out ISO weeks."
+            )
+        global_lower, global_upper = cls._one_sided_residual_bounds(
+            weekly_residuals.to_numpy(dtype=float), confidence
         )
 
         fitted_bins: list[ProbabilityResidualBand] = []
@@ -305,11 +320,14 @@ class ProbabilityUncertaintyModel:
                 if index == bin_count - 1
                 else frame["probability"].lt(upper)
             )
-            residuals = frame.loc[mask, "residual"].to_numpy(dtype=float)
-            if len(residuals) < MIN_UNCERTAINTY_BIN_SAMPLES:
+            selected = frame.loc[mask]
+            if len(selected) < MIN_UNCERTAINTY_BIN_SAMPLES:
                 continue
-            residual_lower, residual_upper = cls._mean_residual_interval(
-                residuals, z_score
+            residuals = selected.groupby("week", sort=True)["residual"].mean()
+            if len(residuals) < MIN_UNCERTAINTY_WEEK_BLOCKS:
+                continue
+            residual_lower, residual_upper = cls._one_sided_residual_bounds(
+                residuals.to_numpy(dtype=float), confidence
             )
             fitted_bins.append(
                 ProbabilityResidualBand(
@@ -317,30 +335,27 @@ class ProbabilityUncertaintyModel:
                     probability_upper=float(upper),
                     residual_lower=residual_lower,
                     residual_upper=residual_upper,
-                    sample_count=int(len(residuals)),
+                    sample_count=int(len(selected)),
                 )
             )
         return cls(
             global_residual_lower=global_lower,
             global_residual_upper=global_upper,
             sample_count=int(len(frame)),
+            calibration_units=int(len(weekly_residuals)),
             confidence=confidence,
             bins=tuple(fitted_bins),
         )
 
     @staticmethod
-    def _mean_residual_interval(
-        residuals: np.ndarray, z_score: float
+    def _one_sided_residual_bounds(
+        residuals: np.ndarray, confidence: float
     ) -> tuple[float, float]:
-        mean = float(np.mean(residuals))
-        standard_error = (
-            float(np.std(residuals, ddof=1) / np.sqrt(len(residuals)))
-            if len(residuals) > 1
-            else 0.0
-        )
-        margin = z_score * standard_error
-        # Preserve the calibrated point inside the range.
-        return min(mean - margin, 0.0), max(mean + margin, 0.0)
+        lower = float(np.quantile(residuals, 1.0 - confidence))
+        upper = float(np.quantile(residuals, confidence))
+        # A conservative adjustment must never raise the lower bound or lower
+        # the complementary upper bound past the calibrated point.
+        return min(lower, 0.0), max(upper, 0.0)
 
     def interval(self, probabilities: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return clipped lower/upper ranges for calibrated probabilities."""
@@ -382,10 +397,137 @@ def valid_probability_calibration_artifacts(
         callable(getattr(calibrator, "predict", None))
         and callable(getattr(uncertainty, "interval", None))
         and getattr(calibrator, "version", None) == CALIBRATION_VERSION
-        and getattr(uncertainty, "version", None) == 1
+        and getattr(uncertainty, "version", None) == PROBABILITY_UNCERTAINTY_VERSION
         and getattr(uncertainty, "fit_split", None) == "uncertainty_fit"
+        and getattr(uncertainty, "unit", None) == "iso_week"
+        and getattr(uncertainty, "method", None)
+        == "week_block_q10_plus_one_sided_calibration_bias"
         and int(getattr(uncertainty, "sample_count", 0)) >= MIN_UNCERTAINTY_SAMPLES
+        and int(getattr(uncertainty, "calibration_units", 0))
+        >= MIN_UNCERTAINTY_WEEK_BLOCKS
     )
+
+
+def conservative_probability_coverage(
+    y_true: pd.Series | np.ndarray,
+    lower_probability: np.ndarray,
+    metadata: pd.DataFrame,
+) -> dict[str, Any]:
+    """Validate lower-bound calibration over preregistered ISO-week cohorts."""
+    if "date" not in metadata:
+        raise ValueError("Conservative coverage requires fixture timestamps.")
+    frame = pd.DataFrame(
+        {
+            "actual": pd.to_numeric(pd.Series(y_true), errors="coerce").to_numpy(),
+            "lower": np.asarray(lower_probability, dtype=float),
+            "date": pd.to_datetime(metadata["date"], errors="coerce", utc=True),
+        }
+    )
+    for column in ("actionable", "league"):
+        if column in metadata:
+            frame[column] = metadata[column].reset_index(drop=True)
+    frame = frame.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["actual", "lower", "date"]
+    )
+    frame = frame[
+        frame["actual"].isin([0, 1])
+        & frame["lower"].between(0.0, 1.0, inclusive="both")
+    ].copy()
+    frame["week"] = frame["date"].dt.strftime("%G-W%V")
+    masks: dict[str, pd.Series] = {
+        "aggregate": pd.Series(True, index=frame.index),
+    }
+    if "actionable" in frame:
+        actionable = frame["actionable"].fillna(False).astype(bool)
+        masks["actionable"] = actionable
+        if "league" in frame:
+            for league in sorted(
+                frame.loc[actionable, "league"].dropna().astype(str).unique()
+            ):
+                masks[f"league:{league}"] = actionable & frame["league"].eq(league)
+
+    cohorts: dict[str, Any] = {}
+    for name, mask in masks.items():
+        selected = frame.loc[mask]
+        weekly = selected.groupby("week", sort=True).agg(
+            actual=("actual", "mean"),
+            lower=("lower", "mean"),
+        )
+        eligible = (
+            len(selected) >= MIN_UNCERTAINTY_SAMPLES
+            and len(weekly) >= MIN_UNCERTAINTY_WEEK_BLOCKS
+        )
+        coverage = (
+            float(weekly["actual"].ge(weekly["lower"] - 1e-12).mean())
+            if len(weekly)
+            else 0.0
+        )
+        shortfall = CONSERVATIVE_COVERAGE_TARGET - coverage
+        cohorts[name] = {
+            "rows": int(len(selected)),
+            "week_blocks": int(len(weekly)),
+            "coverage": coverage,
+            "shortfall": shortfall,
+            "eligible": eligible,
+            "passed": eligible and shortfall <= MAX_CONSERVATIVE_COVERAGE_SHORTFALL,
+        }
+    required = [
+        payload
+        for name, payload in cohorts.items()
+        if name == "aggregate" or payload["eligible"]
+    ]
+    return {
+        "schema_version": 1,
+        "method": "iso_week_observed_rate_at_or_above_mean_lower_bound",
+        "target": CONSERVATIVE_COVERAGE_TARGET,
+        "maximum_shortfall": MAX_CONSERVATIVE_COVERAGE_SHORTFALL,
+        "cohorts": cohorts,
+        "passed": bool(required) and all(item["passed"] for item in required),
+    }
+
+
+def conservative_probability_lower_bound(
+    model: Any,
+    X: pd.DataFrame,
+    calibrator: Any,
+    uncertainty: ProbabilityUncertaintyModel,
+    metadata: pd.DataFrame,
+) -> np.ndarray:
+    """Combine the week-block ensemble quantile and held-out bias adjustment."""
+    point = np.asarray(
+        calibrator.predict(model.predict_proba(X)[:, 1], metadata=metadata),
+        dtype=float,
+    )
+    ensemble_lower = np.asarray(
+        model.conservative_probability(X, calibrator=calibrator, metadata=metadata),
+        dtype=float,
+    )
+    bias_lower, _ = uncertainty.interval(point)
+    return np.clip(
+        ensemble_lower + bias_lower - point,
+        PROBABILITY_EPSILON,
+        point,
+    )
+
+
+def conservative_probability_report(
+    model: Any,
+    X: pd.DataFrame,
+    y_true: pd.Series | np.ndarray,
+    calibrator: Any,
+    uncertainty: ProbabilityUncertaintyModel,
+    metadata: pd.DataFrame,
+) -> dict[str, Any]:
+    """Describe and validate the versioned direct-series lower bound."""
+    lower = conservative_probability_lower_bound(
+        model, X, calibrator, uncertainty, metadata
+    )
+    return {
+        "version": 1,
+        "method": uncertainty.method,
+        "ensemble_quantile": 0.10,
+        "coverage": conservative_probability_coverage(y_true, lower, metadata),
+    }
 
 
 @dataclass
@@ -1642,7 +1784,13 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             return X
         if self.feature_set == "compact":
             allowed = self.compact_feature_candidates()
-            keep = [col for col in X.columns if col in allowed]
+            keep = [
+                col
+                for col in X.columns
+                if col in allowed
+                or col.removeprefix("delta_") in allowed
+                or col in self._mandatory_anchor_features(X.columns)
+            ]
         elif self.feature_set == "selected":
             keep = self._load_selected_feature_candidates(list(X.columns))
         else:
@@ -1893,6 +2041,8 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         frame = frame.replace([np.inf, -np.inf], np.nan).dropna(
             subset=["actual", "prediction", "residual"]
         )
+        baseline_value = float(self.regression_baseline_value_)
+        baseline_prediction = np.full(len(frame), baseline_value, dtype=float)
         report: dict[str, Any] = {
             "model_name": self.model_name,
             "n": int(len(frame)),
@@ -1904,13 +2054,34 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 "reason": "Historical market lines/odds are not stored in the training set yet.",
                 "required_fields": ["line", "over_odds", "under_odds", "placed_at"],
             },
+            "constant_baseline": {
+                "fit_split": "train",
+                "value": baseline_value,
+                "metrics": self.compute_regression_metrics(
+                    pd.Series(frame["actual"]), baseline_prediction
+                ),
+            },
+            "line_semantics": {
+                "version": 1,
+                "supported": (
+                    "continuous_threshold"
+                    if self.model_name.startswith("Gamelength")
+                    else "half_lines_only"
+                ),
+                "push_model": False,
+            },
+            "cohort_dimensions": ["league", "map_number"],
             "residual_cohorts": {},
         }
-        for column in ("league", "patch", "game"):
-            if column not in frame.columns:
+        for output_column, source_column in (
+            ("league", "league"),
+            ("patch", "patch"),
+            ("map_number", "game"),
+        ):
+            if source_column not in frame.columns:
                 continue
             cohorts: dict[str, Any] = {}
-            for value, group in frame.groupby(column, dropna=True):
+            for value, group in frame.groupby(source_column, dropna=True):
                 if len(group) < MIN_PROP_COHORT_SIZE:
                     continue
                 residuals = group["residual"].to_numpy(dtype=float)
@@ -1924,7 +2095,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                     "bias": float(np.mean(residuals)),
                 }
             if cohorts:
-                report["residual_cohorts"][column] = cohorts
+                report["residual_cohorts"][output_column] = cohorts
         self.insight_path("prop_evaluation_report.json").write_text(
             json.dumps(report, indent=2, default=str) + "\n"
         )
@@ -2523,8 +2694,18 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             if self.probability_calibrator is not None
             else raw
         )
+        if metadata is None or "date" not in metadata:
+            logger.warning(
+                "Skipping probability uncertainty for %s: holdout timestamps missing",
+                self.model_name,
+            )
+            return None
         try:
-            uncertainty = ProbabilityUncertaintyModel.fit(y_uncertainty, probabilities)
+            uncertainty = ProbabilityUncertaintyModel.fit(
+                y_uncertainty,
+                probabilities,
+                timestamps=metadata["date"],
+            )
         except ValueError as exc:
             logger.warning(
                 "Skipping probability uncertainty for %s: %s",
@@ -2760,7 +2941,10 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
 
         # Curated compact configs are written for side-POV rows, so apply them
         # before prop targets are collapsed into one row per game.
-        if self.feature_set == "compact":
+        if (
+            self.feature_set == "compact"
+            and self.model_name not in WINNER_V2_MODEL_NAMES
+        ):
             X = self._apply_feature_set_filter(X)
 
         if self.problem_type == "regression" and is_prop_target(target_col):
@@ -2894,6 +3078,10 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         if X_uncertainty is None or y_uncertainty is None:
             X_uncertainty = X_val
             y_uncertainty = y_val
+        if self.problem_type == "regression":
+            self.regression_baseline_value_ = float(
+                pd.to_numeric(y_train, errors="coerce").mean()
+            )
 
         split_report_entries: dict[str, tuple[pd.DataFrame, pd.Series]] = {
             "train": (X_train, y_train),
@@ -2957,6 +3145,31 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         X_cal_full = self._strip_meta_from_features(X_cal_full, "cal_full")
         X_uncertainty = self._strip_meta_from_features(X_uncertainty, "uncertainty")
         X_test = self._strip_meta_from_features(X_test, "test")
+        if self.model_name in WINNER_V2_MODEL_NAMES:
+            if self.feature_set == "auto":
+                selector = getattr(self, "select_development_feature_schema", None)
+                if not callable(selector):
+                    raise RuntimeError("Winner research schema selector is unavailable")
+                self.feature_set = selector(X_train, y_train, X_val, y_val)
+            if self.feature_set == "compact":
+                splits = [
+                    X_train,
+                    X_val,
+                    X_cal_fit,
+                    X_cal_select,
+                    X_cal_full,
+                    X_uncertainty,
+                    X_test,
+                ]
+                (
+                    X_train,
+                    X_val,
+                    X_cal_fit,
+                    X_cal_select,
+                    X_cal_full,
+                    X_uncertainty,
+                    X_test,
+                ) = tuple(self._apply_feature_set_filter(frame) for frame in splits)
         sealed_test_features = X_test.copy()
 
         # Record eval identifiers for artifacts (sourced from meta_df, not features)
@@ -3114,11 +3327,28 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                         "fit_split": self.probability_uncertainty.fit_split,
                         "confidence": self.probability_uncertainty.confidence,
                         "fit_samples": self.probability_uncertainty.sample_count,
+                        "calibration_units": (
+                            self.probability_uncertainty.calibration_units
+                        ),
+                        "unit": self.probability_uncertainty.unit,
+                        "version": self.probability_uncertainty.version,
                         "local_bins": len(self.probability_uncertainty.bins),
                         "test_mean_width": float(np.mean(test_upper - test_lower)),
                         "test_rows": int(len(calibrated_test)),
                         "test_used_for_fit": False,
                     }
+                    if callable(getattr(model, "conservative_probability", None)):
+                        report["conservative_probability"] = (
+                            conservative_probability_report(
+                                model,
+                                X_test,
+                                y_test,
+                                self.probability_calibrator,
+                                self.probability_uncertainty,
+                                meta_test_for_cal,
+                            )
+                            | {"test_used_for_fit": False}
+                        )
                 if target_col == "result":
                     # One row is one canonical game pair. Serving scores that
                     # pair once and returns its exact complement if callers
