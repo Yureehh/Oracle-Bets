@@ -303,6 +303,7 @@ def _record_typed_market_actions(
                             "line": action.get("line"),
                             "game_number": action.get("game_number"),
                             "quote_basis": action.get("quote_basis") or "public_book",
+                            "owner_terms": action.get("owner_terms"),
                         },
                     },
                 )

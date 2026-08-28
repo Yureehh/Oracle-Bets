@@ -557,7 +557,8 @@ def price_manual_lines(
                 "observations": [
                     {
                         "sequence_number": 1,
-                        "observed_at": reviewed_at.isoformat(),
+                        "observed_at": raw.get("observed_at")
+                        or reviewed_at.isoformat(),
                         "provider_timestamp": None,
                         "book_hash": _stable_id("manual-quote", token_id),
                         "token_id": token_id,
@@ -573,6 +574,7 @@ def price_manual_lines(
                     }
                 ],
                 "note": str(raw.get("note") or "").strip() or None,
+                "owner_terms": str(raw.get("terms") or "").strip() or None,
             }
             | decision_payload
         )

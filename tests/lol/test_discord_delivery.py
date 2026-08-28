@@ -15,7 +15,9 @@ from oracle_bets_discord.delivery import (
     check_gateway_access,
     resolve_delivery_mode,
 )
+from oracle_bets_discord.formatting import sanitize_discord_text
 from oracle_bets_discord.ui.charts import performance_png
+from oracle_bets_discord.ui.common import require_owner
 from oracle_bets_discord.ui.presentation import health_message, schedule_pages
 
 EXPECTED_READ_CALLS = 2
@@ -51,6 +53,28 @@ def test_explicit_empty_environment_does_not_fall_back_to_process_environment(
 def test_discord_controls_reject_non_owner_identity():
     assert _is_owner(42, 42)
     assert not _is_owner(41, 42)
+
+
+def test_modal_owner_guard_and_external_text_disable_mentions():
+    class Response:
+        def __init__(self):
+            self.messages = []
+
+        @staticmethod
+        def is_done():
+            return False
+
+        async def send_message(self, content, **kwargs):
+            self.messages.append((content, kwargs))
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=41),
+        response=Response(),
+    )
+
+    assert not asyncio.run(require_owner(interaction, 42))
+    assert interaction.response.messages[0][1]["ephemeral"] is True
+    assert sanitize_discord_text("@everyone\x00") == "@\u200beveryone"
 
 
 def test_gateway_process_lock_rejects_second_instance(tmp_path):
@@ -103,6 +127,10 @@ def test_health_message_is_sectioned_and_human_readable(monkeypatch):
         @staticmethod
         def integrity_check():
             return "ok"
+
+        @staticmethod
+        def list(_table):
+            return []
 
     class Registry:
         @staticmethod

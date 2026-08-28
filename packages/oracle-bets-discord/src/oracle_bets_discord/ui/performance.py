@@ -21,11 +21,22 @@ async def performance_result(
     mode: str,
     since: datetime | None,
     logger: Any,
+    lane: str | None = None,
+    target: str | None = None,
+    provider: str | None = None,
 ) -> tuple[bytes | None, str]:
     """Return immediately when no evidence exists; bound expensive rendering."""
     global _render_inflight  # noqa: PLW0603
     try:
-        rows = await asyncio.to_thread(performance_rows, store, mode=mode, since=since)
+        rows = await asyncio.to_thread(
+            performance_rows,
+            store,
+            mode=mode,
+            since=since,
+            lane=lane,
+            target=target,
+            provider=provider,
+        )
         summary = summarize_bets(rows, mode=mode)
     except Exception:
         logger.exception("Discord performance evidence read failed")
@@ -56,7 +67,24 @@ async def performance_result(
     finally:
         if active.done() and _render_inflight is active:
             _render_inflight = None
-    return image, f"**{mode.title()} performance** · {settled} settled bet(s)."
+    filters = " · ".join(
+        value
+        for value in (
+            mode,
+            lane or "all lanes",
+            target or "all targets",
+            provider or "all providers",
+        )
+    )
+    currency_lines = [
+        f"• **{currency}:** {bucket['settled']} tickets · "
+        f"{bucket['fixture_clusters']} fixtures · ROI {float(bucket['roi'] or 0):+.1%} · "
+        f"PnL {bucket['pnl']} · CLV {bucket['clv']['complete']}/{bucket['settled']}"
+        for currency, bucket in summary["currencies"].items()
+    ]
+    return image, "\n".join(
+        (f"**{mode.title()} performance**", f"Filters: `{filters}`", *currency_lines)
+    )
 
 
 def build_performance_view(
@@ -71,6 +99,7 @@ def build_performance_view(
             super().__init__(timeout=900)
             self.mode = "paper"
             self.days: int | None = None
+            self.lane: str | None = None
             mode = discord.ui.Select(
                 placeholder="Mode",
                 options=[
@@ -102,18 +131,107 @@ def build_performance_view(
 
             timeframe.callback = choose_timeframe
             self.add_item(timeframe)
+            lane = discord.ui.Select(
+                placeholder="Decision lane",
+                options=[
+                    discord.SelectOption(label="All lanes", value="all", default=True),
+                    discord.SelectOption(label="Recommended", value="recommended"),
+                    discord.SelectOption(label="Exploration", value="exploration"),
+                ],
+            )
+
+            async def choose_lane(interaction: Any) -> None:
+                self.lane = None if lane.values[0] == "all" else lane.values[0]
+                await interaction.response.defer()
+
+            lane.callback = choose_lane
+            self.add_item(lane)
+
+        @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
+        async def render(self, interaction: Any, _button: Any) -> None:
+            await interaction.response.edit_message(
+                content="Choose optional target/provider filters, then render.",
+                view=PerformanceDetailView(self.mode, self.days, self.lane),
+            )
+
+    class PerformanceDetailView(OwnerView):
+        def __init__(self, mode: str, days: int | None, lane: str | None) -> None:
+            super().__init__(timeout=900)
+            self.mode = mode
+            self.days = days
+            self.lane = lane
+            self.target: str | None = None
+            self.provider: str | None = None
+            target = discord.ui.Select(
+                placeholder="Target",
+                options=[
+                    discord.SelectOption(
+                        label="All targets", value="all", default=True
+                    ),
+                    *[
+                        discord.SelectOption(
+                            label=value.replace("_", " ").title(), value=value
+                        )
+                        for value in (
+                            "series_winner",
+                            "map_winner",
+                            "series_total_maps",
+                            "series_handicap",
+                            "gamelength_mean",
+                            "total_kills_mean",
+                            "total_towers_mean",
+                        )
+                    ],
+                ],
+            )
+
+            async def choose_target(interaction: Any) -> None:
+                self.target = None if target.values[0] == "all" else target.values[0]
+                await interaction.response.defer()
+
+            target.callback = choose_target
+            self.add_item(target)
+            provider = discord.ui.Select(
+                placeholder="Provider",
+                options=[
+                    discord.SelectOption(
+                        label="All providers", value="all", default=True
+                    ),
+                    discord.SelectOption(label="Polymarket", value="polymarket"),
+                    discord.SelectOption(label="Thunderpick", value="thunderpick"),
+                ],
+            )
+
+            async def choose_provider(interaction: Any) -> None:
+                self.provider = (
+                    None if provider.values[0] == "all" else provider.values[0]
+                )
+                await interaction.response.defer()
+
+            provider.callback = choose_provider
+            self.add_item(provider)
 
         @discord.ui.button(label="Render chart", style=discord.ButtonStyle.primary)
         async def render(self, interaction: Any, _button: Any) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             since = datetime.now(UTC) - timedelta(days=self.days) if self.days else None
             image, message = await performance_result(
-                store, mode=self.mode, since=since, logger=logger
+                store,
+                mode=self.mode,
+                since=since,
+                logger=logger,
+                lane=self.lane,
+                target=self.target,
+                provider=self.provider,
             )
             await interaction.edit_original_response(
                 content=message,
                 attachments=[
-                    discord.File(BytesIO(image), filename="bet-performance.png")
+                    discord.File(
+                        BytesIO(image),
+                        filename="bet-performance.png",
+                        description="Oracle Bets filtered performance chart; metrics are summarized in the message.",
+                    )
                 ]
                 if image
                 else [],

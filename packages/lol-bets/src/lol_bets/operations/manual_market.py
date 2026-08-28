@@ -65,6 +65,17 @@ _LEAGUE_LABELS = {"lrn": "Liga Regional Norte (LRN)"}
 _ALLOWED_HOSTS = frozenset(
     {"polymarket.com", "www.polymarket.com", "thunderpick.io", "www.thunderpick.io"}
 )
+_MANUAL_TARGETS = frozenset(
+    {
+        "series_winner",
+        "map_winner",
+        "series_total_maps",
+        "series_handicap",
+        "gamelength_mean",
+        "total_kills_mean",
+        "total_towers_mean",
+    }
+)
 logger = logging.getLogger(__name__)
 
 
@@ -113,11 +124,14 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
     report_dir: Path | None = None,
     store: EvidenceStore | None = None,
     now: dt.datetime | None = None,
+    review_key: str | None = None,
 ) -> ManualMarketReviewResult:
     """Review one fixture from explicit owner-selected provider URLs."""
     started = time.perf_counter()
     normalized_urls = normalize_market_urls(urls)
     reviewed_at = _as_utc(now or dt.datetime.now(dt.UTC))
+    run_key = review_key or _manual_run_key(normalized_urls, reviewed_at=reviewed_at)
+    tracked_run_id = _begin_review(store, run_key, normalized_urls, reviewed_at)
     adapter = gamma or PolymarketGammaAdapter()
     failures: list[dict[str, str]] = []
     ignored_links: list[dict[str, str]] = []
@@ -256,7 +270,6 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
     snapshots: list[dict[str, Any]] = []
     market_actions: list[dict[str, Any]] = []
     prediction_details: list[dict[str, Any]] = []
-    run_key = _manual_run_key(events, reviewed_at=reviewed_at)
     inference_started = time.perf_counter()
     if not schedule.empty:
         _messages, prediction_details = _build_prediction_messages(
@@ -301,7 +314,7 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         )
     market_actions = rank_market_decisions(market_actions)
 
-    evidence_run_id = None
+    evidence_run_id = tracked_run_id
     evidence_store = store or EvidenceStore(EVIDENCE_DB)
     if not schedule.empty and snapshots:
         evidence_run_id = record_daily_evidence(
@@ -363,6 +376,19 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
     )
     predicted = sum(
         detail.get("status") == "predicted" for detail in prediction_details
+    )
+    _record_review_state(
+        store,
+        tracked_run_id,
+        (
+            "completed"
+            if not failures and (predicted == len(schedule) or ignored_links)
+            else "partial"
+            if predicted
+            else "failed"
+        ),
+        reviewed_at,
+        failures=failures,
     )
     return ManualMarketReviewResult(
         report_paths=paths,
@@ -495,12 +521,65 @@ def _enrich_from_stored_schedule(
     return enriched
 
 
-def _manual_run_key(
-    events: Sequence[PolymarketEvent], *, reviewed_at: dt.datetime
-) -> str:
-    identity = "|".join(sorted(f"{event.event_id}:{event.slug}" for event in events))
+def _manual_run_key(urls: Sequence[str], *, reviewed_at: dt.datetime) -> str:
+    identity = "|".join(urls)
     payload = f"{reviewed_at.isoformat()}|{identity}"
     return "manual-lol-market-" + hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+def _begin_review(
+    store: EvidenceStore | None,
+    run_key: str,
+    urls: Sequence[str],
+    started_at: dt.datetime,
+) -> str | None:
+    if store is None:
+        return None
+    store.initialize_schema()
+    run_id = "run-" + hashlib.sha256(run_key.encode()).hexdigest()[:24]
+    if store.get(EvidenceTable.RUNS, run_id) is None:
+        store.append(
+            EvidenceTable.RUNS,
+            {
+                "id": run_id,
+                "run_type": "manual_lol_market_review",
+                "started_at": started_at,
+                "status": "queued",
+                "idempotency_key": run_key,
+                "payload_json": {"run_key": run_key, "input_links": list(urls)},
+            },
+        )
+    _record_review_state(store, run_id, "running", started_at)
+    return run_id
+
+
+def _record_review_state(
+    store: EvidenceStore | None,
+    run_id: str | None,
+    status: str,
+    event_at: dt.datetime,
+    *,
+    failures: Sequence[dict[str, str]] = (),
+) -> None:
+    if store is None or run_id is None:
+        return
+    event_id = (
+        "run-event-"
+        + hashlib.sha256(f"{run_id}|review_state|{status}".encode()).hexdigest()[:24]
+    )
+    if store.get(EvidenceTable.RUN_EVENTS, event_id) is None:
+        store.append(
+            EvidenceTable.RUN_EVENTS,
+            {
+                "id": event_id,
+                "run_id": run_id,
+                "event_at": event_at,
+                "event_type": "review_state",
+                "status": status,
+                "idempotency_key": event_id,
+                "payload_json": {"failures": list(failures)},
+            },
+        )
 
 
 def discord_review_summary(
@@ -887,23 +966,26 @@ def normalize_market_urls(values: Sequence[str]) -> tuple[str, ...]:
 
 
 def parse_manual_lines_text(value: str) -> list[dict[str, Any]]:
-    """Parse `target | selection | odds | line | game` owner entries."""
+    """Parse controlled Thunderpick rows with optional observation metadata."""
     output: list[dict[str, Any]] = []
     for number, raw in enumerate(value.splitlines(), start=1):
         if not raw.strip():
             continue
         fields = [field.strip() for field in raw.split("|")]
-        if len(fields) not in {3, 4, 5}:
+        if not 3 <= len(fields) <= 7:  # noqa: PLR2004
             raise MarketDataError(
-                f"Thunderpick line {number} must use target | selection | odds | line | game."
+                f"Thunderpick line {number} must use target | selection | odds | line | game | observed_at | terms."
             )
         target, selection, odds_text, *optional = fields
+        optional.extend([""] * (4 - len(optional)))
+        if target not in _MANUAL_TARGETS:
+            raise MarketDataError(
+                f"Thunderpick line {number} target is not supported: {target}."
+            )
         try:
             odds = float(odds_text)
-            line = float(optional[0]) if optional and optional[0] else None
-            game_number = (
-                int(optional[1]) if len(optional) > 1 and optional[1] else None
-            )
+            line = float(optional[0]) if optional[0] else None
+            game_number = int(optional[1]) if optional[1] else None
         except ValueError as exc:
             raise MarketDataError(
                 f"Thunderpick line {number} has invalid numeric values."
@@ -914,6 +996,14 @@ def parse_manual_lines_text(value: str) -> list[dict[str, Any]]:
             )
         if line is not None and not math.isfinite(line):
             raise MarketDataError(f"Thunderpick line {number} line must be finite.")
+        observed_at = optional[2] or None
+        if observed_at is not None:
+            try:
+                _as_utc(dt.datetime.fromisoformat(observed_at))
+            except ValueError as exc:
+                raise MarketDataError(
+                    f"Thunderpick line {number} observed_at must be ISO-8601 with timezone."
+                ) from exc
         output.append(
             {
                 "target": target,
@@ -921,11 +1011,30 @@ def parse_manual_lines_text(value: str) -> list[dict[str, Any]]:
                 "decimal_odds": odds,
                 "line": line,
                 "game_number": game_number,
+                "observed_at": observed_at,
+                "terms": optional[3] or None,
             }
         )
     if len(output) > 10:  # noqa: PLR2004
         raise MarketDataError("Enter at most ten Thunderpick lines per review.")
     return output
+
+
+def parse_manual_lines_batch(
+    value: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Parse up to ten rows while preserving isolated row errors."""
+    rows = [row for row in value.splitlines() if row.strip()]
+    if len(rows) > 10:  # noqa: PLR2004
+        raise MarketDataError("Enter at most ten Thunderpick lines per review.")
+    parsed: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for number, row in enumerate(rows, start=1):
+        try:
+            parsed.extend(parse_manual_lines_text(row))
+        except MarketDataError as error:
+            failures.append({"row": number, "input": row, "reason": str(error)})
+    return parsed, failures
 
 
 def _same_fixture(rows: Sequence[dict[str, Any]]) -> bool:

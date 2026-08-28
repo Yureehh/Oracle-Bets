@@ -52,11 +52,16 @@ def run_bot() -> None:
 
     OwnerView, PageView = build_common_views(discord, owner_id)
     bet_views = build_bet_views(
-        discord, store=store, OwnerView=OwnerView, PageView=PageView
+        discord,
+        store=store,
+        owner_id=owner_id,
+        OwnerView=OwnerView,
+        PageView=PageView,
     )
     review_views = build_review_views(
         discord,
         store=store,
+        owner_id=owner_id,
         logger=logger,
         OwnerView=OwnerView,
         BetOptionsView=bet_views.BetOptionsView,
@@ -75,6 +80,7 @@ def run_bot() -> None:
         BetOptionsView=bet_views.BetOptionsView,
         OpenBetsView=bet_views.OpenBetsView,
         PerformanceView=PerformanceView,
+        RecentReviewsView=review_views.RecentReviewsView,
     )
 
     @tree.command(name="oracle", description="Open the Oracle Bets owner console")

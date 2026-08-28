@@ -8,12 +8,19 @@ from oracle_bets_core.operations.bets import (
     BetEvidenceError,
     list_bets,
     performance_summary,
+    prepare_bet,
     record_bet,
     record_bet_result,
     replace_bet_settlement,
     settle_bet,
     supersede_evidence,
 )
+from oracle_bets_discord.ui.bets import (
+    bet_confirmation_text,
+    parse_result_facts,
+    preview_fixture_results,
+)
+from oracle_bets_discord.ui.presentation import market_options
 
 TWO_BETS = 2
 
@@ -611,3 +618,59 @@ def test_mistaken_settlement_is_replaced_append_only(tmp_path):
         if row["target_id"] == original_id
     )
     assert correction["replacement_id"] == replacement_id
+
+
+def test_discord_uses_only_current_completed_review_and_previews_fixture_result(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    store.append(
+        EvidenceTable.RUNS,
+        {
+            "id": "review-new-partial",
+            "run_type": "manual_lol_market_review",
+            "started_at": datetime(2026, 8, 25, tzinfo=UTC),
+            "status": "partial",
+            "idempotency_key": "review-new-partial",
+            "payload_json": {},
+        },
+    )
+
+    options = market_options(store)
+    bet_id = record_bet(
+        store,
+        review_id="review-1",
+        market_id=options[0]["market_id"],
+        mode="paper",
+        currency="EUR",
+        bankroll_before="1000",
+        stake_percent=options[0]["stake_percent"],
+        accepted_odds="2",
+        reason="owner action",
+        opened_at=datetime(2026, 8, 24, 12, tzinfo=UTC),
+    )
+    rows = list_bets(store, state="open")
+    facts = parse_result_facts("series_winner=A")
+    resolved, unresolved = preview_fixture_results(store, rows, facts)
+
+    assert options[0]["review_id"] == "review-1"
+    assert options[0]["stake_percent"] == "20.0"
+    assert resolved[0]["bet_id"] == bet_id
+    assert resolved[0]["result"] == "win"
+    assert unresolved == []
+    entry = prepare_bet(
+        store,
+        review_id="review-1",
+        market_id="market-1",
+        mode="paper",
+        currency="EUR",
+        bankroll_before="1000",
+        stake_percent="20",
+        accepted_odds="2",
+        reason="owner action",
+        opened_at=datetime(2026, 8, 24, 14, tzinfo=UTC),
+    )
+    confirmation = bet_confirmation_text(entry)
+    assert "recommended" in confirmation
+    assert "Full Kelly" in confirmation
+    assert "Quarter Kelly" in confirmation

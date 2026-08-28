@@ -246,6 +246,28 @@ def _add_research_operation_commands(sub) -> None:  # noqa: PLR0915
     settle.add_argument("--actor-id", default="owner-cli")
     settle.add_argument("--settled-at", default=None)
     settle.add_argument("--closing-odds")
+    result = bet_sub.add_parser("result", help="Record one owner-sourced result fact")
+    result.add_argument("--database", default=None)
+    result.add_argument("--bet-id", required=True)
+    result.add_argument("--source-reference", required=True)
+    result.add_argument("--winning-selection")
+    result.add_argument("--observed-value")
+    result.add_argument("--actor-id", default="owner-cli")
+    result.add_argument("--recorded-at")
+    correct = bet_sub.add_parser(
+        "correct-settlement", help="Supersede a mistaken settlement append-only"
+    )
+    correct.add_argument("--database", default=None)
+    correct.add_argument("--bet-id", required=True)
+    correct.add_argument(
+        "--result", required=True, choices=["win", "loss", "push", "void"]
+    )
+    correct.add_argument("--source-reference", required=True)
+    correct.add_argument("--correction-reason", required=True)
+    correct.add_argument("--note")
+    correct.add_argument("--closing-odds")
+    correct.add_argument("--actor-id", default="owner-cli")
+    correct.add_argument("--corrected-at")
     performance = bet_sub.add_parser("performance", help="Report performance by mode")
     performance.add_argument("--database", default=None)
     performance.add_argument("--mode", required=True, choices=["paper", "real"])
@@ -433,6 +455,8 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
 
         from lol_bets.operations.manual_market import review_polymarket_events
 
+        from oracle_bets_core.evidence import EvidenceStore
+
         manual_lines = []
         if args.manual_lines:
             from pathlib import Path
@@ -447,7 +471,11 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
             if not isinstance(manual_lines, list):
                 sys.stderr.write("--manual-lines must contain a JSON list.\n")
                 return 2
-        result = review_polymarket_events(args.urls, manual_lines=manual_lines)
+        result = review_polymarket_events(
+            args.urls,
+            manual_lines=manual_lines,
+            store=EvidenceStore(),
+        )
         if args.format == "json":
             sys.stdout.write(
                 json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n"
@@ -1083,7 +1111,7 @@ def _main_evidence(args: argparse.Namespace) -> int:
     return 0
 
 
-def _main_bet(args: argparse.Namespace) -> int:
+def _main_bet(args: argparse.Namespace) -> int:  # noqa: PLR0912
     import json
     from datetime import datetime
     from pathlib import Path
@@ -1094,6 +1122,8 @@ def _main_bet(args: argparse.Namespace) -> int:
         list_bets,
         performance_summary,
         record_bet,
+        record_bet_result,
+        replace_bet_settlement,
         settle_bet,
         show_bet,
     )
@@ -1147,6 +1177,40 @@ def _main_bet(args: argparse.Namespace) -> int:
                 closing_odds=args.closing_odds,
             )
             sys.stdout.write(f"Recorded settlement {event_id}.\n")
+            return 0
+        elif args.action == "result":
+            event_id = record_bet_result(
+                store,
+                bet_id=args.bet_id,
+                source_reference=args.source_reference,
+                winning_selection=args.winning_selection,
+                observed_value=args.observed_value,
+                actor_id=args.actor_id,
+                recorded_at=(
+                    datetime.fromisoformat(args.recorded_at)
+                    if args.recorded_at
+                    else None
+                ),
+            )
+            sys.stdout.write(f"Recorded result fact {event_id}.\n")
+            return 0
+        elif args.action == "correct-settlement":
+            event_id = replace_bet_settlement(
+                store,
+                bet_id=args.bet_id,
+                result=args.result,
+                source_reference=args.source_reference,
+                correction_reason=args.correction_reason,
+                actor_id=args.actor_id,
+                note=args.note,
+                corrected_at=(
+                    datetime.fromisoformat(args.corrected_at)
+                    if args.corrected_at
+                    else None
+                ),
+                closing_odds=args.closing_odds,
+            )
+            sys.stdout.write(f"Recorded corrected settlement {event_id}.\n")
             return 0
         else:
             result = performance_summary(store, mode=args.mode)

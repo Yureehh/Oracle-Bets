@@ -5,12 +5,14 @@ from datetime import UTC, datetime
 
 import pytest
 from lol_bets.operations import manual_market
+from oracle_bets_core.evidence import EvidenceStore
 from oracle_bets_core.markets import (
     MarketDataError,
     PolymarketEvent,
     PolymarketGammaAdapter,
     market_semantic_key,
 )
+from oracle_bets_core.operations.bets import review_state
 from oracle_bets_core.pd import pd
 
 NOW = datetime(2026, 8, 21, 8, tzinfo=UTC)
@@ -285,6 +287,32 @@ def test_lrn_is_intentionally_ignored_without_provider_or_model_call(
     assert "no prediction was generated" in result.report_paths[1].read_text().lower()
 
 
+def test_explicit_store_tracks_review_lifecycle_even_when_link_is_ignored(
+    tmp_path, monkeypatch
+):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    monkeypatch.setattr(manual_market, "SCHEDULE", tmp_path / "missing.parquet")
+    url = "https://polymarket.com/esports/league-of-legends/lrn/lol-fue-z5-2026-08-24"
+
+    result = manual_market.review_polymarket_events(
+        [url],
+        gamma=_Gamma(),
+        report_dir=tmp_path / "reports",
+        store=store,
+        now=NOW,
+        review_key="review-lifecycle-test",
+    )
+
+    assert result.evidence_run_id is not None
+    assert review_state(store, result.evidence_run_id) == "completed"
+    states = [
+        row["status"]
+        for row in store.list(manual_market.EvidenceTable.RUN_EVENTS)
+        if row["event_type"] == "review_state"
+    ]
+    assert states == ["running", "completed"]
+
+
 def test_market_url_parser_allows_two_known_providers_and_rejects_hostile_urls():
     thunderpick = "https://thunderpick.io/en/esports/lol/team-we-vs-top-esports"
     assert manual_market.normalize_market_urls([f"{URL},\n{thunderpick}"]) == (
@@ -301,6 +329,20 @@ def test_market_url_parser_allows_two_known_providers_and_rejects_hostile_urls()
                 "https://thunderpick.io/en/esports/lol/third",
             ]
         )
+
+
+def test_thunderpick_batch_parser_isolates_rows_and_keeps_observation_terms():
+    parsed, failures = manual_market.parse_manual_lines_batch(
+        "total_kills_mean | Over | 1.90 | 27.5 | 1 | "
+        "2026-08-21T08:00:00+00:00 | overtime counts\n"
+        "made_up_target | Over | 2.0 | 3.5 | 1\n"
+        "series_winner | Team WE | 2.10"
+    )
+
+    assert len(parsed) == EXPECTED_COMPARISONS
+    assert failures[0]["row"] == EXPECTED_COMPARISONS
+    assert parsed[0]["observed_at"] == "2026-08-21T08:00:00+00:00"
+    assert parsed[0]["terms"] == "overtime counts"
     with pytest.raises(MarketDataError, match="at most one Polymarket"):
         manual_market.normalize_market_urls(
             [URL, "https://polymarket.com/event/second"]

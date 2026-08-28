@@ -5,6 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 
+async def require_owner(interaction: Any, owner_id: int) -> bool:
+    """Protect modal callbacks that do not inherit a View interaction check."""
+    if int(interaction.user.id) == owner_id:
+        return True
+    if not interaction.response.is_done():
+        await interaction.response.send_message("Owner-only control.", ephemeral=True)
+    return False
+
+
 def build_common_views(discord: Any, owner_id: int) -> tuple[type[Any], type[Any]]:
     """Return owner-checked base and paginated view classes."""
 

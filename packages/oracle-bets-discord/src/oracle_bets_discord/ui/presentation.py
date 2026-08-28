@@ -49,8 +49,37 @@ def market_options(
     store: EvidenceStore, market_ids: Sequence[str] = ()
 ) -> list[dict[str, str]]:
     from oracle_bets_core.evidence import EvidenceTable
+    from oracle_bets_core.operations.bets import review_state
 
-    candidates = list(store.get_many(EvidenceTable.MARKET_CANDIDATES, market_ids))
+    corrections = {
+        (str(row["target_table"]), str(row["target_id"]))
+        for row in store.list(EvidenceTable.CORRECTIONS)
+    }
+    selected_ids = tuple(market_ids)
+    if not selected_ids:
+        reviews = [
+            row
+            for row in store.list(EvidenceTable.RUNS)
+            if row["run_type"] == "manual_lol_market_review"
+            and review_state(store, str(row["id"])) in {"complete", "completed"}
+            and ("runs", str(row["id"])) not in corrections
+        ]
+        if not reviews:
+            return []
+        current_review = max(reviews, key=lambda row: str(row["started_at"]))
+        selected_ids = tuple(
+            str(row["id"])
+            for row in store.list(EvidenceTable.MARKET_CANDIDATES)
+            if row["run_id"] == current_review["id"]
+        )
+    candidates = [
+        row
+        for row in store.get_many(EvidenceTable.MARKET_CANDIDATES, selected_ids)
+        if ("market_candidates", str(row["id"])) not in corrections
+        and review_state(store, str(row["run_id"])) in {"complete", "completed"}
+        and _payload(row.get("payload_json")).get("classification")
+        in {"recommended", "exploration"}
+    ]
     candidates.sort(
         key=lambda row: _payload(row.get("payload_json")).get("probability") is None
     )
@@ -59,6 +88,9 @@ def market_options(
         payload = _payload(row.get("payload_json"))
         odds = payload.get("decimal_odds")
         line = f" {payload['line']}" if payload.get("line") is not None else ""
+        sizing = payload.get("sizing") or {}
+        selected_path = str(sizing.get("selected_path") or "flat_1u")
+        fraction = (sizing.get("bankroll_fractions") or {}).get(selected_path, 0.01)
         output.append(
             {
                 "market_id": str(row["id"]),
@@ -71,6 +103,7 @@ def market_options(
                     if odds is not None
                     else f"{row['provider']}{line} · model unavailable"
                 )[:100],
+                "stake_percent": str(float(fraction) * 100),
             }
         )
         if len(output) == _DISCORD_SELECT_LIMIT:
@@ -80,8 +113,9 @@ def market_options(
 
 def health_message(store: EvidenceStore, registry: ModelRegistry) -> str:
     from lol_bets.module import LoLBetsModule
+    from oracle_bets_core.evidence import EvidenceTable
     from oracle_bets_core.markets import PolymarketGammaAdapter
-    from oracle_bets_core.operations.bets import count_open_bets
+    from oracle_bets_core.operations.bets import count_open_bets, review_state
 
     champion = registry.champion_id()
     actionable = bool(champion and registry.is_actionable(champion))
@@ -98,6 +132,16 @@ def health_message(store: EvidenceStore, registry: ModelRegistry) -> str:
     integrity = store.integrity_check()
     open_bets = count_open_bets(store)
     overall_ok = actionable and data_ok and integrity == "ok" and market_ok
+    reviews = [
+        row
+        for row in store.list(EvidenceTable.RUNS)
+        if row["run_type"] == "manual_lol_market_review"
+    ][-3:]
+    review_lines = [
+        f"> `{str(row['id'])[-8:]}` · **{review_state(store, str(row['id']))}** "
+        f"· {str(row['started_at'])[:16]}"
+        for row in reversed(reviews)
+    ] or ["> No market reviews recorded."]
     return "\n".join(
         (
             "**Oracle Bets · System Health**",
@@ -118,6 +162,9 @@ def health_message(store: EvidenceStore, registry: ModelRegistry) -> str:
             f"> Polymarket: {'✅ Connected' if market_ok else '❌ Unavailable'} · read-only",
             "> Thunderpick: 📝 Manual lines only",
             "> Discord Gateway: ✅ Online",
+            "",
+            "**Recent review runs**",
+            *review_lines,
         )
     )
 

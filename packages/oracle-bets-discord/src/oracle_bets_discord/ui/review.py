@@ -3,29 +3,34 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 
 from lol_bets.operations.manual_market import (
     normalize_market_urls,
+    parse_manual_lines_batch,
     parse_manual_lines_text,
     review_polymarket_events,
     thunderpick_fixture_options,
 )
 
-from oracle_bets_discord.formatting import DELIVERY_TARGET
+from oracle_bets_discord.formatting import DELIVERY_TARGET, sanitize_discord_text
+from oracle_bets_discord.ui.common import require_owner
 from oracle_bets_discord.ui.presentation import market_options
 
 
 @dataclass(frozen=True)
 class ReviewViews:
     ReviewLinksModal: type[Any]
+    RecentReviewsView: type[Any]
 
 
 def build_review_views(
     discord: Any,
     *,
     store: Any,
+    owner_id: int,
     logger: Any,
     OwnerView: type[Any],
     BetOptionsView: type[Any],
@@ -37,6 +42,7 @@ def build_review_views(
         urls: tuple[str, ...],
         manual_lines: tuple[dict[str, Any], ...] = (),
         fixture_key: str | None = None,
+        review_key: str | None = None,
     ) -> None:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True, thinking=True)
@@ -46,11 +52,13 @@ def build_review_views(
                 urls,
                 manual_lines=manual_lines,
                 fixture_key=fixture_key,
+                store=store,
+                review_key=review_key or f"discord-review:{interaction.id}",
             )
         except Exception as error:
             logger.exception("Owner market review failed")
             await interaction.edit_original_response(
-                content=f"Review failed: {type(error).__name__}: {str(error)[:300]}"
+                content=f"Review failed: {type(error).__name__}. Check the private log."
             )
             return
         rows = await asyncio.to_thread(market_options, store, result.market_ids)
@@ -58,7 +66,7 @@ def build_review_views(
             result.report_paths[1], filename="lol-market-review.md"
         )
         await interaction.edit_original_response(
-            content=result.discord_message[:DELIVERY_TARGET],
+            content=sanitize_discord_text(result.discord_message)[:DELIVERY_TARGET],
             attachments=[attachment],
             view=BetOptionsView(rows) if rows else None,
         )
@@ -79,6 +87,8 @@ def build_review_views(
             self.setup = setup
 
         async def on_submit(self, interaction: Any) -> None:
+            if not await require_owner(interaction, owner_id):
+                return
             try:
                 line = parse_manual_lines_text(
                     " | ".join(
@@ -106,12 +116,16 @@ def build_review_views(
 
     class ThunderpickSetupView(OwnerView):
         def __init__(
-            self, urls: tuple[str, ...], fixtures: list[dict[str, Any]]
+            self,
+            urls: tuple[str, ...],
+            fixtures: list[dict[str, Any]],
+            review_key: str | None = None,
         ) -> None:
             super().__init__(timeout=900)
             self.urls = urls
             self.fixture_key: str | None = None
             self.manual_lines: list[dict[str, Any]] = []
+            self.review_key = review_key
             matching = [row for row in fixtures if row.get("_url_match")]
             if len(matching) == 1:
                 self.fixture_key = str(matching[0]["match_key"])
@@ -151,6 +165,10 @@ def build_review_views(
                 return
             await interaction.response.send_modal(ThunderpickLineModal(self))
 
+        @discord.ui.button(label="Paste lines", style=discord.ButtonStyle.secondary)
+        async def paste(self, interaction: Any, _button: Any) -> None:
+            await interaction.response.send_modal(ThunderpickBatchModal(self))
+
         @discord.ui.button(label="Finish Review")
         async def finish(self, interaction: Any, _button: Any) -> None:
             if self.fixture_key is None and len(self.urls) == 1:
@@ -163,6 +181,7 @@ def build_review_views(
                 self.urls,
                 tuple(self.manual_lines),
                 fixture_key=self.fixture_key,
+                review_key=self.review_key,
             )
 
     class ReviewLinksModal(discord.ui.Modal, title="Review LoL market links"):
@@ -172,7 +191,17 @@ def build_review_views(
             placeholder="Polymarket and/or Thunderpick URLs",
         )
 
+        def __init__(
+            self, *, default_links: str = "", review_key: str | None = None
+        ) -> None:
+            super().__init__()
+            self.review_key = review_key
+            if default_links:
+                self.links.default = default_links
+
         async def on_submit(self, interaction: Any) -> None:
+            if not await require_owner(interaction, owner_id):
+                return
             try:
                 urls = normalize_market_urls((str(self.links),))
             except Exception as error:
@@ -192,7 +221,7 @@ def build_review_views(
                             "Thunderpick is manual-only. Select the fixture, add "
                             "visible lines, then finish the review."
                         ),
-                        view=ThunderpickSetupView(urls, fixtures),
+                        view=ThunderpickSetupView(urls, fixtures, self.review_key),
                     )
                 except Exception:
                     logger.exception("Thunderpick fixture selection failed")
@@ -204,6 +233,128 @@ def build_review_views(
                         view=None,
                     )
                 return
-            await run_review(interaction, urls)
+            await run_review(interaction, urls, review_key=self.review_key)
 
-    return ReviewViews(ReviewLinksModal)
+    class ThunderpickBatchModal(discord.ui.Modal, title="Paste Thunderpick lines"):
+        lines = discord.ui.TextInput(
+            label="One line per market",
+            style=discord.TextStyle.paragraph,
+            placeholder="target | selection | odds | line | game",
+        )
+
+        def __init__(self, setup: Any) -> None:
+            super().__init__()
+            self.setup = setup
+
+        async def on_submit(self, interaction: Any) -> None:
+            if not await require_owner(interaction, owner_id):
+                return
+            try:
+                parsed, failures = parse_manual_lines_batch(str(self.lines))
+            except Exception as error:
+                await interaction.response.send_message(str(error), ephemeral=True)
+                return
+            self.setup.manual_lines.extend(parsed)
+            failure_text = (
+                "\n"
+                + "\n".join(
+                    f"• Row {item['row']}: {item['reason']}" for item in failures[:5]
+                )
+                if failures
+                else ""
+            )
+            await interaction.response.edit_message(
+                content=(
+                    f"Added **{len(parsed)}** line(s); "
+                    f"**{len(failures)}** row(s) rejected.{failure_text}"
+                ),
+                view=self.setup,
+            )
+
+    class RecentReviewsView(OwnerView):
+        def __init__(self) -> None:
+            super().__init__(timeout=900)
+            from oracle_bets_core.evidence import EvidenceTable
+            from oracle_bets_core.operations.bets import review_state
+
+            rows = [
+                row
+                for row in store.list(EvidenceTable.RUNS)
+                if row["run_type"] == "manual_lol_market_review"
+            ][-25:]
+            self.rows = {str(row["id"]): row for row in rows}
+            self.review_id: str | None = None
+            if rows:
+                select = discord.ui.Select(
+                    placeholder="Recent review run",
+                    options=[
+                        discord.SelectOption(
+                            label=(
+                                f"{review_state(store, str(row['id']))} · "
+                                f"{str(row['started_at'])[:16]}"
+                            )[:100],
+                            value=str(row["id"]),
+                            description=str(row["id"])[-24:],
+                        )
+                        for row in reversed(rows)
+                    ],
+                )
+
+                async def choose(interaction: Any) -> None:
+                    self.review_id = select.values[0]
+                    await interaction.response.defer()
+
+                select.callback = choose
+                self.add_item(select)
+
+        @discord.ui.button(label="Resume", style=discord.ButtonStyle.primary)
+        async def resume(self, interaction: Any, _button: Any) -> None:
+            if self.review_id is None:
+                await interaction.response.send_message(
+                    "Choose a review first.", ephemeral=True
+                )
+                return
+            row = self.rows[self.review_id]
+            from oracle_bets_core.operations.bets import review_state
+
+            if review_state(store, self.review_id) not in {
+                "queued",
+                "running",
+                "partial",
+            }:
+                await interaction.response.send_message(
+                    "Only queued, running, or partial reviews can resume.",
+                    ephemeral=True,
+                )
+                return
+            payload = json.loads(str(row["payload_json"]))
+            urls = "\n".join(payload.get("input_links") or [])
+            await interaction.response.send_modal(
+                ReviewLinksModal(
+                    default_links=urls,
+                    review_key=str(payload.get("run_key") or ""),
+                )
+            )
+
+        @discord.ui.button(label="Invalidate", style=discord.ButtonStyle.danger)
+        async def invalidate(self, interaction: Any, _button: Any) -> None:
+            if self.review_id is None:
+                await interaction.response.send_message(
+                    "Choose a review first.", ephemeral=True
+                )
+                return
+            from oracle_bets_core.operations.bets import supersede_evidence
+
+            await asyncio.to_thread(
+                supersede_evidence,
+                store,
+                target_table="runs",
+                target_id=self.review_id,
+                reason="Owner invalidated the Discord market review.",
+                actor_id=str(interaction.user.id),
+            )
+            await interaction.response.edit_message(
+                content=f"Invalidated review `{self.review_id}`.", view=None
+            )
+
+    return ReviewViews(ReviewLinksModal, RecentReviewsView)

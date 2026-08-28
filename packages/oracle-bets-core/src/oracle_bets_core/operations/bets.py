@@ -250,6 +250,21 @@ def record_bet(
     return str(entry["id"])
 
 
+def review_state(store: EvidenceStore, review_id: str) -> str:
+    """Return the latest append-only state for one market review."""
+    run = store.get(EvidenceTable.RUNS, review_id)
+    if run is None:
+        raise BetEvidenceError(f"Unknown review: {review_id}")
+    if _is_superseded(store, ("runs", review_id)):
+        return "invalidated"
+    states = [
+        row
+        for row in store.list(EvidenceTable.RUN_EVENTS)
+        if row["run_id"] == review_id and row["event_type"] == "review_state"
+    ]
+    return str(states[-1]["status"] if states else run["status"])
+
+
 def prepare_bet(
     store: EvidenceStore,
     *,
@@ -272,6 +287,12 @@ def prepare_bet(
         review_id=review_id,
         market_id=market_id,
         opened_at=opened_at,
+    )
+    fixture = store.get(EvidenceTable.FIXTURES, str(candidate["fixture_id"]))
+    horizon_hours = (
+        (_as_utc(_datetime(fixture["start_time"])) - opened).total_seconds() / 3600
+        if fixture
+        else None
     )
     if mode not in _MODES:
         raise BetEvidenceError("Bet mode must be paper or real.")
@@ -374,6 +395,8 @@ def prepare_bet(
             "warnings": payload.get("warnings") or [],
             "hard_blocks": payload.get("hard_blocks") or [],
             "tracking_only": True,
+            "horizon_hours": horizon_hours,
+            "horizon_bucket": _horizon_bucket(horizon_hours),
         },
     }
 
@@ -563,6 +586,24 @@ def record_bet_result(
     return event_id
 
 
+def preview_bet_result(
+    store: EvidenceStore,
+    *,
+    bet_id: str,
+    winning_selection: str | None = None,
+    observed_value: Decimal | str | None = None,
+) -> str:
+    """Derive a result for owner confirmation without writing evidence."""
+    bet = store.get(EvidenceTable.BETS, bet_id)
+    if bet is None or _is_superseded(store, ("bets", bet_id)):
+        raise BetEvidenceError(f"Unknown or superseded bet: {bet_id}")
+    return _derive_result(
+        bet,
+        winning_selection=winning_selection,
+        observed_value=observed_value,
+    ).value
+
+
 def supersede_evidence(
     store: EvidenceStore,
     *,
@@ -695,6 +736,9 @@ def performance_rows(
     *,
     mode: str,
     since: datetime | None = None,
+    lane: str | None = None,
+    target: str | None = None,
+    provider: str | None = None,
 ) -> list[dict[str, Any]]:
     """Load one filtered settled-bet snapshot for summaries and charts."""
     rows = list_bets(store, state="settled", mode=mode)
@@ -705,6 +749,12 @@ def performance_rows(
             for row in rows
             if _as_utc(_datetime(row["settlement"]["event_at"])) >= cutoff
         ]
+    if lane:
+        rows = [row for row in rows if row["payload"].get("lane") == lane]
+    if target:
+        rows = [row for row in rows if row["target"] == target]
+    if provider:
+        rows = [row for row in rows if row["provider"] == provider]
     return rows
 
 
@@ -730,7 +780,10 @@ def _bet_context(
     if str(candidate["run_id"]) != review_id:
         raise BetEvidenceError("The market does not belong to the supplied review.")
     review = store.get(EvidenceTable.RUNS, review_id)
-    if review is None or str(review["status"]) not in {"complete", "completed"}:
+    if review is None or review_state(store, review_id) not in {
+        "complete",
+        "completed",
+    }:
         raise BetEvidenceError("The review is not completed and cannot record bets.")
     fixture = store.get(EvidenceTable.FIXTURES, str(candidate["fixture_id"]))
     if fixture is None:
@@ -953,3 +1006,15 @@ def _datetime(value: Any) -> datetime:
 
 def _id(prefix: str, identity: str) -> str:
     return f"{prefix}-{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+
+
+def _horizon_bucket(hours: float | None) -> str | None:
+    if hours is None:
+        return None
+    if hours < 24:  # noqa: PLR2004
+        return "under_24h"
+    if hours < 72:  # noqa: PLR2004
+        return "24h_72h"
+    if hours < 168:  # noqa: PLR2004
+        return "3d_7d"
+    return "7d_plus"

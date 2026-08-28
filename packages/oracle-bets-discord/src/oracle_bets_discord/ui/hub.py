@@ -34,6 +34,7 @@ def build_hub_view(
     BetOptionsView: type[Any],
     OpenBetsView: type[Any],
     PerformanceView: type[Any],
+    RecentReviewsView: type[Any],
 ) -> type[Any]:
     """Build the seven-button owner hub from focused UI components."""
 
@@ -109,9 +110,7 @@ def build_hub_view(
             except Exception as error:
                 logger.exception("Discord schedule failed")
                 await interaction.edit_original_response(
-                    content=(
-                        f"Schedule failed: {type(error).__name__}: {str(error)[:300]}"
-                    )
+                    content=f"Schedule failed: {type(error).__name__}. Check the private log."
                 )
                 return
             view = PageView(pages)
@@ -129,6 +128,8 @@ def build_hub_view(
         async def health(self, interaction: Any) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             text = await asyncio.to_thread(health_message, store, registry)
-            await interaction.edit_original_response(content=text)
+            await interaction.edit_original_response(
+                content=text, view=RecentReviewsView()
+            )
 
     return OracleHub

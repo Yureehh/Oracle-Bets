@@ -63,6 +63,8 @@ uv run oracle-bets lol schedule --days 14
 uv run oracle-bets lol market-review "<POLYMARKET_URL> <THUNDERPICK_URL>"
 uv run oracle-bets bet list --state open --mode paper
 uv run oracle-bets bet show <BET_ID>
+uv run oracle-bets bet result --bet-id <BET_ID> --winning-selection <TEAM> \
+  --source-reference <RESULT_URL>
 uv run oracle-bets bet settle \
   --bet-id <BET_ID> --result win --source-reference <RESULT_URL_OR_ID>
 uv run oracle-bets bet performance --mode paper
@@ -99,8 +101,11 @@ model probability.
 
 ## Unified bet ledger
 
-The active commands are `bet list`, `bet show`, `bet record`, `bet settle`, and
-`bet performance`.
+The active commands are `bet list`, `bet show`, `bet record`, `bet result`,
+`bet settle`, `bet correct-settlement`, and `bet performance`.
+
+Use `bet correct-settlement` only after an owner mistake; it preserves the old
+fact and appends a superseding settlement instead of editing history.
 
 ```bash
 uv run oracle-bets bet list --state open --mode paper
