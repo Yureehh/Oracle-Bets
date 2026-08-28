@@ -25,11 +25,14 @@ from oracle_bets_core.operations.backup import (
     verify_evidence_backup,
 )
 from oracle_bets_core.paths import (
-    DATA_DIR,
     EVIDENCE_DB,
+    INTERIM_DIR,
     LOGS_DIR,
     MODELS_DIR,
+    PROCESSED_DIR,
     PRODUCT_STATE_DIR,
+    RAW_DIR,
+    RAW_GENERATIONS_DIR,
     REPORTS_DIR,
     SUITE_ROOT,
 )
@@ -57,7 +60,10 @@ class ResetPlanResult:
 def default_reset_paths(root: Path = SUITE_ROOT) -> tuple[Path, ...]:
     """Return the finite generated-state allowlist for this repository."""
     return (
-        DATA_DIR,
+        RAW_GENERATIONS_DIR,
+        RAW_DIR / "oracles_elixir_cache",
+        INTERIM_DIR,
+        PROCESSED_DIR,
         PRODUCT_STATE_DIR,
         MODELS_DIR,
         REPORTS_DIR,

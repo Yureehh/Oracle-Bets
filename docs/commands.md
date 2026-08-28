@@ -282,6 +282,8 @@ uv run oracle-bets ops reset-apply \
 
 Stop the Gateway bot first. Never replace these commands with ad hoc `find
 -delete` or `rm -rf` cleanup.
+The local `data/lol/raw/oracles_elixir` Drive symlink and its external target are
+explicitly preserved; only generated source caches and derived history are reset.
 
 Immediately after a successful reset, rebuild in this order and stop on the
 first failure:
