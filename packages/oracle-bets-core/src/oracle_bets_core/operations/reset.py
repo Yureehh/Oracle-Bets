@@ -129,7 +129,7 @@ def create_reset_plan(
         _write_archive(
             archive_path,
             root=root,
-            paths=selected,
+            manifest=manifest,
             manifest_path=manifest_path,
             evidence_database=evidence_database,
             created_at=created_at,
@@ -224,11 +224,7 @@ def apply_reset_plan(
         )
         for path in selected:
             _assert_safe_root(root, path)
-        for path in selected:
-            if path.is_dir():
-                shutil.rmtree(path)
-            elif path.exists():
-                path.unlink()
+        _delete_manifest_entries(root, manifest["entries"])
         _recreate_directories(selected, manifest["root_types"])
         store = EvidenceStore(evidence_database, lock_writes=False)
         store.initialize_schema()
@@ -280,6 +276,7 @@ def _build_manifest(
     entries: list[dict[str, Any]] = []
     roots: list[str] = []
     root_types: list[str] = []
+    preserved_symlinks: list[dict[str, str]] = []
     volatile_sqlite_paths = {
         Path(f"{evidence_database}-wal").resolve(strict=False),
         Path(f"{evidence_database}-shm").resolve(strict=False),
@@ -299,7 +296,13 @@ def _build_manifest(
                 continue
             stat = item.lstat()
             if item.is_symlink():
-                raise ResetSafetyError(f"reset path contains a symlink: {item}")
+                preserved_symlinks.append(
+                    {
+                        "path": item.relative_to(root).as_posix(),
+                        "target": str(item.readlink()),
+                    }
+                )
+                continue
             if os.path.ismount(item):
                 raise ResetSafetyError(f"reset path contains a mount point: {item}")
             relative = item.relative_to(root).as_posix()
@@ -326,6 +329,7 @@ def _build_manifest(
         .as_posix(),
         "roots": roots,
         "root_types": root_types,
+        "preserved_symlinks": preserved_symlinks,
         "entries": entries,
     }
 
@@ -334,7 +338,7 @@ def _write_archive(
     destination: Path,
     *,
     root: Path,
-    paths: tuple[Path, ...],
+    manifest: dict[str, Any],
     manifest_path: Path,
     evidence_database: Path,
     created_at: datetime,
@@ -350,9 +354,9 @@ def _write_archive(
             )
             shutil.copy2(backup.path, metadata / "evidence.db")
         with tarfile.open(destination, "w:gz") as archive:
-            for path in paths:
-                if path.exists():
-                    archive.add(path, arcname=path.resolve().relative_to(root))
+            for entry in manifest["entries"]:
+                path = root / entry["path"]
+                archive.add(path, arcname=entry["path"], recursive=False)
             archive.add(metadata / "manifest.json", arcname="_reset/manifest.json")
             evidence_copy = metadata / "evidence.db"
             if evidence_copy.is_file():
@@ -416,6 +420,19 @@ def _recreate_directories(paths: tuple[Path, ...], kinds: list[str]) -> None:
     for path, kind in zip(paths, kinds, strict=True):
         if kind == "directory":
             path.mkdir(parents=True, exist_ok=True)
+
+
+def _delete_manifest_entries(root: Path, entries: list[dict[str, Any]]) -> None:
+    files = [entry for entry in entries if entry["type"] == "file"]
+    directories = [entry for entry in entries if entry["type"] == "directory"]
+    for entry in files:
+        (root / entry["path"]).unlink(missing_ok=True)
+    for entry in reversed(directories):
+        try:
+            (root / entry["path"]).rmdir()
+        except OSError:
+            # A preserved symlink may keep its parent directory non-empty.
+            continue
 
 
 def _assert_gateway_stopped(lock_path: Path) -> None:

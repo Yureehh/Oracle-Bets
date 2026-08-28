@@ -273,6 +273,7 @@ def _reset_repository(tmp_path):
     store = EvidenceStore(database)
     store.initialize_schema()
     (generated / "runtime.txt").write_text("generated\n", encoding="utf-8")
+    (generated / "preserved-link").symlink_to(root / "tracked.txt")
     return root, generated, database
 
 
@@ -312,6 +313,7 @@ def test_guarded_reset_archives_verifies_and_initializes_one_epoch(
     assert epoch == "paper-v1"
     assert (root / "tracked.txt").read_text() == "preserve\n"
     assert not (generated / "runtime.txt").exists()
+    assert (generated / "preserved-link").is_symlink()
     fresh = EvidenceStore(database)
     assert fresh.integrity_check() == "ok"
     assert fresh.count(EvidenceTable.RUNS) == 1
