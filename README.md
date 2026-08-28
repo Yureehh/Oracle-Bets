@@ -4,16 +4,16 @@ Oracle Bets is a local-first League of Legends betting-research system focused
 on calibrated probability accuracy, leakage prevention, conservative market
 matching, and real paper-profit evidence.
 
-It downloads the public 2024–2026 Oracle's Elixir files into a validated local
-cache, generates chronological team/player features and ratings, reconstructs
-complete historical series, and normally trains five targets. The actionable
-Winner V2 model is a direct, symmetric series-winner model with a rating
-baseline, ten week-block LightGBM members, held-out calibration, and a
-conservative probability bound. The owner submits exact Polymarket event links;
-the system inventories their contracts, compares independent probabilities with
-one current public quote per supported outcome, records compact JSON/Markdown
-evidence, and serves a unified paper/real tracking ledger through one owner-only
-Discord Gateway bot. Thunderpick lines are entered manually and never scraped.
+It validates public 2024–2026 Oracle's Elixir history, generates strictly
+chronological team/player features and ratings, reconstructs complete series,
+and trains direct-series, map, next-map, duration, kills, and towers research
+targets. The direct Winner V2 model is symmetric, calibrated, and compared with
+a rating-only baseline. The owner submits exact Polymarket/Thunderpick links;
+Polymarket books are read publicly while Thunderpick lines are entered manually.
+One deterministic policy labels comparable outcomes `recommended`,
+`exploration`, or `not_comparable`, records every reason, and freezes flat 1u,
+full-, half-, and quarter-Kelly paths in one paper ticket. An optional LLM may
+later explain stored decisions but can never create or alter them.
 
 There is no automated betting, wallet, signing, private-key, order-submission,
 or fund-movement code.
@@ -40,7 +40,8 @@ export DISCORD_DELIVERY_MODE="gateway"
 ## First data setup
 
 ```bash
-uv run oracle-bets lol ingest
+uv run oracle-bets lol source-check
+uv run oracle-bets lol reconcile-history
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol build-series
 ```
@@ -55,11 +56,16 @@ uv run oracle-bets lol market-review "<URL1> <URL2>"
 uv run oracle-bets bet list --state open --mode paper
 ```
 
-The source refresh is built into ingestion. `market-review` uses only one or two
+Source refresh is built into history ingestion. `market-review` uses only one or two
 exact owner-selected Polymarket/Thunderpick links. Polymarket is read-only;
 Thunderpick is link-plus-manual-lines. The review compares independent series,
 experimental map/derived, and calibrated prop probabilities where compatible.
 Unsupported specials are counted in the compact report and preserved in JSON.
+
+Direct series is the only initial recommendation-capable target. Map, next-map,
+derived totals/handicaps, and props begin as exploration. Forced exploration
+coverage is kept separate from recommendation evidence and is never proof that
+a wager is profitable.
 
 Run `uv run oracle-bets discord run`, then use the owner-only `/oracle` hub. The
 first row contains Review Markets, Record Bet, Open Bets, and Closed Bets; the

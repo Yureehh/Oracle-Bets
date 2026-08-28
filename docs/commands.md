@@ -12,6 +12,40 @@ never contacts Thunderpick automatically, and never places a bet.
 
 ## Normal order of use
 
+### Daily owner loop
+
+1. Keep one Gateway process running.
+2. Run `daily lol` once after the public source has updated. It refreshes
+   history/features, validates artifacts, fetches the actionable schedule,
+   evaluates the fixed-parameter retraining trigger, and writes one compact
+   maintenance report. It never discovers markets, predicts fixtures, opens
+   bets, settles bets, or invokes an LLM.
+3. Open `/oracle` and inspect **Schedule**.
+4. Submit one or two exact links for one fixture through **Review Markets**.
+5. Add visible Thunderpick lines manually when present.
+6. Inspect deterministic `recommended`, `exploration`, and `not_comparable`
+   decisions. Record at most the intended research samples; forced exploration
+   is not a recommendation.
+7. Record official results and settle every open bet manually.
+
+```bash
+uv run oracle-bets daily lol
+uv run oracle-bets bet list --state open --mode paper
+```
+
+Monday: review the previous league-week coverage and paper performance.
+Thursday: review health, provider failures, open bets, and current-week
+coverage. On the first day of each month, back up/export evidence and run the
+previous-month audit:
+
+```bash
+uv run oracle-bets bet performance --mode paper
+uv run oracle-bets health system
+uv run oracle-bets evidence backup --output ~/OracleBetsArchives/backups
+uv run oracle-bets evidence export --output ~/OracleBetsArchives/exports
+uv run oracle-bets audit monthly --period YYYY-MM
+```
+
 ### Start the owner console
 
 ```bash
@@ -44,10 +78,11 @@ launchctl bootstrap gui/$(id -u) \
 4. For Thunderpick, select the fixture and manually enter visible lines as
    `target | selection | decimal odds | line | game number`.
 5. Read the compact comparison and attached Markdown report.
-6. Use **Record Bet**, choose paper/real and currency, and enter the actual
-   accepted odds, bankroll, stake percentage, amount, and note.
-7. Review the confirmation screen. Confirm only after manually placing a real
-   bet outside Oracle Bets.
+6. Use **Record Bet**, choose paper mode, and confirm the actual accepted odds,
+   bankroll, deterministic lane, and frozen flat/full/half/quarter-Kelly paths.
+7. Review the confirmation screen. Real mode only records a bet already placed
+   manually outside Oracle Bets; it is not recommendation-enabled during the
+   paper epoch.
 8. Use **Open Bets** to settle Win/Loss/Push/Void with a result reference.
 9. Use **Closed Bets** and **Performance** to review evidence.
 
@@ -131,7 +166,7 @@ uv run oracle-bets bet performance --mode paper --format table
 uv run oracle-bets bet performance --mode real --format json
 ```
 
-Stake amount must equal bankroll × stake percentage within currency rounding.
+CLI stake amount must equal bankroll × stake percentage within currency rounding.
 Win PnL is `stake × (odds - 1)`, loss is `-stake`, and push/void are zero.
 Paper and real results are separate; different currencies are never summed.
 Settlement is always manual and append-only.
@@ -204,6 +239,10 @@ uv run oracle-bets daily lol --dry-run
 uv run oracle-bets daily lol --skip-retrain
 ```
 
+`--dry-run` performs read-only checks and writes only its one reviewable report
+pair. `--skip-retrain` still refreshes/validates data and schedule but suppresses
+the fixed-parameter training trigger. Never use daily for Optuna.
+
 Public commands are `discord doctor` and `discord run`. The first is diagnostic;
 `--live` adds read-only Discord API checks. The second starts the owner-only
 Gateway console.
@@ -225,6 +264,61 @@ uv run oracle-bets discord doctor --live
 ```
 
 ## Generated state
+
+### Guarded fresh rebuild
+
+Create and apply a guarded fresh-epoch reset only from a clean commit. Stop the
+Gateway first. The first
+command archives and restore-verifies all generated state outside the repository
+and prints a short-lived single-use token; the second revalidates every hash
+before deletion. The public commands are `ops reset-plan` and `ops reset-apply`:
+
+```bash
+uv run oracle-bets ops reset-plan \
+  --epoch paper-v1 --archive-dir ~/OracleBetsArchives
+uv run oracle-bets ops reset-apply \
+  --plan <PLAN_JSON> --token <SINGLE_USE_TOKEN>
+```
+
+Stop the Gateway bot first. Never replace these commands with ad hoc `find
+-delete` or `rm -rf` cleanup.
+
+Immediately after a successful reset, rebuild in this order and stop on the
+first failure:
+
+```bash
+uv run oracle-bets lol source-check
+uv run oracle-bets lol source-refresh
+uv run oracle-bets lol reconcile-history
+uv run oracle-bets lol sync-identities
+uv run oracle-bets lol validate-data
+uv run oracle-bets lol build-series
+
+# Isolated research/Optuna: never promotes automatically.
+uv run oracle-bets lol research --targets all --include-next-map
+uv run oracle-bets lol retune --targets all --feature-set auto
+uv run oracle-bets lol review-tuning <RUN_ID> --format json
+uv run oracle-bets lol promote-tuning <RUN_ID>
+
+# One fixed-parameter serving bundle from reviewed parameters.
+uv run oracle-bets lol train --targets all --feature-set compact
+uv run oracle-bets model list --format json
+uv run oracle-bets model review <CANDIDATE_ID> --format json
+uv run oracle-bets model promote <CANDIDATE_ID> \
+  --reason "fresh epoch; structural and sealed evidence gates passed"
+
+uv run oracle-bets lol validate-winner-model
+uv run oracle-bets lol validate-market-strategies
+uv run oracle-bets lol health
+uv run oracle-bets evidence health
+uv run oracle-bets discord doctor --live
+uv run oracle-bets discord run
+```
+
+Only direct series begins recommendation-capable. An exploration target passing
+artifact health does not automatically activate recommendations. Failed tuning
+reviews are retained as research and must not be promoted merely because they
+are newer.
 
 - `data/state/oracle_bets.db`: canonical ledger; keep and back up.
 - `data/state/model-registry/lol/`: immutable candidates/champion history.

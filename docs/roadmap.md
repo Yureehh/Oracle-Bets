@@ -1,6 +1,6 @@
 # Roadmap and status
 
-## Ready now
+## Implemented and verified
 
 - Independent symmetric direct-series champion plus experimental prematch map,
   legal BO3/BO5 totals, handicaps, and scalar prop forecasts.
@@ -12,29 +12,44 @@
 - Compact Discord/Markdown output and detailed normalized JSON evidence.
 - One owner-only `/oracle` console: Review Markets, Record Bet, Open Bets,
   Closed Bets, Schedule, Performance, and Health.
-- Unified append-only paper/real ledger with manual settlement and per-currency
-  performance.
-- No proposals, automatic acceptance, automatic settlement, betting, wallet,
+- Versioned target/cohort readiness, deterministic
+  `recommended|exploration|not_comparable` policy, and frozen flat/full/half/
+  quarter-Kelly paths on one ticket.
+- Unified append-only paper/real ledger with result facts, manual settlement,
+  correction events, cohort coverage, calibration, drawdown, CLV, and
+  fixture-clustered performance.
+- Guarded external archive, restore verification, exclusive reset lock, and
+  short-lived single-use reset confirmation.
+- No automatic acceptance, automatic settlement, betting, wallet,
   signing, bookmaker login, scraping, or fund movement.
 
-## Current work: accumulate evidence
+## Current work: bootstrap the fresh paper epoch
 
-The product is operational research software, not a proven profitable system.
-The owner should review selected fixtures, record every actual paper decision
-including negative-EV discretion, settle it from an official source, and inspect
-calibration, CLV where available, and ROI by target/provider/league.
+Code verification alone does not create a valid paper epoch. The current
+generated state must be archived and reset through `ops reset-plan` /
+`ops reset-apply`, then current 2024–2026 history, research studies, reviewed
+tuning, fixed-parameter models, registry champion, and smoke evidence must be
+rebuilt from one clean commit. Any stale source, dirty provenance, failed
+symmetry/train-serve check, or failed archive restore blocks the bootstrap.
 
-Real-money sizing or recommendations remain blocked until at least 200 settled
-model-backed paper bets show healthy calibration, positive CLV, cohort stability,
-and a positive lower-95% fixture-clustered ROI. Recent wins or losses must not
-change thresholds or models ad hoc.
+After bootstrap, the owner should review every scheduled fixture in each
+preregistered league-week cohort, keep recommendation and exploration evidence
+separate, capture official results, settle manually, and inspect calibration,
+CLV, drawdown, and equal-fixture ROI rather than raw ticket ROI alone.
+
+Real-money recommendations remain blocked until at least 200 unique fixture
+clusters from consecutively shadowed direct-series recommendation opportunities
+show at least 90% schedule-review coverage, 100% result capture, healthy
+calibration, positive CLV, no material cohort failure, and a positive
+multiplicity-aware lower confidence bound for fixture-clustered ROI at a fixed
+monthly decision date. Owner-accepted tickets are reported separately. Each
+experimental target needs its own independent 200-fixture activation review.
 
 ## Next
 
-1. Accumulate enough settled evidence to compare direct series, prematch map,
+1. Complete and record the guarded fresh-epoch bootstrap.
+2. Accumulate enough settled evidence to compare direct series, prematch map,
    derived totals/handicaps, and calibrated props separately.
-2. Add a deliberate settlement-correction event before considering any
-   provider-assisted result lookup. Settlement remains manual by default.
 3. Add controlled closing-price capture for CLV only after the manual ledger has
    enough entries to justify the operational cost.
 4. Improve Discord integration testing at the interaction boundary, including

@@ -146,22 +146,41 @@ the owner enters the visible target, selection, line, and decimal odds. Provider
 rows are compared only when target, period, selection, line, and settlement
 meaning match exactly. Prices never enter inference.
 
-## Transparent comparison and manual control
+## Strategy decisions, sizing, and manual control
 
-There are no automatic proposals or eligibility thresholds. Each comparison
-shows model probability, fair odds, provider odds, implied probability, point
-EV, and the best equivalent provider. Positive EV is evidence, not permission.
-Warnings and negative EV remain visible, and the owner may still record the
-decision with a rationale.
+Every exact semantic comparison is classified by one versioned deterministic
+policy as `recommended`, `exploration`, or `not_comparable`; an LLM never makes
+this decision. The direct series target is the only initial
+`recommendation_active` target. Map 1, score-aware next map, map-path totals and
+handicaps, duration, kills, and towers begin `exploration_only`. Unsupported or
+structurally unready targets are `display_only` and cannot create a ticket.
 
-The active append-only schema has `bets` for immutable paper/real entry terms
-and `bet_events` for lifecycle/settlement events. Legacy proposal, approval,
-paper-position, and settlement tables remain readable/exportable but receive no
-new writes. Settlement is manual `win|loss|push|void` with a source reference;
-identical repeats are idempotent and conflicts fail visibly.
+A recommendation requires healthy fixture/model evidence and positive
+conservative net EV after the configured friction allowance. Exploration keeps
+research coverage separate: at most one comparable outcome per target/period is
+sampled when no recommendation exists. Negative-EV exploration remains clearly
+labelled; it is not a claim that the bet should win. All reason codes, warnings,
+rejected alternatives, and the owner decision are preserved.
 
-Paper and real evidence never combine. Monetary totals are grouped by currency,
-and markets without model probabilities contribute PnL but not calibration.
+One unit is 1% of the pre-bet bankroll. A single immutable ticket freezes the
+accepted quote, probability used for sizing, flat 1u, full Kelly, half Kelly,
+and quarter Kelly. Positive-EV paper research uses full Kelly as the primary
+study path; negative-EV exploration uses flat 1u and zero Kelly fractions. These
+are counterfactual research tracks, not real-money authorization.
+
+The append-only schema uses `bets` for immutable entry terms and `bet_events`
+for result, settlement, and correction facts. Settlement is manual
+`win|loss|push|void` with a source reference; identical repeats are idempotent
+and conflicting facts fail visibly. Paper and real evidence, currencies,
+recommendation and exploration, direct and derived targets, and prematch and
+reactive lanes never aggregate silently.
+
+Activation evidence is intention-to-treat and fixture-clustered. League-week
+cohorts are preregistered before prices/results, require at least 90% scheduled
+fixture review coverage and 100% result capture for recommendation
+opportunities, and report calibration, Brier score, log loss, CLV, drawdown,
+ticket ROI, and equal-fixture ROI. Owner acceptance is reported separately so
+selection cannot make a weak strategy look profitable.
 
 ## Model lifecycle
 
