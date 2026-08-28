@@ -13,6 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_research_operation_commands(sub)
     _add_delivery_commands(sub)
     _add_monitoring_commands(sub)
+    _add_ops_commands(sub)
     return parser
 
 
@@ -332,6 +333,23 @@ def _add_monitoring_commands(sub) -> None:
     monthly.add_argument("--database", default=None)
     monthly.add_argument("--period", default=None, help="Audit month in YYYY-MM")
     monthly.add_argument("--output", default=None, help="Output directory")
+
+
+def _add_ops_commands(sub) -> None:
+    ops = sub.add_parser("ops", help="Guarded repository maintenance")
+    ops_sub = ops.add_subparsers(dest="action", required=True)
+    plan = ops_sub.add_parser(
+        "reset-plan",
+        help="Archive and restore-verify generated state before a fresh epoch",
+    )
+    plan.add_argument("--epoch", required=True)
+    plan.add_argument("--archive-dir", default="~/OracleBetsArchives")
+    apply = ops_sub.add_parser(
+        "reset-apply",
+        help="Apply one unexpired, verified reset plan",
+    )
+    apply.add_argument("--plan", required=True)
+    apply.add_argument("--token", required=True)
 
 
 def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915
@@ -1389,6 +1407,38 @@ def _main_audit(args: argparse.Namespace) -> int:
     return 2 if report.status == "critical" else 0
 
 
+def _main_ops(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from oracle_bets_core.operations.reset import (
+        ResetSafetyError,
+        apply_reset_plan,
+        create_reset_plan,
+    )
+
+    try:
+        if args.action == "reset-plan":
+            result = create_reset_plan(
+                archive_directory=Path(args.archive_dir),
+                epoch=args.epoch,
+            )
+            sys.stdout.write(
+                f"Reset archive verified: {result.archive_path}\n"
+                f"Manifest: {result.manifest_path}\n"
+                f"Plan: {result.plan_path}\n"
+                f"Files: {result.file_count}; bytes: {result.total_bytes}\n"
+                f"Expires: {result.expires_at.isoformat()}\n"
+                f"Single-use token: {result.confirmation_token}\n"
+            )
+            return 0
+        epoch = apply_reset_plan(Path(args.plan), token=args.token)
+    except (OSError, ResetSafetyError, ValueError) as error:
+        sys.stderr.write(f"Reset blocked: {error}\n")
+        return 2
+    sys.stdout.write(f"Fresh paper epoch initialized: {epoch}\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {
@@ -1400,8 +1450,14 @@ def main(argv: list[str] | None = None) -> int:
         "discord": _main_discord,
         "health": _main_health,
         "audit": _main_audit,
+        "ops": _main_ops,
     }
-    return handlers[args.domain](args)
+    if args.domain == "ops":
+        return handlers[args.domain](args)
+    from oracle_bets_core.maintenance import maintenance_lock
+
+    with maintenance_lock(exclusive=False):
+        return handlers[args.domain](args)
 
 
 if __name__ == "__main__":  # pragma: no cover

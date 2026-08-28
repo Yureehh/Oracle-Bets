@@ -45,6 +45,8 @@ def test_parser_exposes_required_operational_commands():
         ["evidence", "restore-verify", "backup.db"],
         ["health", "system"],
         ["audit", "monthly", "--period", "2026-07"],
+        ["ops", "reset-plan", "--epoch", "paper-v1"],
+        ["ops", "reset-apply", "--plan", "plan.json", "--token", "token"],
         [
             "bet",
             "settle",

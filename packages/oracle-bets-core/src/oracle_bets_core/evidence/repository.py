@@ -6,7 +6,7 @@ import csv
 import hashlib
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -20,6 +20,7 @@ from oracle_bets_core.evidence.schema import (
     SCHEMA_VERSION,
     append_only_triggers_sql,
 )
+from oracle_bets_core.maintenance import maintenance_lock
 from oracle_bets_core.paths import EVIDENCE_DB
 
 _BET_LEDGER_SCHEMA_VERSION = 5
@@ -360,9 +361,11 @@ class EvidenceStore:
         path: str | Path = EVIDENCE_DB,
         *,
         dry_run: bool = False,
+        lock_writes: bool = True,
     ) -> None:
         self.path = Path(path)
         self.dry_run = dry_run
+        self.lock_writes = lock_writes
 
     @contextmanager
     def connection(
@@ -370,33 +373,39 @@ class EvidenceStore:
         *,
         read_only: bool = False,
     ) -> Iterator[sqlite3.Connection]:
-        if read_only:
-            conn = sqlite3.connect(_database_uri(self.path), uri=True)
-        else:
-            _ensure_private_directory(self.path.parent)
-            conn = sqlite3.connect(self.path)
-            _secure_file(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
-        if read_only:
-            conn.execute("PRAGMA query_only=ON")
-        else:
-            conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            yield conn
-            if read_only or self.dry_run:
-                conn.rollback()
+        lock = (
+            maintenance_lock(exclusive=False)
+            if not read_only and self.lock_writes
+            else nullcontext()
+        )
+        with lock:
+            if read_only:
+                conn = sqlite3.connect(_database_uri(self.path), uri=True)
             else:
-                conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-            if not read_only:
-                for suffix in ("", "-wal", "-shm"):
-                    _secure_file(Path(f"{self.path}{suffix}"))
+                _ensure_private_directory(self.path.parent)
+                conn = sqlite3.connect(self.path)
+                _secure_file(self.path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+            if read_only:
+                conn.execute("PRAGMA query_only=ON")
+            else:
+                conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                yield conn
+                if read_only or self.dry_run:
+                    conn.rollback()
+                else:
+                    conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+                if not read_only:
+                    for suffix in ("", "-wal", "-shm"):
+                        _secure_file(Path(f"{self.path}{suffix}"))
 
     def initialize_schema(self) -> None:
         if self.dry_run and not self.path.exists():

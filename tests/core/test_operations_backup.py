@@ -6,6 +6,10 @@ from datetime import UTC, datetime
 
 import pytest
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
+from oracle_bets_core.maintenance import (
+    MaintenanceBusyError,
+    maintenance_lock,
+)
 from oracle_bets_core.operations import (
     EvidenceWorkflowJournal,
     WorkflowStep,
@@ -16,6 +20,11 @@ from oracle_bets_core.operations.backup import (
     create_evidence_backup,
     export_all_evidence,
     verify_evidence_backup,
+)
+from oracle_bets_core.operations.reset import (
+    ResetSafetyError,
+    apply_reset_plan,
+    create_reset_plan,
 )
 
 NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
@@ -252,3 +261,88 @@ def test_backup_verification_rejects_unknown_future_schema(tmp_path):
 
     with pytest.raises(ValueError, match="outside supported range"):
         create_evidence_backup(store.path, tmp_path / "backups", created_at=NOW)
+
+
+def _reset_repository(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "tracked.txt").write_text("preserve\n", encoding="utf-8")
+    generated = root / "data" / "state"
+    generated.mkdir(parents=True)
+    database = generated / "oracle_bets.db"
+    store = EvidenceStore(database)
+    store.initialize_schema()
+    (generated / "runtime.txt").write_text("generated\n", encoding="utf-8")
+    return root, generated, database
+
+
+def test_maintenance_lock_blocks_exclusive_reset(tmp_path):
+    with (
+        maintenance_lock(exclusive=False, root=tmp_path),
+        pytest.raises(MaintenanceBusyError),
+        maintenance_lock(exclusive=True, blocking=False, root=tmp_path),
+    ):
+        pass
+
+
+def test_guarded_reset_archives_verifies_and_initializes_one_epoch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.reset._clean_commit", lambda _root: "commit-1"
+    )
+    root, generated, database = _reset_repository(tmp_path)
+    result = create_reset_plan(
+        archive_directory=tmp_path / "archives",
+        epoch="paper-v1",
+        root=root,
+        paths=(generated,),
+        evidence_database=database,
+        now=NOW,
+    )
+
+    assert result.archive_path.is_file()
+    assert result.confirmation_token not in result.plan_path.read_text()
+    epoch = apply_reset_plan(
+        result.plan_path,
+        token=result.confirmation_token,
+        now=NOW,
+    )
+
+    assert epoch == "paper-v1"
+    assert (root / "tracked.txt").read_text() == "preserve\n"
+    assert not (generated / "runtime.txt").exists()
+    fresh = EvidenceStore(database)
+    assert fresh.integrity_check() == "ok"
+    assert fresh.count(EvidenceTable.RUNS) == 1
+    with pytest.raises(ResetSafetyError, match="already been used"):
+        apply_reset_plan(
+            result.plan_path,
+            token=result.confirmation_token,
+            now=NOW,
+        )
+
+
+def test_guarded_reset_rejects_generated_state_changed_after_plan(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.reset._clean_commit", lambda _root: "commit-1"
+    )
+    root, generated, database = _reset_repository(tmp_path)
+    result = create_reset_plan(
+        archive_directory=tmp_path / "archives",
+        epoch="paper-v1",
+        root=root,
+        paths=(generated,),
+        evidence_database=database,
+        now=NOW,
+    )
+    (generated / "late.txt").write_text("changed\n", encoding="utf-8")
+
+    with pytest.raises(ResetSafetyError, match="changed after reset planning"):
+        apply_reset_plan(
+            result.plan_path,
+            token=result.confirmation_token,
+            now=NOW,
+        )
