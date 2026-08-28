@@ -15,7 +15,7 @@ from oracle_bets_core.evidence.schema import SCHEMA_SQL
 
 NOW = datetime(2026, 7, 26, 8, 15, tzinfo=UTC)
 BATCH_SIZE = 3
-EVIDENCE_SCHEMA_VERSION = 5
+EVIDENCE_SCHEMA_VERSION = 6
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ def test_schema_upgrade_records_auditable_transactional_migration(tmp_path):
             "SELECT from_version, to_version FROM evidence_schema_migrations "
             "ORDER BY from_version"
         ).fetchall()
-    assert [tuple(row) for row in rows] == [(4, 5)]
+    assert [tuple(row) for row in rows] == [(4, 5), (5, 6)]
     assert {"bets", "bet_events"} <= store.table_names()
     store.append(
         EvidenceTable.CORRECTIONS,

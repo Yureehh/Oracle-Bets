@@ -1,4 +1,7 @@
+import hashlib
+import json
 import sqlite3
+import stat
 from datetime import UTC, datetime
 
 import pytest
@@ -19,6 +22,8 @@ NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
 EXPECTED_EXPORTED_FILES = len(EvidenceTable) + 1
 EXPECTED_RETRY_ATTEMPTS = 2
 LEGACY_SCHEMA_VERSION = 3
+PRIVATE_FILE_MODE = 0o600
+PRIVATE_DIRECTORY_MODE = 0o700
 
 
 def _journal(tmp_path):
@@ -208,6 +213,21 @@ def test_backup_restore_verification_and_complete_export(tmp_path):
     assert len(exports) == EXPECTED_EXPORTED_FILES
     assert (tmp_path / "exports/runs.json").is_file()
     assert (tmp_path / "exports/manifest.json").is_file()
+    assert stat.S_IMODE(backup.path.stat().st_mode) == PRIVATE_FILE_MODE
+    assert stat.S_IMODE((tmp_path / "exports").stat().st_mode) == PRIVATE_DIRECTORY_MODE
+    assert all(
+        stat.S_IMODE(path.stat().st_mode) == PRIVATE_FILE_MODE for path in exports
+    )
+    restored = EvidenceStore(backup.path)
+    assert {table.value: restored.count(table) for table in EvidenceTable} == {
+        table.value: store.count(table) for table in EvidenceTable
+    }
+    manifest = json.loads((tmp_path / "exports/manifest.json").read_text())
+    assert manifest["files"] == {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in exports
+        if path.name != "manifest.json"
+    }
 
 
 def test_backup_verification_accepts_migratable_older_schema(tmp_path):

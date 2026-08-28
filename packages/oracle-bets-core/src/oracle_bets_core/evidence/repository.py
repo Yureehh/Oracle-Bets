@@ -23,6 +23,8 @@ from oracle_bets_core.evidence.schema import (
 from oracle_bets_core.paths import EVIDENCE_DB
 
 _BET_LEDGER_SCHEMA_VERSION = 5
+_PRIVATE_DIRECTORY_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -338,6 +340,18 @@ def _database_uri(path: Path) -> str:
     return f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
 
 
+def _ensure_private_directory(path: Path) -> None:
+    existed = path.exists()
+    path.mkdir(parents=True, exist_ok=True, mode=_PRIVATE_DIRECTORY_MODE)
+    if not existed:
+        path.chmod(_PRIVATE_DIRECTORY_MODE)
+
+
+def _secure_file(path: Path) -> None:
+    if path.exists():
+        path.chmod(_PRIVATE_FILE_MODE)
+
+
 class EvidenceStore:
     """One SQLite evidence store with append-only and dry-run guarantees."""
 
@@ -359,8 +373,9 @@ class EvidenceStore:
         if read_only:
             conn = sqlite3.connect(_database_uri(self.path), uri=True)
         else:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            _ensure_private_directory(self.path.parent)
             conn = sqlite3.connect(self.path)
+            _secure_file(self.path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
@@ -379,6 +394,9 @@ class EvidenceStore:
             raise
         finally:
             conn.close()
+            if not read_only:
+                for suffix in ("", "-wal", "-shm"):
+                    _secure_file(Path(f"{self.path}{suffix}"))
 
     def initialize_schema(self) -> None:
         if self.dry_run and not self.path.exists():
@@ -670,22 +688,24 @@ class EvidenceStore:
 
     def export_json(self, table: EvidenceTable, path: str | Path) -> Path:
         destination = Path(path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_private_directory(destination.parent)
         destination.write_text(
             json.dumps(self.list(table), indent=2, ensure_ascii=False, sort_keys=True)
             + "\n"
         )
+        _secure_file(destination)
         return destination
 
     def export_csv(self, table: EvidenceTable, path: str | Path) -> Path:
         destination = Path(path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_private_directory(destination.parent)
         rows = self.list(table)
         with destination.open("w", newline="") as handle:
             if rows:
                 writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
                 writer.writeheader()
                 writer.writerows(rows)
+        _secure_file(destination)
         return destination
 
 

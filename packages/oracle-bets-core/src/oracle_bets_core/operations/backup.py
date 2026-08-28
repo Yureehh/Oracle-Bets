@@ -15,6 +15,9 @@ from oracle_bets_core.evidence.schema import SCHEMA_VERSION
 if TYPE_CHECKING:
     from pathlib import Path
 
+_PRIVATE_DIRECTORY_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
+
 
 @dataclass(frozen=True)
 class BackupResult:
@@ -37,6 +40,7 @@ def create_evidence_backup(
     if not source.is_file():
         raise FileNotFoundError(f"evidence database does not exist: {source}")
     destination_directory.mkdir(parents=True, exist_ok=True)
+    destination_directory.chmod(_PRIVATE_DIRECTORY_MODE)
     destination = destination_directory / (
         f"oracle-bets-{timestamp.strftime('%Y%m%dT%H%M%SZ')}.db"
     )
@@ -48,6 +52,7 @@ def create_evidence_backup(
         sqlite3.connect(destination) as destination_connection,
     ):
         source_connection.backup(destination_connection)
+    destination.chmod(_PRIVATE_FILE_MODE)
     return verify_evidence_backup(destination)
 
 
@@ -92,6 +97,7 @@ def export_all_evidence(
     if file_format not in {"json", "csv"}:
         raise ValueError("evidence export format must be json or csv")
     destination_directory.mkdir(parents=True, exist_ok=True)
+    destination_directory.chmod(_PRIVATE_DIRECTORY_MODE)
     outputs: list[Path] = []
     for table in EvidenceTable:
         path = destination_directory / f"{table.value}.{file_format}"
@@ -117,6 +123,7 @@ def export_all_evidence(
         + "\n",
         encoding="utf-8",
     )
+    manifest.chmod(_PRIVATE_FILE_MODE)
     return (*outputs, manifest)
 
 

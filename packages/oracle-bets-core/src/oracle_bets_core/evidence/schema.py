@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 EVIDENCE_TABLES = (
     "runs",
@@ -311,6 +311,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_settlements_position ON settlements(paper_
 CREATE INDEX IF NOT EXISTS idx_bets_opened_at ON bets(opened_at);
 CREATE INDEX IF NOT EXISTS idx_bets_mode ON bets(mode);
 CREATE INDEX IF NOT EXISTS idx_bet_events_bet ON bet_events(bet_id, event_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bet_events_one_result
+    ON bet_events(bet_id) WHERE event_type = 'result';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bet_events_one_settlement
+    ON bet_events(bet_id) WHERE event_type = 'settlement';
 CREATE INDEX IF NOT EXISTS idx_corrections_target ON corrections(target_table, target_id);
 """
 
