@@ -19,6 +19,7 @@ from oracle_bets_core.betting import (
     probability_from_decimal_odds,
 )
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
+from oracle_bets_core.io_utils import atomic_write_text
 from oracle_bets_core.league_selection import actionable_leagues
 from oracle_bets_core.markets import (
     MarketDataError,
@@ -915,19 +916,13 @@ def _write_report(
     payload["timings"]["total_seconds"] += payload["timings"][
         "report_persistence_seconds"
     ]
-    json_temp = json_path.with_suffix(".json.tmp")
-    markdown_temp = markdown_path.with_suffix(".md.tmp")
     try:
-        json_temp.write_text(
+        atomic_write_text(
+            json_path,
             json.dumps(payload, indent=2, default=str, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
-        markdown_temp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        json_temp.replace(json_path)
-        markdown_temp.replace(markdown_path)
+        atomic_write_text(markdown_path, "\n".join(lines) + "\n")
     except Exception:
-        json_temp.unlink(missing_ok=True)
-        markdown_temp.unlink(missing_ok=True)
         json_path.unlink(missing_ok=True)
         markdown_path.unlink(missing_ok=True)
         raise

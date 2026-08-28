@@ -9,7 +9,9 @@ imports remain unchanged.
 from __future__ import annotations
 
 import json
+import os
 import pickle
+import tempfile
 from pathlib import Path
 from typing import Any, Final
 
@@ -70,6 +72,32 @@ def get_identity(entity: str) -> str:
 def _load_json(path: Path) -> Any:
     with path.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def atomic_write_text(
+    path: str | Path,
+    content: str,
+    *,
+    mode: int | None = None,
+) -> None:
+    """Durably replace a text file without exposing a partial write."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mode is not None:
+            temporary.chmod(mode)
+        temporary.replace(destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def load_file(file_path: str | Path, *, file_type: str = "json") -> Any | pd.DataFrame:

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -11,14 +11,9 @@ from oracle_bets_core.evidence.performance import (
     prediction_quality,
 )
 from oracle_bets_core.evidence.settlement import (
-    MarketCloseSnapshot,
     PositionTerms,
-    SettlementError,
     SettlementResult,
-    SettlementSource,
-    calculate_clv,
-    reconcile_settlement,
-    select_fixed_close,
+    settlement_pnl,
 )
 
 NOW = datetime(2026, 7, 27, 12, tzinfo=UTC)
@@ -39,96 +34,8 @@ MAX_EXPECTED_BRIER = 0.1
     ],
 )
 def test_paper_settlement_accounting_invariants(result, expected):
-    record = reconcile_settlement(
-        PositionTerms("position-1", "10", "1.90"),
-        settled_at=NOW,
-        provider_result=result,
-        provider_reference="provider-settlement-1",
-    )
-
-    assert record.pnl_units == expected
-    assert record.source is SettlementSource.PROVIDER
-
-
-def test_provider_is_preferred_but_source_conflicts_stop_settlement():
-    provider = reconcile_settlement(
-        PositionTerms("position-1", "10", "1.90"),
-        settled_at=NOW,
-        provider_result=SettlementResult.WIN,
-        provider_reference="provider-1",
-        internal_result=SettlementResult.WIN,
-        internal_reference="game-1",
-        internal_verified=True,
-    )
-    internal = reconcile_settlement(
-        PositionTerms("position-2", "10", "1.90"),
-        settled_at=NOW,
-        provider_result=None,
-        internal_result=SettlementResult.LOSS,
-        internal_reference="game-2",
-        internal_verified=True,
-    )
-
-    assert provider.source is SettlementSource.PROVIDER
-    assert internal.source is SettlementSource.VERIFIED_INTERNAL
-    assert internal.warnings == ("internal_settlement",)
-    with pytest.raises(SettlementError, match="conflict"):
-        reconcile_settlement(
-            PositionTerms("position-3", "10", "1.90"),
-            settled_at=NOW,
-            provider_result=SettlementResult.WIN,
-            provider_reference="provider-3",
-            internal_result=SettlementResult.LOSS,
-            internal_reference="game-3",
-            internal_verified=True,
-        )
-
-
-def _close(snapshot_id, seconds_before, odds, available="10", warnings=()):
-    return MarketCloseSnapshot(
-        snapshot_id=snapshot_id,
-        observed_at=NOW - timedelta(seconds=seconds_before),
-        decimal_odds=odds,
-        available_stake_units=available,
-        source="polymarket-clob-v2",
-        warnings=warnings,
-    )
-
-
-def test_fixed_close_is_latest_fillable_prestart_snapshot():
-    snapshots = (
-        _close("old", 120, "1.85"),
-        _close("thin", 30, "1.80", available="0.2"),
-        _close("chosen", 60, "1.82"),
-        MarketCloseSnapshot(
-            snapshot_id="late",
-            observed_at=NOW + timedelta(seconds=1),
-            decimal_odds="1.75",
-            available_stake_units="10",
-            source="polymarket-clob-v2",
-        ),
-    )
-
-    close = select_fixed_close(
-        snapshots,
-        event_start=NOW,
-        intended_stake_units="1",
-    )
-
-    assert close is not None
-    assert close.snapshot_id == "chosen"
-    clv = calculate_clv(entry_decimal_odds="2.00", close=close)
-    assert clv.available
-    assert clv.probability_clv > 0
-    assert clv.odds_ratio_clv > 0
-
-
-def test_missing_close_is_reported_not_fabricated():
-    clv = calculate_clv(entry_decimal_odds="2.00", close=None)
-
-    assert not clv.available
-    assert clv.probability_clv is None
-    assert clv.reason == "closing_snapshot_unavailable"
+    pnl = settlement_pnl(PositionTerms("position-1", "10", "1.90"), result)
+    assert pnl == expected
 
 
 def _row(

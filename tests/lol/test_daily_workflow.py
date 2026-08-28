@@ -22,7 +22,7 @@ from oracle_bets_discord.predictions.lol import format_schedule_messages
 MESSAGE_SPLIT_LIMIT = 420
 EXPECTED_MIN_SPLIT_MESSAGES = 2
 EXPECTED_HORIZON_HOURS = 36
-DAILY_REPORT_SCHEMA_VERSION = 5
+DAILY_REPORT_SCHEMA_VERSION = 6
 EXPECTED_STABLE_SERIES = 3
 
 
@@ -283,13 +283,11 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
         schedule_fetcher=schedule_fetcher,
         data_generator_factory=data_generator_factory,
         train_fn=train_fn,
-        predictor_factory=_FakePredictor,
     )
 
     assert result.ok
     assert not any(called.values())
-    assert any("T1 vs Gen.G" in message for message in result.messages)
-    assert result.market_actions == []
+    assert any("Upcoming" in message for message in result.messages)
     assert result.report_paths is not None
     json_path, markdown_path = result.report_paths
     assert json_path.is_file()
@@ -298,22 +296,17 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     assert payload["config"]["delivery_mode"] == "off"
     assert payload["evidence_run_id"] is None
     assert payload["schema_version"] == DAILY_REPORT_SCHEMA_VERSION
-    assert payload["market_reviews"] == result.market_reviews
-    assert payload["market_actions"] == result.market_actions
     assert payload["cadence_reminders"] == result.cadence_reminders
     assert payload["open_positions"] == result.open_positions
     assert "source_freshness" in payload
-    assert "roster_evidence" in payload
+    assert "predictions" not in payload
     assert "drift_review" in payload
     daily_module.write_daily_report(
         cfg=DailyWorkflowConfig(dry_run=True),
         steps=result.steps,
         schedule=result.schedule,
         excluded_fixtures=result.excluded_fixtures,
-        prediction_details=result.prediction_details,
         messages=result.messages,
-        market_reviews=result.market_reviews,
-        market_actions=result.market_actions,
         cadence_reminders=result.cadence_reminders,
         open_positions=result.open_positions,
         report_paths=result.report_paths,
@@ -393,7 +386,6 @@ def test_daily_defaults_to_operational_leagues_and_hides_academy(
     result = run_daily_lol_workflow(
         DailyWorkflowConfig(dry_run=True),
         schedule_fetcher=schedule_fetcher,
-        predictor_factory=_FakePredictor,
     )
 
     assert {"LCK", "LIT"}.issubset(set(captured["leagues"].split(",")))
@@ -432,7 +424,6 @@ def test_daily_explicit_league_filter_overrides_operational_profile(
             leagues="LCK",
         ),
         schedule_fetcher=schedule_fetcher,
-        predictor_factory=_FakePredictor,
     )
 
     assert result.schedule["league"].tolist() == ["LCK"]
@@ -462,7 +453,6 @@ def test_daily_refreshes_match_detail_before_filtering(monkeypatch):
         DailyWorkflowConfig(dry_run=True),
         schedule_fetcher=schedule_fetcher,
         lineup_refresher_factory=_Refresher,
-        predictor_factory=_FakePredictor,
     )
 
     assert called["refresh"]

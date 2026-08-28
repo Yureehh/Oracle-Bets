@@ -1232,8 +1232,6 @@ def _main_bet(args: argparse.Namespace) -> int:  # noqa: PLR0912
 
 
 def _main_daily(args: argparse.Namespace) -> int:
-    from collections import Counter
-
     from lol_bets.daily import DailyWorkflowConfig, run_daily_lol_workflow
 
     result = run_daily_lol_workflow(
@@ -1252,17 +1250,6 @@ def _main_daily(args: argparse.Namespace) -> int:
     for step in result.steps:
         status = "OK" if step.ok else "FAILED"
         sys.stdout.write(f"- {status}: {step.name} - {step.detail}\n")
-    prediction_counts = Counter(
-        detail.get("status", "unknown") for detail in result.prediction_details
-    )
-    if prediction_counts:
-        sys.stdout.write(
-            "Predictions: "
-            f"{prediction_counts['predicted']} generated, "
-            f"{prediction_counts['unsupported_team']} unsupported team, "
-            f"{prediction_counts['insufficient_history']} insufficient history, "
-            f"{prediction_counts['prediction_unavailable']} unavailable.\n"
-        )
     if result.report_paths is not None:
         json_path, markdown_path = result.report_paths
         sys.stdout.write(f"Daily JSON report: {json_path}\n")

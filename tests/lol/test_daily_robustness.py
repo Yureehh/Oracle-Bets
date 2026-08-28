@@ -1,4 +1,4 @@
-"""Tests for daily workflow failure handling, snapshots, and market matching."""
+"""Tests for daily workflow failure handling and explicit-review inference."""
 
 import datetime as dt
 
@@ -7,7 +7,6 @@ from lol_bets.daily import (
     DailyStepResult,
     DailyWorkflowConfig,
     _build_prediction_messages,
-    append_prediction_snapshots,
     build_prediction_snapshot_rows,
     format_step_summary,
     run_daily_lol_workflow,
@@ -96,7 +95,6 @@ def test_excluded_league_is_not_predicted_or_reported(monkeypatch):
     messages, details = _build_prediction_messages(
         schedule,
         cfg=DailyWorkflowConfig(dry_run=True),
-        predictor_factory=_FakePredictor,
     )
 
     assert messages == []
@@ -119,7 +117,6 @@ def test_schedule_fetch_failure_yields_failed_step_not_crash(tmp_path, monkeypat
     result = run_daily_lol_workflow(
         DailyWorkflowConfig(dry_run=True),
         schedule_fetcher=broken_fetcher,
-        predictor_factory=_FakePredictor,
     )
 
     assert not result.ok
@@ -165,7 +162,6 @@ def test_reconcile_and_ingest_precede_schedule_fetch(tmp_path, monkeypatch):
         DailyWorkflowConfig(dry_run=False),
         schedule_fetcher=broken_fetcher,
         data_generator_factory=data_generator_factory,
-        predictor_factory=_FakePredictor,
     )
 
     assert not result.ok
@@ -250,16 +246,3 @@ def test_snapshot_rows_cover_both_selections_and_props():
     prop_rows = [r for r in rows if r["market"] == "total_kills_mean"]
     assert len(prop_rows) == 1
     assert prop_rows[0]["model_value"] == EXPECTED_TOTAL_KILLS
-
-
-def test_snapshot_append_is_idempotent_per_day(tmp_path):
-    path = tmp_path / "prediction_snapshots.parquet"
-    rows = _snapshot_rows()
-
-    append_prediction_snapshots(rows, path=path)
-    append_prediction_snapshots(rows, path=path)
-
-    stored = pd.read_parquet(path)
-    keys = ["run_date", "team_a", "team_b", "start_utc", "market", "selection"]
-    assert not stored.duplicated(subset=keys).any()
-    assert len(stored) == len(rows)

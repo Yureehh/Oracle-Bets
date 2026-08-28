@@ -30,7 +30,12 @@ import numpy as np
 if TYPE_CHECKING:
     from pathlib import Path
 
-from oracle_bets_core.io_utils import load_model, load_training_data, store_model
+from oracle_bets_core.io_utils import (
+    atomic_write_text,
+    load_model,
+    load_training_data,
+    store_model,
+)
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
@@ -955,12 +960,10 @@ def promote_tuning_run(run_id: str) -> tuple[Path, ...]:  # noqa: PLR0912, PLR09
             previous[destination] = (
                 destination.read_bytes() if destination.exists() else None
             )
-            temporary = destination.with_suffix(".json.tmp")
-            temporary.write_text(
+            atomic_write_text(
+                destination,
                 json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
             )
-            temporary.replace(destination)
             promoted.append(destination)
     except Exception:
         for destination, content in previous.items():
@@ -1005,7 +1008,7 @@ def review_tuning_run(run_id: str) -> dict[str, object]:
     } | evidence
     if _tuning_review_input_fingerprint(run_root) != review_fingerprint:
         raise ValueError("Winner tuning artifacts changed during review.")
-    _atomic_write_text(
+    atomic_write_text(
         run_root / "tuning_review.json",
         json.dumps(result, indent=2, sort_keys=True) + "\n",
     )
@@ -1274,9 +1277,10 @@ def _next_map_review_labels(labels: pd.DataFrame) -> tuple[pd.DataFrame, str]:
 def _write_training_manifest(report_root: Path, payload: dict) -> Path:
     report_root.mkdir(parents=True, exist_ok=True)
     destination = report_root / "manifest.json"
-    temporary = destination.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    temporary.replace(destination)
+    atomic_write_text(
+        destination,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+    )
     return destination
 
 
@@ -1349,7 +1353,7 @@ def _write_training_summary(
     }
     json_path = report_root / "summary.json"
     markdown_path = report_root / "summary.md"
-    _atomic_write_text(json_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    atomic_write_text(json_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
     lines = [
         f"# LoL training run {manifest['run_id']}",
@@ -1381,7 +1385,7 @@ def _write_training_summary(
                 for row in top_features
             )
             lines.append("")
-    _atomic_write_text(markdown_path, "\n".join(lines))
+    atomic_write_text(markdown_path, "\n".join(lines))
     return json_path, markdown_path
 
 
@@ -1392,7 +1396,7 @@ def _publish_latest_training_report(report_root: Path, run_id: str) -> Path:
         "run_id": run_id,
         "report_directory": str(report_root),
     }
-    _atomic_write_text(latest, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    atomic_write_text(latest, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return latest
 
 
@@ -1408,13 +1412,6 @@ def _prune_training_reports(runs_root: Path) -> None:
     )
     for obsolete in completed[TRAINING_REPORT_RETENTION:]:
         shutil.rmtree(obsolete)
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
 
 
 def _register_training_candidate(

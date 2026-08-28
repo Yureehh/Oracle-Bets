@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from oracle_bets_core.config import load_product_config
 from oracle_bets_core.evidence import EvidenceStore
+from oracle_bets_core.io_utils import atomic_write_text
 from oracle_bets_core.league_selection import (
     actionable_leagues,
     selected_leagues,
@@ -189,9 +190,6 @@ class DailyWorkflowResult:
     messages: list[str]
     steps: list[DailyStepResult] = field(default_factory=list)
     excluded_fixtures: list[dict[str, Any]] = field(default_factory=list)
-    prediction_details: list[dict[str, Any]] = field(default_factory=list)
-    market_reviews: list[dict[str, Any]] = field(default_factory=list)
-    market_actions: list[dict[str, Any]] = field(default_factory=list)
     cadence_reminders: list[dict[str, Any]] = field(default_factory=list)
     open_positions: dict[str, Any] = field(default_factory=dict)
     report_paths: tuple[Path, Path] | None = None
@@ -774,9 +772,6 @@ def build_match_prediction_message(  # noqa: PLR0915
     return output
 
 
-PREDICTION_SNAPSHOTS = REPORTS_DIR / "prediction_snapshots.parquet"
-
-
 def build_prediction_snapshot_rows(
     row: pd.Series,
     *,
@@ -976,36 +971,6 @@ def build_prediction_snapshot_rows(
                 }
             )
     return rows
-
-
-def append_prediction_snapshots(
-    rows: Sequence[dict[str, Any]],
-    *,
-    path: Any = PREDICTION_SNAPSHOTS,
-) -> int:
-    """
-    Append snapshot rows, idempotent per (run_date, teams, market, selection):
-    re-running the workflow on the same day replaces that day's rows for the
-    same match/market instead of duplicating them.
-    """
-    if not rows:
-        return 0
-    new = pd.DataFrame(list(rows))
-    key_cols = ["run_date", "team_a", "team_b", "start_utc", "market", "selection"]
-    try:
-        existing = pd.read_parquet(path)
-    except (FileNotFoundError, OSError):
-        existing = pd.DataFrame()
-    if not existing.empty:
-        combined = pd.concat([existing, new], ignore_index=True)
-    else:
-        combined = new
-    combined = combined.drop_duplicates(subset=key_cols, keep="last").reset_index(
-        drop=True
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_parquet(path, index=False)
-    return len(new)
 
 
 def _health_detail(health: ArtifactHealth) -> str:
@@ -1246,7 +1211,7 @@ def _build_prediction_messages(
     schedule: pd.DataFrame,
     *,
     cfg: DailyWorkflowConfig,
-    predictor_factory: Callable[[], Predictor] | None,
+    predictor_factory: Callable[[], Predictor] | None = None,
     snapshot_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     schedule = _actionable_schedule(schedule)
@@ -1355,12 +1320,7 @@ def write_daily_report(
     steps: Sequence[DailyStepResult],
     schedule: pd.DataFrame,
     excluded_fixtures: Sequence[dict[str, Any]],
-    prediction_details: Sequence[dict[str, Any]],
     messages: Sequence[str],
-    advisory_review: dict[str, Any] | None = None,
-    market_reviews: Sequence[dict[str, Any]] = (),
-    market_actions: Sequence[dict[str, Any]] = (),
-    prediction_snapshots: Sequence[dict[str, Any]] = (),
     cadence_reminders: Sequence[dict[str, Any]] = (),
     open_positions: dict[str, Any] | None = None,
     source_freshness: dict[str, Any] | None = None,
@@ -1377,47 +1337,20 @@ def write_daily_report(
     else:
         json_path, markdown_path = report_paths
     payload = {
-        "schema_version": 5,
+        "schema_version": 6,
         "generated_at": dt.datetime.now(dt.UTC).isoformat(),
         "evidence_run_id": _evidence_run_id(steps),
         "config": dict(vars(cfg)),
         "steps": [vars(step) for step in steps],
         "schedule": schedule.to_dict(orient="records"),
         "excluded_fixtures": list(excluded_fixtures),
-        "predictions": list(prediction_details),
-        "prediction_snapshots": list(prediction_snapshots),
-        "roster_evidence": [
-            {
-                "match_key": snapshot.get("match_key"),
-                "team_a": snapshot.get("team_a"),
-                "team_b": snapshot.get("team_b"),
-                "team_a_evidence": snapshot.get("team_a_roster_evidence"),
-                "team_b_evidence": snapshot.get("team_b_roster_evidence"),
-            }
-            for snapshot in prediction_snapshots
-            if snapshot.get("team_a_roster_evidence")
-            or snapshot.get("team_b_roster_evidence")
-        ],
-        "resolved_aliases": [
-            alias
-            for detail in prediction_details
-            for alias in detail.get("resolved_aliases", [])
-        ],
-        "unsupported_teams": [
-            detail
-            for detail in prediction_details
-            if detail.get("status") == "unsupported_team"
-        ],
         "messages": list(messages),
-        "advisory_review": advisory_review,
-        "market_reviews": list(market_reviews),
-        "market_actions": list(market_actions),
         "cadence_reminders": list(cadence_reminders),
         "open_positions": open_positions or {"available": False, "count": None},
         "source_freshness": source_freshness,
         "drift_review": drift_review,
     }
-    _atomic_write_report(
+    atomic_write_text(
         json_path,
         json.dumps(payload, indent=2, default=str) + "\n",
     )
@@ -1429,7 +1362,7 @@ def write_daily_report(
     markdown = "\n\n".join(messages)
     if excluded_lines:
         markdown += "\n\n## Excluded fixtures\n" + "\n".join(excluded_lines)
-    _atomic_write_report(markdown_path, markdown + "\n")
+    atomic_write_text(markdown_path, markdown + "\n")
     return json_path, markdown_path
 
 
@@ -1463,12 +1396,6 @@ def _latest_model_drift_review() -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return None
     return drift if isinstance(drift, dict) else None
-
-
-def _atomic_write_report(path: Path, content: str) -> None:
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
 
 
 def _refresh_expected_lineups(
@@ -1514,19 +1441,6 @@ def _refresh_expected_lineups(
         )
 
 
-def _persist_prediction_snapshots(
-    rows: Sequence[dict[str, Any]],
-) -> DailyStepResult | None:
-    if not rows:
-        return None
-    try:
-        written = append_prediction_snapshots(rows)
-        return DailyStepResult("snapshot", True, f"{written} prediction rows logged")
-    except Exception as exc:
-        logger.exception("Prediction snapshot write failed.")
-        return DailyStepResult("snapshot", False, str(exc))
-
-
 def _fetch_daily_schedule(
     *,
     cfg: DailyWorkflowConfig,
@@ -1560,14 +1474,13 @@ def _fetch_daily_schedule(
     return filtered.reset_index(drop=True), detail
 
 
-def run_daily_lol_workflow(  # noqa: PLR0915
+def run_daily_lol_workflow(
     config: DailyWorkflowConfig | None = None,
     *,
     schedule_fetcher: Callable[..., pd.DataFrame] = fetch_and_store_schedule,
     data_generator_factory: Callable[[], DataGenerator] = DataGenerator,
     train_fn: Callable[..., Path | None] = train_models,
     module_factory: Callable[[], LoLBetsModule] = LoLBetsModule,
-    predictor_factory: Callable[[], Predictor] | None = None,
     lineup_refresher_factory: (Callable[[], PandaScoreLineupRefresher] | None) = None,
     series_builder_fn: Callable[[], dict[str, Any]] = build_series_artifacts,
 ) -> DailyWorkflowResult:
@@ -1645,27 +1558,6 @@ def run_daily_lol_workflow(  # noqa: PLR0915
         *format_schedule_messages(_actionable_schedule(reportable_schedule)),
     ]
 
-    should_predict = all(step.ok for step in steps) or (
-        cfg.dry_run and not reportable_schedule.empty
-    )
-    snapshot_rows: list[dict[str, Any]] = []
-    prediction_details: list[dict[str, Any]] = []
-    market_reviews: list[dict[str, Any]] = []
-    market_actions: list[dict[str, Any]] = []
-    if should_predict:
-        prediction_messages, prediction_details = _build_prediction_messages(
-            reportable_schedule,
-            cfg=cfg,
-            predictor_factory=predictor_factory,
-            snapshot_sink=snapshot_rows,
-        )
-        messages.extend(prediction_messages)
-
-    if not cfg.dry_run:
-        snapshot_step = _persist_prediction_snapshots(snapshot_rows)
-        if snapshot_step is not None:
-            steps.append(snapshot_step)
-
     if not cfg.dry_run and schedule_step.ok:
         try:
             run_id = record_daily_evidence(
@@ -1673,9 +1565,8 @@ def run_daily_lol_workflow(  # noqa: PLR0915
                 scheduled_for=scheduled_for,
                 effective_config=effective_config,
                 schedule=daily_schedule,
-                snapshot_rows=snapshot_rows,
+                snapshot_rows=(),
                 steps=steps,
-                market_actions=market_actions,
             )
             steps.append(
                 DailyStepResult("evidence", True, f"canonical run recorded: {run_id}")
@@ -1708,12 +1599,7 @@ def run_daily_lol_workflow(  # noqa: PLR0915
         steps=steps,
         schedule=reportable_schedule,
         excluded_fixtures=excluded_fixtures,
-        prediction_details=prediction_details,
         messages=messages,
-        advisory_review=None,
-        market_reviews=market_reviews,
-        market_actions=market_actions,
-        prediction_snapshots=snapshot_rows,
         cadence_reminders=reminders,
         open_positions=open_positions,
         source_freshness=source_freshness,
@@ -1724,9 +1610,6 @@ def run_daily_lol_workflow(  # noqa: PLR0915
         messages=messages,
         steps=steps,
         excluded_fixtures=excluded_fixtures,
-        prediction_details=prediction_details,
-        market_reviews=market_reviews,
-        market_actions=market_actions,
         cadence_reminders=reminders,
         open_positions=open_positions,
         report_paths=report_paths,

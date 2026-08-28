@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
+from oracle_bets_core.io_utils import atomic_write_text
 from oracle_bets_core.operations.bets import cohort_coverage, performance_summary
 from oracle_bets_core.operations.health import (
     SystemHealthReport,
@@ -133,7 +134,7 @@ def build_monthly_audit(
             "Compare shadow prediction quality by league, market, strategy, model, mode, and edge band.",
             "Review paper ROI, CLV, calibration, drawdown, and uncertainty; do not use point ROI alone.",
             "Require 90% fixture review coverage and 100% recommendation result capture before activation review.",
-            "Review all corrections, failed runs, stale proposals, and provider failures.",
+            "Review all corrections, failed runs, stale reviews, and provider failures.",
             "Review new model candidates; promotion remains a separate owner-controlled decision.",
             "Create and verify a backup, then copy it to owner-controlled encrypted storage.",
             "Record owner comments and any approved rule change as a new versioned decision.",
@@ -209,7 +210,7 @@ def write_monthly_audit(
     """Write stable owner-readable JSON and Markdown report artifacts."""
     json_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(
+    atomic_write_text(
         json_path,
         json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
     )
@@ -262,7 +263,7 @@ Status: **{report.status}**. This report is not owner sign-off.
 
 {checklist}
 """
-    _atomic_write(markdown_path, markdown)
+    atomic_write_text(markdown_path, markdown)
     return json_path, markdown_path
 
 
@@ -369,12 +370,6 @@ def _accepted_risks(config: ProductConfig) -> tuple[str, ...]:
     if not config.promotion.optuna_automatic:
         risks.append("Optuna-derived candidates always require explicit owner review.")
     return tuple(risks)
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
 
 
 def _utc_text(value: datetime) -> str:
