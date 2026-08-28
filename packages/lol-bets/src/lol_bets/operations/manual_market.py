@@ -42,6 +42,12 @@ from lol_bets.data_generation.ingestion.schedule import (
 )
 from lol_bets.inference.team_resolver import canonical_team_name, team_name_variants
 from lol_bets.operations.evidence import record_daily_evidence
+from lol_bets.operations.market_actions import (
+    active_strategy_readiness,
+    evaluate_daily_market_actions,
+    price_manual_lines,
+)
+from lol_bets.operations.market_strategies import rank_market_decisions
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -262,9 +268,12 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
     model_inference_seconds = time.perf_counter() - inference_started
 
     provider_started = time.perf_counter()
+    readiness = (
+        active_strategy_readiness()
+        if not schedule.empty and (markets_by_fixture or manual_lines)
+        else {}
+    )
     if not schedule.empty and markets_by_fixture:
-        from lol_bets.operations.market_actions import evaluate_daily_market_actions
-
         market_actions.extend(
             evaluate_daily_market_actions(
                 schedule=schedule,
@@ -272,22 +281,25 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
                 markets=markets_by_fixture,
                 clob_client=clob_client_factory(),
                 model_healthy=True,
+                strategy_readiness=readiness,
                 run_key=run_key,
                 clock=lambda: reviewed_at,
+                rank=False,
             ).actions
         )
     provider_retrieval_seconds = time.perf_counter() - provider_started
     if not schedule.empty and manual_lines:
-        from lol_bets.operations.market_actions import price_manual_lines
-
         market_actions.extend(
             price_manual_lines(
                 fixture=schedule.iloc[0],
                 snapshot_rows=snapshots,
                 lines=manual_lines,
                 reviewed_at=reviewed_at,
+                strategy_readiness=readiness,
+                rank=False,
             )
         )
+    market_actions = rank_market_decisions(market_actions)
 
     evidence_run_id = None
     evidence_store = store or EvidenceStore(EVIDENCE_DB)
@@ -617,41 +629,32 @@ def provider_comparisons(
     actions: Sequence[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Group only semantically identical provider outcomes and select best odds."""
-    grouped: dict[
-        tuple[str, str, int | None, str, float | None], list[dict[str, Any]]
-    ] = {}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for action in actions:
         odds = action.get("decimal_odds")
         if odds is None or action.get("hard_blocks"):
             continue
-        key = (
-            str(action.get("fixture_key") or ""),
-            str(action.get("target") or "unknown"),
-            _optional_int(action.get("game_number")),
-            canonical_team_name(str(action.get("selection") or "")).casefold(),
-            _optional_float(action.get("line")),
-        )
+        semantic_fingerprint = str(action.get("semantic_fingerprint") or "")
+        if not semantic_fingerprint:
+            continue
+        key = (str(action.get("fixture_key") or ""), semantic_fingerprint)
         grouped.setdefault(key, []).append(action)
 
     output: list[dict[str, Any]] = []
-    for (
-        fixture_key,
-        target,
-        game_number,
-        selection_key,
-        line,
-    ), rows in grouped.items():
+    for (fixture_key, semantic_fingerprint), rows in grouped.items():
         best = max(rows, key=lambda row: float(row["decimal_odds"]))
         probability = best.get("probability")
         odds = float(best["decimal_odds"])
         output.append(
             {
                 "fixture_key": fixture_key,
-                "target": target,
-                "game_number": game_number,
+                "semantic_fingerprint": semantic_fingerprint,
+                "semantic_key": best.get("semantic_key"),
+                "target": best.get("target"),
+                "game_number": best.get("game_number"),
                 "selection": best.get("selection"),
-                "selection_key": selection_key,
-                "line": line,
+                "selection_key": (best.get("semantic_key") or {}).get("selection"),
+                "line": best.get("line"),
                 "model_probability": probability,
                 "fair_decimal_odds": decimal_odds_from_probability(float(probability))
                 if probability

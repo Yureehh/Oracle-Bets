@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import erf, sqrt
+
+from oracle_bets_core.probabilities import probability_over_under
 
 
 @dataclass(frozen=True)
@@ -21,13 +22,6 @@ class OverUnderSignal:
     under_edge: float | None = None
     over_half_kelly_fraction: float | None = None
     under_half_kelly_fraction: float | None = None
-
-
-PROBABILITY_EPSILON = 1e-6
-
-
-def _clip_probability(probability: float) -> float:
-    return min(1.0 - PROBABILITY_EPSILON, max(PROBABILITY_EPSILON, probability))
 
 
 def probability_from_decimal_odds(odds: float) -> float:
@@ -74,11 +68,6 @@ def kelly_fraction(
     return max(0.0, full * fraction)
 
 
-def normal_cdf(value: float) -> float:
-    """Normal CDF without requiring SciPy in the core package."""
-    return 0.5 * (1.0 + erf(value / sqrt(2.0)))
-
-
 def price_over_under(
     *,
     mean: float,
@@ -95,15 +84,12 @@ def price_over_under(
     estimate into a probability distribution, so line pricing reflects historical
     model error instead of treating the mean as a deterministic outcome.
     """
-    if sigma <= 0:
-        msg = "Residual sigma must be positive."
-        raise ValueError(msg)
     if kelly_multiplier < 0:
         msg = "Kelly fraction multiplier must be non-negative."
         raise ValueError(msg)
-
-    under_probability = _clip_probability(normal_cdf((line - mean) / sigma))
-    over_probability = _clip_probability(1.0 - under_probability)
+    probabilities = probability_over_under(mean=mean, line=line, sigma=sigma)
+    under_probability = probabilities.under_probability
+    over_probability = probabilities.over_probability
     over_edge = (
         expected_edge(over_odds, over_probability) if over_odds is not None else None
     )

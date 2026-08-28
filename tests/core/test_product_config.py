@@ -15,8 +15,12 @@ from oracle_bets_core.paths import PRODUCT_CONFIG
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_FIXTURE_WINDOW_HOURS = 36
 EXPECTED_MAJOR_MAP_TRIGGER = 20
-EXPECTED_SCHEMA_VERSION = 3
+EXPECTED_MINIMUM_FAVORITE = 0.51
+EXPECTED_QUOTE_TTL_SECONDS = 120
+EXPECTED_SCHEMA_VERSION = 4
 EXPECTED_VALID_MAP_TRIGGER = 50
+INVALID_MINIMUM_FAVORITE = 0.6
+INVALID_QUOTE_TTL_SECONDS = 30
 
 
 def _raw_config() -> dict:
@@ -31,6 +35,9 @@ def test_product_config_contains_only_runtime_and_safety_rules():
     assert config.timezone == "Europe/Rome"
     assert config.fixture_window_hours == EXPECTED_FIXTURE_WINDOW_HOURS
     assert config.market.read_only is True
+    assert config.market.quote_ttl_seconds == EXPECTED_QUOTE_TTL_SECONDS
+    assert config.strategy.recommendation_target == "series_winner"
+    assert config.strategy.minimum_model_favorite == EXPECTED_MINIMUM_FAVORITE
     assert config.leagues.training_profile == "research_all_supported"
     assert config.leagues.prediction_profile == "tier1_plus_erls"
     assert config.leagues.actionable_exclusions == ("CBLOL", "LCP")
@@ -52,6 +59,18 @@ def test_config_round_trip_is_stable():
     ("section", "key", "value", "message"),
     [
         ("market", "read_only", False, "read-only"),
+        (
+            "market",
+            "quote_ttl_seconds",
+            INVALID_QUOTE_TTL_SECONDS,
+            "120",
+        ),
+        (
+            "strategy",
+            "minimum_model_favorite",
+            INVALID_MINIMUM_FAVORITE,
+            "versioned policy",
+        ),
         ("leagues", "training_profile", "tier1_plus_erls", "research_all_supported"),
         ("leagues", "prediction_profile", "research_all_supported", "tier1_plus_erls"),
         ("training", "new_valid_maps_trigger", 1, "triggers"),

@@ -13,7 +13,9 @@ from oracle_bets_core.markets import (
     PolymarketClobClient,
     PolymarketGammaAdapter,
     SupportedMarketType,
+    capture_confirmation_order_book,
     capture_current_order_books,
+    market_semantic_key,
     match_market,
     polymarket_event_slug,
     select_best_market,
@@ -22,6 +24,7 @@ from oracle_bets_core.markets import (
 
 START = datetime(2026, 7, 27, 12, tzinfo=UTC)
 EXPECTED_MARKETS = 2
+EXPECTED_CONFIRMATION_CALLS = 2
 MAX_RETRIES = 3
 REQUEST_TIMEOUT = 4
 T1_ASSET_ID = "asset-t1"
@@ -584,6 +587,69 @@ def test_current_book_capture_quotes_each_token_once_at_provider_minimum():
         item.fill.requested_shares == item.book.minimum_order_size
         for item in result.observations.values()
     )
+
+
+def test_confirmation_reuses_fresh_review_quote_and_refreshes_stale_quote_once():
+    client = _BookClient()
+    review = capture_current_order_books(
+        client,
+        token_ids=(T1_ASSET_ID,),
+        clock=lambda: START,
+    ).observations[T1_ASSET_ID]
+
+    fresh = capture_confirmation_order_book(
+        client,
+        token_id=T1_ASSET_ID,
+        review_observation=review,
+        clock=lambda: START + timedelta(seconds=119),
+        ttl_seconds=120,
+    )
+    stale = capture_confirmation_order_book(
+        client,
+        token_id=T1_ASSET_ID,
+        review_observation=review,
+        clock=lambda: START + timedelta(seconds=121),
+        ttl_seconds=120,
+    )
+
+    assert fresh.source == "review_snapshot"
+    assert fresh.observation is review
+    assert stale.source == "confirmation_snapshot"
+    assert stale.observation is not review
+    assert client.calls == EXPECTED_CONFIRMATION_CALLS
+
+
+@pytest.mark.parametrize(
+    ("target", "game_number"),
+    [("total_kills_mean", 1), ("total_towers_mean", 2)],
+)
+def test_market_semantics_reject_integer_count_lines(target, game_number):
+    with pytest.raises(MarketDataError, match="half-point"):
+        market_semantic_key(
+            target=target,
+            selection="Over",
+            game_number=game_number,
+            line=24,
+        )
+
+
+def test_market_semantics_distinguish_period_line_and_resolution_contract():
+    map_one = market_semantic_key(
+        target="map_winner", selection="T1", game_number=1, line=None
+    )
+    map_two = market_semantic_key(
+        target="map_winner", selection="T1", game_number=2, line=None
+    )
+    total_two = market_semantic_key(
+        target="series_total_maps", selection="Over", game_number=None, line=2.5
+    )
+    total_three = market_semantic_key(
+        target="series_total_maps", selection="Over", game_number=None, line=3.5
+    )
+
+    assert map_one.fingerprint != map_two.fingerprint
+    assert total_two.fingerprint != total_three.fingerprint
+    assert map_one.resolution_fingerprint != total_two.resolution_fingerprint
 
 
 def test_current_book_capture_isolates_unavailable_partial_and_timestamp_warnings():

@@ -431,13 +431,13 @@ def test_prop_distribution_calibrator_prices_over_under() -> None:
         global_residuals=np.array([-2.0, -1.0, 0.0, 1.0, 2.0]),
     )
 
-    signal = calibrator.price(mean=27.0, line=26.5, over_odds=1.9, under_odds=1.9)
+    signal = calibrator.price(mean=27.0, line=26.5)
 
     assert signal.over_probability + signal.under_probability == 1
     assert signal.over_probability > 0
     assert signal.under_probability > 0
-    assert signal.over_edge is not None
-    assert signal.under_edge is not None
+    assert not hasattr(signal, "over_edge")
+    assert not hasattr(signal, "over_half_kelly_fraction")
 
 
 def test_prop_distribution_calibrator_uses_metadata_segments() -> None:

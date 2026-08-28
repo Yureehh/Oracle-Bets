@@ -26,7 +26,6 @@ from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
-from oracle_bets_core.betting import OverUnderSignal, kelly_fraction, price_over_under
 from oracle_bets_core.io_utils import json_loader
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import (
@@ -39,6 +38,7 @@ from oracle_bets_core.paths import (
     TRAINING_COMPACT_TEAM_CONFIG,
 )
 from oracle_bets_core.pd import pd
+from oracle_bets_core.probabilities import PropLineProbability, probability_over_under
 from pandas.api.types import is_numeric_dtype
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
@@ -630,7 +630,7 @@ class PropDistributionCalibrator:
         if self.method == "normal_global":
             sigma = float(np.std(self.global_residuals, ddof=1))
             sigma = max(sigma, PROBABILITY_EPSILON)
-            return price_over_under(
+            return probability_over_under(
                 mean=0.0, line=threshold, sigma=sigma
             ).under_probability
         return self._empirical_under(threshold, self.global_residuals)
@@ -645,9 +645,7 @@ class PropDistributionCalibrator:
         strength_pool: str | None = None,
         bo_format: str | None = None,
         patch: str | None = None,
-        over_odds: float | None = None,
-        under_odds: float | None = None,
-    ) -> OverUnderSignal:
+    ) -> PropLineProbability:
         threshold = float(line) - float(mean)
         under_probability = self._global_under(threshold)
         if self.method in {"league_shrunk", "metadata_shrunk"}:
@@ -676,31 +674,12 @@ class PropDistributionCalibrator:
         )
         over_probability = 1.0 - under_probability
         sigma = float(np.std(self.global_residuals, ddof=1))
-        signal = price_over_under(
+        return PropLineProbability(
             mean=mean,
             line=line,
             sigma=max(sigma, PROBABILITY_EPSILON),
-        )
-        return OverUnderSignal(
-            mean=mean,
-            line=line,
-            sigma=signal.sigma,
             over_probability=over_probability,
             under_probability=under_probability,
-            over_fair_odds=1.0 / over_probability,
-            under_fair_odds=1.0 / under_probability,
-            over_edge=(over_probability * over_odds - 1.0)
-            if over_odds is not None
-            else None,
-            under_edge=(under_probability * under_odds - 1.0)
-            if under_odds is not None
-            else None,
-            over_half_kelly_fraction=kelly_fraction(over_odds, over_probability)
-            if over_odds is not None
-            else None,
-            under_half_kelly_fraction=kelly_fraction(under_odds, under_probability)
-            if under_odds is not None
-            else None,
         )
 
 

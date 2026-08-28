@@ -1,9 +1,18 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "timezone": "Europe/Rome",
   "fixture_window_hours": 36,
   "market": {
-    "read_only": true
+    "read_only": true,
+    "quote_ttl_seconds": 120
+  },
+  "strategy": {
+    "policy_version": "lol-market-policy-v1",
+    "recommendation_target": "series_winner",
+    "minimum_model_favorite": 0.51,
+    "unit_bankroll_fraction": 0.01,
+    "paper_positive_ev_path": "full_kelly",
+    "paper_negative_ev_exploration_path": "flat_1u"
   },
   "leagues": {
     "training_profile": "research_all_supported",

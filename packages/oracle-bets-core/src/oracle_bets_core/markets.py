@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -43,6 +44,153 @@ class SupportedMarketType(StrEnum):
     MAP_WINNER = "map_winner"
     SERIES_WINNER = "series_winner"
     SERIES_TOTAL_MAPS = "series_total_maps"
+
+
+_SEMANTIC_RULES = {
+    "series_winner": ("series_winner", "not_applicable", "cancelled_series_void"),
+    "map_winner": ("map_winner", "not_applicable", "unplayed_map_void"),
+    "series_total_maps": (
+        "maps_played",
+        "half_line_no_push",
+        "cancelled_or_shortened_series_void",
+    ),
+    "series_handicap": (
+        "final_map_differential",
+        "half_line_no_push",
+        "cancelled_or_shortened_series_void",
+    ),
+    "gamelength_mean": (
+        "official_map_duration_seconds",
+        "continuous_strict_boundary",
+        "unplayed_map_void",
+    ),
+    "total_kills_mean": (
+        "combined_team_kills_at_map_end",
+        "half_line_no_push",
+        "unplayed_map_void",
+    ),
+    "total_towers_mean": (
+        "combined_team_towers_destroyed_at_map_end",
+        "half_line_no_push",
+        "unplayed_map_void",
+    ),
+}
+MARKET_SEMANTIC_VERSION = 1
+
+
+@dataclass(frozen=True)
+class MarketSemanticKey:
+    """Provider-neutral contract identity used for comparison and settlement."""
+
+    target: str
+    period: str
+    selection: str
+    line: str | None
+    stat_definition: str
+    push_rule: str
+    void_rule: str
+    resolution_fingerprint: str
+    version: int = MARKET_SEMANTIC_VERSION
+
+    @property
+    def fingerprint(self) -> str:
+        payload = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    def to_dict(self) -> dict[str, str | int | None]:
+        return {
+            "version": self.version,
+            "target": self.target,
+            "period": self.period,
+            "selection": self.selection,
+            "line": self.line,
+            "stat_definition": self.stat_definition,
+            "push_rule": self.push_rule,
+            "void_rule": self.void_rule,
+            "resolution_fingerprint": self.resolution_fingerprint,
+        }
+
+
+def market_semantic_key(
+    *,
+    target: str,
+    selection: str,
+    game_number: int | None,
+    line: float | Decimal | None,
+) -> MarketSemanticKey:
+    """Build one strict semantic key or reject an unsupported settlement shape."""
+    try:
+        stat_definition, push_rule, void_rule = _SEMANTIC_RULES[target]
+    except KeyError as exc:
+        raise MarketDataError(f"Unsupported market target: {target}") from exc
+    if target in {
+        "map_winner",
+        "gamelength_mean",
+        "total_kills_mean",
+        "total_towers_mean",
+    }:
+        if game_number is None or game_number < 1:
+            raise MarketDataError("Map markets require a positive game number")
+        period = f"map:{game_number}"
+    else:
+        period = "series"
+    normalized_line = _semantic_line(line)
+    line_targets = {
+        "series_total_maps",
+        "series_handicap",
+        "gamelength_mean",
+        "total_kills_mean",
+        "total_towers_mean",
+    }
+    if target in line_targets and normalized_line is None:
+        raise MarketDataError("Totals, handicaps, and props require a line")
+    if target not in line_targets and normalized_line is not None:
+        raise MarketDataError("Winner markets cannot carry a line")
+    if target in {
+        "series_total_maps",
+        "series_handicap",
+        "total_kills_mean",
+        "total_towers_mean",
+    } and abs(Decimal(normalized_line or "0") % 1) != Decimal("0.5"):
+        raise MarketDataError("Count totals and handicaps require half-point lines")
+    normalized_selection = " ".join(selection.casefold().split())
+    if not normalized_selection:
+        raise MarketDataError("Market selection cannot be empty")
+    resolution = "|".join(
+        (
+            str(MARKET_SEMANTIC_VERSION),
+            target,
+            period,
+            stat_definition,
+            push_rule,
+            void_rule,
+        )
+    )
+    fingerprint = hashlib.sha256(resolution.encode()).hexdigest()
+    return MarketSemanticKey(
+        target=target,
+        period=period,
+        selection=normalized_selection,
+        line=normalized_line,
+        stat_definition=stat_definition,
+        push_rule=push_rule,
+        void_rule=void_rule,
+        resolution_fingerprint=fingerprint,
+    )
+
+
+def _semantic_line(value: float | Decimal | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise MarketDataError("Market line must be numeric") from exc
+    if not parsed.is_finite():
+        raise MarketDataError("Market line must be finite")
+    return format(parsed.normalize(), "f")
 
 
 @dataclass(frozen=True)
@@ -793,6 +941,16 @@ class CurrentOrderBookBatch:
     warnings: dict[str, tuple[str, ...]]
 
 
+@dataclass(frozen=True)
+class ConfirmationOrderBook:
+    """One reusable review quote or one freshly captured confirmation quote."""
+
+    source: str
+    observation: BookObservation | None
+    failure: BookCaptureFailure | None
+    warnings: tuple[str, ...]
+
+
 def capture_current_order_books(  # noqa: PLR0915
     client: OrderBookClient,
     *,
@@ -836,20 +994,14 @@ def capture_current_order_books(  # noqa: PLR0915
                 f"{reason}: minimum executable size {book.minimum_order_size} "
                 "shares was unavailable"
             )
-        book_warnings: list[str] = []
-        if book.timestamp_warning:
-            book_warnings.append(book.timestamp_warning)
-        elif book.timestamp is None:
-            book_warnings.append("provider_timestamp_missing")
-        elif (
-            abs((observed_at - book.timestamp).total_seconds())
-            > maximum_book_age_seconds
-        ):
-            book_warnings.append("provider_timestamp_old")
         return (
             token_id,
             BookObservation(1, observed_at, book, fill),
-            tuple(book_warnings),
+            _provider_timestamp_warnings(
+                book,
+                observed_at=observed_at,
+                maximum_book_age_seconds=maximum_book_age_seconds,
+            ),
         )
 
     executor = ThreadPoolExecutor(max_workers=min(8, len(unique_tokens) or 1))
@@ -908,6 +1060,66 @@ def capture_current_order_books(  # noqa: PLR0915
         if not release_deferred:
             _BOOK_CAPTURE_GUARD.release()
     return CurrentOrderBookBatch(observations, failures, warnings)
+
+
+def capture_confirmation_order_book(
+    client: OrderBookClient,
+    *,
+    token_id: str,
+    review_observation: BookObservation | None,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ttl_seconds: int = 120,
+) -> ConfirmationOrderBook:
+    """Reuse a fresh review quote; otherwise fetch exactly one current book."""
+    if ttl_seconds <= 0:
+        raise ValueError("quote TTL must be positive")
+    normalized_token = _required_text(token_id, "CLOB token id")
+    now = clock()
+    _require_utc_observation(now)
+    if review_observation is not None:
+        age = (now - review_observation.observed_at).total_seconds()
+        if (
+            review_observation.book.token_id == normalized_token
+            and review_observation.fill.complete
+            and 0 <= age <= ttl_seconds
+        ):
+            return ConfirmationOrderBook(
+                source="review_snapshot",
+                observation=review_observation,
+                failure=None,
+                warnings=_provider_timestamp_warnings(
+                    review_observation.book,
+                    observed_at=now,
+                    maximum_book_age_seconds=ttl_seconds,
+                ),
+            )
+    batch = capture_current_order_books(
+        client,
+        token_ids=(normalized_token,),
+        clock=clock,
+        maximum_book_age_seconds=ttl_seconds,
+    )
+    return ConfirmationOrderBook(
+        source="confirmation_snapshot",
+        observation=batch.observations.get(normalized_token),
+        failure=batch.failures.get(normalized_token),
+        warnings=batch.warnings.get(normalized_token, ()),
+    )
+
+
+def _provider_timestamp_warnings(
+    book: OrderBook,
+    *,
+    observed_at: datetime,
+    maximum_book_age_seconds: int,
+) -> tuple[str, ...]:
+    if book.timestamp_warning:
+        return (book.timestamp_warning,)
+    if book.timestamp is None:
+        return ("provider_timestamp_missing",)
+    if abs((observed_at - book.timestamp).total_seconds()) > maximum_book_age_seconds:
+        return ("provider_timestamp_old",)
+    return ()
 
 
 def _require_utc_observation(observed_at: datetime) -> None:

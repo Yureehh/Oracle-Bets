@@ -13,11 +13,15 @@ from typing import TYPE_CHECKING, Any, cast
 
 from oracle_bets_core.betting import (
     decimal_odds_from_probability,
-    expected_edge,
     probability_from_decimal_odds,
 )
 from oracle_bets_core.io_utils import load_model
-from oracle_bets_core.markets import PolymarketMarket, capture_current_order_books
+from oracle_bets_core.markets import (
+    MarketDataError,
+    PolymarketMarket,
+    capture_current_order_books,
+    market_semantic_key,
+)
 from oracle_bets_core.paths import (
     GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
     MODEL_REGISTRY_DIR,
@@ -28,8 +32,12 @@ from oracle_bets_core.paths import (
 from oracle_bets_core.pd import pd
 
 from lol_bets.inference.team_resolver import canonical_team_name, team_name_variants
-from lol_bets.operations.market_strategies import enumerate_series_paths
-from lol_bets.operations.models import resolve_serving_artifact
+from lol_bets.operations.market_strategies import (
+    decide_market,
+    enumerate_series_paths,
+    rank_market_decisions,
+)
+from lol_bets.operations.models import ModelRegistry, resolve_serving_artifact
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -84,6 +92,9 @@ class PendingMarketAction:
     roster_ready: bool
     roster_confidence: str
     uncertainty_available: bool
+    readiness: str
+    semantic_key: dict[str, Any] | None
+    semantic_fingerprint: str | None
     hard_blocks: tuple[str, ...]
     warnings: tuple[str, ...]
 
@@ -96,6 +107,20 @@ class DailyMarketEvaluation:
     actions: tuple[dict[str, Any], ...]
 
 
+def active_strategy_readiness() -> dict[str, str]:
+    """Flatten the champion's immutable target/cohort readiness cells."""
+    artifact = ModelRegistry(MODEL_REGISTRY_DIR).strategy_readiness() or {}
+    cells = artifact.get("cells")
+    if not isinstance(cells, list):
+        return {}
+    return {
+        f"{cell['target']}|{cell['cohort']}": str(cell["state"])
+        for cell in cells
+        if isinstance(cell, dict)
+        and all(key in cell for key in ("target", "cohort", "state"))
+    }
+
+
 def evaluate_daily_market_actions(
     *,
     schedule: pd.DataFrame,
@@ -103,8 +128,10 @@ def evaluate_daily_market_actions(
     markets: Sequence[PolymarketMarket] | Mapping[str, Sequence[PolymarketMarket]],
     clob_client: OrderBookClient,
     model_healthy: bool,
+    strategy_readiness: Mapping[str, str] | None = None,
     run_key: str | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    rank: bool = True,
 ) -> DailyMarketEvaluation:
     """Inventory every exact-event contract and quote every outcome once."""
     grouped = _group_markets(schedule, markets)
@@ -123,6 +150,7 @@ def evaluate_daily_market_actions(
                 fixture_snapshots,
                 reviewed_at=reviewed_at,
                 model_healthy=model_healthy,
+                strategy_readiness=strategy_readiness or {},
                 run_key=run_key,
             )
             pending.extend(mapped)
@@ -137,7 +165,8 @@ def evaluate_daily_market_actions(
                     )
                 )
     if not pending:
-        return DailyMarketEvaluation(tuple(reviews), tuple(inventory_actions))
+        actions = _optional_ranking(inventory_actions, rank=rank)
+        return DailyMarketEvaluation(tuple(reviews), tuple(actions))
 
     batch = capture_current_order_books(
         clob_client,
@@ -192,8 +221,6 @@ def evaluate_daily_market_actions(
             warnings.append("roster_confidence_low_or_unknown")
         if not item.uncertainty_available:
             warnings.append("uncertainty_unavailable")
-        point_edge = expected_edge(odds, item.probability)
-        conservative_edge = expected_edge(odds, item.probability_lower)
         market_probability = probability_from_decimal_odds(odds)
         if abs(item.probability - market_probability) >= 0.20:  # noqa: PLR2004
             warnings.append("model_market_disagreement_high")
@@ -207,11 +234,11 @@ def evaluate_daily_market_actions(
                 hard_blocks=item.hard_blocks,
                 warnings=tuple(warnings),
                 observation=observation,
-                point_edge=point_edge,
-                conservative_edge=conservative_edge,
             )
         )
-    return DailyMarketEvaluation(tuple(reviews), (*action_rows, *inventory_actions))
+    actions = [*action_rows, *inventory_actions]
+    actions = _optional_ranking(actions, rank=rank)
+    return DailyMarketEvaluation(tuple(reviews), tuple(actions))
 
 
 def _interpret_market(
@@ -221,6 +248,7 @@ def _interpret_market(
     *,
     reviewed_at: datetime,
     model_healthy: bool,
+    strategy_readiness: Mapping[str, str],
     run_key: str | None,
 ) -> tuple[list[PendingMarketAction], dict[str, Any]]:
     team_a = str(fixture.get("team_a") or "").strip()
@@ -235,6 +263,8 @@ def _interpret_market(
         best_of=best_of,
         reviewed_at=reviewed_at,
     )
+    if not model_healthy:
+        hard_blocks = (*hard_blocks, "model_unhealthy")
     probabilities, mapping_warnings = _market_probabilities(
         market,
         target=target,
@@ -250,6 +280,26 @@ def _interpret_market(
     for outcome in market.outcomes:
         mapped = probabilities.get(outcome.name.casefold())
         probability, lower, baseline, favorite = mapped or (None, None, 0.5, False)
+        line = _outcome_line(
+            market,
+            target=target,
+            outcome=outcome.name,
+            team_a=team_a,
+            team_b=team_b,
+        )
+        semantic = None
+        outcome_blocks = list(hard_blocks)
+        try:
+            semantic = market_semantic_key(
+                target=target,
+                selection=_semantic_selection(
+                    outcome.name, team_a=team_a, team_b=team_b
+                ),
+                game_number=market.game_number,
+                line=line,
+            )
+        except MarketDataError as error:
+            outcome_blocks.append(f"semantic_contract:{error}")
         comparison_id = _stable_id(
             "comparison",
             f"{run_key or reviewed_at.isoformat()}|{fixture_key}|"
@@ -267,9 +317,7 @@ def _interpret_market(
                 strategy_version=strategy,
                 probability_source=source,
                 game_number=market.game_number,
-                line=float(market.total_line)
-                if market.total_line is not None
-                else None,
+                line=line,
                 selection=outcome.name,
                 probability=probability,
                 probability_lower=lower,
@@ -284,7 +332,15 @@ def _interpret_market(
                 roster_ready=_roster_ready(snapshots),
                 roster_confidence=_roster_confidence(snapshots),
                 uncertainty_available=lower is not None,
-                hard_blocks=tuple(dict.fromkeys(hard_blocks)),
+                readiness=_readiness_state(
+                    target,
+                    league=str(fixture.get("league") or ""),
+                    game_number=market.game_number,
+                    readiness=strategy_readiness,
+                ),
+                semantic_key=semantic.to_dict() if semantic else None,
+                semantic_fingerprint=semantic.fingerprint if semantic else None,
+                hard_blocks=tuple(dict.fromkeys(outcome_blocks)),
                 warnings=tuple(mapping_warnings),
             )
         )
@@ -322,14 +378,13 @@ def _unsupported_inventory_actions(
     reviewed_at: datetime,
     run_key: str | None,
 ) -> list[dict[str, Any]]:
-    """Retain unsupported selections for manual ledger references without quoting."""
+    """Retain one compact unsupported-contract record without quoting outcomes."""
     fixture_key = str(fixture.get("match_key") or "")
     return [
         {
             "comparison_id": _stable_id(
                 "comparison",
-                f"{run_key or reviewed_at.isoformat()}|{fixture_key}|"
-                f"{market.market_id}|{outcome.token_id}",
+                f"{run_key or reviewed_at.isoformat()}|{fixture_key}|{market.market_id}",
             ),
             "fixture_id": fixture_key,
             "fixture_key": fixture_key,
@@ -342,16 +397,20 @@ def _unsupported_inventory_actions(
             "probability_source": None,
             "game_number": market.game_number,
             "line": float(market.total_line) if market.total_line is not None else None,
-            "selection": outcome.name,
+            "selection": None,
+            "selections": [outcome.name for outcome in market.outcomes],
             "probability": None,
             "probability_lower": None,
             "start_time": _utc_datetime(fixture.get("start_utc")),
             "market_id": market.market_id,
-            "token_id": outcome.token_id,
+            "token_id": None,
+            "token_ids": [outcome.token_id for outcome in market.outcomes],
             "market_url": market.url,
             "resolution_source": market.resolution_source,
-            "state": "model_unavailable",
+            "state": "not_comparable",
+            "classification": "not_comparable",
             "reason": "no_model_target",
+            "reason_codes": ["unsupported_probability_mapping"],
             "hard_blocks": ["unsupported_probability_mapping"],
             "warnings": ["no_model_target"],
             "point_edge": None,
@@ -359,7 +418,6 @@ def _unsupported_inventory_actions(
             "quote_basis": "not_quoted",
             "observations": [],
         }
-        for outcome in market.outcomes
     ]
 
 
@@ -369,6 +427,8 @@ def price_manual_lines(
     snapshot_rows: Sequence[dict[str, Any]],
     lines: Sequence[dict[str, Any]],
     reviewed_at: datetime,
+    strategy_readiness: Mapping[str, str] | None = None,
+    rank: bool = True,
 ) -> list[dict[str, Any]]:
     """Price owner-entered bookmaker lines without contacting the provider."""
     fixture_key = str(fixture.get("match_key") or "")
@@ -388,7 +448,7 @@ def price_manual_lines(
             )
         if line is not None and not math.isfinite(line):
             raise ValueError("Manual market lines must be finite.")
-        probability, warning = _manual_probability(
+        probability, probability_lower, warning = _manual_probabilities(
             target=target,
             selection=selection,
             line=line,
@@ -397,13 +457,52 @@ def price_manual_lines(
             team_b=team_b,
             best_of=best_of,
         )
+        hard_blocks: list[str] = []
+        semantic = None
+        try:
+            semantic = market_semantic_key(
+                target=target,
+                selection=_semantic_selection(selection, team_a=team_a, team_b=team_b),
+                game_number=(
+                    int(raw["game_number"])
+                    if raw.get("game_number") is not None
+                    else None
+                ),
+                line=line,
+            )
+        except (MarketDataError, TypeError, ValueError) as error:
+            hard_blocks.append(f"semantic_contract:{error}")
         market_id = str(raw.get("market_id") or f"thunderpick-{index}")
         token_id = _stable_id(
             "manual-selection",
             f"{fixture_key}|{market_id}|{selection}|{line}|{odds}",
         )
-        point_edge = (
-            expected_edge(odds, probability) if probability is not None else None
+        readiness = _readiness_state(
+            target,
+            league=str(fixture.get("league") or ""),
+            game_number=(
+                int(raw["game_number"]) if raw.get("game_number") is not None else None
+            ),
+            readiness=strategy_readiness or {},
+        )
+        decision = decide_market(
+            semantic_fingerprint=semantic.fingerprint if semantic else token_id,
+            target=target,
+            readiness=readiness,
+            probability=probability,
+            conservative_probability=probability_lower,
+            decimal_odds=odds,
+            is_model_favorite=(
+                probability is not None and probability >= _EVEN_PROBABILITY
+            ),
+            hard_blocks=tuple(hard_blocks),
+        )
+        decision_payload = decision.to_dict()
+        selected_path = decision_payload["sizing"]["selected_path"]
+        stake_units = (
+            decision_payload["sizing"]["stake_units"][selected_path]
+            if selected_path
+            else 0.0
         )
         output.append(
             {
@@ -421,7 +520,7 @@ def price_manual_lines(
                 "line": line,
                 "selection": selection,
                 "probability": probability,
-                "probability_lower": probability,
+                "probability_lower": probability_lower,
                 "rating_baseline_probability": _EVEN_PROBABILITY,
                 "is_model_favorite": (
                     probability is not None and probability >= _EVEN_PROBABILITY
@@ -435,13 +534,18 @@ def price_manual_lines(
                 "roster_ready": _roster_ready(snapshots),
                 "roster_confidence": _roster_confidence(snapshots),
                 "uncertainty_available": probability is not None,
-                "state": "quoted" if probability is not None else "model_unavailable",
-                "reason": warning,
-                "hard_blocks": [],
+                "readiness": readiness,
+                "semantic_key": semantic.to_dict() if semantic else None,
+                "semantic_fingerprint": semantic.fingerprint if semantic else None,
+                "state": decision.classification.value,
+                "reason": decision.reason_codes[0]
+                if decision.reason_codes
+                else warning,
+                "hard_blocks": hard_blocks,
                 "warnings": [warning] if warning else ["owner_entered_bookmaker_line"],
-                "point_edge": point_edge,
-                "conservative_edge": point_edge,
-                "stake_units": 0.0,
+                "point_edge": decision.point_ev,
+                "conservative_edge": decision.conservative_ev,
+                "stake_units": stake_units,
                 "correlation_rank": None,
                 "decimal_odds": odds,
                 "fair_decimal_odds": decimal_odds_from_probability(probability)
@@ -470,11 +574,18 @@ def price_manual_lines(
                 ],
                 "note": str(raw.get("note") or "").strip() or None,
             }
+            | decision_payload
         )
-    return output
+    return _optional_ranking(output, rank=rank)
 
 
-def _manual_probability(  # noqa: PLR0911, PLR0912
+def _optional_ranking(
+    actions: list[dict[str, Any]], *, rank: bool
+) -> list[dict[str, Any]]:
+    return rank_market_decisions(actions) if rank else actions
+
+
+def _manual_probabilities(  # noqa: PLR0911, PLR0912
     *,
     target: str,
     selection: str,
@@ -483,7 +594,7 @@ def _manual_probability(  # noqa: PLR0911, PLR0912
     team_a: str,
     team_b: str,
     best_of: int,
-) -> tuple[float | None, str | None]:
+) -> tuple[float | None, float | None, str | None]:
     if target in {"series_winner", "map_winner"}:
         rows = snapshots.get(target, [])
         side = _team_side(selection, team_a=team_a, team_b=team_b)
@@ -498,17 +609,16 @@ def _manual_probability(  # noqa: PLR0911, PLR0912
             ),
             None,
         )
-        return (
-            (float(row["model_value"]), None)
-            if row is not None
-            else (None, "model_probability_unavailable")
-        )
+        if row is None:
+            return None, None, "model_probability_unavailable"
+        probability = float(row["model_value"])
+        return probability, float(row.get("probability_lower", probability)), None
     if target in _PROP_CALIBRATORS:
         if line is None:
-            return None, "prop_line_missing"
+            return None, None, "prop_line_missing"
         rows = snapshots.get(target, [])
         if len(rows) != 1:
-            return None, "prop_forecast_unavailable"
+            return None, None, "prop_forecast_unavailable"
         try:
             signal = _prop_calibrator(target).price(
                 mean=float(rows[0]["model_value"]),
@@ -519,16 +629,18 @@ def _manual_probability(  # noqa: PLR0911, PLR0912
                 },
             )
         except Exception:
-            return None, "prop_calibrator_unavailable"
+            return None, None, "prop_calibrator_unavailable"
         side = selection.casefold()
         if side == "over":
-            return float(signal.over_probability), None
+            probability = float(signal.over_probability)
+            return probability, probability, None
         if side == "under":
-            return float(signal.under_probability), None
-        return None, "prop_outcome_orientation_unsupported"
+            probability = float(signal.under_probability)
+            return probability, probability, None
+        return None, None, "prop_outcome_orientation_unsupported"
     if target == "series_total_maps" and line is not None:
         if line.is_integer():
-            return None, "total_push_probability_not_supported"
+            return None, None, "total_push_probability_not_supported"
         map_rows = snapshots.get("map_winner", [])
         team_a_row = next(
             (
@@ -540,21 +652,19 @@ def _manual_probability(  # noqa: PLR0911, PLR0912
             None,
         )
         if team_a_row is None:
-            return None, "map_probability_unavailable"
+            return None, None, "map_probability_unavailable"
         distribution = enumerate_series_paths(
             float(team_a_row["model_value"]), best_of=best_of
         )
         side = selection.casefold()
         if side not in {"over", "under"}:
-            return None, "total_outcome_orientation_unsupported"
-        return (
-            sum(
-                value
-                for maps, value in distribution.total_maps.items()
-                if (maps > line if side == "over" else maps < line)
-            ),
-            "derived_map_path_v1",
+            return None, None, "total_outcome_orientation_unsupported"
+        probability = sum(
+            value
+            for maps, value in distribution.total_maps.items()
+            if (maps > line if side == "over" else maps < line)
         )
+        return probability, probability, "derived_map_path_v1"
     if target == "series_handicap" and line is not None:
         map_rows = snapshots.get("map_winner", [])
         team_a_row = next(
@@ -568,7 +678,7 @@ def _manual_probability(  # noqa: PLR0911, PLR0912
         )
         side = _team_side(selection, team_a=team_a, team_b=team_b)
         if team_a_row is None or side is None:
-            return None, "map_probability_unavailable"
+            return None, None, "map_probability_unavailable"
         distribution = enumerate_series_paths(
             float(team_a_row["model_value"]), best_of=best_of
         )
@@ -576,16 +686,14 @@ def _manual_probability(  # noqa: PLR0911, PLR0912
             (difference if side == "a" else -difference) + line == 0
             for difference in distribution.map_differential
         ):
-            return None, "handicap_push_probability_not_supported"
-        return (
-            sum(
-                value
-                for difference, value in distribution.map_differential.items()
-                if ((difference if side == "a" else -difference) + line) > 0
-            ),
-            "derived_map_path_v1",
+            return None, None, "handicap_push_probability_not_supported"
+        probability = sum(
+            value
+            for difference, value in distribution.map_differential.items()
+            if ((difference if side == "a" else -difference) + line) > 0
         )
-    return None, "model_probability_unavailable"
+        return probability, probability, "derived_map_path_v1"
+    return None, None, "model_probability_unavailable"
 
 
 def _market_classification(
@@ -612,6 +720,62 @@ def _market_classification(
             "derived_map_path_v1",
         )
     return "unknown", None, None
+
+
+def _outcome_line(
+    market: PolymarketMarket,
+    *,
+    target: str,
+    outcome: str,
+    team_a: str,
+    team_b: str,
+) -> float | None:
+    if target == "series_handicap":
+        lines = _handicap_lines(market, team_a=team_a, team_b=team_b) or {}
+        side = _team_side(outcome, team_a=team_a, team_b=team_b)
+        return lines.get(side or "")
+    return float(market.total_line) if market.total_line is not None else None
+
+
+def _semantic_selection(value: str, *, team_a: str, team_b: str) -> str:
+    side = _team_side(value, team_a=team_a, team_b=team_b)
+    if side == "a":
+        return canonical_team_name(team_a)
+    if side == "b":
+        return canonical_team_name(team_b)
+    return value
+
+
+def _readiness_state(
+    target: str,
+    *,
+    league: str,
+    game_number: int | None,
+    readiness: Mapping[str, str],
+) -> str:
+    normalized_target = {
+        "gamelength_mean": "gamelength",
+        "total_kills_mean": "total_kills",
+        "total_towers_mean": "total_towers",
+    }.get(target, target)
+    if normalized_target == "series_winner":
+        states = (
+            readiness.get("series_winner|actionable_tier1_plus_erls"),
+            readiness.get(f"series_winner|league:{league}"),
+        )
+        if states == ("recommendation_active", "recommendation_active"):
+            return "recommendation_active"
+        if "display_only" in states:
+            return "display_only"
+        return "exploration_only"
+    if normalized_target == "map_winner":
+        normalized_target = (
+            "map_winner:map_1" if game_number == 1 else "map_winner:later_maps"
+        )
+    return readiness.get(
+        f"{normalized_target}|all_actionable",
+        "exploration_only",
+    )
 
 
 def _prop_target(market: PolymarketMarket) -> str | None:
@@ -998,16 +1162,19 @@ def _action_payload(
     hard_blocks: tuple[str, ...],
     warnings: tuple[str, ...],
     observation: Any,
-    point_edge: float | None = None,
-    conservative_edge: float | None = None,
 ) -> dict[str, Any]:
+    quoted_odds = (
+        float(observation.fill.decimal_odds)
+        if observation is not None and observation.fill.decimal_odds is not None
+        else None
+    )
     payload = asdict(item) | {
         "state": state,
         "reason": reason,
         "hard_blocks": list(dict.fromkeys(hard_blocks)),
         "warnings": list(dict.fromkeys(warnings)),
-        "point_edge": point_edge,
-        "conservative_edge": conservative_edge,
+        "point_edge": None,
+        "conservative_edge": None,
         "stake_units": 0.0,
         "correlation_rank": None,
         "decimal_odds": None,
@@ -1027,6 +1194,33 @@ def _action_payload(
                 "observations": [_observation_payload(observation)],
             }
         )
+    decision = decide_market(
+        semantic_fingerprint=item.semantic_fingerprint or item.comparison_id,
+        target=item.target,
+        readiness=item.readiness,
+        probability=item.probability,
+        conservative_probability=item.probability_lower,
+        decimal_odds=quoted_odds,
+        is_model_favorite=item.is_model_favorite,
+        hard_blocks=hard_blocks,
+    )
+    decision_payload = decision.to_dict()
+    selected_path = decision_payload["sizing"]["selected_path"]
+    stake_units = (
+        decision_payload["sizing"]["stake_units"][selected_path]
+        if selected_path
+        else 0.0
+    )
+    payload.update(decision_payload)
+    payload.update(
+        {
+            "state": decision.classification.value,
+            "reason": decision.reason_codes[0] if decision.reason_codes else None,
+            "point_edge": decision.point_ev,
+            "conservative_edge": decision.conservative_ev,
+            "stake_units": stake_units,
+        }
+    )
     return payload
 
 

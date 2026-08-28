@@ -85,7 +85,7 @@ def test_product_league_profiles_and_read_only_market_are_consistent():
     prediction_profile = product["leagues"]["prediction_profile"]
     exclusions = set(product["leagues"]["actionable_exclusions"])
 
-    assert product["market"] == {"read_only": True}
+    assert product["market"] == {"read_only": True, "quote_ttl_seconds": 120}
     assert product["timezone"] == "Europe/Rome"
     assert training_profile in profiles
     assert prediction_profile in profiles

@@ -9,6 +9,7 @@ from oracle_bets_core.markets import (
     MarketDataError,
     PolymarketEvent,
     PolymarketGammaAdapter,
+    market_semantic_key,
 )
 from oracle_bets_core.pd import pd
 
@@ -307,6 +308,18 @@ def test_market_url_parser_allows_two_known_providers_and_rejects_hostile_urls()
 
 
 def test_provider_comparison_groups_only_identical_semantics_and_picks_best_odds():
+    winner_semantic = market_semantic_key(
+        target="series_winner",
+        selection="Top Esports",
+        game_number=None,
+        line=None,
+    )
+    total_semantic = market_semantic_key(
+        target="series_total_maps",
+        selection="Over",
+        game_number=None,
+        line=2.5,
+    )
     rows = [
         {
             "fixture_key": "fixture-1",
@@ -320,6 +333,8 @@ def test_provider_comparison_groups_only_identical_semantics_and_picks_best_odds
             "point_edge": 0.08,
             "hard_blocks": [],
             "market_id": "poly-series",
+            "semantic_key": winner_semantic.to_dict(),
+            "semantic_fingerprint": winner_semantic.fingerprint,
         },
         {
             "fixture_key": "fixture-1",
@@ -333,6 +348,8 @@ def test_provider_comparison_groups_only_identical_semantics_and_picks_best_odds
             "point_edge": 0.14,
             "hard_blocks": [],
             "market_id": "tp-series",
+            "semantic_key": winner_semantic.to_dict(),
+            "semantic_fingerprint": winner_semantic.fingerprint,
         },
         {
             "fixture_key": "fixture-1",
@@ -346,6 +363,8 @@ def test_provider_comparison_groups_only_identical_semantics_and_picks_best_odds
             "point_edge": 0.0725,
             "hard_blocks": [],
             "market_id": "tp-total",
+            "semantic_key": total_semantic.to_dict(),
+            "semantic_fingerprint": total_semantic.fingerprint,
         },
     ]
 
@@ -356,6 +375,43 @@ def test_provider_comparison_groups_only_identical_semantics_and_picks_best_odds
     assert winner["best_provider"] == "thunderpick"
     assert winner["best_decimal_odds"] == BEST_ODDS
     assert len(winner["providers"]) == EXPECTED_COMPARISONS
+
+
+def test_provider_comparison_never_merges_equal_labels_across_map_periods():
+    map_one = market_semantic_key(
+        target="map_winner", selection="Top Esports", game_number=1, line=None
+    )
+    map_two = market_semantic_key(
+        target="map_winner", selection="Top Esports", game_number=2, line=None
+    )
+    rows = [
+        {
+            "fixture_key": "fixture-1",
+            "provider": provider,
+            "target": "map_winner",
+            "selection": "Top Esports",
+            "game_number": game_number,
+            "probability": 0.6,
+            "decimal_odds": odds,
+            "hard_blocks": [],
+            "market_id": f"{provider}-map-{game_number}",
+            "semantic_key": semantic.to_dict(),
+            "semantic_fingerprint": semantic.fingerprint,
+        }
+        for provider, game_number, odds, semantic in (
+            ("polymarket", 1, 1.8, map_one),
+            ("thunderpick", 1, 1.9, map_one),
+            ("polymarket", 2, 2.0, map_two),
+        )
+    ]
+
+    comparisons = manual_market.provider_comparisons(rows)
+
+    assert len(comparisons) == EXPECTED_COMPARISONS
+    assert {row["semantic_fingerprint"] for row in comparisons} == {
+        map_one.fingerprint,
+        map_two.fingerprint,
+    }
 
 
 def test_thunderpick_is_schedule_resolved_and_never_fetched(tmp_path, monkeypatch):

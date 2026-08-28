@@ -147,8 +147,8 @@ def test_exact_event_markets_use_one_snapshot_and_rank_correlated_contracts():
     quoted = [row for row in result.actions if row.get("decimal_odds")]
     assert books.calls == len({row["token_id"] for row in quoted})
     assert result.reviews
-    assert all(row["state"] == "quoted" for row in quoted)
-    assert all(row["reason"] is None for row in quoted)
+    assert all(row["state"] == "exploration" for row in quoted)
+    assert all(row["bet_type"] == "exploration" for row in quoted)
     assert all(Decimal(str(row["decimal_odds"])) > 1 for row in quoted)
     assert all(row["requested_shares"] == "5" for row in quoted)
     assert all(row["hypothetical_cost"] == "2.50" for row in quoted)
@@ -223,7 +223,7 @@ def test_scalar_prop_is_priced_and_recorded_but_never_systematic(monkeypatch):
         adapter,
         "kills",
         "kill_over_under_game",
-        "Total Kills 24.5",
+        "Game 1 Total Kills 24.5",
         '["Over","Under"]',
         '["kills-over","kills-under"]',
         line="24.5",
@@ -232,7 +232,7 @@ def test_scalar_prop_is_priced_and_recorded_but_never_systematic(monkeypatch):
         adapter,
         "kills-generic-totals",
         "totals",
-        "Total Kills 24.5",
+        "Game 1 Total Kills 24.5",
         '["Over","Under"]',
         '["kills-generic-over","kills-generic-under"]',
         line="24.5",
@@ -249,8 +249,7 @@ def test_scalar_prop_is_priced_and_recorded_but_never_systematic(monkeypatch):
 
     assert {row["probability"] for row in result.actions} == {0.4, 0.6}
     assert all(row["decimal_odds"] for row in result.actions)
-    assert all(row["state"] == "quoted" for row in result.actions)
-    assert all(row["reason"] is None for row in result.actions)
+    assert all(row["state"] == "exploration" for row in result.actions)
     assert all("display_only_prop" in row["warnings"] for row in result.actions)
 
 
@@ -340,7 +339,7 @@ def test_handicap_is_derived_while_odd_even_kills_has_no_model_target():
     ]
     assert {row["target"] for row in handicap} == {"series_handicap"}
     assert all(row["probability"] is not None for row in handicap)
-    assert len(unsupported) == EXPECTED_OUTCOMES
+    assert len(unsupported) == 1
     assert all(row["reason"] == "no_model_target" for row in unsupported)
     assert all(row["decimal_odds"] is None for row in unsupported)
     unsupported_review = next(
@@ -386,7 +385,10 @@ def test_manual_integer_total_is_not_priced_without_push_accounting():
     )[0]
 
     assert action["probability"] is None
-    assert action["reason"] == "total_push_probability_not_supported"
+    assert "total_push_probability_not_supported" in action["warnings"]
+    assert any(
+        reason.startswith("semantic_contract:") for reason in action["reason_codes"]
+    )
 
 
 def test_ready_low_confidence_roster_is_warned():

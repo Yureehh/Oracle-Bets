@@ -16,7 +16,8 @@ NEW_VALID_MAPS_TRIGGER = 50
 ACTIONABLE_LEAGUE_EXCLUSIONS = ("CBLOL", "LCP")
 PREDICTION_LEAGUE_PROFILE = "tier1_plus_erls"
 RESEARCH_LEAGUE_PROFILE = "research_all_supported"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+QUOTE_TTL_SECONDS = 120
 
 
 class ProductConfigError(ValueError):
@@ -47,13 +48,52 @@ def _positive_int(value: Any, field_name: str) -> int:
 @dataclass(frozen=True)
 class MarketConfig:
     read_only: bool
+    quote_ttl_seconds: int
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> MarketConfig:
-        _expect_keys(value, {"read_only"}, "market")
+        _expect_keys(value, {"read_only", "quote_ttl_seconds"}, "market")
         if value["read_only"] is not True:
             raise ProductConfigError("market comparison must remain read-only.")
-        return cls(read_only=True)
+        ttl = _positive_int(value["quote_ttl_seconds"], "market.quote_ttl_seconds")
+        if ttl != QUOTE_TTL_SECONDS:
+            raise ProductConfigError("market.quote_ttl_seconds must remain 120.")
+        return cls(read_only=True, quote_ttl_seconds=ttl)
+
+
+@dataclass(frozen=True)
+class StrategyConfig:
+    policy_version: str
+    recommendation_target: str
+    minimum_model_favorite: float
+    unit_bankroll_fraction: float
+    paper_positive_ev_path: str
+    paper_negative_ev_exploration_path: str
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> StrategyConfig:
+        expected = {
+            "policy_version",
+            "recommendation_target",
+            "minimum_model_favorite",
+            "unit_bankroll_fraction",
+            "paper_positive_ev_path",
+            "paper_negative_ev_exploration_path",
+        }
+        _expect_keys(value, expected, "strategy")
+        required = {
+            "policy_version": "lol-market-policy-v1",
+            "recommendation_target": "series_winner",
+            "minimum_model_favorite": 0.51,
+            "unit_bankroll_fraction": 0.01,
+            "paper_positive_ev_path": "full_kelly",
+            "paper_negative_ev_exploration_path": "flat_1u",
+        }
+        if any(
+            value.get(key) != expected_value for key, expected_value in required.items()
+        ):
+            raise ProductConfigError("strategy values must match the versioned policy.")
+        return cls(**required)
 
 
 @dataclass(frozen=True)
@@ -144,6 +184,7 @@ class ProductConfig:
     leagues: LeagueConfig
     training: TrainingConfig
     promotion: PromotionConfig
+    strategy: StrategyConfig
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> ProductConfig:
@@ -155,6 +196,7 @@ class ProductConfig:
             "leagues",
             "training",
             "promotion",
+            "strategy",
         }
         _expect_keys(value, expected, "product config")
         if value["schema_version"] != SCHEMA_VERSION:
@@ -182,6 +224,7 @@ class ProductConfig:
             leagues=LeagueConfig.from_dict(value["leagues"]),
             training=TrainingConfig.from_dict(value["training"]),
             promotion=PromotionConfig.from_dict(value["promotion"]),
+            strategy=StrategyConfig.from_dict(value["strategy"]),
         )
 
     def to_dict(self) -> dict[str, Any]:

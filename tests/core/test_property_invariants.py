@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -12,6 +14,7 @@ from oracle_bets_core.betting import (
     kelly_fraction,
     probability_from_decimal_odds,
 )
+from oracle_bets_core.markets import market_semantic_key
 
 FINITE_PROBABILITY = st.floats(
     min_value=1e-6,
@@ -116,3 +119,35 @@ def test_polymarket_url_normalization_is_idempotent(urls):
     normalized = normalize_market_urls(("\n, ".join(urls),))
 
     assert normalize_market_urls((" ".join(normalized),)) == normalized
+
+
+@PROPERTY_SETTINGS
+@given(
+    whole=st.integers(min_value=-1000, max_value=1000),
+    target=st.sampled_from(
+        (
+            "series_total_maps",
+            "series_handicap",
+            "total_kills_mean",
+            "total_towers_mean",
+        )
+    ),
+)
+def test_half_line_semantic_normalization_is_idempotent(whole, target):
+    line = Decimal(whole) + Decimal("0.5")
+    game_number = 1 if target.startswith("total_") else None
+
+    decimal_key = market_semantic_key(
+        target=target,
+        selection="  OVER  ",
+        game_number=game_number,
+        line=line,
+    )
+    string_roundtrip = market_semantic_key(
+        target=target,
+        selection=decimal_key.selection,
+        game_number=game_number,
+        line=Decimal(decimal_key.line or "0"),
+    )
+
+    assert string_roundtrip == decimal_key
