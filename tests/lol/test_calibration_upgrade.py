@@ -8,6 +8,7 @@ from lol_bets.prediction_models.gbdt_model import (
     ProbabilityCalibrator,
     ProbabilityUncertaintyModel,
     PropDistributionCalibrator,
+    _calibration_metadata,
     conservative_probability_coverage,
 )
 from oracle_bets_core.paths import (
@@ -38,6 +39,21 @@ class ProbabilityColumnModel:
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         probabilities = X["p"].to_numpy(dtype=float)
         return np.column_stack([1.0 - probabilities, probabilities])
+
+
+def test_calibration_metadata_preserves_timestamps_without_model_features() -> None:
+    frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-01-01"], utc=True),
+            "league": ["LCK"],
+            "model_signal": [42.0],
+        }
+    )
+
+    metadata = _calibration_metadata(frame)
+
+    assert list(metadata) == ["date", "league"]
+    assert metadata["date"].notna().all()
 
 
 def _calibration_model(tmp_path, monkeypatch) -> DummyCalibratedModel:

@@ -153,6 +153,26 @@ DERIVED_STRENGTH_FEATURES = (
     "rating_consensus",
     "rating_disagreement",
 )
+CALIBRATION_METADATA_COLUMNS = (
+    "date",
+    "gameid",
+    "league",
+    "strength_pool",
+    "patch",
+    "season",
+    "game",
+    "match_type",
+    "is_bo1",
+    "is_bo3",
+    "is_bo5",
+)
+
+
+def _calibration_metadata(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep timestamp/context metadata separate from model features."""
+    return frame[
+        [column for column in CALIBRATION_METADATA_COLUMNS if column in frame]
+    ].copy()
 
 
 def _model_feature_lineage(
@@ -2804,8 +2824,12 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 if y_proba is not None:
                     self.plot_roc_pr_calibration(y_test, y_proba)
                     self.store_calibration_table(y_test, y_proba)
-                # historical accuracy uses PROCESSED_TEAMS join by gameid internally
-                self.plot_historical_accuracy(X_test, y_test, y_pred, eval_gameids)
+                history_features = X_test
+                if eval_meta is not None and "date" in eval_meta:
+                    history_features = X_test.assign(date=eval_meta["date"].to_numpy())
+                self.plot_historical_accuracy(
+                    history_features, y_test, y_pred, eval_gameids
+                )
             else:
                 metrics = self.compute_regression_metrics(y_test, y_pred)
                 self.store_residual_summary(
@@ -3082,27 +3106,11 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             require_temporal_order=used_temporal_split,
         )
 
-        calibration_meta_cols = [
-            col
-            for col in (
-                "gameid",
-                "league",
-                "strength_pool",
-                "patch",
-                "season",
-                "game",
-                "match_type",
-                "is_bo1",
-                "is_bo3",
-                "is_bo5",
-            )
-            if col in X_for_split.columns
-        ]
-        meta_cal_fit_for_cal = X_cal_fit[calibration_meta_cols].copy()
-        meta_cal_select_for_cal = X_cal_select[calibration_meta_cols].copy()
-        meta_cal_full_for_cal = X_cal_full[calibration_meta_cols].copy()
-        meta_uncertainty_for_cal = X_uncertainty[calibration_meta_cols].copy()
-        meta_test_for_cal = X_test[calibration_meta_cols].copy()
+        meta_cal_fit_for_cal = _calibration_metadata(X_cal_fit)
+        meta_cal_select_for_cal = _calibration_metadata(X_cal_select)
+        meta_cal_full_for_cal = _calibration_metadata(X_cal_full)
+        meta_uncertainty_for_cal = _calibration_metadata(X_uncertainty)
+        meta_test_for_cal = _calibration_metadata(X_test)
 
         self.fit_partition_metadata = {
             name: frame[[col for col in ("gameid", "date") if col in frame]].copy()
