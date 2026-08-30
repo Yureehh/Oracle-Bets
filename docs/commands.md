@@ -203,6 +203,15 @@ Routine retraining updates weights and calibrators with fixed reviewed
 hyperparameters. Retuning runs Optuna and needs separate review. Neither action
 is required for each market review.
 
+State-mutating LoL, model-lifecycle, and daily commands share one process lock.
+If one is already running, another exits immediately instead of racing generated
+data or model artifacts. Before a manual rebuild, pause the scheduled daily job:
+
+```bash
+launchctl bootout gui/$(id -u) \
+  ~/Library/LaunchAgents/com.oracle-bets.daily-lol.plist
+```
+
 ## Model registry
 
 | Command | Purpose |

@@ -5,6 +5,31 @@ from __future__ import annotations
 import argparse
 import sys
 
+_LOL_READ_ONLY_ACTIONS = frozenset(
+    {
+        "health",
+        "source-check",
+        "validate-data",
+        "validate-winner-model",
+        "validate-market-strategies",
+        "market-check",
+        "review-tuning",
+    }
+)
+_MODEL_READ_ONLY_ACTIONS = frozenset({"status", "list", "review", "register-run"})
+
+
+def _requires_pipeline_lock(args: argparse.Namespace) -> bool:
+    if args.domain == "daily":
+        return True
+    if args.domain == "lol":
+        return args.action not in _LOL_READ_ONLY_ACTIONS
+    if args.domain == "model":
+        return args.action not in _MODEL_READ_ONLY_ACTIONS or bool(
+            getattr(args, "refresh", False)
+        )
+    return False
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="oracle-bets")
@@ -1454,10 +1479,23 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.domain == "ops":
         return handlers[args.domain](args)
-    from oracle_bets_core.maintenance import maintenance_lock
+    from contextlib import nullcontext
 
-    with maintenance_lock(exclusive=False):
-        return handlers[args.domain](args)
+    from oracle_bets_core.maintenance import (
+        MaintenanceBusyError,
+        maintenance_lock,
+        operation_lock,
+    )
+
+    pipeline_guard = (
+        operation_lock("pipeline") if _requires_pipeline_lock(args) else nullcontext()
+    )
+    try:
+        with maintenance_lock(exclusive=False), pipeline_guard:
+            return handlers[args.domain](args)
+    except MaintenanceBusyError as error:
+        sys.stderr.write(f"{error}\n")
+        return 2
 
 
 if __name__ == "__main__":  # pragma: no cover

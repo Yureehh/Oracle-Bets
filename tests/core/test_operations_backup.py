@@ -9,6 +9,7 @@ from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.maintenance import (
     MaintenanceBusyError,
     maintenance_lock,
+    operation_lock,
 )
 from oracle_bets_core.operations import (
     EvidenceWorkflowJournal,
@@ -282,6 +283,17 @@ def test_maintenance_lock_blocks_exclusive_reset(tmp_path):
         maintenance_lock(exclusive=False, root=tmp_path),
         pytest.raises(MaintenanceBusyError),
         maintenance_lock(exclusive=True, blocking=False, root=tmp_path),
+    ):
+        pass
+
+
+def test_operation_lock_allows_only_one_pipeline_writer(tmp_path):
+    with (
+        operation_lock("pipeline", root=tmp_path),
+        pytest.raises(
+            MaintenanceBusyError, match="pipeline operation is already running"
+        ),
+        operation_lock("pipeline", blocking=False, root=tmp_path),
     ):
         pass
 

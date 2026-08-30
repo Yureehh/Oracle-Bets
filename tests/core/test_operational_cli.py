@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 from lol_bets.operations.models import CandidateManifest, ModelRegistry
-from oracle_bets_core.cli import _market_check_fixture_rows, build_parser, main
+from oracle_bets_core.cli import (
+    _market_check_fixture_rows,
+    _requires_pipeline_lock,
+    build_parser,
+    main,
+)
 from oracle_bets_core.paths import SCHEDULE
 from oracle_bets_core.pd import pd
 
@@ -60,6 +65,37 @@ def test_parser_exposes_required_operational_commands():
     )
 
     assert all(build_parser().parse_args(command) for command in commands)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["lol", "reconcile-history"],
+        ["lol", "schedule"],
+        ["lol", "research"],
+        ["lol", "retune"],
+        ["lol", "train"],
+        ["lol", "promote-tuning", "run-1"],
+        ["model", "promote", "candidate-1", "--reason", "reviewed"],
+        ["daily", "lol"],
+    ],
+)
+def test_state_mutating_pipeline_commands_require_single_writer_lock(command):
+    assert _requires_pipeline_lock(build_parser().parse_args(command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["lol", "source-check"],
+        ["lol", "health"],
+        ["lol", "validate-data"],
+        ["model", "list"],
+        ["model", "review", "candidate-1"],
+    ],
+)
+def test_read_only_commands_do_not_require_pipeline_writer_lock(command):
+    assert not _requires_pipeline_lock(build_parser().parse_args(command))
 
 
 def test_removed_automatic_reconciliation_command_is_rejected():
