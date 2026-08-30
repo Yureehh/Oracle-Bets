@@ -13,7 +13,6 @@ _LOL_READ_ONLY_ACTIONS = frozenset(
         "validate-winner-model",
         "validate-market-strategies",
         "market-check",
-        "review-tuning",
     }
 )
 _MODEL_READ_ONLY_ACTIONS = frozenset({"status", "list", "review", "register-run"})

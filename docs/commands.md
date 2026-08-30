@@ -307,9 +307,13 @@ uv run oracle-bets lol build-series
 
 # Isolated research/Optuna: never promotes automatically.
 uv run oracle-bets lol research --targets all --include-next-map
-uv run oracle-bets lol retune --targets all --feature-set auto
-uv run oracle-bets lol review-tuning <RUN_ID> --format json
-uv run oracle-bets lol promote-tuning <RUN_ID>
+
+# The command prints one RUN_ID per target. Review both winner targets.
+uv run oracle-bets lol review-tuning <SERIES_RUN_ID> --format json
+uv run oracle-bets lol review-tuning <NEXT_MAP_RUN_ID> --format json
+
+# Promote only reviewed/accepted winner runs and inspected map/prop runs.
+uv run oracle-bets lol promote-tuning <TARGET_RUN_ID>
 
 # One fixed-parameter serving bundle from reviewed parameters.
 uv run oracle-bets lol train --targets all --feature-set compact
@@ -325,6 +329,11 @@ uv run oracle-bets evidence health
 uv run oracle-bets discord doctor --live
 uv run oracle-bets discord run
 ```
+
+`lol research --targets all --include-next-map` already performs one isolated
+Optuna study per target. Do not follow it with `retune --targets all`; `retune`
+is for rerunning one explicitly named target, such as
+`--targets series_winner`.
 
 Only direct series begins recommendation-capable. An exploration target passing
 artifact health does not automatically activate recommendations. Failed tuning

@@ -75,6 +75,7 @@ def test_parser_exposes_required_operational_commands():
         ["lol", "research"],
         ["lol", "retune"],
         ["lol", "train"],
+        ["lol", "review-tuning", "run-1"],
         ["lol", "promote-tuning", "run-1"],
         ["model", "promote", "candidate-1", "--reason", "reviewed"],
         ["daily", "lol"],
