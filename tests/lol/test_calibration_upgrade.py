@@ -5,6 +5,7 @@ import warnings
 import numpy as np
 import pytest
 from lol_bets.prediction_models.gbdt_model import (
+    WINNER_TEMPORAL_SPLIT_MODEL_NAMES,
     GradientBoostingModel,
     MetadataAwareProbabilityCalibrator,
     ProbabilityCalibrator,
@@ -180,6 +181,10 @@ def test_winner_v2_uses_predeclared_temporal_partitions() -> None:
     splits = GradientBoostingModel.temporal_winner_v2_split(X, y)
 
     assert [len(frame) for frame in splits[:6]] == [55, 5, 10, 10, 5, 15]
+
+
+def test_map_winner_uses_the_dedicated_uncertainty_partition() -> None:
+    assert "OutcomePrediction_LightGBM" in WINNER_TEMPORAL_SPLIT_MODEL_NAMES
 
 
 def test_split_integrity_rejects_overlapping_gameids() -> None:

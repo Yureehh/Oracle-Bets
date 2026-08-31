@@ -88,6 +88,9 @@ MIN_CALIBRATION_SPLITS = 6
 WINNER_V2_MODEL_NAMES = frozenset(
     {"SeriesWinnerPrediction_LightGBM", "NextMapWinnerPrediction_LightGBM"}
 )
+WINNER_TEMPORAL_SPLIT_MODEL_NAMES = WINNER_V2_MODEL_NAMES | {
+    "OutcomePrediction_LightGBM"
+}
 BINARY_CLASS_UNIQUE_VALUES = 2
 ROWS_PER_GAME = 2
 POSITIVE_RESULT_SUM_PER_GAME = 1
@@ -3030,7 +3033,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
                 y_test,
             ) = (
                 self.temporal_winner_v2_split(X_for_split, y)
-                if self.model_name in WINNER_V2_MODEL_NAMES
+                if self.model_name in WINNER_TEMPORAL_SPLIT_MODEL_NAMES
                 else self.temporal_train_tune_cal_test_split(
                     X_for_split,
                     y,
