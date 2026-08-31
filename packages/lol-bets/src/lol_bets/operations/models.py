@@ -44,10 +44,6 @@ _MAX_BOOTSTRAP_INDEX_CELLS = 1_000_000
 _DRIFT_MISSINGNESS_WARNING = 0.25
 _DRIFT_TOP_FEATURE_MINIMUM_OVERLAP = 5
 _DRIFT_PREDICTION_MEAN_WARNING = 0.05
-_MIN_CALIBRATION_SLOPE = 0.8
-_MAX_CALIBRATION_SLOPE = 1.2
-_MAX_ABSOLUTE_CALIBRATION_INTERCEPT = 0.10
-
 _COMPLETE_LOL_BUNDLE_REQUIRED_ARTIFACTS = frozenset(
     {
         "team_league_mapping.parquet",
@@ -638,6 +634,9 @@ def _review_winner_target_against_rating_baseline(
 ) -> tuple[list[str], str, dict[str, Any]]:
     """Review one Winner V2 target without borrowing evidence from another."""
     from lol_bets.prediction_models.gbdt_model import (
+        MAX_ABSOLUTE_CALIBRATION_INTERCEPT,
+        MAX_CALIBRATION_SLOPE,
+        MIN_CALIBRATION_SLOPE,
         GradientBoostingModel,
         conservative_probability_report,
     )
@@ -709,10 +708,10 @@ def _review_winner_target_against_rating_baseline(
     slope = calibration.get("calibration_slope")
     intercept = calibration.get("calibration_intercept")
     if slope is None or not (
-        _MIN_CALIBRATION_SLOPE <= float(slope) <= _MAX_CALIBRATION_SLOPE
+        MIN_CALIBRATION_SLOPE <= float(slope) <= MAX_CALIBRATION_SLOPE
     ):
         warnings.append("calibration_slope_outside_0.8_1.2")
-    if intercept is None or abs(float(intercept)) > _MAX_ABSOLUTE_CALIBRATION_INTERCEPT:
+    if intercept is None or abs(float(intercept)) > MAX_ABSOLUTE_CALIBRATION_INTERCEPT:
         warnings.append("calibration_intercept_above_0.10")
     if target == "series_winner":
         readiness_failures.extend(warnings)
