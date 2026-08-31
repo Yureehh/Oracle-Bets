@@ -74,6 +74,9 @@ _COMPLETE_LOL_BUNDLE_REQUIRED_ARTIFACTS = frozenset(
         "TotalTowersPrediction_LightGBM/TotalTowersPrediction_LightGBM_feature_pipeline.pkl",
         "TotalTowersPrediction_LightGBM/TotalTowersPrediction_LightGBM_residual_summary.pkl",
         "TotalTowersPrediction_LightGBM/TotalTowersPrediction_LightGBM_prop_calibrator.pkl",
+        "_evaluation/GamelengthPrediction_LightGBM/prop_evaluation_report.json",
+        "_evaluation/TotalKillsPrediction_LightGBM/prop_evaluation_report.json",
+        "_evaluation/TotalTowersPrediction_LightGBM/prop_evaluation_report.json",
     }
 )
 

@@ -67,6 +67,14 @@ def test_healthy_model_and_powered_safe_cohort_can_activate_series_only():
         == "exploration_only"
     )
     assert (
+        _cell(artifact, "series_total_maps", "all_actionable")["state"]
+        == "exploration_only"
+    )
+    assert (
+        _cell(artifact, "series_handicap", "all_actionable")["state"]
+        == "exploration_only"
+    )
+    assert (
         _cell(artifact, "gamelength", "all_actionable")["state"] == "exploration_only"
     )
     assert _cell(artifact, "total_towers", "all_actionable")["state"] == "display_only"

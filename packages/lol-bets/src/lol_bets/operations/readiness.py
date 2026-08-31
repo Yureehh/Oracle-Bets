@@ -182,7 +182,12 @@ def build_readiness_artifact(
 
     for target in EXPLORATION_TARGETS:
         base_target = target.split(":", 1)[0]
-        status = target_statuses.get(base_target)
+        source_target = (
+            "map_winner"
+            if base_target in {"series_total_maps", "series_handicap"}
+            else base_target
+        )
+        status = target_statuses.get(source_target)
         structurally_available = status in {"meets_basic_sanity", "weak_signal"}
         state = (
             ReadinessState.EXPLORATION_ONLY

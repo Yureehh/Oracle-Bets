@@ -1456,6 +1456,7 @@ def _register_training_candidate(
             "split_report.json",
             "calibration_report.json",
             "winner_model_report.json",
+            "prop_evaluation_report.json",
         ):
             source = report_root / model_name / filename
             if source.is_file():
