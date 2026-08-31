@@ -446,9 +446,10 @@ def conservative_probability_coverage(
     for column in ("actionable", "league"):
         if column in metadata:
             frame[column] = metadata[column].reset_index(drop=True)
-    frame = frame.replace([np.inf, -np.inf], np.nan).dropna(
-        subset=["actual", "lower", "date"]
-    )
+    with pd.option_context("future.no_silent_downcasting", True):
+        frame = frame.replace([np.inf, -np.inf], np.nan)
+    frame = frame.infer_objects(copy=False)
+    frame = frame.dropna(subset=["actual", "lower", "date"])
     frame = frame[
         frame["actual"].isin([0, 1])
         & frame["lower"].between(0.0, 1.0, inclusive="both")

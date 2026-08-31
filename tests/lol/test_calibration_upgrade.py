@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 from lol_bets.prediction_models.gbdt_model import (
@@ -348,6 +350,25 @@ def test_conservative_probability_requires_week_block_coverage() -> None:
     assert passing["cohorts"]["actionable"]["eligible"] is True
     assert failing["passed"] is False
     assert failing["cohorts"]["aggregate"]["shortfall"] > MAX_COVERAGE_SHORTFALL
+
+
+def test_conservative_probability_coverage_avoids_downcasting_warning() -> None:
+    dates = pd.date_range("2026-01-01", periods=70, freq="D")
+    metadata = pd.DataFrame(
+        {
+            "date": dates,
+            "actionable": pd.Series(([1.0, None] * 35), dtype=object),
+            "league": "LCK",
+        }
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", FutureWarning)
+        conservative_probability_coverage(
+            np.tile([0, 1], 35), np.full(70, 0.40), metadata
+        )
+
+    assert not any(isinstance(item.message, FutureWarning) for item in captured)
 
 
 def test_metadata_probability_calibrator_skips_sparse_segments(
