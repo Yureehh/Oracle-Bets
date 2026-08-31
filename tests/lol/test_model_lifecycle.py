@@ -765,6 +765,10 @@ def test_first_v2_without_legacy_champion_runs_internal_baseline_review(
             "calibration_intercept": -0.15,
         },
     )
+    monkeypatch.setattr(
+        "lol_bets.prediction_models.gbdt_model.conservative_probability_report",
+        lambda *_args, **_kwargs: {"coverage": {"passed": False}},
+    )
 
     review = review_candidate_on_sealed_rows(
         registry,
@@ -791,7 +795,11 @@ def test_first_v2_without_legacy_champion_runs_internal_baseline_review(
         if cell["target"] == "series_winner"
         and cell["cohort"] == "actionable_tier1_plus_erls"
     )
-    assert actionable["state"] == "recommendation_active"
+    assert actionable["state"] == "exploration_only"
+    assert actionable["reasons"] == [
+        "calibration_intercept_above_0.10",
+        "conservative_probability_coverage_failed",
+    ]
 
 
 def test_champion_transition_activates_reviewed_readiness_once(tmp_path, monkeypatch):

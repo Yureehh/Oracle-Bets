@@ -138,6 +138,7 @@ def build_readiness_artifact(
     target_statuses: dict[str, str],
     series_cohorts: dict[str, CohortEvidence],
     preregistered_cohorts: tuple[str, ...],
+    series_recommendation_failures: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build every target/cohort state without consulting market or final policy data."""
     if reviewed_at.tzinfo is None:
@@ -153,6 +154,9 @@ def build_readiness_artifact(
         if not series_structural:
             state = ReadinessState.DISPLAY_ONLY
             reasons.append("series_model_not_structurally_ready")
+        elif series_recommendation_failures:
+            state = ReadinessState.EXPLORATION_ONLY
+            reasons.extend(series_recommendation_failures)
         elif evidence is None:
             state = ReadinessState.EXPLORATION_ONLY
             reasons.append("cohort_evidence_missing")

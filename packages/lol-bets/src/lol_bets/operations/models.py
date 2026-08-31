@@ -702,6 +702,7 @@ def _review_winner_target_against_rating_baseline(
     )
     reasons = list(decision.reasons)
     warnings: list[str] = []
+    readiness_failures: list[str] = []
     slope = calibration.get("calibration_slope")
     intercept = calibration.get("calibration_intercept")
     if slope is None or not (
@@ -710,6 +711,8 @@ def _review_winner_target_against_rating_baseline(
         warnings.append("calibration_slope_outside_0.8_1.2")
     if intercept is None or abs(float(intercept)) > _MAX_ABSOLUTE_CALIBRATION_INTERCEPT:
         warnings.append("calibration_intercept_above_0.10")
+    if target == "series_winner":
+        readiness_failures.extend(warnings)
     conservative_report: dict[str, Any] | None = None
     if target == "series_winner":
         conservative_report = conservative_probability_report(
@@ -721,7 +724,7 @@ def _review_winner_target_against_rating_baseline(
             metadata,
         )
         if conservative_report["coverage"]["passed"] is not True:
-            reasons.append("conservative_probability_coverage_failed")
+            readiness_failures.append("conservative_probability_coverage_failed")
     report = {
         "sealed_rows": len(labels),
         "bootstrap_unit": cluster_col or "series",
@@ -745,6 +748,7 @@ def _review_winner_target_against_rating_baseline(
         "operational_failures": list(operational_failures),
         "reasons": list(dict.fromkeys(reasons)),
         "warnings": warnings,
+        "readiness_failures": list(dict.fromkeys(readiness_failures)),
         "conservative_probability": conservative_report,
         "readiness_cohorts": _series_readiness_cohorts(
             labels,
@@ -1770,6 +1774,9 @@ def _build_review_readiness(
         target_statuses=statuses,
         series_cohorts=cohorts,
         preregistered_cohorts=preregistered,
+        series_recommendation_failures=tuple(
+            str(reason) for reason in series_report.get("readiness_failures", ())
+        ),
     )
 
 

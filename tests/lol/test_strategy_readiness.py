@@ -74,6 +74,23 @@ def test_healthy_model_and_powered_safe_cohort_can_activate_series_only():
     assert len(artifact["content_sha256"]) == SHA256_LENGTH
 
 
+def test_recommendation_gate_failure_keeps_healthy_series_in_exploration() -> None:
+    artifact = build_readiness_artifact(
+        candidate_id="lol-test",
+        reviewed_at=NOW,
+        target_statuses={"series_winner": "meets_basic_sanity"},
+        series_cohorts={
+            "actionable": CohortEvidence(80, 0.5, 0.6, 0.58, 0.01),
+        },
+        preregistered_cohorts=("actionable",),
+        series_recommendation_failures=("conservative_probability_coverage_failed",),
+    )
+
+    cell = _cell(artifact, "series_winner", "actionable")
+    assert cell["state"] == "exploration_only"
+    assert cell["reasons"] == ["conservative_probability_coverage_failed"]
+
+
 def test_cohort_evidence_counts_unique_fixture_clusters_and_applies_family_bound():
     actual = np.array([1, 1, 0, 0, 1, 1])
     baseline = np.array([0.6, 0.6, 0.4, 0.4, 0.55, 0.55])
