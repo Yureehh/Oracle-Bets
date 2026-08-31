@@ -306,7 +306,7 @@ class LoLBetsModule:
                     "sample_count",
                     "version",
                 },
-                expected_version=1,
+                expected_version=2,
             ),
             _check_winner_contract(),
             _check_file("gamelength model", GAMELENGTH_PREDICTION_MODEL_PATH),
