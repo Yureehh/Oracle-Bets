@@ -23,16 +23,16 @@
 - No automatic acceptance, automatic settlement, betting, wallet,
   signing, bookmaker login, scraping, or fund movement.
 
-## Current work: bootstrap the fresh paper epoch
+## Current work: accumulate fresh paper evidence
 
-Code verification alone does not create a valid paper epoch. The current
-generated state must be archived and reset through `ops reset-plan` /
-`ops reset-apply`, then current 2024–2026 history, research studies, reviewed
-tuning, fixed-parameter models, registry champion, and smoke evidence must be
-rebuilt from one clean commit. Any stale source, dirty provenance, failed
-symmetry/train-serve check, or failed archive restore blocks the bootstrap.
+The guarded reset, current 2024–2026 rebuild, isolated research studies,
+fixed-parameter training, registry review, champion promotion, and smoke checks
+are complete. The serving champion is `lol-20260831T085623_622859Z`.
+Structural model and artifact health is green, but every betting target remains
+`exploration_only` or `display_only`; no strategy is currently allowed to
+present itself as a validated recommendation.
 
-After bootstrap, the owner should review every scheduled fixture in each
+The owner should now review every scheduled fixture in each
 preregistered league-week cohort, keep recommendation and exploration evidence
 separate, capture official results, settle manually, and inspect calibration,
 CLV, drawdown, and equal-fixture ROI rather than raw ticket ROI alone.
@@ -47,9 +47,11 @@ experimental target needs its own independent 200-fixture activation review.
 
 ## Next
 
-1. Complete and record the guarded fresh-epoch bootstrap.
-2. Accumulate enough settled evidence to compare direct series, prematch map,
+1. Accumulate enough settled evidence to compare direct series, prematch map,
    derived totals/handicaps, and calibrated props separately.
+2. Decompose the large market-review and bet-ledger orchestration modules along
+   their tested pricing, provider, lifecycle, and query boundaries. This is a
+   maintainability task; it must not change decisions or evidence IDs.
 3. Add controlled closing-price capture for CLV only after the manual ledger has
    enough entries to justify the operational cost.
 4. Improve Discord integration testing at the interaction boundary, including
