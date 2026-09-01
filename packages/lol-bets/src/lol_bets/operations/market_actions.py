@@ -643,58 +643,51 @@ def _manual_probabilities(  # noqa: PLR0911, PLR0912
     if target == "series_total_maps" and line is not None:
         if line.is_integer():
             return None, None, "total_push_probability_not_supported"
-        map_rows = snapshots.get("map_winner", [])
-        team_a_row = next(
-            (
-                row
-                for row in map_rows
-                if canonical_team_name(str(row.get("selection") or "")).casefold()
-                == canonical_team_name(team_a).casefold()
-            ),
-            None,
+        map_values = _team_snapshot_values(
+            snapshots.get("map_winner", []), team_a=team_a, team_b=team_b
         )
-        if team_a_row is None:
+        if map_values is None:
             return None, None, "map_probability_unavailable"
-        distribution = enumerate_series_paths(
-            float(team_a_row["model_value"]), best_of=best_of
-        )
         side = selection.casefold()
         if side not in {"over", "under"}:
             return None, None, "total_outcome_orientation_unsupported"
-        probability = sum(
-            value
-            for maps, value in distribution.total_maps.items()
-            if (maps > line if side == "over" else maps < line)
-        )
-        return probability, probability, "derived_map_path_v1"
+        probabilities = [
+            _series_total_probability(value, best_of=best_of, line=line, side=side)
+            for value in (
+                map_values["a"][1],
+                map_values["a"][0],
+                1.0 - map_values["b"][1],
+            )
+        ]
+        return probabilities[1], min(probabilities), "derived_map_path_v1"
     if target == "series_handicap" and line is not None:
-        map_rows = snapshots.get("map_winner", [])
-        team_a_row = next(
-            (
-                row
-                for row in map_rows
-                if canonical_team_name(str(row.get("selection") or "")).casefold()
-                == canonical_team_name(team_a).casefold()
-            ),
-            None,
+        map_values = _team_snapshot_values(
+            snapshots.get("map_winner", []), team_a=team_a, team_b=team_b
         )
         side = _team_side(selection, team_a=team_a, team_b=team_b)
-        if team_a_row is None or side is None:
+        if map_values is None or side is None:
             return None, None, "map_probability_unavailable"
-        distribution = enumerate_series_paths(
-            float(team_a_row["model_value"]), best_of=best_of
-        )
         if any(
             (difference if side == "a" else -difference) + line == 0
-            for difference in distribution.map_differential
+            for difference in enumerate_series_paths(
+                map_values["a"][0], best_of=best_of
+            ).map_differential
         ):
             return None, None, "handicap_push_probability_not_supported"
-        probability = sum(
-            value
-            for difference, value in distribution.map_differential.items()
-            if ((difference if side == "a" else -difference) + line) > 0
-        )
-        return probability, probability, "derived_map_path_v1"
+        probabilities = [
+            _series_handicap_probability(
+                value,
+                best_of=best_of,
+                line=line,
+                side=side,
+            )
+            for value in (
+                map_values["a"][1],
+                map_values["a"][0],
+                1.0 - map_values["b"][1],
+            )
+        ]
+        return probabilities[1], min(probabilities), "derived_map_path_v1"
     return None, None, "model_probability_unavailable"
 
 
@@ -956,10 +949,6 @@ def _total_probabilities(
     point = map_values["a"][0]
     lower = map_values["a"][1]
     upper = 1.0 - map_values["b"][1]
-    distributions = [
-        enumerate_series_paths(value, best_of=best_of)
-        for value in (lower, point, upper)
-    ]
     line = float(market.total_line)
     output: dict[str, tuple[float, float, float, bool]] = {}
     for outcome in market.outcomes:
@@ -967,15 +956,26 @@ def _total_probabilities(
         if side not in {"over", "under"}:
             return None
         probabilities = [
-            sum(
-                value
-                for total, value in distribution.total_maps.items()
-                if (total > line if side == "over" else total < line)
-            )
-            for distribution in distributions
+            _series_total_probability(value, best_of=best_of, line=line, side=side)
+            for value in (lower, point, upper)
         ]
         output[side] = (probabilities[1], min(probabilities), 0.5, True)
     return output
+
+
+def _series_total_probability(
+    map_probability: float,
+    *,
+    best_of: int,
+    line: float,
+    side: str,
+) -> float:
+    distribution = enumerate_series_paths(map_probability, best_of=best_of)
+    return sum(
+        value
+        for total, value in distribution.total_maps.items()
+        if (total > line if side == "over" else total < line)
+    )
 
 
 def _handicap_probabilities(
@@ -994,9 +994,6 @@ def _handicap_probabilities(
         map_values["a"][0],
         1.0 - map_values["b"][1],
     )
-    distributions = [
-        enumerate_series_paths(value, best_of=best_of) for value in p_values
-    ]
     output: dict[str, tuple[float, float, float, bool]] = {}
     for outcome in market.outcomes:
         side = _team_side(outcome.name, team_a=team_a, team_b=team_b)
@@ -1004,12 +1001,13 @@ def _handicap_probabilities(
             return None
         handicap = lines[side]
         probabilities = [
-            sum(
-                value
-                for difference, value in distribution.map_differential.items()
-                if ((difference if side == "a" else -difference) + handicap) > 0
+            _series_handicap_probability(
+                value,
+                best_of=best_of,
+                line=handicap,
+                side=side,
             )
-            for distribution in distributions
+            for value in p_values
         ]
         output[outcome.name.casefold()] = (
             probabilities[1],
@@ -1018,6 +1016,21 @@ def _handicap_probabilities(
             True,
         )
     return output
+
+
+def _series_handicap_probability(
+    map_probability: float,
+    *,
+    best_of: int,
+    line: float,
+    side: str,
+) -> float:
+    distribution = enumerate_series_paths(map_probability, best_of=best_of)
+    return sum(
+        value
+        for difference, value in distribution.map_differential.items()
+        if ((difference if side == "a" else -difference) + line) > 0
+    )
 
 
 def _handicap_lines(

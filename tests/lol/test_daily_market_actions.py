@@ -391,6 +391,62 @@ def test_manual_integer_total_is_not_priced_without_push_accounting():
     )
 
 
+@pytest.mark.parametrize(
+    ("target", "selection", "line", "expected_point", "expected_lower"),
+    [
+        ("series_total_maps", "Over", 2.5, 0.48, 0.42),
+        ("series_handicap", "T1", -1.5, 0.36, 0.3025),
+    ],
+)
+def test_manual_derived_markets_preserve_map_uncertainty(
+    target, selection, line, expected_point, expected_lower
+):
+    fixture = pd.Series(
+        {
+            "match_key": "pandascore:1",
+            "league": "LCK",
+            "team_a": "T1",
+            "team_b": "Gen.G",
+            "start_utc": FIXTURE_START,
+            "best_of": 3,
+        }
+    )
+    rows = [
+        {
+            "source_match_key": "pandascore:1",
+            "market": "map_winner",
+            "selection": "T1",
+            "model_value": 0.6,
+            "probability_lower": 0.55,
+        },
+        {
+            "source_match_key": "pandascore:1",
+            "market": "map_winner",
+            "selection": "Gen.G",
+            "model_value": 0.4,
+            "probability_lower": 0.3,
+        },
+    ]
+
+    action = market_actions.price_manual_lines(
+        fixture=fixture,
+        snapshot_rows=rows,
+        lines=[
+            {
+                "target": target,
+                "selection": selection,
+                "line": line,
+                "decimal_odds": 2.0,
+            }
+        ],
+        reviewed_at=START,
+    )[0]
+
+    assert action["probability"] == pytest.approx(expected_point)
+    assert action["probability_lower"] == pytest.approx(expected_lower)
+    assert action["conservative_edge"] < action["point_edge"]
+
+
 def test_ready_low_confidence_roster_is_warned():
     schedule = pd.DataFrame(
         [

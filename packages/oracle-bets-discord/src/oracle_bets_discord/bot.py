@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from lol_bets.operations.models import ModelRegistry
 from oracle_bets_core.evidence import EvidenceStore
@@ -13,28 +13,15 @@ from oracle_bets_core.paths import MODEL_REGISTRY_DIR, PRODUCT_STATE_DIR
 
 from oracle_bets_discord.ui.bets import build_bet_views
 from oracle_bets_discord.ui.common import build_common_views
-from oracle_bets_discord.ui.hub import HUB_BUTTON_LAYOUT as _HUB_BUTTON_LAYOUT
 from oracle_bets_discord.ui.hub import build_hub_view
-from oracle_bets_discord.ui.performance import (
-    build_performance_view,
-    performance_result,
-)
+from oracle_bets_discord.ui.performance import build_performance_view
 from oracle_bets_discord.ui.review import build_review_views
 
 if TYPE_CHECKING:
-    from datetime import datetime
     from pathlib import Path
     from typing import TextIO
 
 logger = instantiate_logger(LOG_TOPIC.DISCORD)
-HUB_BUTTON_LAYOUT = _HUB_BUTTON_LAYOUT
-
-
-async def _performance_result(
-    store: Any, *, mode: str, since: datetime | None
-) -> tuple[bytes | None, str]:
-    """Compatibility wrapper around the focused performance UI service."""
-    return await performance_result(store, mode=mode, since=since, logger=logger)
 
 
 def run_bot() -> None:

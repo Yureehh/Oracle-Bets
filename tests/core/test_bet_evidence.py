@@ -60,7 +60,7 @@ def _store(tmp_path):
             "competition_id": "LPL",
             "team_a_identity_id": "a",
             "team_b_identity_id": "b",
-            "start_time": datetime(2026, 9, 1, tzinfo=UTC),
+            "start_time": datetime(2099, 1, 1, tzinfo=UTC),
             "best_of": 3,
             "status": "not_started",
             "idempotency_key": "fixture-1",

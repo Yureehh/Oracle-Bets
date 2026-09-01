@@ -5,10 +5,8 @@ from types import SimpleNamespace
 import pytest
 from oracle_bets_core.evidence import EvidenceStore
 from oracle_bets_discord.bot import (
-    HUB_BUTTON_LAYOUT,
     _acquire_instance_lock,
     _is_owner,
-    _performance_result,
 )
 from oracle_bets_discord.delivery import (
     DiscordDeliveryMode,
@@ -18,6 +16,8 @@ from oracle_bets_discord.delivery import (
 from oracle_bets_discord.formatting import sanitize_discord_text
 from oracle_bets_discord.ui.charts import performance_png
 from oracle_bets_discord.ui.common import require_owner
+from oracle_bets_discord.ui.hub import HUB_BUTTON_LAYOUT
+from oracle_bets_discord.ui.performance import performance_result
 from oracle_bets_discord.ui.presentation import health_message, schedule_pages
 
 EXPECTED_READ_CALLS = 2
@@ -206,12 +206,10 @@ def test_performance_failure_becomes_visible_message(monkeypatch):
         "oracle_bets_discord.ui.performance.summarize_bets",
         lambda *_args, **_kwargs: {"settled": 1},
     )
-    monkeypatch.setattr(
-        "oracle_bets_discord.bot.logger.exception", lambda *_args, **_kwargs: None
-    )
+    logger = SimpleNamespace(exception=lambda *_args, **_kwargs: None)
 
     image, message = asyncio.run(
-        _performance_result(object(), mode="paper", since=None)
+        performance_result(object(), mode="paper", since=None, logger=logger)
     )
 
     assert image is None
