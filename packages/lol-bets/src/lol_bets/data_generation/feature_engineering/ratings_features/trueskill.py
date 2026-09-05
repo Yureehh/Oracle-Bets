@@ -8,7 +8,6 @@ the TrueSkill library from the `trueskill` package.
 from __future__ import annotations
 
 import itertools
-import json
 import math
 import sys
 from collections import defaultdict
@@ -18,8 +17,7 @@ from typing import Any
 
 import optuna
 import trueskill
-from oracle_bets_core.io_utils import get_sorting_keys, json_loader
-from oracle_bets_core.league_taxonomy import get_league_taxonomy
+from oracle_bets_core.io_utils import json_loader
 from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
@@ -33,6 +31,23 @@ from trueskill import Rating, TrueSkill
 
 from lol_bets.data_generation.feature_engineering.ratings_features import (
     freeze_same_date_rating_inputs,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.common import (
+    clamp,
+    is_cross_league_competition,
+    is_major_league,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.common import (
+    load_hyperparameters as _load_hyperparameters,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.common import (
+    preprocess_rating_dataframe as preprocess_trueskill_dataframe,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.common import (
+    save_hyperparameters as _save_hyperparameters,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.common import (
+    split_and_validate_data as _split_and_validate_data,
 )
 
 # ------------------------------------------------------------------------------
@@ -50,101 +65,6 @@ OPTUNA_SEED = int(config.get("optuna", {}).get("seed", 42))
 MIN_FLOAT = 1e-9  # For float comparisons
 
 data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
-
-
-# ------------------------------------------------------------------------------
-# 2. Helper Utilities
-# ------------------------------------------------------------------------------
-def clamp(value: float, min_val: float, max_val: float) -> float:
-    """Clamp numeric `value` between `min_val` and `max_val`."""
-    return max(min_val, min(value, max_val))
-
-
-def is_major_league(league: str) -> bool:
-    """Check if league is considered major."""
-    return get_league_taxonomy(league)["tier"] == "major"
-
-
-def is_cross_league_competition(league: str) -> bool:
-    """Check if league is a cross-league competition."""
-    return get_league_taxonomy(league)["tier"] == "cross"
-
-
-# ------------------------------------------------------------------------------
-# 3. DataFrame Preprocessing
-# ------------------------------------------------------------------------------
-def preprocess_trueskill_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
-    """
-    Validate columns, convert dates, drop missing, normalize result to 0/1, and stable-sort.
-    Mirrors the approach in Elo/Glicko/PL.
-    """
-    if entity.lower() not in ["team", "player"]:
-        msg = "Entity must be 'team' or 'player'"
-        raise ValueError(msg)
-
-    entity_key = "teamid" if entity.lower() == "team" else "playerid"
-    required_columns = [
-        "season",
-        "date",
-        "gameid",
-        entity_key,
-        "league",
-        "side",
-        "result",
-    ]
-    if entity.lower() == "player":
-        required_columns.append("position")
-
-    missing_cols = set(required_columns) - set(df.columns)
-    if missing_cols:
-        msg = f"Input DataFrame is missing required columns: {missing_cols}"
-        raise ValueError(msg)
-
-    df = df.copy()
-
-    # Convert 'date' to datetime
-    if not pd.api.types.is_datetime64_any_dtype(df["date"]):
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        null_count = df["date"].isna().sum()
-        if null_count > 0:
-            logger.warning(
-                f"{null_count} 'date' entries could not be converted; dropping them."
-            )
-            data_pipeline_logger.warning(
-                f"{null_count} 'date' entries could not be converted; dropping them."
-            )
-            df = df.dropna(subset=["date"]).copy()
-
-    # Drop rows missing league or result
-    if df["league"].isna().any() or df["result"].isna().any():
-        n_missing_league = df["league"].isna().sum()
-        n_missing_result = df["result"].isna().sum()
-        logger.warning(
-            f"{n_missing_league} 'league' and {n_missing_result} 'result' missing; dropping them."
-        )
-        data_pipeline_logger.warning(
-            f"{n_missing_league} 'league' and {n_missing_result} 'result' missing; dropping them."
-        )
-        df = df.dropna(subset=["league", "result"]).reset_index(drop=True)
-
-    # Normalize 'result' to numeric 0/1 if needed
-    if not pd.api.types.is_numeric_dtype(df["result"]):
-        valmap = {
-            "W": 1,
-            "Win": 1,
-            "win": 1,
-            True: 1,
-            "L": 0,
-            "Loss": 0,
-            "loss": 0,
-            False: 0,
-        }
-        df["result"] = df["result"].map(valmap).astype("float64")
-
-    # Stable sort by canonical keys
-    return df.sort_values(by=get_sorting_keys(entity), kind="mergesort").reset_index(
-        drop=True
-    )
 
 
 # ------------------------------------------------------------------------------
@@ -445,7 +365,7 @@ def tune_trueskill_hyperparameters(
     If existing hyperparams are found, load them. Otherwise, run Optuna to find best
     TrueSkill params that minimize validation log loss.
     """
-    best_params = load_hyperparameters(hyperparameters_path)
+    best_params = _load_hyperparameters(hyperparameters_path, data_pipeline_logger)
     if best_params and not force_retune:
         return best_params
     if not force_retune:
@@ -464,7 +384,7 @@ def tune_trueskill_hyperparameters(
     def objective(trial: optuna.trial.Trial) -> float:
         hyperparams = suggest_trueskill_hyperparameters(trial)
 
-        df_train, df_valid = split_and_validate_data(df, entity)
+        df_train, df_valid = _split_and_validate_data(df, entity, data_pipeline_logger)
         if df_train.empty or df_valid.empty:
             logger.warning("Training or validation data is empty after splitting.")
             data_pipeline_logger.warning(
@@ -519,38 +439,8 @@ def tune_trueskill_hyperparameters(
     logger.info(f"Best TrueSkill hyperparameters: {best_params}")
     data_pipeline_logger.info(f"Best TrueSkill hyperparameters: {best_params}")
 
-    save_hyperparameters(best_params, hyperparameters_path)
+    _save_hyperparameters(best_params, hyperparameters_path, data_pipeline_logger)
     return best_params
-
-
-def load_hyperparameters(path: Path) -> dict[str, float]:
-    """Load TrueSkill hyperparameters from JSON if available."""
-    if path.exists():
-        logger.info(f"Loading TrueSkill hyperparameters from {path}")
-        data_pipeline_logger.info(f"Loading TrueSkill hyperparameters from {path}")
-        try:
-            with path.open("r") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load TrueSkill hyperparameters: {e}")
-            data_pipeline_logger.exception(
-                f"Failed to load TrueSkill hyperparameters from {path}"
-            )
-    return {}
-
-
-def save_hyperparameters(params: dict[str, float], path: Path) -> None:
-    """Save hyperparameters to a JSON file."""
-    try:
-        logger.info(f"Storing TrueSkill hyperparameters to {path}")
-        data_pipeline_logger.info(f"Storing TrueSkill hyperparameters to {path}")
-        with path.open("w") as f:
-            json.dump(params, f)
-    except Exception as e:
-        logger.error(f"Failed to save TrueSkill hyperparameters: {e}")
-        data_pipeline_logger.exception(
-            f"Failed to save TrueSkill hyperparameters to {path}"
-        )
 
 
 def suggest_trueskill_hyperparameters(trial: optuna.trial.Trial) -> dict[str, float]:
@@ -568,54 +458,6 @@ def suggest_trueskill_hyperparameters(trial: optuna.trial.Trial) -> dict[str, fl
             "position_reset_factor", 0.0, 1.0, step=0.1
         ),
     }
-
-
-def split_and_validate_data(
-    df: pd.DataFrame, entity: str
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Sort, then split the DataFrame into training and validation sets by year boundary;
-    fallback to 80/20 time split if necessary; verify the group size (2 for teams, 10 for players).
-    """
-    df_sorted = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
-    if df_sorted.empty:
-        logger.warning("DataFrame is empty after sorting in split_and_validate_data.")
-        data_pipeline_logger.warning(
-            "DataFrame is empty after sorting in split_and_validate_data."
-        )
-        return pd.DataFrame(), pd.DataFrame()
-
-    try:
-        split_year = df_sorted["date"].dt.year.max()
-        split_date = pd.to_datetime(f"{split_year}-01-01")
-    except AttributeError as e:
-        logger.error(f"Error accessing date column with .dt: {e}")
-        data_pipeline_logger.exception(f"Error accessing date column with .dt: {e}")
-        return pd.DataFrame(), pd.DataFrame()
-
-    df_train = df_sorted[df_sorted["date"] < split_date].reset_index(drop=True)
-    df_valid = df_sorted[df_sorted["date"] >= split_date].reset_index(drop=True)
-
-    # Fallback: 80/20 time split if either side is empty
-    if df_train.empty or df_valid.empty:
-        q80 = df_sorted["date"].quantile(0.8)
-        df_train = df_sorted[df_sorted["date"] < q80].reset_index(drop=True)
-        df_valid = df_sorted[df_sorted["date"] >= q80].reset_index(drop=True)
-
-    expected_count = 10 if entity.lower() == "player" else 2
-    for subset, name in [(df_train, "Training"), (df_valid, "Validation")]:
-        if not subset.empty:
-            group_sizes = subset.groupby("gameid").size()
-            if not (group_sizes == expected_count).all():
-                logger.warning(
-                    f"{name} data has gameids with an incorrect number of entities."
-                )
-                data_pipeline_logger.warning(
-                    f"{name} data has gameids with an incorrect number of entities."
-                )
-                return pd.DataFrame(), pd.DataFrame()
-
-    return df_train, df_valid
 
 
 def initialize_validation_ratings(
