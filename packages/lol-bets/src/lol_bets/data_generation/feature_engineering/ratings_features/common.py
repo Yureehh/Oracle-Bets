@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from oracle_bets_core.io_utils import get_sorting_keys
 from oracle_bets_core.league_taxonomy import get_league_taxonomy
@@ -11,6 +11,7 @@ from oracle_bets_core.logger import logger
 from oracle_bets_core.pd import pd
 
 if TYPE_CHECKING:
+    import logging
     from pathlib import Path
 
 
@@ -28,7 +29,7 @@ def is_cross_league_competition(league: str) -> bool:
 
 
 def preprocess_rating_dataframe(
-    df: pd.DataFrame, entity: str, pipeline_logger: Any
+    df: pd.DataFrame, entity: str, pipeline_logger: logging.Logger
 ) -> pd.DataFrame:
     """Validate and normalize the common team/player rating input contract."""
     entity = entity.lower()
@@ -84,15 +85,17 @@ def preprocess_rating_dataframe(
     )
 
 
-def load_hyperparameters(path: Path, pipeline_logger: Any) -> dict[str, float]:
+def load_hyperparameters(
+    path: Path, pipeline_logger: logging.Logger
+) -> dict[str, float]:
     """Load a rating parameter JSON file, falling back to an empty mapping."""
-    if not path.exists():
-        return {}
-    logger.info(f"Loading hyperparameters from {path}")
-    pipeline_logger.info(f"Loading hyperparameters from {path}")
     try:
         with path.open() as stream:
+            logger.info(f"Loading hyperparameters from {path}")
+            pipeline_logger.info(f"Loading hyperparameters from {path}")
             return json.load(stream)
+    except FileNotFoundError:
+        return {}
     except Exception as error:
         logger.error(f"Failed to load hyperparameters from {path}: {error}")
         pipeline_logger.exception(f"Failed to load hyperparameters from {path}")
@@ -100,7 +103,7 @@ def load_hyperparameters(path: Path, pipeline_logger: Any) -> dict[str, float]:
 
 
 def save_hyperparameters(
-    params: dict[str, float], path: Path, pipeline_logger: Any
+    params: dict[str, float], path: Path, pipeline_logger: logging.Logger
 ) -> None:
     """Write a rating parameter JSON file."""
     logger.info(f"Storing hyperparameters to {path}")
@@ -114,7 +117,7 @@ def save_hyperparameters(
 
 
 def split_and_validate_data(
-    df: pd.DataFrame, entity: str, pipeline_logger: Any
+    df: pd.DataFrame, entity: str, pipeline_logger: logging.Logger
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Create the common chronological tuning split and validate game groups."""
     ordered = df.sort_values(by=["date", "gameid", "side"]).reset_index(drop=True)
@@ -152,6 +155,6 @@ def split_and_validate_data(
     return train, valid
 
 
-def _warn(message: str, pipeline_logger: Any) -> None:
+def _warn(message: str, pipeline_logger: logging.Logger) -> None:
     logger.warning(message)
     pipeline_logger.warning(message)

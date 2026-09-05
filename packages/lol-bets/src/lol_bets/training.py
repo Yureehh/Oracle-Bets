@@ -1492,7 +1492,6 @@ def _register_training_candidate(
             SERIES_WINNER_PLAYER_DATA,
         ),
     )
-    shutil.rmtree(staging_root)
     return candidate_id
 
 

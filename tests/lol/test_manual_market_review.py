@@ -471,6 +471,14 @@ def test_report_compacts_unsupported_actions_without_losing_reasons():
                 "warnings": ["unsupported_contract"],
                 "observations": [],
             },
+            {
+                "market_id": "special",
+                "target": "unknown",
+                "selection": "No",
+                "hard_blocks": ["ambiguous_resolution_rules"],
+                "warnings": ["provider_timestamp_missing"],
+                "observations": [],
+            },
         ]
     )
 
@@ -478,8 +486,8 @@ def test_report_compacts_unsupported_actions_without_losing_reasons():
     assert unsupported == [
         {
             "market_id": "special",
-            "hard_blocks": ["no_model_target"],
-            "warnings": ["unsupported_contract"],
+            "hard_blocks": ["ambiguous_resolution_rules", "no_model_target"],
+            "warnings": ["provider_timestamp_missing", "unsupported_contract"],
         }
     ]
 

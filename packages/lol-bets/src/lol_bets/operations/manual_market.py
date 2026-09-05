@@ -1252,11 +1252,12 @@ def _compact_report_actions(
         if action.get("target") != "unknown":
             continue
         market_id = str(action.get("market_id") or "unknown")
-        unsupported[market_id] = {
-            "market_id": market_id,
-            "hard_blocks": list(action.get("hard_blocks") or []),
-            "warnings": list(action.get("warnings") or []),
-        }
+        compact = unsupported.setdefault(
+            market_id,
+            {"market_id": market_id, "hard_blocks": [], "warnings": []},
+        )
+        for key in ("hard_blocks", "warnings"):
+            compact[key] = sorted({*compact[key], *(action.get(key) or [])})
     return quotes, list(unsupported.values())
 
 
