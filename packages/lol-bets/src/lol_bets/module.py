@@ -78,6 +78,16 @@ FLATTENED_PLAYER_COLUMNS = {
     "trueskill_sigma",
 }
 CALIBRATOR_VERSION = 3
+PROBABILITY_CALIBRATOR_ATTRS = {"global_calibrator", "segments", "version"}
+PROBABILITY_UNCERTAINTY_ATTRS = {
+    "bins",
+    "confidence",
+    "fit_split",
+    "interval",
+    "sample_count",
+    "version",
+}
+PROP_CALIBRATOR_ATTRS = {"global_residuals", "segment_residuals", "version"}
 
 
 def _resolve_model_path(path) -> Path:
@@ -239,6 +249,55 @@ def _check_winner_contract() -> ArtifactCheck:
     )
 
 
+def _winner_checks(
+    label: str,
+    model: Path,
+    feature_pipeline: Path,
+    matchup_schema: Path,
+    calibrator: Path,
+    uncertainty: Path,
+    *,
+    calibrator_name: str,
+    uncertainty_name: str,
+    uncertainty_attrs: set[str] = PROBABILITY_UNCERTAINTY_ATTRS,
+) -> tuple[ArtifactCheck, ...]:
+    return (
+        _check_file(f"{label} model", model),
+        _check_file(f"{label} feature pipeline", feature_pipeline),
+        _check_file(f"{label} matchup schema", matchup_schema),
+        _check_calibrator_schema(
+            calibrator_name,
+            calibrator,
+            required_attrs=PROBABILITY_CALIBRATOR_ATTRS,
+        ),
+        _check_calibrator_schema(
+            uncertainty_name,
+            uncertainty,
+            required_attrs=uncertainty_attrs,
+            expected_version=2,
+        ),
+    )
+
+
+def _prop_checks(
+    label: str,
+    model: Path,
+    feature_pipeline: Path,
+    residual_summary: Path,
+    calibrator: Path,
+) -> tuple[ArtifactCheck, ...]:
+    return (
+        _check_file(f"{label} model", model),
+        _check_file(f"{label} feature pipeline", feature_pipeline),
+        _check_file(f"{label} residual summary", residual_summary),
+        _check_calibrator_schema(
+            f"{label} prop calibrator",
+            calibrator,
+            required_attrs=PROP_CALIBRATOR_ATTRS,
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class LoLBetsModule:
     """LoL prediction module metadata and health checks."""
@@ -259,93 +318,48 @@ class LoLBetsModule:
                 FLATTENED_PLAYERS,
                 FLATTENED_PLAYER_COLUMNS,
             ),
-            _check_file("outcome model", OUTCOME_PREDICTION_MODEL_PATH),
-            _check_file(
-                "outcome feature pipeline", OUTCOME_PREDICTION_FEATURE_PIPELINE
-            ),
-            _check_file("outcome matchup schema", OUTCOME_PREDICTION_MATCHUP_SCHEMA),
-            _check_calibrator_schema(
-                "outcome probability calibrator",
+            *_winner_checks(
+                "outcome",
+                OUTCOME_PREDICTION_MODEL_PATH,
+                OUTCOME_PREDICTION_FEATURE_PIPELINE,
+                OUTCOME_PREDICTION_MATCHUP_SCHEMA,
                 OUTCOME_PREDICTION_PROBABILITY_CALIBRATOR,
-                required_attrs={"global_calibrator", "segments", "version"},
-            ),
-            _check_calibrator_schema(
-                "outcome probability uncertainty",
                 OUTCOME_PREDICTION_PROBABILITY_UNCERTAINTY,
-                required_attrs={
-                    "bins",
-                    "confidence",
-                    "calibration_units",
-                    "fit_split",
-                    "interval",
-                    "sample_count",
-                    "version",
-                },
-                expected_version=2,
+                calibrator_name="outcome probability calibrator",
+                uncertainty_name="outcome probability uncertainty",
+                uncertainty_attrs=PROBABILITY_UNCERTAINTY_ATTRS | {"calibration_units"},
             ),
-            _check_file("direct series winner model", SERIES_WINNER_MODEL_PATH),
-            _check_file(
-                "direct series winner feature pipeline", SERIES_WINNER_FEATURE_PIPELINE
-            ),
-            _check_file(
-                "direct series winner matchup schema", SERIES_WINNER_MATCHUP_SCHEMA
-            ),
-            _check_calibrator_schema(
-                "direct series winner calibrator",
+            *_winner_checks(
+                "direct series winner",
+                SERIES_WINNER_MODEL_PATH,
+                SERIES_WINNER_FEATURE_PIPELINE,
+                SERIES_WINNER_MATCHUP_SCHEMA,
                 SERIES_WINNER_PROBABILITY_CALIBRATOR,
-                required_attrs={"global_calibrator", "segments", "version"},
-            ),
-            _check_calibrator_schema(
-                "direct series winner uncertainty",
                 SERIES_WINNER_PROBABILITY_UNCERTAINTY,
-                required_attrs={
-                    "bins",
-                    "confidence",
-                    "fit_split",
-                    "interval",
-                    "sample_count",
-                    "version",
-                },
-                expected_version=2,
+                calibrator_name="direct series winner calibrator",
+                uncertainty_name="direct series winner uncertainty",
             ),
             _check_winner_contract(),
-            _check_file("gamelength model", GAMELENGTH_PREDICTION_MODEL_PATH),
-            _check_file(
-                "gamelength feature pipeline", GAMELENGTH_PREDICTION_FEATURE_PIPELINE
-            ),
-            _check_file(
-                "gamelength residual summary", GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY
-            ),
-            _check_calibrator_schema(
-                "gamelength prop calibrator",
+            *_prop_checks(
+                "gamelength",
+                GAMELENGTH_PREDICTION_MODEL_PATH,
+                GAMELENGTH_PREDICTION_FEATURE_PIPELINE,
+                GAMELENGTH_PREDICTION_RESIDUAL_SUMMARY,
                 GAMELENGTH_PREDICTION_PROP_CALIBRATOR,
-                required_attrs={"global_residuals", "segment_residuals", "version"},
             ),
-            _check_file("total kills model", TOTAL_KILLS_PREDICTION_MODEL_PATH),
-            _check_file(
-                "total kills feature pipeline", TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE
-            ),
-            _check_file(
-                "total kills residual summary", TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY
-            ),
-            _check_calibrator_schema(
-                "total kills prop calibrator",
+            *_prop_checks(
+                "total kills",
+                TOTAL_KILLS_PREDICTION_MODEL_PATH,
+                TOTAL_KILLS_PREDICTION_FEATURE_PIPELINE,
+                TOTAL_KILLS_PREDICTION_RESIDUAL_SUMMARY,
                 TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR,
-                required_attrs={"global_residuals", "segment_residuals", "version"},
             ),
-            _check_file("total towers model", TOTAL_TOWERS_PREDICTION_MODEL_PATH),
-            _check_file(
-                "total towers feature pipeline",
+            *_prop_checks(
+                "total towers",
+                TOTAL_TOWERS_PREDICTION_MODEL_PATH,
                 TOTAL_TOWERS_PREDICTION_FEATURE_PIPELINE,
-            ),
-            _check_file(
-                "total towers residual summary",
                 TOTAL_TOWERS_PREDICTION_RESIDUAL_SUMMARY,
-            ),
-            _check_calibrator_schema(
-                "total towers prop calibrator",
                 TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR,
-                required_attrs={"global_residuals", "segment_residuals", "version"},
             ),
             _check_parquet_schema(
                 "team league mapping", TEAM_LEAGUES_MAPPING, TEAM_LEAGUE_COLUMNS

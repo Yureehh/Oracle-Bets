@@ -28,6 +28,9 @@ from lol_bets.data_generation.ingestion.snapshot_io import (
     atomic_symlink as _atomic_symlink,
 )
 from lol_bets.data_generation.ingestion.snapshot_io import (
+    prune_generations,
+)
+from lol_bets.data_generation.ingestion.snapshot_io import (
     remove_tree as _remove_tree,
 )
 from lol_bets.data_generation.ingestion.snapshot_io import (
@@ -303,9 +306,11 @@ def refresh_oracle_source(  # noqa: PLR0912, PLR0915
         for metadata in files:
             filename = str(metadata["filename"])
             _atomic_symlink(generation / filename, root / filename)
-        _prune_source_generations(
+        prune_generations(
             generations,
             {generation.name, previous_snapshot_id},
+            label="source",
+            logger=logger,
         )
     except (
         KeyError,
@@ -746,18 +751,3 @@ def _current_source_snapshot_id(root: Path) -> str | None:
         return None
     snapshot_id = str(value or "")
     return snapshot_id if re.fullmatch(r"source-[a-f0-9]{24}", snapshot_id) else None
-
-
-def _prune_source_generations(root: Path, keep: set[str | None]) -> None:
-    for generation in root.iterdir():
-        if generation.name.startswith(".") or generation.name in keep:
-            continue
-        try:
-            if generation.is_symlink():
-                generation.unlink()
-            else:
-                _remove_tree(generation)
-        except OSError as error:
-            logger.warning(
-                "Could not remove old source generation %s: %s", generation, error
-            )

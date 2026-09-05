@@ -8,7 +8,10 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import logging
 
 
 def sha256_file(path: Path) -> str:
@@ -49,3 +52,25 @@ def atomic_symlink(target: Path, destination: Path) -> None:
 
 def remove_tree(path: Path) -> None:
     shutil.rmtree(path)
+
+
+def prune_generations(
+    root: Path,
+    keep: set[str | None],
+    *,
+    label: str,
+    logger: logging.Logger,
+) -> None:
+    """Retain current/previous immutable generations and best-effort prune older ones."""
+    for generation in root.iterdir():
+        if generation.name.startswith(".") or generation.name in keep:
+            continue
+        try:
+            generation.unlink() if generation.is_symlink() else remove_tree(generation)
+        except OSError as error:
+            logger.warning(
+                "Could not remove old %s generation %s: %s",
+                label,
+                generation,
+                error,
+            )

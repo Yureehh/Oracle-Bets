@@ -18,6 +18,7 @@ from oracle_bets_core.pd import pd
 from lol_bets.data_generation.ingestion.quality import schema_fingerprint
 from lol_bets.data_generation.ingestion.snapshot_io import (
     atomic_json,
+    prune_generations,
 )
 from lol_bets.data_generation.ingestion.snapshot_io import (
     atomic_symlink as _atomic_symlink,
@@ -298,7 +299,12 @@ def publish_history_snapshot(
         _atomic_json(Path(pointer_path), pointer)
         _atomic_symlink(generation / "raw_data.parquet", Path(raw_path))
         _atomic_symlink(generation / "manifest.json", Path(manifest_path))
-        _prune_generations(root, {snapshot_id, previous_snapshot_id})
+        prune_generations(
+            root,
+            {snapshot_id, previous_snapshot_id},
+            label="history",
+            logger=logger,
+        )
     except Exception:
         if temporary.exists():
             _remove_tree(temporary)
@@ -390,18 +396,3 @@ def _current_snapshot_id(pointer: Path) -> str | None:
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     atomic_json(path, payload, default=str)
-
-
-def _prune_generations(root: Path, keep: set[str | None]) -> None:
-    for generation in root.iterdir():
-        if generation.name.startswith(".") or generation.name in keep:
-            continue
-        try:
-            if generation.is_symlink():
-                generation.unlink()
-            else:
-                _remove_tree(generation)
-        except OSError as error:
-            logger.warning(
-                "Could not remove old history generation %s: %s", generation, error
-            )
