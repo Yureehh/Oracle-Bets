@@ -17,7 +17,7 @@ from oracle_bets_core.pd import pd
 
 NOW = datetime(2026, 8, 21, 8, tzinfo=UTC)
 EXPECTED_REPORT_FILES = 2
-REPORT_SCHEMA_VERSION = 4
+REPORT_SCHEMA_VERSION = 5
 EXPECTED_COMPARISONS = 2
 BEST_ODDS = 1.9
 BEST_OF_FIVE = 5
@@ -105,11 +105,9 @@ def test_manual_review_uses_exact_event_and_writes_one_report_pair(
                 {"market": "series_winner", "selection": "Top Esports"},
             ]
         )
-        return ["prediction output"], [
-            {"status": "predicted", "match_key": schedule.iloc[0]["match_key"]}
-        ]
+        return [{"status": "predicted", "match_key": schedule.iloc[0]["match_key"]}]
 
-    monkeypatch.setattr(manual_market, "_build_prediction_messages", fake_build)
+    monkeypatch.setattr(manual_market, "_build_prediction_snapshots", fake_build)
     monkeypatch.setattr(
         manual_market, "record_daily_evidence", lambda **_kwargs: "run-1"
     )
@@ -124,7 +122,7 @@ def test_manual_review_uses_exact_event_and_writes_one_report_pair(
     assert len(list((tmp_path / "reports").iterdir())) == EXPECTED_REPORT_FILES
     payload = json.loads(result.report_paths[0].read_text())
     assert payload["schema_version"] == REPORT_SCHEMA_VERSION
-    assert payload["workflow"] == "owner_market_review_v4"
+    assert payload["workflow"] == "owner_market_review_v5"
     assert payload["fixture"]["league"] == "LPL"
     assert payload["fixture"]["team_a"] == "Team WE"
     assert payload["evidence_run_id"] == "run-1"
@@ -139,7 +137,7 @@ def test_market_only_metadata_is_inventory_without_model_inference(
     monkeypatch.setattr(manual_market, "SCHEDULE", tmp_path / "missing.parquet")
     monkeypatch.setattr(
         manual_market,
-        "_build_prediction_messages",
+        "_build_prediction_snapshots",
         lambda *_args, **_kwargs: pytest.fail(
             "market metadata must not authorize inference"
         ),
@@ -170,9 +168,9 @@ def test_approved_schedule_remains_authoritative_for_inference(tmp_path, monkeyp
 
     def fake_build(schedule, **_kwargs):
         captured.update(schedule.iloc[0].to_dict())
-        return [], [{"status": "predicted"}]
+        return [{"status": "predicted"}]
 
-    monkeypatch.setattr(manual_market, "_build_prediction_messages", fake_build)
+    monkeypatch.setattr(manual_market, "_build_prediction_snapshots", fake_build)
     monkeypatch.setattr(
         manual_market, "record_daily_evidence", lambda **_kwargs: "run-1"
     )
@@ -198,13 +196,12 @@ def test_manual_review_persists_evidence_without_queueing_discord(
     monkeypatch.setattr(manual_market, "SCHEDULE", schedule_path)
     monkeypatch.setattr(
         manual_market,
-        "_build_prediction_messages",
+        "_build_prediction_snapshots",
         lambda _schedule, **kwargs: (
             kwargs["snapshot_sink"].extend(
                 [{"market": "series_winner", "selection": "Team WE"}]
             )
-            or ["prediction output"],
-            [{"status": "predicted"}],
+            or [{"status": "predicted"}]
         ),
     )
     calls = []
@@ -456,6 +453,37 @@ def test_provider_comparison_never_merges_equal_labels_across_map_periods():
     }
 
 
+def test_report_compacts_unsupported_actions_without_losing_reasons():
+    quotes, unsupported = manual_market._compact_report_actions(
+        [
+            {
+                "market_id": "supported",
+                "target": "series_winner",
+                "selection": "Top Esports",
+                "decimal_odds": 1.8,
+                "observations": [],
+            },
+            {
+                "market_id": "special",
+                "target": "unknown",
+                "question": "First dragon",
+                "hard_blocks": ["no_model_target"],
+                "warnings": ["unsupported_contract"],
+                "observations": [],
+            },
+        ]
+    )
+
+    assert [row["market_id"] for row in quotes] == ["supported"]
+    assert unsupported == [
+        {
+            "market_id": "special",
+            "hard_blocks": ["no_model_target"],
+            "warnings": ["unsupported_contract"],
+        }
+    ]
+
+
 def test_thunderpick_is_schedule_resolved_and_never_fetched(tmp_path, monkeypatch):
     schedule_path = tmp_path / "schedule.parquet"
     pd.DataFrame(
@@ -493,10 +521,10 @@ def test_thunderpick_is_schedule_resolved_and_never_fetched(tmp_path, monkeypatc
                 },
             ]
         )
-        return ["prediction"], [{"status": "predicted"}]
+        return [{"status": "predicted"}]
 
     captured = []
-    monkeypatch.setattr(manual_market, "_build_prediction_messages", fake_build)
+    monkeypatch.setattr(manual_market, "_build_prediction_snapshots", fake_build)
     monkeypatch.setattr(
         manual_market,
         "record_daily_evidence",
@@ -545,7 +573,7 @@ def test_mismatched_thunderpick_fixture_stops_the_review(tmp_path, monkeypatch):
     monkeypatch.setattr(manual_market, "SCHEDULE", schedule_path)
     monkeypatch.setattr(
         manual_market,
-        "_build_prediction_messages",
+        "_build_prediction_snapshots",
         lambda *_args, **_kwargs: pytest.fail("mismatched fixture was predicted"),
     )
 

@@ -6,7 +6,7 @@ import pytest
 from lol_bets.daily import (
     DailyStepResult,
     DailyWorkflowConfig,
-    _build_prediction_messages,
+    _build_prediction_snapshots,
     build_prediction_snapshot_rows,
     format_step_summary,
     run_daily_lol_workflow,
@@ -69,16 +69,15 @@ def test_insufficient_roster_history_is_reported_separately(monkeypatch):
         raise InsufficientRosterHistoryError("missing top")
 
     monkeypatch.setattr(
-        daily_module, "build_match_prediction_message", fail_for_history
+        daily_module, "build_match_prediction_snapshot", fail_for_history
     )
-    messages, details = _build_prediction_messages(
+    details = _build_prediction_snapshots(
         _future_schedule(),
         cfg=DailyWorkflowConfig(dry_run=True),
         predictor_factory=_FakePredictor,
     )
 
     assert details[0]["status"] == "insufficient_history"
-    assert "no prediction was fabricated" in messages[-1]
 
 
 def test_excluded_league_is_not_predicted_or_reported(monkeypatch):
@@ -86,18 +85,17 @@ def test_excluded_league_is_not_predicted_or_reported(monkeypatch):
 
     monkeypatch.setattr(
         daily_module,
-        "build_match_prediction_message",
-        lambda *_args, **_kwargs: "excluded prediction detail",
+        "build_match_prediction_snapshot",
+        lambda *_args, **_kwargs: None,
     )
     schedule = _future_schedule()
     schedule["league"] = "LCP"
 
-    messages, details = _build_prediction_messages(
+    details = _build_prediction_snapshots(
         schedule,
         cfg=DailyWorkflowConfig(dry_run=True),
     )
 
-    assert messages == []
     assert details == []
 
 

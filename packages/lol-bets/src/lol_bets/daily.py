@@ -40,12 +40,8 @@ from oracle_bets_discord.delivery import (
     resolve_delivery_mode,
 )
 from oracle_bets_discord.predictions.lol import (
-    context_line,
-    format_research_forecasts,
     format_schedule_messages,
-    format_winner_market_output,
     get_empty_roster,
-    outcome_probability_source,
 )
 
 from lol_bets.data_generation.ingestion.history import current_history_data_path
@@ -565,14 +561,14 @@ def match_type_from_best_of(best_of: Any) -> str:
     raise ValueError("best_of must be one of 1, 3, or 5")
 
 
-def build_match_prediction_message(  # noqa: PLR0915
+def build_match_prediction_snapshot(  # noqa: PLR0915
     row: pd.Series,
     *,
     predictor: Predictor,
     snapshot_sink: list[dict[str, Any]] | None = None,
     resolution_sink: list[dict[str, str]] | None = None,
-) -> str:
-    """Build one Discord-safe daily prediction message for a scheduled match."""
+) -> None:
+    """Run prematch inference and append its structured snapshot rows."""
     team_a_name = str(row.get("team_a") or "").strip()
     team_b_name = str(row.get("team_b") or "").strip()
     match_type = match_type_from_best_of(row.get("best_of"))
@@ -654,43 +650,15 @@ def build_match_prediction_message(  # noqa: PLR0915
     full_model_a = prediction.get("full_model_probability")
     drivers = [str(value) for value in prediction.get("drivers", [])]
     attribution_stable = prediction.get("attribution_stable") is True
-    warnings: list[str] = []
-    if not lineup_ready:
-        warnings.append(
-            "Expected lineup is incomplete or unknown; roster confidence is unknown."
-        )
-    elif not roster_ready:
-        warnings.append(
-            "Roster evidence is uncertain; review it before accepting a paper ticket "
-            f"({team_a_name}: {team_a_roster_gate.state}, "
-            f"{team_a_roster_gate.completed_series}/"
-            f"{team_a_roster_gate.required_completed_series} completed series; "
-            f"{team_b_name}: {team_b_roster_gate.state}, "
-            f"{team_b_roster_gate.completed_series}/"
-            f"{team_b_roster_gate.required_completed_series})."
-        )
-    if getattr(predictor, "series_winner_calibrator", None) is None:
-        warnings.append(
-            "Series calibration artifact is missing; raw model probability is being used."
-        )
-    if not uncertainty_method:
-        warnings.append("Held-out probability uncertainty is unavailable.")
-    if not drivers:
-        warnings.append("Local model drivers are unavailable.")
-
-    output = format_winner_market_output(
-        blue_team_name=team_a_name,
-        red_team_name=team_b_name,
-        match_type=match_type,
-        blue_win=team_a_win,
-        red_win=team_b_win,
-        probability_source=outcome_probability_source(predictor),
-        warnings=warnings,
-        context=context_line(team_a, team_b, False, None),
-        blue_range=(team_a_lower, team_a_upper),
-        red_range=(team_b_lower, team_b_upper),
-        uncertainty_confidence=uncertainty_confidence,
-        drivers=drivers,
+    calibrator_method = getattr(
+        getattr(predictor, "series_winner_calibrator", None), "method", None
+    )
+    probability_source = (
+        f"calibrated model ({calibrator_method})"
+        if calibrator_method and calibrator_method != "raw"
+        else "raw model (selected by calibration)"
+        if calibrator_method == "raw"
+        else "raw model"
     )
 
     prop_values: dict[str, float] = {}
@@ -734,7 +702,7 @@ def build_match_prediction_message(  # noqa: PLR0915
                 team_a_upper=team_a_upper,
                 team_b_lower=team_b_lower,
                 team_b_upper=team_b_upper,
-                probability_source=outcome_probability_source(predictor),
+                probability_source=probability_source,
                 uncertainty_method=uncertainty_method,
                 uncertainty_confidence=uncertainty_confidence,
                 uncertainty_sample_count=uncertainty_sample_count,
@@ -760,16 +728,6 @@ def build_match_prediction_message(  # noqa: PLR0915
                 roster_ready=roster_ready,
             )
         )
-
-    research = format_research_forecasts(
-        team_a=team_a_name,
-        team_b=team_b_name,
-        map_prediction=map_prediction,
-        prop_values=prop_values,
-    )
-    if research:
-        output += "\n\n" + research
-    return output
 
 
 def build_prediction_snapshot_rows(
@@ -1194,29 +1152,16 @@ def _train_triggered_candidate(
     return f"registered immutable {candidate_id}; triggers: {reasons}{suffix}"
 
 
-def _format_unmatched_teams_message(
-    unmatched: dict[str, tuple[str, ...]],
-) -> str:
-    lines = [
-        "**Unmatched teams** — no prediction was generated for these. "
-        "Add entries to `config/lol/data_ingestion/team_aliases.json`:"
-    ]
-    for name, suggestions in sorted(unmatched.items()):
-        hint = f" (closest: {', '.join(suggestions)})" if suggestions else ""
-        lines.append(f"- {name}{hint}")
-    return "\n".join(lines)
-
-
-def _build_prediction_messages(
+def _build_prediction_snapshots(
     schedule: pd.DataFrame,
     *,
     cfg: DailyWorkflowConfig,
     predictor_factory: Callable[[], Predictor] | None = None,
     snapshot_sink: list[dict[str, Any]] | None = None,
-) -> tuple[list[str], list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     schedule = _actionable_schedule(schedule)
     if schedule.empty:
-        return [], []
+        return []
     predictor = predictor_factory() if predictor_factory is not None else None
     if predictor is None:
         # Dry run included: exercising the real prediction path is the point of
@@ -1227,33 +1172,21 @@ def _build_prediction_messages(
             predictor = MatchPredictor()
         except Exception as exc:
             if cfg.dry_run:
-                return (
-                    [
-                        "Dry run: prediction artifacts unavailable, "
-                        f"prediction generation skipped ({exc})."
-                    ],
-                    [{"status": "artifacts_unavailable", "reason": str(exc)}],
-                )
+                return [{"status": "artifacts_unavailable", "reason": str(exc)}]
             raise
 
-    messages: list[str] = []
     details: list[dict[str, Any]] = []
-    unmatched: dict[str, tuple[str, ...]] = {}
-    insufficient_history: list[dict[str, str]] = []
-    failures: list[dict[str, str]] = []
     actionable = set(actionable_leagues())
     for _, row in schedule.iterrows():
         try:
             resolutions: list[dict[str, str]] = []
-            message = build_match_prediction_message(
+            build_match_prediction_snapshot(
                 row,
                 predictor=predictor,
                 snapshot_sink=snapshot_sink,
                 resolution_sink=resolutions,
             )
             league = str(row.get("league") or "")
-            if league in actionable:
-                messages.append(message)
             details.append(
                 {
                     "status": "predicted",
@@ -1261,12 +1194,10 @@ def _build_prediction_messages(
                     "actionable_league": league in actionable,
                     "match_key": row.get("match_key"),
                     "match": row.get("discord_label"),
-                    "report": message,
                     "resolved_aliases": resolutions,
                 }
             )
         except TeamResolutionError as exc:
-            unmatched[exc.resolved.query] = exc.resolved.suggestions
             details.append(
                 {
                     "status": "unsupported_team",
@@ -1277,9 +1208,6 @@ def _build_prediction_messages(
                 }
             )
         except InsufficientRosterHistoryError as exc:
-            insufficient_history.append(
-                {"match": str(row.get("discord_label", "match")), "reason": str(exc)}
-            )
             details.append(
                 {
                     "status": "insufficient_history",
@@ -1289,9 +1217,6 @@ def _build_prediction_messages(
                 }
             )
         except Exception as exc:
-            failures.append(
-                {"match": str(row.get("discord_label", "match")), "reason": str(exc)}
-            )
             details.append(
                 {
                     "status": "prediction_unavailable",
@@ -1300,18 +1225,7 @@ def _build_prediction_messages(
                     "reason": str(exc),
                 }
             )
-    if unmatched:
-        messages.append(_format_unmatched_teams_message(unmatched))
-    if insufficient_history:
-        messages.append(
-            f"Insufficient roster history for {len(insufficient_history)} fixture(s); "
-            "no prediction was fabricated. See the daily report artifact."
-        )
-    if failures:
-        messages.append(
-            f"Prediction unavailable for {len(failures)} fixture(s); see the daily report artifact."
-        )
-    return messages, details
+    return details
 
 
 def write_daily_report(

@@ -18,11 +18,6 @@ MIN_FIXTURE_CLUSTERS = 30
 MIN_OUTCOME_FRACTION = 0.15
 MAX_RELATIVE_LOG_LOSS_REGRESSION = 0.02
 MIN_BOOTSTRAP_SAMPLES = 100
-READINESS_STATES = (
-    "recommendation_active",
-    "exploration_only",
-    "display_only",
-)
 RECOMMENDATION_TARGET = "series_winner"
 EXPLORATION_TARGETS = (
     "map_winner:map_1",

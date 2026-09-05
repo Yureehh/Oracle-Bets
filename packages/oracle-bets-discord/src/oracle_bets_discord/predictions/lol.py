@@ -2,18 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import numpy as np
-from oracle_bets_core.betting import decimal_odds_from_probability
 from oracle_bets_core.pd import pd
 
 from oracle_bets_discord.formatting import (
     MESSAGE_LIMIT,
 )
-
-if TYPE_CHECKING:
-    from lol_bets.inference.team import Team
 
 # ── config & constants ──────────────────────────────────────────────────── #
 
@@ -24,7 +18,6 @@ _EMPTY_ROSTER: dict[str, str | None] = {
     "bot": None,
     "sup": None,
 }
-LOW_CONFIDENCE_WARNING_COUNT: int = 2
 
 
 # ── small helpers ───────────────────────────────────────────────────────── #
@@ -142,147 +135,3 @@ def format_league(
     md = league_df.to_markdown(index=False)
     md = "\n".join(line.lstrip() for line in md.split("\n"))
     return f"Upcoming {league} Games:\n```{md}```\n\n"
-
-
-def _pct(value: float) -> str:
-    return f"{value * 100:.1f}%"
-
-
-def _odds(value: float) -> str:
-    if value <= 0:
-        return "∞"
-    if value >= 1:
-        return "1.00"
-    return f"{decimal_odds_from_probability(value):.2f}"
-
-
-def confidence_label(warnings: list[str]) -> str:
-    if len(warnings) >= LOW_CONFIDENCE_WARNING_COUNT:
-        return "Low"
-    if warnings:
-        return "Medium"
-    return "High"
-
-
-def format_warnings(warnings: list[str]) -> str:
-    if not warnings:
-        return ""
-    summary = "; ".join(warning.removesuffix(".") for warning in warnings)
-    return f"\n\nWarning: {summary}."
-
-
-def outcome_probability_source(predictor) -> str:
-    calibrator = getattr(predictor, "series_winner_calibrator", None)
-    method = getattr(calibrator, "method", None)
-    if method and method != "raw":
-        return f"calibrated model ({method})"
-    if method == "raw":
-        return "raw model (selected by calibration)"
-    return "raw model"
-
-
-def context_line(
-    team_a: Team,
-    team_b: Team,
-    account_for_side: bool,
-    first_pick_team_name: str | None,
-) -> str:
-    side = f"{team_a.name}=Blue, {team_b.name}=Red" if account_for_side else "ignored"
-    first_pick = first_pick_team_name.strip() if first_pick_team_name else "unknown"
-    return f"- Context: side {side} | first pick {first_pick}"
-
-
-def format_winner_market_output(
-    *,
-    blue_team_name: str,
-    red_team_name: str,
-    match_type: str,
-    blue_win: float,
-    red_win: float,
-    probability_source: str,
-    warnings: list[str],
-    context: str,
-    notes: list[str] | None = None,
-    blue_range: tuple[float, float] | None = None,
-    red_range: tuple[float, float] | None = None,
-    uncertainty_confidence: float | None = None,
-    drivers: list[str] | None = None,
-) -> str:
-    market = "Map Winner" if match_type == "bo1" else "Series Winner"
-    lines = [
-        f"**LoL Markets: {blue_team_name} vs {red_team_name} ({match_type.upper()})**",
-        f"Source: {probability_source} | Confidence: {confidence_label(warnings)}",
-        *(
-            [
-                "Evidence: probabilities come directly from the independent "
-                "prematch series-winner model."
-            ]
-            if match_type != "bo1"
-            else []
-        ),
-        "",
-        "```text",
-        f"{'Market':<18} {'Pick':<16} {'Model':>7} {'Fair':>6}",
-        (
-            f"{market:<18} {blue_team_name[:16]:<16} "
-            f"{_pct(blue_win):>7} {_odds(blue_win):>6}"
-        ),
-        (
-            f"{market:<18} {red_team_name[:16]:<16} "
-            f"{_pct(red_win):>7} {_odds(red_win):>6}"
-        ),
-        "```",
-    ]
-    if blue_range is not None and red_range is not None:
-        uncertainty_label = (
-            f"{uncertainty_confidence * 100:.0f}%"
-            if uncertainty_confidence is not None
-            else "held-out"
-        )
-        lines.append(
-            f"Probability range ({uncertainty_label} calibration uncertainty): "
-            f"{blue_team_name} {_pct(blue_range[0])}–{_pct(blue_range[1])}; "
-            f"{red_team_name} {_pct(red_range[0])}–{_pct(red_range[1])}."
-        )
-    if drivers:
-        lines.append("Main model drivers (descriptive, not causal):")
-        lines.extend(f"- {driver}" for driver in drivers)
-    lines.append(context.removeprefix("- "))
-    # Informational notes are displayed alongside warnings but do not count
-    # against the confidence tier shown above.
-    return "\n".join(lines) + format_warnings([*warnings, *(notes or [])])
-
-
-def format_research_forecasts(
-    *,
-    team_a: str,
-    team_b: str,
-    map_prediction: dict | None,
-    prop_values: dict[str, float],
-) -> str:
-    """Render compact non-actionable Map 1 and scalar forecasts."""
-    lines = ["**Research-only forecasts**"]
-    if map_prediction is not None:
-        team_a_map = float(map_prediction["team1_win_probability"])
-        team_b_map = float(map_prediction["team2_win_probability"])
-        lines.append(
-            f"- Map 1: {team_a} {_pct(team_a_map)} (fair {_odds(team_a_map)}) · "
-            f"{team_b} {_pct(team_b_map)} (fair {_odds(team_b_map)})"
-        )
-    labels = {
-        "gamelength": ("Length", "m"),
-        "total_kills": ("Kills", ""),
-        "total_towers": ("Towers", ""),
-    }
-    values = [
-        f"{label} {float(prop_values[key]):.1f}{suffix}"
-        for key, (label, suffix) in labels.items()
-        if key in prop_values
-    ]
-    if values:
-        lines.append("- Point means: " + " · ".join(values))
-        lines.append("- Prop over/under probabilities require an explicit market line.")
-    if len(lines) == 1:
-        return ""
-    lines.append("These forecasts do not record bets.")
-    return "\n".join(lines)

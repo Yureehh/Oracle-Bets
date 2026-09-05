@@ -35,7 +35,7 @@ from lol_bets.daily import (
     DailyStepResult,
     DailyWorkflowConfig,
     Predictor,
-    _build_prediction_messages,
+    _build_prediction_snapshots,
 )
 from lol_bets.data_generation.ingestion.schedule import (
     fixture_version,
@@ -273,7 +273,7 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
     prediction_details: list[dict[str, Any]] = []
     inference_started = time.perf_counter()
     if not schedule.empty:
-        _messages, prediction_details = _build_prediction_messages(
+        prediction_details = _build_prediction_snapshots(
             schedule,
             cfg=DailyWorkflowConfig(dry_run=True),
             predictor_factory=predictor_factory,
@@ -786,9 +786,10 @@ def _write_report(
     stem = reviewed_at.strftime("%Y%m%dT%H%M%S_%fZ")
     json_path = report_dir / f"{stem}.json"
     markdown_path = report_dir / f"{stem}.md"
+    quotes, unsupported_contracts = _compact_report_actions(market_actions)
     payload = {
-        "schema_version": 4,
-        "workflow": "owner_market_review_v4",
+        "schema_version": 5,
+        "workflow": "owner_market_review_v5",
         "generated_at": reviewed_at.isoformat(),
         "evidence_run_id": evidence_run_id,
         "input_links": list(urls),
@@ -832,7 +833,8 @@ def _write_report(
             for market in event.markets
         ]
         + _manual_contract_payloads(market_actions),
-        "quotes": [_compact_action(action) for action in market_actions],
+        "quotes": quotes,
+        "unsupported_contracts": unsupported_contracts,
         "comparisons": list(comparisons),
         "warnings": sorted(
             {
@@ -1234,6 +1236,28 @@ def _compact_action(action: dict[str, Any]) -> dict[str, Any]:
         for observation in action.get("observations") or []
     ]
     return compact
+
+
+def _compact_report_actions(
+    actions: Sequence[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep supported quotes detailed and unsupported inventory referential."""
+    quotes = [
+        _compact_action(action)
+        for action in actions
+        if action.get("target") != "unknown"
+    ]
+    unsupported: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        if action.get("target") != "unknown":
+            continue
+        market_id = str(action.get("market_id") or "unknown")
+        unsupported[market_id] = {
+            "market_id": market_id,
+            "hard_blocks": list(action.get("hard_blocks") or []),
+            "warnings": list(action.get("warnings") or []),
+        }
+    return quotes, list(unsupported.values())
 
 
 def _as_utc(value: dt.datetime) -> dt.datetime:

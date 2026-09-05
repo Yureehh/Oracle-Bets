@@ -361,8 +361,3 @@ class LoLBetsModule:
             _check_file("training players", TRAINING_PLAYER_DATA),
         )
         return ArtifactHealth(module_id=self.id, checks=checks)
-
-    def predict_match(self, *args, **kwargs):
-        from lol_bets.inference.match_predictor import MatchPredictor
-
-        return MatchPredictor().predict_match(*args, **kwargs)

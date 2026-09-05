@@ -44,8 +44,6 @@ from sklearn.metrics import (
 
 sns.set_style("darkgrid")
 
-FIGSIZE = (20, 16)
-CMAP = "coolwarm"
 TOP_N_FEATURES = 30
 MIN_WEEKS_FOR_TREND = 4
 

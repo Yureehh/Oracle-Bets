@@ -237,9 +237,6 @@ NEXT_MAP_WINNER_FEATURE_PIPELINE: Path = _model_artifact(
 NEXT_MAP_WINNER_PROBABILITY_CALIBRATOR: Path = _model_artifact(
     "NextMapWinnerPrediction", "probability_calibrator"
 )
-NEXT_MAP_WINNER_PROBABILITY_UNCERTAINTY: Path = _model_artifact(
-    "NextMapWinnerPrediction", "probability_uncertainty"
-)
 NEXT_MAP_WINNER_MATCHUP_SCHEMA: Path = _model_artifact(
     "NextMapWinnerPrediction", "outcome_matchup_schema"
 )
