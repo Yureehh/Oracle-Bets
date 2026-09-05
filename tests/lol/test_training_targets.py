@@ -307,6 +307,19 @@ def test_training_stages_shared_rating_artifacts(tmp_path, monkeypatch):
     assert (staging / league_elo.name).read_bytes() == b"elo"
 
 
+def test_training_cleanup_removes_only_promotable_run_staging(tmp_path):
+    staging = tmp_path / "staging"
+    research_artifacts = tmp_path / "research-artifacts"
+    staging.mkdir()
+    research_artifacts.mkdir()
+
+    training._cleanup_training_artifacts(staging, promotable=True)
+    training._cleanup_training_artifacts(research_artifacts, promotable=False)
+
+    assert not staging.exists()
+    assert research_artifacts.is_dir()
+
+
 def _tuning_candidate(model_name: str) -> dict:
     return {
         "metadata": {

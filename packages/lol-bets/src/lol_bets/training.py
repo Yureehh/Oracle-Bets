@@ -576,6 +576,7 @@ def train_models(  # noqa: PLR0915
                     "target_interrupted": cfg.model_name,
                 },
             )
+            _cleanup_training_artifacts(artifact_root, promotable=promotable)
             raise
         except Exception as e:
             failed.append(cfg.model_name)
@@ -591,23 +592,27 @@ def train_models(  # noqa: PLR0915
     if failed:
         logger.warning(f"Failed: {', '.join(failed)}")
         _write_training_manifest(report_root, manifest | {"status": "failed"})
+        _cleanup_training_artifacts(artifact_root, promotable=promotable)
         msg = f"Training failed for: {', '.join(failed)}"
         raise RuntimeError(msg)
 
-    _write_training_summary(report_root, selected_models, manifest)
-    if promotable:
-        candidate_id = _register_training_candidate(
-            artifact_root,
-            report_root=report_root,
-            run_id=run_id,
-        )
-        manifest["candidate_id"] = candidate_id
-        review = _review_training_candidate(candidate_id, parameter_source)
-        manifest["promotion_status"] = review.status
-        manifest["promotion_reasons"] = list(review.reasons)
-    _write_training_manifest(report_root, manifest | {"status": "completed"})
-    _publish_latest_training_report(report_root, run_id)
-    _prune_training_reports(report_root.parent)
+    try:
+        _write_training_summary(report_root, selected_models, manifest)
+        if promotable:
+            candidate_id = _register_training_candidate(
+                artifact_root,
+                report_root=report_root,
+                run_id=run_id,
+            )
+            manifest["candidate_id"] = candidate_id
+            review = _review_training_candidate(candidate_id, parameter_source)
+            manifest["promotion_status"] = review.status
+            manifest["promotion_reasons"] = list(review.reasons)
+        _write_training_manifest(report_root, manifest | {"status": "completed"})
+        _publish_latest_training_report(report_root, run_id)
+        _prune_training_reports(report_root.parent)
+    finally:
+        _cleanup_training_artifacts(artifact_root, promotable=promotable)
     logger.info("All model training tasks finished.\n")
     return report_root
 
@@ -1412,6 +1417,12 @@ def _prune_training_reports(runs_root: Path) -> None:
     )
     for obsolete in completed[TRAINING_REPORT_RETENTION:]:
         shutil.rmtree(obsolete)
+
+
+def _cleanup_training_artifacts(artifact_root: Path, *, promotable: bool) -> None:
+    """Remove only this run's transient candidate staging directory."""
+    if promotable:
+        shutil.rmtree(artifact_root, ignore_errors=True)
 
 
 def _register_training_candidate(
