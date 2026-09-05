@@ -41,7 +41,7 @@ from lol_bets.data_generation.feature_engineering.ratings_features.common import
     load_hyperparameters as _load_hyperparameters,
 )
 from lol_bets.data_generation.feature_engineering.ratings_features.common import (
-    preprocess_rating_dataframe as preprocess_trueskill_dataframe,
+    preprocess_rating_dataframe as _preprocess_rating_dataframe,
 )
 from lol_bets.data_generation.feature_engineering.ratings_features.common import (
     save_hyperparameters as _save_hyperparameters,
@@ -668,7 +668,7 @@ def calculate_trueskill(
       2. Load or tune hyperparameters
       3. Run final TrueSkill computations
     """
-    df_pre = preprocess_trueskill_dataframe(df, entity)
+    df_pre = _preprocess_rating_dataframe(df, entity, data_pipeline_logger)
 
     # If league_elo_dict is not provided, load the mutable training-time table.
     if league_elo_dict is None:

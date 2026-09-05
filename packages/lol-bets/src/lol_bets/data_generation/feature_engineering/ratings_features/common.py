@@ -7,13 +7,11 @@ from typing import TYPE_CHECKING, Any
 
 from oracle_bets_core.io_utils import get_sorting_keys
 from oracle_bets_core.league_taxonomy import get_league_taxonomy
-from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
+from oracle_bets_core.logger import logger
 from oracle_bets_core.pd import pd
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-data_pipeline_logger = instantiate_logger(LOG_TOPIC.DATA_PIPELINE)
 
 
 def clamp(value: float, min_value: float, max_value: float) -> float:
@@ -29,7 +27,9 @@ def is_cross_league_competition(league: str) -> bool:
     return get_league_taxonomy(league)["tier"] == "cross"
 
 
-def preprocess_rating_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
+def preprocess_rating_dataframe(
+    df: pd.DataFrame, entity: str, pipeline_logger: Any
+) -> pd.DataFrame:
     """Validate and normalize the common team/player rating input contract."""
     entity = entity.lower()
     if entity not in {"team", "player"}:
@@ -46,7 +46,10 @@ def preprocess_rating_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     if not pd.api.types.is_datetime64_any_dtype(out["date"]):
         out["date"] = pd.to_datetime(out["date"], errors="coerce")
         if null_count := int(out["date"].isna().sum()):
-            _warn(f"{null_count} 'date' entries could not be converted; dropping them.")
+            _warn(
+                f"{null_count} 'date' entries could not be converted; dropping them.",
+                pipeline_logger,
+            )
             out = out.dropna(subset=["date"]).copy()
 
     missing_leagues = int(out["league"].isna().sum())
@@ -54,7 +57,8 @@ def preprocess_rating_dataframe(df: pd.DataFrame, entity: str) -> pd.DataFrame:
     if missing_leagues or missing_results:
         _warn(
             f"{missing_leagues} 'league' and {missing_results} 'result' missing; "
-            "dropping them."
+            "dropping them.",
+            pipeline_logger,
         )
         out = out.dropna(subset=["league", "result"]).reset_index(drop=True)
 
@@ -148,6 +152,6 @@ def split_and_validate_data(
     return train, valid
 
 
-def _warn(message: str, pipeline_logger: Any = data_pipeline_logger) -> None:
+def _warn(message: str, pipeline_logger: Any) -> None:
     logger.warning(message)
     pipeline_logger.warning(message)

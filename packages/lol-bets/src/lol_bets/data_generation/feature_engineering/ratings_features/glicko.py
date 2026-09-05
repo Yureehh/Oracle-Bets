@@ -37,7 +37,7 @@ from lol_bets.data_generation.feature_engineering.ratings_features.common import
     load_hyperparameters as _load_hyperparameters,
 )
 from lol_bets.data_generation.feature_engineering.ratings_features.common import (
-    preprocess_rating_dataframe as preprocess_glicko2_dataframe,
+    preprocess_rating_dataframe as _preprocess_rating_dataframe,
 )
 from lol_bets.data_generation.feature_engineering.ratings_features.common import (
     save_hyperparameters as _save_hyperparameters,
@@ -680,7 +680,7 @@ def calculate_glicko2(
     Mirrors the structure of the Elo code but uses Glicko-2 updates
     and columns named glicko2_*.
     """
-    df_pre = preprocess_glicko2_dataframe(df, entity)
+    df_pre = _preprocess_rating_dataframe(df, entity, data_pipeline_logger)
 
     if league_elo_dict is None:
         league_elo_dict = {}
