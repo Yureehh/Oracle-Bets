@@ -1,5 +1,26 @@
-# Welcome to Yureeh Match Modeling Documentation
+# Oracle Bets
 
-This documentation provides an overview of the ProjektZero Match Modeling project, a tool to predict match outcomes for competitive League of Legends using advanced data science models.
+Oracle Bets is a local-first League of Legends betting-research system. It
+turns historical Oracle's Elixir data and upcoming PandaScore fixtures into
+calibrated probabilities, prop estimates, reviewable reports, one-way Discord
+messages, and read-only Polymarket comparisons.
 
-Use the sidebar to navigate through the sections.
+The objective is long-run decision quality and profit evidence, in this order:
+
+1. prevent temporal and identity leakage;
+2. minimize out-of-sample log loss and Brier score;
+3. maintain calibration across time and important cohorts;
+4. match markets conservatively and record the price actually available;
+5. assess paper ROI, CLV, drawdown, and calibration together.
+
+The repository contains no automated betting, wallet, signing, private-key,
+order-submission, or fund-movement path. Counter-Strike and real sports are
+future architecture concerns, not active implementations.
+
+Start with the [command runbook](commands.md): its **Order of use** section is
+the canonical CLI and Discord guide from setup through review, confirmation,
+settlement, and performance. Read the [system design and operating
+decisions](system.md) for why the pipeline works this way, and check the
+[roadmap](roadmap.md) before changing strategy or promoting a model.
+The [pipeline status](pipeline-status.md) separates verified code and local
+artifacts from the live evidence still needed before any profit claim.

@@ -1,0 +1,122 @@
+"""Betting and prediction-market math with no execution side effects."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from oracle_bets_core.probabilities import probability_over_under
+
+
+@dataclass(frozen=True)
+class OverUnderSignal:
+    """Decision-support output for an over/under quote."""
+
+    mean: float
+    line: float
+    sigma: float
+    over_probability: float
+    under_probability: float
+    over_fair_odds: float
+    under_fair_odds: float
+    over_edge: float | None = None
+    under_edge: float | None = None
+    over_half_kelly_fraction: float | None = None
+    under_half_kelly_fraction: float | None = None
+
+
+def probability_from_decimal_odds(odds: float) -> float:
+    if odds <= 1:
+        msg = "Decimal odds must be greater than 1."
+        raise ValueError(msg)
+    return 1.0 / odds
+
+
+def decimal_odds_from_probability(probability: float) -> float:
+    if not 0 < probability < 1:
+        msg = "Probability must be in (0, 1)."
+        raise ValueError(msg)
+    return 1.0 / probability
+
+
+def expected_edge(decimal_odds: float, win_probability: float) -> float:
+    if decimal_odds <= 1:
+        msg = "Decimal odds must be greater than 1."
+        raise ValueError(msg)
+    if not 0 <= win_probability <= 1:
+        msg = "Win probability must be in [0, 1]."
+        raise ValueError(msg)
+    return win_probability * decimal_odds - 1.0
+
+
+def kelly_fraction(
+    decimal_odds: float, win_probability: float, *, fraction: float = 0.5
+) -> float:
+    """Return clipped fractional-Kelly stake fraction for decimal odds."""
+    if decimal_odds <= 1:
+        msg = "Decimal odds must be greater than 1."
+        raise ValueError(msg)
+    if not 0 <= win_probability <= 1:
+        msg = "Win probability must be in [0, 1]."
+        raise ValueError(msg)
+    if fraction < 0:
+        msg = "Kelly fraction multiplier must be non-negative."
+        raise ValueError(msg)
+
+    b = decimal_odds - 1.0
+    q = 1.0 - win_probability
+    full = (b * win_probability - q) / b
+    return max(0.0, full * fraction)
+
+
+def price_over_under(
+    *,
+    mean: float,
+    line: float,
+    sigma: float,
+    over_odds: float | None = None,
+    under_odds: float | None = None,
+    kelly_multiplier: float = 0.5,
+) -> OverUnderSignal:
+    """
+    Price an over/under market from a regression mean and residual uncertainty.
+
+    The model predicts the central estimate. The residual sigma turns that central
+    estimate into a probability distribution, so line pricing reflects historical
+    model error instead of treating the mean as a deterministic outcome.
+    """
+    if kelly_multiplier < 0:
+        msg = "Kelly fraction multiplier must be non-negative."
+        raise ValueError(msg)
+    probabilities = probability_over_under(mean=mean, line=line, sigma=sigma)
+    under_probability = probabilities.under_probability
+    over_probability = probabilities.over_probability
+    over_edge = (
+        expected_edge(over_odds, over_probability) if over_odds is not None else None
+    )
+    under_edge = (
+        expected_edge(under_odds, under_probability) if under_odds is not None else None
+    )
+    over_half_kelly = (
+        kelly_fraction(over_odds, over_probability, fraction=kelly_multiplier)
+        if over_odds is not None
+        else None
+    )
+    under_half_kelly = (
+        kelly_fraction(under_odds, under_probability, fraction=kelly_multiplier)
+        if under_odds is not None
+        else None
+    )
+
+    return OverUnderSignal(
+        mean=mean,
+        line=line,
+        sigma=sigma,
+        over_probability=over_probability,
+        under_probability=under_probability,
+        over_fair_odds=decimal_odds_from_probability(over_probability),
+        under_fair_odds=decimal_odds_from_probability(under_probability),
+        over_edge=over_edge,
+        under_edge=under_edge,
+        over_half_kelly_fraction=over_half_kelly,
+        under_half_kelly_fraction=under_half_kelly,
+    )

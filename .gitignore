@@ -35,10 +35,15 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
+.hypothesis/
+.pytest_cache/
+.ruff_cache/
 .tox/
 .coverage
 .coverage.*
 .cache
+.uv-cache/
+.pre-commit-cache/
 nosetests.xml
 coverage.xml
 *.cover
@@ -61,6 +66,8 @@ target/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.rdb
 
 # Pycharm
@@ -75,8 +82,15 @@ target/
 # Jupyter NB Checkpoints
 .ipynb_checkpoints/
 
-# exclude data from source control by default
-/data/
+# Generated data/artifact trees. Runtime commands create these directories.
+/data/*
+!/data/state/
+/data/state/backups/
+/data/state/model-registry/
+/data/state/discord-bot.lock
+
+# Production rating hyperparameters are reviewed, tracked inputs.
+/artifacts/
 
 # Mac OS-specific storage files
 .DS_Store
@@ -91,8 +105,8 @@ target/
 # Pyre type checker
 *.pyc
 
-# Poetry lock file
-poetry.lock
+# Poetry files
+poetry
 
 # All csv files
 *.csv
@@ -103,14 +117,30 @@ poetry.lock
 # Catboost info
 catboost_info/
 
-# All models folder
-models/artifacts/
+# Model outputs (generated files)
+/models/
 
 # Site packages
 site-packages/
+
+# Reports and docs build output
+/reports/
+
+# Logs
+/logs/
 
 # Site folder
 site/
 
 # Testing script
 test.py
+
+# TXT files
+*.txt
+
+# Claude files
+.claude/
+.codex/
+
+# Ontology Atlas
+.ontology-agent/

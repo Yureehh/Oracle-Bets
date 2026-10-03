@@ -1,0 +1,480 @@
+import argparse
+import json
+import re
+import sqlite3
+from datetime import UTC, datetime
+from functools import partial
+from pathlib import Path
+
+import pytest
+from lol_bets.operations.models import CandidateManifest, ModelRegistry
+from oracle_bets_core.cli import (
+    _market_check_fixture_rows,
+    _requires_pipeline_lock,
+    build_parser,
+    main,
+)
+from oracle_bets_core.paths import SCHEDULE
+from oracle_bets_core.pd import pd
+
+NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
+BEST_OF_THREE = 3
+BLOCKED_EXIT = 2
+
+
+@pytest.fixture(autouse=True)
+def _isolate_operation_locks(tmp_path, monkeypatch):
+    from oracle_bets_core import maintenance
+
+    monkeypatch.setattr(
+        maintenance,
+        "maintenance_lock",
+        partial(maintenance.maintenance_lock, root=tmp_path),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "operation_lock",
+        partial(maintenance.operation_lock, root=tmp_path),
+    )
+
+
+def test_parser_exposes_required_operational_commands():
+    commands = (
+        ["lol", "source-check"],
+        ["lol", "source-check", "--format", "json"],
+        ["lol", "source-refresh"],
+        ["lol", "source-refresh", "--format", "json"],
+        ["lol", "retune"],
+        ["lol", "market-check"],
+        ["lol", "market-check", "--match-key", "pandascore:123"],
+        ["model", "status"],
+        ["model", "review", "candidate-1", "--refresh", "--format", "json"],
+        ["model", "promote", "candidate-1", "--reason", "gate passed"],
+        ["model", "rollback", "candidate-1", "--reason", "owner review"],
+        [
+            "model",
+            "register-current",
+            "candidate-2",
+            "--code-version",
+            "abc123",
+            "--metric",
+            "log_loss=0.64",
+        ],
+        ["evidence", "init"],
+        ["evidence", "health"],
+        ["evidence", "backup"],
+        ["evidence", "export"],
+        ["evidence", "restore-verify", "backup.db"],
+        ["health", "system"],
+        ["audit", "monthly", "--period", "2026-07"],
+        ["ops", "reset-plan", "--epoch", "paper-v1"],
+        ["ops", "reset-apply", "--plan", "plan.json", "--token", "token"],
+        [
+            "bet",
+            "settle",
+            "--bet-id",
+            "bet-1",
+            "--result",
+            "win",
+            "--source-reference",
+            "provider-1",
+        ],
+    )
+
+    assert all(build_parser().parse_args(command) for command in commands)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["lol", "reconcile-history"],
+        ["lol", "schedule"],
+        ["lol", "research"],
+        ["lol", "retune"],
+        ["lol", "train"],
+        ["lol", "review-tuning", "run-1"],
+        ["lol", "promote-tuning", "run-1"],
+        ["model", "promote", "candidate-1", "--reason", "reviewed"],
+        ["daily", "lol"],
+    ],
+)
+def test_state_mutating_pipeline_commands_require_single_writer_lock(command):
+    assert _requires_pipeline_lock(build_parser().parse_args(command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["lol", "source-check"],
+        ["lol", "health"],
+        ["lol", "validate-data"],
+        ["model", "list"],
+        ["model", "review", "candidate-1"],
+    ],
+)
+def test_read_only_commands_do_not_require_pipeline_writer_lock(command):
+    assert not _requires_pipeline_lock(build_parser().parse_args(command))
+
+
+def test_removed_automatic_reconciliation_command_is_rejected():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["paper", "reconcile"])
+
+
+def test_schedule_command_persists_fixture_evidence(monkeypatch, capsys):
+    captured = {}
+
+    def fetch(**kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame(
+            [
+                {
+                    "start_utc": NOW,
+                    "league": "LCK",
+                    "team_a": "T1",
+                    "team_b": "Gen.G",
+                    "best_of": 3,
+                    "status": "not_started",
+                },
+                {
+                    "start_utc": NOW,
+                    "league": "LCK",
+                    "team_a": "TBD",
+                    "team_b": "T1",
+                    "best_of": 5,
+                    "status": "not_started",
+                },
+            ]
+        )
+
+    monkeypatch.setattr(
+        "lol_bets.data_generation.ingestion.schedule.fetch_and_store_schedule",
+        fetch,
+    )
+
+    assert main(["lol", "schedule", "--days", "7"]) == 0
+    assert captured["save_path"] == SCHEDULE
+    output = capsys.readouterr().out
+    assert "Upcoming LoL schedule: 1 matches" in output
+    assert "T1 vs Gen.G" in output
+    assert "TBD" not in output
+
+
+@pytest.mark.parametrize("action", ["reconcile-history", "train"])
+def test_source_failure_blocks_history_and_training_commands(
+    action,
+    monkeypatch,
+    capsys,
+):
+    from lol_bets.data_generation.ingestion.source import OracleSourceReadinessError
+
+    def blocked():
+        raise OracleSourceReadinessError("source stale")
+
+    monkeypatch.setattr(
+        "lol_bets.data_generation.ingestion.source.require_oracle_source_ready",
+        blocked,
+    )
+    monkeypatch.setattr(
+        "lol_bets.data_generation.ingestion.source.refresh_oracle_source",
+        lambda: None,
+    )
+
+    assert main(["lol", action]) == BLOCKED_EXIT
+    assert "source stale" in capsys.readouterr().err
+
+
+def test_fixture_market_check_falls_back_to_newest_daily_report(tmp_path):
+    reports = tmp_path / "daily"
+    reports.mkdir()
+    (reports / "20260802.json").write_text(
+        json.dumps(
+            {
+                "schedule": [
+                    {
+                        "match_key": "pandascore:1",
+                        "team_a": "T1",
+                        "team_b": "Gen.G",
+                        "league": "LCK",
+                        "start_utc": "2026-08-02T10:00:00+00:00",
+                        "best_of": 3,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = _market_check_fixture_rows(
+        "pandascore:1",
+        schedule_path=tmp_path / "missing.parquet",
+        report_dir=reports,
+    )
+
+    assert rows.iloc[0]["team_a"] == "T1"
+    assert rows.iloc[0]["team_b"] == "Gen.G"
+    assert rows.iloc[0]["best_of"] == BEST_OF_THREE
+
+
+def test_command_runbook_mentions_every_public_leaf_command():
+    def leaf_commands(
+        parser: argparse.ArgumentParser,
+        prefix: tuple[str, ...] = (),
+    ) -> list[tuple[str, ...]]:
+        subparsers = next(
+            (
+                action
+                for action in parser._actions
+                if isinstance(action, argparse._SubParsersAction)
+            ),
+            None,
+        )
+        if subparsers is None:
+            return [prefix]
+        return [
+            command
+            for name, child in subparsers.choices.items()
+            for command in leaf_commands(child, (*prefix, name))
+        ]
+
+    docs = (Path(__file__).parents[2] / "docs" / "commands.md").read_text(
+        encoding="utf-8"
+    )
+    missing = [
+        " ".join(command)
+        for command in leaf_commands(build_parser())
+        if not re.search(
+            rf"`{re.escape(' '.join(command))}(?:`|\s)",
+            docs,
+        )
+    ]
+
+    assert missing == []
+
+
+def test_evidence_cli_init_health_backup_verify_and_export(tmp_path, capsys):
+    database = tmp_path / "evidence.db"
+    backups = tmp_path / "backups"
+    exports = tmp_path / "exports"
+
+    assert main(["evidence", "init", "--database", str(database)]) == 0
+    assert main(["evidence", "health", "--database", str(database)]) == 0
+    assert (
+        main(
+            [
+                "evidence",
+                "backup",
+                "--database",
+                str(database),
+                "--output",
+                str(backups),
+            ]
+        )
+        == 0
+    )
+    backup = next(backups.glob("*.db"))
+    assert main(["evidence", "restore-verify", str(backup)]) == 0
+    assert (
+        main(
+            [
+                "evidence",
+                "export",
+                "--database",
+                str(database),
+                "--output",
+                str(exports),
+            ]
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "integrity=ok" in output
+    assert "Backup verified" in output
+    assert (exports / "manifest.json").is_file()
+
+
+def test_evidence_health_fails_closed_on_stale_schema(tmp_path):
+    database = tmp_path / "evidence.db"
+    assert main(["evidence", "init", "--database", str(database)]) == 0
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE evidence_schema_version SET version = 3")
+
+    assert main(["evidence", "health", "--database", str(database)]) == BLOCKED_EXIT
+
+
+def _manifest(model_id):
+    return CandidateManifest(
+        model_id=model_id,
+        sport="lol",
+        target="map_win",
+        created_at=NOW,
+        code_version="code",
+        data_manifest="data",
+        feature_fingerprint="features",
+        config_hash="config",
+        dependency_lock_hash="lock",
+        random_seed=7,
+        metrics={"log_loss": 0.65},
+    )
+
+
+def test_model_cli_promotes_checks_and_rolls_back_verified_bundles(
+    tmp_path,
+    capsys,
+):
+    registry_path = tmp_path / "registry"
+    registry = ModelRegistry(registry_path)
+    first = tmp_path / "first.pkl"
+    second = tmp_path / "second.pkl"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    registry.register_candidate(_manifest("candidate-1"), {"model.pkl": first})
+    registry.register_candidate(_manifest("candidate-2"), {"model.pkl": second})
+
+    assert (
+        main(
+            [
+                "model",
+                "promote",
+                "candidate-1",
+                "--reason",
+                "initial",
+                "--registry",
+                str(registry_path),
+            ]
+        )
+        == 0
+    )
+    assert main(["model", "status", "--registry", str(registry_path)]) == 0
+    assert (
+        main(
+            [
+                "model",
+                "promote",
+                "candidate-2",
+                "--reason",
+                "passed gate",
+                "--registry",
+                str(registry_path),
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
+                "model",
+                "rollback",
+                "candidate-1",
+                "--reason",
+                "owner review",
+                "--registry",
+                str(registry_path),
+            ]
+        )
+        == 0
+    )
+
+    assert registry.champion_id() == "candidate-1"
+    assert "healthy" in capsys.readouterr().out
+
+
+def test_removed_paper_interface_is_rejected():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["paper", "list"])
+
+
+def test_bet_settlement_rejects_legacy_stake_flag():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "bet",
+                "settle",
+                "--bet-id",
+                "bet-1",
+                "--result",
+                "win",
+                "--source-reference",
+                "provider-1",
+                "--stake",
+                "1",
+            ]
+        )
+
+
+def test_market_review_rejects_malformed_manual_lines_file(tmp_path, capsys):
+    manual_lines = tmp_path / "manual-lines.json"
+    manual_lines.write_text("{not-json", encoding="utf-8")
+
+    result = main(
+        [
+            "lol",
+            "market-review",
+            "https://thunderpick.io/en/esports/lol/team-a-vs-team-b",
+            "--manual-lines",
+            str(manual_lines),
+        ]
+    )
+
+    assert result == BLOCKED_EXIT
+    assert "Invalid --manual-lines file" in capsys.readouterr().err
+
+
+def test_system_health_and_monthly_audit_cli_record_reports(tmp_path, capsys):
+    database = tmp_path / "evidence.db"
+    health_path = tmp_path / "health.json"
+    audit_dir = tmp_path / "audits"
+    assert main(["evidence", "init", "--database", str(database)]) == 0
+
+    health_code = main(
+        [
+            "health",
+            "system",
+            "--database",
+            str(database),
+            "--output",
+            str(health_path),
+            "--record",
+        ]
+    )
+    audit_code = main(
+        [
+            "audit",
+            "monthly",
+            "--database",
+            str(database),
+            "--period",
+            "2026-07",
+            "--output",
+            str(audit_dir),
+        ]
+    )
+
+    assert health_code == 1
+    assert audit_code == 0
+    assert health_path.is_file()
+    assert (audit_dir / "monthly-2026-07.json").is_file()
+    assert (audit_dir / "monthly-2026-07.md").is_file()
+    assert "Owner review and sign-off are still required" in capsys.readouterr().out
+
+
+def test_daily_refuses_concurrent_pipeline_without_removing_lock(tmp_path, capsys):
+    from oracle_bets_core import maintenance
+
+    path = maintenance.operation_lock_path("pipeline", root=tmp_path)
+    with maintenance.operation_lock("pipeline"):
+        inode = path.stat().st_ino
+        owner = path.read_text()
+        assert main(["daily", "lol"]) == BLOCKED_EXIT
+        assert "already running" in capsys.readouterr().err
+        assert path.stat().st_ino == inode
+        assert path.read_text() == owner
+        with (
+            pytest.raises(maintenance.MaintenanceBusyError),
+            maintenance.operation_lock("pipeline"),
+        ):
+            pytest.fail("the first owner's lock was released")
+
+    with maintenance.operation_lock("pipeline"):
+        assert path.stat().st_ino == inode

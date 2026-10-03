@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "calibration": "auto",
+    "calibration_method": "auto",
+    "calibration_size": 0.15,
+    "code_version": "96655041ec369fd68c9c304522f001778e9469a8",
+    "dataset_fingerprint": "94c1fafe3f07dd32b1db3b71a8654a4857236837079431c9e901008c35331d81",
+    "feature_schema_fingerprint": "38a22c8c93dd07f211b00dfdd4067b245ab3e888d819283ed075906b6dae8e3d",
+    "feature_set": "compact",
+    "max_features": 120,
+    "model_name": "TotalKillsPrediction_LightGBM",
+    "model_type": "lightgbm",
+    "objective": "rmse",
+    "problem_type": "regression",
+    "random_seed": 42,
+    "search_space_version": 1,
+    "test_size": 0.15,
+    "tune_size": 0.1,
+    "validation_score": 8.710432098121556,
+    "version": 2
+  },
+  "params": {
+    "bagging_freq": 5,
+    "boosting_type": "gbdt",
+    "colsample_bytree": 0.9099796179750076,
+    "feature_fraction": 0.98148028151946,
+    "learning_rate": 0.01311040122839729,
+    "max_depth": 6,
+    "min_child_samples": 136,
+    "min_split_gain": 0.07154046856188379,
+    "num_leaves": 20,
+    "reg_alpha": 0.001083955684280533,
+    "reg_lambda": 0.006883570629013683,
+    "subsample": 0.7769778884853272
+  }
+}

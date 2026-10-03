@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "calibration": "auto",
+    "calibration_method": "auto",
+    "calibration_size": 0.15,
+    "code_version": "96655041ec369fd68c9c304522f001778e9469a8",
+    "dataset_fingerprint": "94c1fafe3f07dd32b1db3b71a8654a4857236837079431c9e901008c35331d81",
+    "feature_schema_fingerprint": "38a22c8c93dd07f211b00dfdd4067b245ab3e888d819283ed075906b6dae8e3d",
+    "feature_set": "compact",
+    "max_features": 120,
+    "model_name": "TotalTowersPrediction_LightGBM",
+    "model_type": "lightgbm",
+    "objective": "rmse",
+    "problem_type": "regression",
+    "random_seed": 42,
+    "search_space_version": 1,
+    "test_size": 0.15,
+    "tune_size": 0.1,
+    "validation_score": 2.0518891778352053,
+    "version": 2
+  },
+  "params": {
+    "bagging_freq": 6,
+    "boosting_type": "gbdt",
+    "colsample_bytree": 0.6872548047645872,
+    "feature_fraction": 0.9795523682993356,
+    "learning_rate": 0.014352633771162335,
+    "max_depth": 7,
+    "min_child_samples": 31,
+    "min_split_gain": 0.16691529825676849,
+    "num_leaves": 39,
+    "reg_alpha": 0.0007931772740512972,
+    "reg_lambda": 0.01634201704695827,
+    "subsample": 0.7523710633196833
+  }
+}

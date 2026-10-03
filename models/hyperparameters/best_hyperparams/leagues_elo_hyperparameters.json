@@ -1,6 +1,0 @@
-{
-  "k_factor": 32.0,
-  "initial_elo": 1400.0,
-  "elo_divisor": 450.0,
-  "decay_factor": 0.75
-}

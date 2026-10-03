@@ -1,0 +1,33 @@
+{
+  "schema_version": 4,
+  "timezone": "Europe/Rome",
+  "fixture_window_hours": 36,
+  "market": {
+    "read_only": true,
+    "quote_ttl_seconds": 120
+  },
+  "strategy": {
+    "policy_version": "lol-market-policy-v2",
+    "recommendation_target": "series_winner",
+    "minimum_model_favorite": 0.51,
+    "unit_bankroll_fraction": 0.01,
+    "paper_positive_ev_path": "balanced_kelly",
+    "paper_negative_ev_exploration_path": "observe_only"
+  },
+  "leagues": {
+    "training_profile": "research_all_supported",
+    "prediction_profile": "tier1_plus_erls",
+    "actionable_exclusions": [
+      "CBLOL",
+      "LCP"
+    ]
+  },
+  "training": {
+    "new_valid_maps_trigger": 50,
+    "new_major_maps_trigger": 20
+  },
+  "promotion": {
+    "routine_automatic": true,
+    "optuna_automatic": false
+  }
+}

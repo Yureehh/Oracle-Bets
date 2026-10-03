@@ -1,83 +1,54 @@
----
 repos:
-  # Upgrade Python syntax to newer versions
+  # Upgrade Python syntax
   - repo: https://github.com/asottile/pyupgrade
-    rev: v3.19.1
+    rev: v3.20.0
     hooks:
       - id: pyupgrade
+        args: ["--py312-plus"]
 
-  # Black for code formatting
-  - repo: https://github.com/psf/black
-    rev: 24.10.0
+  # Ruff (lint -> format, per docs)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
     hooks:
-      - id: black
+      - id: ruff
+        args: ["--fix", "--exit-non-zero-on-fix"]
+      - id: ruff-format
 
-  # isort for import sorting
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
-      - id: isort
-        args: ["--profile", "black", "--filter-files"]
-
-  # Flake8 for linting
-  - repo: https://github.com/pycqa/flake8
-    rev: 7.1.1
-    hooks:
-      - id: flake8
-        additional_dependencies:
-          - flake8-bugbear           # Catch likely bugs
-          - flake8-comprehensions    # Simplify comprehensions
-          - pep8-naming              # Enforce naming conventions
-          - flake8-docstrings        # Enforce docstring style
-        verbose: true
-        args: [
-          "--max-line-length=120",    # Match
-          "--ignore=B905,B907,N803,N806,W503,C420,D205,D400,D401,C901",
-          "--max-line-length=120",    # Match Black's default
-          "--exclude=.git,__pycache__,docs/source/conf.py,build,dist,tests,src/prediction_bot.py",
-          "--max-complexity=10",
-          "--select=B,C,D,E,F,N,W,B9"
-        ]
-
-  # General purpose pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
-      - id: check-docstring-first      # Enforce docstrings at the start
-      - id: check-json                 # Validate JSON files
-      - id: check-merge-conflict       # Prevent merge conflicts
-      - id: check-yaml                 # Validate YAML files
-      - id: debug-statements           # Remove debug statements (e.g., pdb)
-      - id: end-of-file-fixer          # Ensure newline at EOF
-      - id: trailing-whitespace        # Remove trailing whitespaces
-      - id: requirements-txt-fixer     # Fix requirements.txt formatting
-      - id: check-added-large-files    # Warn about large files
-
-  # Detect secrets in code
+      - id: check-docstring-first
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: debug-statements
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: requirements-txt-fixer
+      - id: check-added-large-files
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
       - id: detect-secrets
+        args:
+          - --exclude-lines
+          - '"(code_version|dataset_fingerprint|feature_schema_fingerprint)"'
 
-  # Enforce consistent commit messages
+  # TOML files linter
+  - repo: https://github.com/ComPWA/taplo-pre-commit
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
+
   - repo: https://github.com/jorisroovers/gitlint
     rev: v0.19.1
     hooks:
       - id: gitlint
 
-  # Python-specific hooks
   - repo: https://github.com/pre-commit/pygrep-hooks
     rev: v1.10.0
     hooks:
-      - id: python-check-mock-methods       # Catch incorrect use of mock methods
-      - id: python-use-type-annotations     # Enforce type annotations
-      - id: python-check-blanket-noqa       # Avoid overuse of noqa
-      - id: python-use-type-annotations     # Enforce type annotations
-      - id: text-unicode-replacement-char   # Detect unicode replacement chars
-
-  # # Validate and sort YAML files
-  # - repo: https://github.com/adrienverge/yamllint
-  #   rev: v1.29.0
-  #   hooks:
-  #     - id: yamllint
-        # args: ["--strict"]
+      - id: python-check-mock-methods
+      - id: python-use-type-annotations
+      - id: python-check-blanket-noqa
+      - id: text-unicode-replacement-char

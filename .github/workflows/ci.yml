@@ -1,81 +1,115 @@
----
-name: Python package
+name: CI
 
 on:
-  push:
-    branches: [main, develop, feature/*]
   pull_request:
-    branches: [main, develop]
+  push:
+    branches: [main, dev, big-refactor]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
 
 jobs:
-  build:
+  python:
+    name: Python quality and contracts
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11"]
-
+    timeout-minutes: 35
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v3
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+      - name: Install Python
+        run: uv python install "$PYTHON_VERSION"
+      - name: Verify dependency lock
+        run: uv lock --check
+      - name: Install exact dependencies
+        run: uv sync --frozen --extra dev --extra discord-bot
+      - name: Lint Python
+        run: uv run ruff check packages tests
+      - name: Verify Python formatting
+        run: uv run ruff format --check packages tests
+      - name: Typecheck all Python packages
+        run: |
+          uv run ty check \
+            --extra-search-path packages/oracle-bets-core/src \
+            --extra-search-path packages/lol-bets/src \
+            --extra-search-path packages/oracle-bets-discord/src \
+            packages
+      - name: Run deterministic test suite
+        run: uv run pytest -q
+      - name: Compile packages
+        run: uv run python -m compileall -q packages
+      - name: Smoke-test optional Discord package
+        run: uv run python -c "import discord; import oracle_bets_discord.bot"
+      - name: Exercise evidence backup and restore
+        run: |
+          evidence_dir="$(mktemp -d)"
+          uv run oracle-bets evidence init --database "$evidence_dir/evidence.db"
+          uv run oracle-bets evidence health --database "$evidence_dir/evidence.db"
+          uv run oracle-bets evidence backup \
+            --database "$evidence_dir/evidence.db" \
+            --output "$evidence_dir/backups"
+          uv run oracle-bets evidence restore-verify "$evidence_dir"/backups/*.db
+      - name: Exercise CLI health contract
+        run: |
+          set +e
+          uv run oracle-bets lol health
+          status=$?
+          test "$status" -eq 0 -o "$status" -eq 2
 
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: ${{ matrix.python-version }}
+  documentation:
+    name: Documentation contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - name: Install Python
+        run: uv python install "$PYTHON_VERSION"
+      - name: Install exact dependencies
+        run: uv sync --frozen --extra dev
+      - name: Build strict documentation
+        run: uv run mkdocs build --strict
 
-    - name: Cache Poetry Binary
-      uses: actions/cache@v3
-      with:
-        path: ~/.poetry
-        key: poetry-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-        restore-keys: poetry-${{ runner.os }}-
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Scan committed content
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Install Poetry
-      run: |
-        curl -sSL https://install.python-poetry.org | python3 -
-        echo "$HOME/.poetry/bin" >> $GITHUB_PATH
-
-    - name: Cache Poetry Dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/pypoetry
-        key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock', '**/pyproject.toml') }}
-        restore-keys: ${{ runner.os }}-poetry-
-
-    - name: Install Dependencies with Poetry
-      run: poetry install --no-root
-
-    - name: Install pre-commit
-      run: pip install pre-commit
-
-    - name: Run Pre-commit Hooks
-      run: pre-commit run --config .pre-commit-config.yaml --all-files
-
-    - name: Run Linting and Formatting Checks
-      run: |
-        poetry run black --check .
-        poetry run isort --check-only .
-        poetry run flake8 . \
-          --max-line-length=120 \
-          --max-complexity=10 \
-          --exclude=.git,__pycache__,docs/source/conf.py,build,dist,tests,src/prediction_bot.py \
-          --ignore=B905,B907,N803,N806,W503,C420,D205,D400,D401 \
-          --select=B,C,D,E,F,N,W,B9
-
-    - name: Run Tests with Coverage
-      continue-on-error: true
-      run: |
-        poetry run pytest --cov=src --cov-fail-under=85 --cov-report xml
-
-    - name: Upload Coverage Report
-      uses: actions/upload-artifact@v3
-      with:
-        name: coverage-report
-        path: coverage.xml
-
-    - name: Build MkDocs
-      run: mkdocs build
-
-    - name: Deploy MkDocs
-      run: mkdocs gh-deploy --force
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Reject vulnerable dependency changes
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
