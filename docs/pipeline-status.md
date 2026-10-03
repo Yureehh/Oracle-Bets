@@ -60,7 +60,9 @@ and output hashes. Benchmark an awake before/after run and keep the full path
 for changed or damaged inputs. Serving also verifies and reads the paired
 snapshot for both teams; measure fixture latency before caching a verified
 read-only pair. Profile memory and CPU before changing the dataframe backend or
-adding infrastructure.
+adding infrastructure. FireDucks remains opt-in and is not in the locked
+installation while its dependency pins an Arrow version flagged by the
+repository's dependency review.
 
 See the [research readiness plan](plans/2026-09-24-1117-fix-paper-research-readiness-plan.md)
 for detailed gates and the separate

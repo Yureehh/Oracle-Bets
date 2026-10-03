@@ -1,8 +1,8 @@
 """
-Pandas shim with FireDucks acceleration when available.
+Pandas shim with optional FireDucks acceleration.
 
 Usage: ``from oracle_bets_core.pd import pd`` in place of ``import pandas as pd``.
-Falls back to pandas if FireDucks is not installed.
+Uses pandas unless FireDucks is explicitly enabled and available.
 """
 
 from __future__ import annotations
@@ -14,17 +14,17 @@ from typing import Any
 
 def _load_pd() -> Any:
     """
-    Prefer FireDucks for speed but fall back to pandas if unavailable, opted
-    out, or missing required functionality (reshape internals, groupby
-    transform with custom lambdas).
+    Use FireDucks only when opted in; fall back to pandas if unavailable or
+    missing required functionality (reshape internals, groupby transform with
+    custom lambdas).
     """
-    if os.getenv("USE_FIREDUCKS", "1").lower() in {"0", "false", "no"}:
+    if os.getenv("USE_FIREDUCKS", "0").lower() in {"0", "false", "no"}:
         import pandas as _pd  # type: ignore[import-untyped]  # noqa: ICN001
 
         return _pd
 
     try:
-        import fireducks.pandas as _fd_pd  # type: ignore[import-not-found]
+        _fd_pd = importlib.import_module("fireducks.pandas")
     except Exception:
         import pandas as _pd  # type: ignore[import-untyped]  # noqa: ICN001
 
