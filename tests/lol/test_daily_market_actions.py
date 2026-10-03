@@ -536,3 +536,54 @@ def test_programmatic_manual_lines_reject_non_finite_odds(value):
             ],
             reviewed_at=START,
         )
+
+
+@pytest.mark.parametrize(
+    ("target", "selection", "line", "game_number"),
+    [
+        ("map_winner", "T1", None, 1),
+        ("series_handicap", "T1", -1.5, None),
+        ("gamelength_mean", "Over", 1800, 1),
+        ("total_kills_mean", "Over", 24.5, 1),
+        ("total_towers_mean", "Over", 12.5, 1),
+    ],
+)
+def test_thunderpick_required_research_markets_keep_unverified_terms(
+    monkeypatch, target, selection, line, game_number
+):
+    fixture = pd.Series(
+        {
+            "match_key": "pandascore:1",
+            "league": "LCK",
+            "team_a": "T1",
+            "team_b": "Gen.G",
+            "start_utc": FIXTURE_START,
+            "best_of": 3,
+        }
+    )
+    monkeypatch.setattr(
+        market_actions, "_manual_probabilities", lambda **_: (0.6, 0.55, None)
+    )
+    action = market_actions.price_manual_lines(
+        fixture=fixture,
+        snapshot_rows=[],
+        reviewed_at=START,
+        lines=[
+            {
+                "target": target,
+                "selection": selection,
+                "line": line,
+                "game_number": game_number,
+                "decimal_odds": 2.0,
+                "terms": "Owner supplied full contract terms.",
+            }
+        ],
+    )[0]
+    assert action["state"] == "exploration"
+    assert not action["hard_blocks"]
+    assert (
+        action["semantic_key"]["resolution_terms"]
+        == "Owner supplied full contract terms."
+    )
+    assert action["semantic_key"]["terms_verified"] is False
+    assert action["observations"][0]["observed_at"] == START.isoformat()

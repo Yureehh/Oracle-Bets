@@ -11,6 +11,7 @@ from lol_bets.operations.market_strategies import (
 )
 
 ONE_UNIT = 0.01
+TICKET_CAP = 0.02
 EXPECTED_EXPLORATION_SAMPLES = 2
 PREDICTION_MODELS = (
     Path(__file__).resolve().parents[2]
@@ -36,7 +37,8 @@ def test_direct_series_recommendation_is_deterministic_and_records_all_sizes():
     assert first == second
     assert first.classification is DecisionClass.RECOMMENDED
     assert first.reason_codes == ("all_recommendation_gates_passed",)
-    assert sizing["selected_path"] == "full_kelly"
+    assert sizing["selected_path"] == "balanced_kelly"
+    assert sizing["bankroll_fractions"]["balanced_kelly"] <= TICKET_CAP
     assert sizing["bankroll_fractions"]["flat_1u"] == ONE_UNIT
     assert sizing["bankroll_fractions"]["half_kelly"] == pytest.approx(
         sizing["bankroll_fractions"]["full_kelly"] / 2
@@ -46,7 +48,7 @@ def test_direct_series_recommendation_is_deterministic_and_records_all_sizes():
     )
 
 
-def test_negative_ev_exploration_uses_flat_unit_and_zero_kelly():
+def test_negative_ev_exploration_is_observed_without_a_stake():
     decision = decide_market(
         semantic_fingerprint="map-team-a",
         target="map_winner",
@@ -61,12 +63,13 @@ def test_negative_ev_exploration_uses_flat_unit_and_zero_kelly():
     assert decision.classification is DecisionClass.EXPLORATION
     assert "target_exploration_only" in decision.reason_codes
     assert "point_ev_non_positive" in decision.reason_codes
-    assert sizing["selected_path"] == "flat_1u"
+    assert sizing["selected_path"] is None
     assert sizing["bankroll_fractions"] == {
         "flat_1u": ONE_UNIT,
         "full_kelly": 0.0,
         "half_kelly": 0.0,
         "quarter_kelly": 0.0,
+        "balanced_kelly": 0.0,
     }
 
 
@@ -111,12 +114,7 @@ def test_exploration_sampler_selects_once_per_target_and_period():
 
     ranked = rank_market_decisions(actions)
 
-    assert [
-        row["semantic_fingerprint"] for row in ranked if row["ticket_eligible"]
-    ] == [
-        "map1-a",
-        "map2-a",
-    ]
+    assert not any(row["ticket_eligible"] for row in ranked)
     assert (
         sum(row["exploration_sampled"] for row in ranked)
         == EXPECTED_EXPLORATION_SAMPLES

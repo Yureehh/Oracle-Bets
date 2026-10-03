@@ -22,8 +22,9 @@ import json
 import math
 import re
 import shutil
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -33,15 +34,13 @@ if TYPE_CHECKING:
 from oracle_bets_core.io_utils import (
     atomic_write_text,
     load_model,
-    load_training_data,
     store_model,
 )
 from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
+    MODEL_REGISTRY_DIR,
     MODELS_DIR,
-    NEXT_MAP_PLAYER_DATA,
-    NEXT_MAP_TEAM_DATA,
     RATING_HYPERPARAMETER_PROVENANCE,
     RATING_LEAGUE_ELO,
     RATING_TEAM_LEAGUES_MAPPING,
@@ -61,13 +60,22 @@ from oracle_bets_core.pd import pd
 
 from lol_bets.data_generation.ingestion.history import (
     current_history_data_path,
-    read_history_snapshot,
 )
 from lol_bets.data_generation.ingestion.quality import normalize_result
 from lol_bets.module import LoLBetsModule
 from lol_bets.operations.provenance import (
     RepositoryProvenance,
     require_clean_repository,
+)
+from lol_bets.operations.training_exposure import (
+    initialize_history,
+    read_exposures,
+    record_exposure,
+    reserve_exposure,
+)
+from lol_bets.operations.training_inputs import (
+    SERIES_INPUT_MANIFEST,
+    load_training_inputs,
 )
 from lol_bets.prediction_models.gbdt_model import (
     DEFAULT_SELECTED_MAX_FEATURES,
@@ -161,7 +169,7 @@ TRAINING_REPORT_RETENTION = 12
 RANDOM_CLASSIFIER_LOG_LOSS = 0.693147
 RANDOM_CLASSIFIER_BRIER = 0.25
 WEAK_REGRESSION_R2 = 0.1
-TUNING_REVIEW_SCHEMA_VERSION = 4
+TUNING_REVIEW_SCHEMA_VERSION = 5
 
 
 # ───────────────────────────────  helpers  ───────────────────────────────────
@@ -361,6 +369,7 @@ def initialize_and_train_model(
     report_root: Path | None = None,
     run_id: str | None = None,
     dataset_fingerprint: str | None = None,
+    research_hparams_path: Path | None = None,
 ) -> Path | None:
     """
     Initialize, train (and optionally validate) a model defined by `cfg`.
@@ -397,6 +406,7 @@ def initialize_and_train_model(
         report_root=report_root,
         run_id=run_id or dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S"),
         dataset_fingerprint=dataset_fingerprint,
+        research_hparams_path=research_hparams_path,
     )
 
     start = dt.datetime.now()
@@ -424,27 +434,6 @@ def initialize_and_train_model(
     return path
 
 
-def _training_frames_for_config(
-    cfg: ModelConfig,
-    map_teams: pd.DataFrame,
-    map_players: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    if cfg.dataset == "map":
-        return map_teams, map_players
-    paths = (
-        (SERIES_WINNER_TEAM_DATA, SERIES_WINNER_PLAYER_DATA)
-        if cfg.dataset == "series"
-        else (NEXT_MAP_TEAM_DATA, NEXT_MAP_PLAYER_DATA)
-    )
-    missing = [str(path) for path in paths if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "Winner V2 datasets are missing; run `oracle-bets lol build-series`: "
-            f"{missing}"
-        )
-    return pd.read_parquet(paths[0]), pd.read_parquet(paths[1])
-
-
 def _feature_set_for_config(
     cfg: ModelConfig,
     requested: TrainingFeatureSet,
@@ -464,6 +453,78 @@ def _feature_set_for_config(
     return feature_set if feature_set in {"full", "compact"} else "full"
 
 
+def _load_research_parameters(
+    selected_models: tuple[ModelConfig, ...], run_ids: tuple[str, ...]
+) -> dict[str, dict[str, Any]]:
+    """Validate independent completed studies before fitting any research model."""
+    requested = {cfg.target_name: cfg for cfg in selected_models}
+    if len(run_ids) != len(requested):
+        raise ValueError("Provide one independent research run per target")
+    found: dict[str, dict[str, Any]] = {}
+    for run_id in run_ids:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+            raise ValueError("Invalid research run id")
+        run_root = REPORTS_DIR / "training" / "runs" / run_id
+        manifest = json.loads((run_root / "manifest.json").read_text(encoding="utf-8"))
+        targets = manifest.get("targets_requested")
+        if (
+            manifest.get("status") != "completed"
+            or manifest.get("retune") is not True
+            or not isinstance(targets, list)
+            or len(targets) != 1
+            or targets[0] not in requested
+            or manifest.get("targets_failed")
+            or manifest.get("targets_trained") != [requested[targets[0]].model_name]
+            or targets[0] in found
+        ):
+            raise ValueError(f"Invalid or duplicate research study: {run_id}")
+        cfg = requested[targets[0]]
+        source = run_root / f"{cfg.model_name}_LightGBM" / "tuned_hyperparameters.json"
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        metadata = payload.get("metadata") or {}
+        if (
+            metadata.get("model_name") != f"{cfg.model_name}_LightGBM"
+            or metadata.get("problem_type") != cfg.problem_type
+            or metadata.get("feature_set") not in {"full", "compact", "selected"}
+            or not isinstance(metadata.get("max_features"), int)
+            or not isinstance(payload.get("params"), dict)
+            or not payload["params"]
+        ):
+            raise ValueError(f"Invalid research parameters: {source}")
+        found[targets[0]] = {
+            "source": source,
+            "feature_set": metadata["feature_set"],
+            "max_features": metadata["max_features"],
+            "run_id": run_id,
+            "code_version": manifest.get("code_version"),
+            "training_input_generations": manifest.get("training_input_generations"),
+        }
+    return found
+
+
+def _validate_research_input_provenance(
+    selected_models: tuple[ModelConfig, ...],
+    research_params: dict[str, dict[str, Any]],
+    inputs: Any,
+    code_version: str,
+) -> None:
+    for cfg in selected_models:
+        details = research_params.get(cfg.target_name)
+        if details is None:
+            continue
+        dataset = "map" if cfg.dataset == "map" else "series"
+        study_generations = details["training_input_generations"]
+        if (
+            details["code_version"] != code_version
+            or not isinstance(study_generations, dict)
+            or study_generations.get(dataset) != inputs.manifests[dataset]
+        ):
+            raise ValueError(
+                "Research study source or training generation changed: "
+                f"{cfg.target_name}"
+            )
+
+
 def train_models(  # noqa: PLR0915
     feature_selection: FeatureSelectionMethod = "none",
     targets: str = "all",
@@ -475,63 +536,106 @@ def train_models(  # noqa: PLR0915
     calibration_size: float = 0.15,
     tune_size: float = 0.10,
     test_size: float = 0.15,
+    research_tuning_runs: tuple[str, ...] | None = None,
 ) -> Path:
     """Train all configured models using shared training tables."""
     repository = _training_preflight()
     selected_models = parse_training_targets(targets)
-    _validate_reviewed_winner_parameters(selected_models, force_retune=force_retune)
+    if research_tuning_runs is not None and force_retune:
+        raise ValueError("Research refit cannot run Optuna")
+    research_params = (
+        _load_research_parameters(selected_models, research_tuning_runs)
+        if research_tuning_runs is not None
+        else {}
+    )
+    if research_tuning_runs is None:
+        _validate_reviewed_winner_parameters(selected_models, force_retune=force_retune)
 
     try:
         logger.info("Loading training data…")
-        team_df, player_df = load_training_data(
-            TRAINING_TEAM_DATA, TRAINING_PLAYER_DATA, logger
+        inputs = load_training_inputs(
+            series_manifest=(
+                SERIES_INPUT_MANIFEST
+                if any(cfg.dataset != "map" for cfg in selected_models)
+                else None
+            ),
         )
-        validate_training_tables(team_df, player_df)
+        validate_training_tables(
+            inputs.frames["map_teams"], inputs.frames["map_players"]
+        )
     except Exception as e:
         logger.exception(f"Failed to load training data: {e}")
         raise
+    _validate_research_input_provenance(
+        selected_models, research_params, inputs, repository.revision
+    )
 
     run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S_%fZ")
     report_root = REPORTS_DIR / "training" / "runs" / run_id
-    promotable = tuple(selected_models) == ALL_MODEL_CONFIGS and not force_retune
+    _archive_training_exposure(report_root.parent)
+    for target, details in research_params.items():
+        path = report_root / "parameters" / f"{target}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(details["source"], path)
+        details["path"] = path
+        details["provenance"] = {
+            "run_id": details["run_id"],
+            "sha256": _sha256_file(path),
+            "review_status": "review_required",
+        }
+    promotable = (
+        tuple(selected_models) == ALL_MODEL_CONFIGS
+        and not force_retune
+        and research_tuning_runs is None
+    )
     artifact_root = (
         MODELS_DIR / ".staging" / run_id if promotable else report_root / "artifacts"
     )
     trained: list[str] = []
     failed: list[str] = []
-    if RAW_CURRENT_POINTER.is_file():
-        history_path, history_manifest = read_history_snapshot(
-            pointer_path=RAW_CURRENT_POINTER
-        )
-        dataset_fingerprint = str(history_manifest["data_sha256"])
-    else:
-        history_path = RAW_DATA
-        history_manifest = {}
-        dataset_fingerprint = _sha256_file(history_path)
-    parameter_source, tuning_run_id = _parameter_provenance()
+    history_manifest = inputs.manifests["map"]["source"]
+    parameter_source, tuning_run_id = (
+        ("optuna_development_selected", None)
+        if research_tuning_runs is not None
+        else _parameter_provenance()
+    )
     base_manifest = {
         "schema_version": 1,
         "run_id": run_id,
         "created_at_utc": dt.datetime.now(dt.UTC).isoformat(),
         "targets_requested": [cfg.target_name for cfg in selected_models],
         "retune": force_retune,
+        "research_only": research_tuning_runs is not None,
         "optuna_allowed": force_retune,
         "promotable_full_bundle": promotable,
         "workspace_promoted": False,
         "artifact_root": str(artifact_root),
         "parameter_source": parameter_source,
         "tuning_run_id": tuning_run_id,
-        "parameter_provenance": _parameter_provenance_by_target(),
+        "parameter_provenance": (
+            {
+                target: details["provenance"]
+                for target, details in research_params.items()
+            }
+            if research_tuning_runs is not None
+            else _parameter_provenance_by_target()
+        ),
         "shadow_hparameter_policy": (
             "reviewed map and prop parameters may cross feature-schema drift; "
             "these targets remain non-actionable"
         ),
         "feature_set_by_target": {
-            cfg.target_name: _feature_set_for_config(cfg, feature_set)
+            cfg.target_name: (
+                research_params[cfg.target_name]["feature_set"]
+                if research_tuning_runs is not None
+                else _feature_set_for_config(cfg, feature_set)
+            )
             for cfg in selected_models
         },
         "code_version": repository.revision,
         "worktree_clean": repository.clean,
+        "training_input_generations": inputs.manifests,
+        "history_data_sha256": history_manifest["data_sha256"],
         "history_snapshot_id": history_manifest.get("snapshot_id"),
         "source_snapshot_id": history_manifest.get("source_snapshot_id"),
     }
@@ -541,18 +645,33 @@ def train_models(  # noqa: PLR0915
         ", ".join(cfg.target_name for cfg in selected_models),
     )
 
+    _write_training_manifest(report_root, base_manifest | {"status": "running"})
     for cfg in selected_models:
         try:
-            cfg_team, cfg_player = _training_frames_for_config(cfg, team_df, player_df)
+            inputs.assert_unchanged()
+            cfg_team = inputs.frames[f"{cfg.dataset}_teams"]
+            cfg_player = inputs.frames[f"{cfg.dataset}_players"]
             validate_training_tables(cfg_team, cfg_player)
+            dates = pd.to_datetime(cfg_team["date"], utc=True, errors="raise")
+            reserve_exposure(
+                report_root, target=cfg.target_name, date_max=dates.max().isoformat()
+            )
             initialize_and_train_model(
                 cfg=cfg,
                 training_team_data=cfg_team,
                 training_player_data=cfg_player,
                 feature_selection=feature_selection,
                 force_retune=force_retune,
-                feature_set=_feature_set_for_config(cfg, feature_set),
-                max_features=max_features,
+                feature_set=(
+                    research_params[cfg.target_name]["feature_set"]
+                    if research_tuning_runs is not None
+                    else _feature_set_for_config(cfg, feature_set)
+                ),
+                max_features=(
+                    research_params[cfg.target_name]["max_features"]
+                    if research_tuning_runs is not None
+                    else max_features
+                ),
                 calibration=calibration,
                 calibration_method=calibration_method,
                 calibration_size=calibration_size,
@@ -561,8 +680,16 @@ def train_models(  # noqa: PLR0915
                 artifact_root=artifact_root,
                 report_root=report_root,
                 run_id=run_id,
-                dataset_fingerprint=dataset_fingerprint,
+                dataset_fingerprint=inputs.manifests[
+                    "map" if cfg.dataset == "map" else "series"
+                ]["generation_id"],
+                research_hparams_path=(
+                    research_params[cfg.target_name]["path"]
+                    if research_tuning_runs is not None
+                    else None
+                ),
             )
+            inputs.assert_unchanged()
             trained.append(cfg.model_name)
         except KeyboardInterrupt:
             logger.info(f"Training interrupted by user during '{cfg.model_name}'")
@@ -777,6 +904,7 @@ def _tuning_review_input_fingerprint(run_root: Path) -> str:
     artifact_root = run_root / "artifacts"
     paths = (
         manifest_path,
+        run_root / model_name / "split_report.json",
         run_root / model_name / "tuned_hyperparameters.json",
         artifact_root / "_evaluation" / model_name / "features.parquet",
         artifact_root / "_evaluation" / model_name / "labels.parquet",
@@ -992,6 +1120,8 @@ def review_tuning_run(run_id: str) -> dict[str, object]:
         if (
             existing.get("schema_version") == TUNING_REVIEW_SCHEMA_VERSION
             and existing.get("review_input_sha256") == review_fingerprint
+            and existing.get("sealed_holdout", {}).get("baseline_cutoff")
+            == initialize_history(run_root.parent)["baseline_cutoff"]
         ):
             return existing
     holdout = _sealed_tuning_holdout(run_root, target=target)
@@ -1053,33 +1183,42 @@ def _sealed_tuning_holdout(run_root: Path, *, target: str) -> dict[str, object]:
         raise ValueError("Winner tuning review requires sealed test date bounds.")
     current_min = _parse_utc_holdout_date(date_min)
     current_max = _parse_utc_holdout_date(date_max)
-    prior: list[tuple[dt.datetime, str]] = []
-    runs_root = run_root.parent
-    for review_path in sorted(runs_root.glob("*/tuning_review.json")):
-        previous_root = review_path.parent
-        try:
-            review = json.loads(review_path.read_text(encoding="utf-8"))
-            if review.get("target") != target:
-                continue
-            sealed = review["sealed_holdout"]
-            previous_max = _parse_utc_holdout_date(str(sealed["date_max"]))
-            prior.append((previous_max, previous_root.name))
-        except (
-            FileNotFoundError,
-            KeyError,
-            TypeError,
-            ValueError,
-            json.JSONDecodeError,
-        ):
-            continue
+    _archive_training_exposure(run_root.parent)
+    baseline = initialize_history(run_root.parent)
+    cutoff = _parse_utc_holdout_date(baseline["baseline_cutoff"])
+    fingerprint = _tuning_review_input_fingerprint(run_root)
+    records = read_exposures(run_root.parent)
+    # A first review may assess its own completed evaluation. A changed run may
+    # not reuse that exposure, and reservations survive interrupted fits.
+    same_evaluation = any(
+        record["run_id"] == run_root.name
+        and record.get("review_input_sha256") == fingerprint
+        for record in records
+    )
+    prior = [
+        (_parse_utc_holdout_date(record["date_max"]), record["run_id"])
+        for record in records
+        if record["target"] == target
+        and not (
+            record["run_id"] == run_root.name
+            and (
+                record.get("review_input_sha256") == fingerprint
+                or (record["kind"] == "reservation" and same_evaluation)
+            )
+        )
+    ]
     latest_prior = max(prior, default=None)
     labels_path = run_root / "artifacts" / "_evaluation" / model_name / "labels.parquet"
-    fresh = latest_prior is None or current_min > latest_prior[0]
+    fresh = current_min > cutoff and (
+        latest_prior is None or current_min > latest_prior[0]
+    )
     return {
         "date_min": current_min.isoformat(),
         "date_max": current_max.isoformat(),
         "labels_sha256": _sha256_file(labels_path),
         "fresh_for_promotion": fresh,
+        "history_status": baseline["history_status"],
+        "baseline_cutoff": cutoff.isoformat(),
         "latest_prior_exposed_date_max": (
             latest_prior[0].isoformat() if latest_prior is not None else None
         ),
@@ -1405,7 +1544,71 @@ def _publish_latest_training_report(report_root: Path, run_id: str) -> Path:
     return latest
 
 
+def _archive_training_exposure(runs_root: Path) -> None:
+    """Preserve all known test windows, including unreviewed/failed models."""
+    initialize_history(runs_root)
+    model_targets = {
+        _lightgbm_model_name(cfg.model_name): cfg.target_name for cfg in MODEL_CONFIGS
+    }
+    roots = [(root, root.name) for root in sorted(runs_root.glob("*")) if root.is_dir()]
+    roots.extend(
+        (root / "_evaluation", f"registry:{root.name}")
+        for root in sorted((MODEL_REGISTRY_DIR / "candidates").glob("*"))
+        if root.is_dir()
+    )
+    existing = read_exposures(runs_root)
+    for root, run_id in roots:
+        fingerprint = None
+        if (root / "manifest.json").is_file():
+            with suppress(ValueError, FileNotFoundError):
+                fingerprint = _tuning_review_input_fingerprint(root)
+        for model_name, target in model_targets.items():
+            split_path = root / model_name / "split_report.json"
+            if not split_path.is_file():
+                continue
+            split = json.loads(split_path.read_text(encoding="utf-8"))["test"]
+            # Preserve the first binding. Re-reading modified artifacts must not
+            # relabel an already exposed run as a new, self-exempt evaluation.
+            prior = [
+                r
+                for r in existing
+                if r["run_id"] == run_id
+                and r["target"] == target
+                and r["kind"] == "evaluation"
+            ]
+            if prior and not any(
+                r.get("review_input_sha256") == fingerprint for r in prior
+            ):
+                fingerprint = None
+            record_exposure(
+                runs_root,
+                {
+                    "run_id": run_id,
+                    "target": target,
+                    "kind": "evaluation",
+                    "date_min": split.get("date_min"),
+                    "date_max": split["date_max"],
+                    "review_input_sha256": fingerprint,
+                },
+            )
+        review_path = root / "tuning_review.json"
+        if review_path.is_file():
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+            record_exposure(
+                runs_root,
+                {
+                    "run_id": run_id,
+                    "target": review["target"],
+                    "kind": "review",
+                    "date_min": review["sealed_holdout"].get("date_min"),
+                    "date_max": review["sealed_holdout"]["date_max"],
+                    "review_input_sha256": review.get("review_input_sha256"),
+                },
+            )
+
+
 def _prune_training_reports(runs_root: Path) -> None:
+    _archive_training_exposure(runs_root)
     completed = sorted(
         (
             path

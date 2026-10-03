@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -9,10 +10,6 @@ from oracle_bets_core.paths import (
     CLOSE_SERIES_OOF,
     NEXT_MAP_PLAYER_DATA,
     NEXT_MAP_TEAM_DATA,
-    SERIES_MANIFEST,
-    SERIES_WINNER_TEAM_DATA,
-    TRAINING_PLAYER_DATA,
-    TRAINING_TEAM_DATA,
 )
 from oracle_bets_core.pd import pd
 from sklearn.linear_model import LogisticRegression
@@ -20,6 +17,13 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from lol_bets.data_generation.series import _next_map_training_tables
+from lol_bets.operations.training_inputs import (
+    SERIES_INPUT_MANIFEST,
+    TrainingInputs,
+    file_evidence,
+    load_training_inputs,
+    publish_generation,
+)
 
 RATING_COLUMNS = (
     "elo",
@@ -100,8 +104,9 @@ def rolling_close_series_oof(
 
 def build_close_series_oof_artifacts() -> dict[str, Any]:
     """Publish OOF membership and rebuild next-map tables from close series only."""
-    manifest = pd.read_parquet(SERIES_MANIFEST)
-    teams = pd.read_parquet(SERIES_WINNER_TEAM_DATA)
+    inputs = load_training_inputs(series_manifest=SERIES_INPUT_MANIFEST)
+    manifest = inputs.frames["series_manifest"]
+    teams = inputs.frames["series_teams"]
     oof = rolling_close_series_oof(teams)
     if oof.empty:
         raise RuntimeError(
@@ -115,16 +120,31 @@ def build_close_series_oof_artifacts() -> dict[str, Any]:
     )
     next_teams, next_players = _next_map_training_tables(
         augmented,
-        pd.read_parquet(TRAINING_TEAM_DATA),
-        pd.read_parquet(TRAINING_PLAYER_DATA),
+        inputs.frames["map_teams"],
+        inputs.frames["map_players"],
     )
-    for path, frame in (
-        (CLOSE_SERIES_OOF, oof),
-        (NEXT_MAP_TEAM_DATA, next_teams),
-        (NEXT_MAP_PLAYER_DATA, next_players),
+    inputs.assert_unchanged()
+    files = dict(inputs.manifests["series"]["files"])
+    for key, path, frame in (
+        ("close_series_oof", CLOSE_SERIES_OOF, oof),
+        ("next_map_teams", NEXT_MAP_TEAM_DATA, next_teams),
+        ("next_map_players", NEXT_MAP_PLAYER_DATA, next_players),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(path, index=False)
+        files.update(file_evidence({key: path}))
+    parent = inputs.manifests["map"]
+    TrainingInputs(
+        {"map": parent}, {"map": inputs.manifest_paths["map"]}, {}, inputs.pointer
+    ).assert_unchanged()
+    publish_generation(
+        SERIES_INPUT_MANIFEST,
+        {key: Path(item["path"]) for key, item in files.items()},
+        source=parent["source"],
+        code=parent["code_sha256"],
+        parent_generation=parent["generation_id"],
+        expected_files=files,
+    )
     return {
         "oof_series": int(len(oof)),
         "close_series": int(augmented["series_id"].nunique()),

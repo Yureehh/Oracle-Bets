@@ -15,6 +15,59 @@ NOW = datetime(2026, 8, 24, 8, tzinfo=UTC)
 START = NOW + timedelta(days=2)
 EXPECTED_ODDS = 1.8
 TWO_ROWS = 2
+HORIZON_HOURS = 72
+
+
+def test_daily_cohort_enrolls_before_forecasts_and_survives_reschedule(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    options = {
+        "store": store,
+        "effective_config": {"horizon_hours": HORIZON_HOURS},
+        "snapshot_rows": (),
+        "steps": [DailyStepResult("schedule", True, "complete")],
+    }
+    record_daily_evidence(
+        **options,
+        scheduled_for=NOW,
+        observed_at=NOW,
+        schedule=_schedule(),
+    )
+    record_daily_evidence(
+        **options,
+        scheduled_for=NOW + timedelta(hours=1),
+        observed_at=NOW + timedelta(hours=1),
+        schedule=_schedule(version="v2", start=START + timedelta(hours=2)),
+    )
+    enrollments = [
+        row
+        for row in store.list(EvidenceTable.RUN_EVENTS)
+        if row["event_type"] == "cohort_enrollment"
+    ]
+    assert len(enrollments) == 1
+    payload = json.loads(enrollments[0]["payload_json"])
+    assert payload["sporting_event_key"] == "pandascore:1"
+    assert payload["first_start_utc"] == START.isoformat()
+    assert payload["horizon_hours"] == HORIZON_HOURS
+
+
+def test_daily_cohort_refuses_enrollment_after_existing_forecast(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    options = {
+        "store": store,
+        "effective_config": {},
+        "schedule": _schedule(),
+        "steps": [DailyStepResult("schedule", True, "complete")],
+    }
+    record_daily_evidence(
+        **options, scheduled_for=NOW, observed_at=NOW, snapshot_rows=[_snapshot()]
+    )
+    with pytest.raises(ValueError, match="after its first forecast"):
+        record_daily_evidence(
+            **options,
+            scheduled_for=NOW + timedelta(hours=1),
+            observed_at=NOW + timedelta(hours=1),
+            snapshot_rows=(),
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +179,26 @@ def _market_action(observed_at: datetime = NOW):
     }
 
 
+def test_forecast_timestamps_use_decision_time_instead_of_scheduled_run(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    decision = NOW + timedelta(hours=3)
+    winner = _snapshot() | {"decision_at": decision.isoformat()}
+    prop = winner | {"market": "total_kills_mean", "model_value": 25.0}
+    record_daily_evidence(
+        store=store,
+        scheduled_for=NOW,
+        observed_at=decision,
+        effective_config={},
+        schedule=_schedule(),
+        snapshot_rows=[winner, prop],
+        steps=[DailyStepResult("review", True, "complete")],
+    )
+    for table in (EvidenceTable.PREDICTIONS, EvidenceTable.FORECASTS):
+        rows = store.list(table)
+        assert len(rows) == 1
+        assert datetime.fromisoformat(rows[0]["created_at"]) == decision
+
+
 def test_review_evidence_records_forecasts_quotes_but_never_legacy_proposals(tmp_path):
     store = EvidenceStore(tmp_path / "evidence.db")
     run_id = record_daily_evidence(
@@ -153,6 +226,12 @@ def test_review_evidence_records_forecasts_quotes_but_never_legacy_proposals(tmp
     assert payload["classification"] == "recommended"
     assert payload["semantic_fingerprint"] == "semantic-1"
     assert payload["sizing"]["selected_path"] == "full_kelly"
+    assert candidate["prediction_id"] == store.list(EvidenceTable.PREDICTIONS)[0]["id"]
+    quote = json.loads(store.list(EvidenceTable.MARKET_SNAPSHOTS)[0]["payload_json"])
+    assert quote["semantic_fingerprint"] == "semantic-1"
+    assert quote["terms_verified"] is False
+    assert quote["stake_amount"] is None
+    assert quote["stake_currency"] is None
 
 
 def test_same_review_is_idempotent_and_new_book_is_append_only(tmp_path):
@@ -207,3 +286,39 @@ def test_fixture_change_supersedes_prediction_without_creating_proposal(tmp_path
         "fixtures",
         "predictions",
     }
+
+
+def test_schedule_capture_time_is_separate_from_scheduled_run_identity(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    captured = NOW + timedelta(hours=8)
+    run_id = record_daily_evidence(
+        store=store,
+        scheduled_for=NOW,
+        observed_at=captured,
+        effective_config={},
+        schedule=_schedule(),
+        snapshot_rows=[],
+        steps=[DailyStepResult("refresh", True, "complete")],
+    )
+    source = store.list(EvidenceTable.SOURCE_SNAPSHOTS)[0]
+    assert datetime.fromisoformat(source["observed_at"]) == captured
+    run = store.get(EvidenceTable.RUNS, run_id)
+    assert json.loads(run["payload_json"])["scheduled_for"] == NOW.isoformat()
+
+
+def test_market_snapshot_keeps_provider_timestamp(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    action = _market_action()
+    provider_time = (NOW - timedelta(seconds=3)).isoformat()
+    action["observations"][0]["provider_timestamp"] = provider_time
+    record_daily_evidence(
+        store=store,
+        scheduled_for=NOW,
+        effective_config={},
+        schedule=_schedule(),
+        snapshot_rows=[_snapshot()],
+        steps=[DailyStepResult("review", True, "complete")],
+        market_actions=[action],
+    )
+    snapshot = store.list(EvidenceTable.MARKET_SNAPSHOTS)[0]
+    assert json.loads(snapshot["payload_json"])["provider_timestamp"] == provider_time

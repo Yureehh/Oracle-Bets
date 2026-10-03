@@ -176,7 +176,7 @@ def test_match_detail_refresh_updates_lineup_and_fixture_version() -> None:
     refreshed = PandaScoreLineupRefresher(
         api_key=_FIXTURE_AUTH,
         session=_Session(),
-    ).refresh(initial, observed_at=dt.datetime(2026, 5, 23, 12, tzinfo=dt.UTC))
+    ).refresh(initial)
 
     row = refreshed.iloc[0]
     assert row["lineup_source"] == "pandascore_match_detail"
@@ -233,3 +233,41 @@ def test_match_detail_refresh_stops_after_forbidden_response() -> None:
         "match_detail_http_403",
         "match_detail_http_403",
     ]
+
+
+def test_lineup_observation_clock_advances_after_each_response(monkeypatch):
+    from lol_bets.data_generation.ingestion import schedule as schedule_module
+
+    current = dt.datetime(2026, 5, 23, 12, tzinfo=dt.UTC)
+    arrivals = [current + dt.timedelta(minutes=1), current + dt.timedelta(minutes=3)]
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current.astimezone(tz)
+
+    class Response:
+        def __init__(self, match_id):
+            self.match_id = match_id
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            nonlocal current
+            current = arrivals[self.match_id - 42]
+            return _pandascore_match(self.match_id)
+
+    class Session:
+        def get(self, url, **_kwargs):
+            return Response(int(url.rsplit("/", 1)[-1]))
+
+    monkeypatch.setattr(schedule_module.dt, "datetime", Clock)
+    initial = PandaScoreSchedule._parse_matches_response(
+        [_pandascore_match(42), _pandascore_match(43)]
+    )
+    refreshed = PandaScoreLineupRefresher(
+        api_key=_FIXTURE_AUTH, session=Session()
+    ).refresh(initial)
+
+    assert refreshed["lineup_observed_at"].tolist() == arrivals

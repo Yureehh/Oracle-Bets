@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pickle
 from datetime import UTC, datetime
+from itertools import pairwise
 from types import SimpleNamespace
 
 import numpy as np
@@ -346,3 +347,169 @@ def test_winner_validation_requires_ratings_parity_and_no_market_features(tmp_pa
     )
 
     assert report.ok
+
+
+@pytest.mark.parametrize("categorical_dtype", [False, True])
+def test_optuna_preprocessing_is_fold_local_and_cached(
+    monkeypatch, categorical_dtype
+) -> None:
+    trainer = object.__new__(WinnerLightGBMModel)
+    trainer.trials = 2
+    dates = pd.Series(pd.date_range("2026-01-05", periods=4, freq="7D")).repeat(4)
+    dates.index = range(16)
+    trainer.fit_partition_metadata = {
+        "train": pd.DataFrame({"date": dates.iloc[:12]}),
+        "tune": pd.DataFrame({"date": dates.iloc[12:]}),
+        "test": pd.DataFrame({"date": ["2026-02-02"]}, index=[99]),
+    }
+    features = pd.DataFrame(
+        {
+            "signal": [0.0, 2.0, 4.0, np.nan] + [100.0, 200.0, np.nan, 400.0] * 3,
+            "future_only": [np.nan] * 4 + list(range(12)),
+            "region": ["early"] * 4 + ["future"] * 12,
+        }
+    )
+    if categorical_dtype:
+        features["region"] = features["region"].astype("category")
+    target = pd.Series([0, 1] * 8)
+    fits = []
+    pipelines = []
+    fit_pipeline = trainer._fit_feature_pipeline
+
+    def record_pipeline(frame, **kwargs):
+        transformed, pipeline = fit_pipeline(frame, **kwargs)
+        pipelines.append(pipeline)
+        return transformed, pipeline
+
+    def record_member(_params, train, _y_train, validation, _y_val, categorical, **_kw):
+        assert train.index.max() < validation.index.min()
+        assert train.index.equals(_y_train.index)
+        assert validation.index.equals(_y_val.index)
+        test_index = trainer.fit_partition_metadata["test"].index
+        assert train.index.intersection(test_index).empty
+        assert validation.index.intersection(test_index).empty
+        fits.append((train.copy(), validation.copy(), categorical))
+        return _ProbabilityModel([0.4, 0.6])
+
+    class Study:
+        def __init__(self):
+            self.best_params = {"num_leaves": 31}
+            self.best_value = 0.5
+
+        @staticmethod
+        def optimize(objective, *, n_trials, show_progress_bar):
+            del show_progress_bar
+            trial = SimpleNamespace(
+                suggest_float=lambda _name, low, _high, **_kw: low,
+                suggest_int=lambda _name, low, _high: low,
+            )
+            for _ in range(n_trials):
+                objective(trial)
+
+    monkeypatch.setattr(
+        "lol_bets.prediction_models.winner_model.optuna.create_study",
+        lambda **_kwargs: Study(),
+    )
+    trainer._fit_feature_pipeline = record_pipeline
+    trainer._fit_member = record_member
+    trainer.store_best_hyperparameters = lambda *_args, **_kwargs: None
+
+    def run_search():
+        return trainer._optimize_hyperparameters(
+            features.iloc[:12], target.iloc[:12], features.iloc[12:], target.iloc[12:]
+        )
+
+    assert run_search() == {"num_leaves": 31}
+    # One fit per fold, reused by both trials.
+    assert len(pipelines) == dates.nunique() - 1
+    first_train, first_validation, categorical = fits[0]
+    assert list(first_train.columns) == ["signal", "region"]
+    assert first_train["signal"].tolist() == [0.0, 2.0, 4.0, 2.0]
+    assert list(first_train["region"].cat.categories) == ["early", "Unknown"]
+    assert first_validation["region"].tolist() == ["Unknown"] * 4
+    assert categorical == ["region"]
+    assert pipelines[0].numeric_medians["signal"] == pytest.approx(2.0)
+
+    features.loc[4:, "signal"] = np.nan
+    features["region"] = features["region"].astype(object)
+    features.loc[4:, "region"] = "different_future"
+    features.loc[4:, "future_only"] = -1000.0
+    fits.clear()
+    pipelines.clear()
+    run_search()
+    pd.testing.assert_frame_equal(fits[0][0], first_train)
+    assert len(pipelines) == dates.nunique() - 1
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["SeriesWinnerPrediction_LightGBM", "NextMapWinnerPrediction_LightGBM"],
+)
+def test_winner_orchestrator_passes_raw_development_to_search(model_name) -> None:
+    trainer = object.__new__(WinnerLightGBMModel)
+    trainer.model_name = model_name
+    trainer.problem_type = "classification"
+    trainer.force_retune = True
+    trainer.feature_set = "full"
+    trainer.calibration = "auto"
+    trainer.training_data = pd.DataFrame(
+        {
+            "signal": [0.0, 2.0, 4.0, np.nan] * 7,
+            "region": ["train"] * 8 + ["future"] * 20,
+            "winner": [0, 1] * 14,
+            "gameid": [f"game-{i}" for i in range(28)],
+            "league": ["LCK"] * 28,
+            "date": pd.date_range("2026-01-01", periods=28, freq="D"),
+        }
+    )
+
+    def split(features, target):
+        boundaries = [0, 8, 12, 16, 20, 24, 28]
+        slices = [slice(start, end) for start, end in pairwise(boundaries)]
+        return (
+            *(features.iloc[part] for part in slices),
+            *(target.iloc[part] for part in slices),
+        )
+
+    trainer.temporal_winner_v2_split = split
+    trainer._store_split_report = lambda *_args, **_kwargs: None
+    trainer._maybe_load_cached_hparams = lambda: None
+    for name in (
+        "store_model_features",
+        "store_feature_lineage",
+        "store_categorical_features",
+    ):
+        setattr(trainer, name, lambda *_args: None)
+    final_pipelines = []
+    trainer.store_feature_pipeline = final_pipelines.append
+    observed = []
+
+    def search(raw_train, y_train, raw_tune, y_tune, **thresholds):
+        observed.append(True)
+        assert raw_train.index.tolist() == list(range(8))
+        assert raw_tune.index.tolist() == list(range(8, 12))
+        assert y_train.index.equals(raw_train.index)
+        assert y_tune.index.equals(raw_tune.index)
+        assert raw_train.index[raw_train["signal"].isna()].tolist() == [3, 7]
+        assert raw_tune["region"].tolist() == ["future"] * 4
+        assert thresholds == {
+            "drop_missing_threshold": 0.7,
+            "drop_low_std_threshold": 0.0,
+            "drop_high_corr_threshold": 1.0,
+        }
+        raise RuntimeError("search boundary observed")
+
+    trainer._optimize_hyperparameters = search
+    with pytest.raises(RuntimeError, match="search boundary observed"):
+        trainer.train_and_validate_model(
+            "winner",
+            fuse_opponents=False,
+            process_player_likelihoods=False,
+            drop_missing_threshold=0.7,
+            drop_low_std_threshold=0.0,
+            drop_high_corr_threshold=1.0,
+        )
+    assert observed == [True]
+    assert len(final_pipelines) == 1
+    assert final_pipelines[0].numeric_medians["signal"] == pytest.approx(2.0)
+    assert final_pipelines[0].categorical_levels["region"] == ["train", "Unknown"]

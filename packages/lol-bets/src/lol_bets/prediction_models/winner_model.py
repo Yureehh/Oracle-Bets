@@ -18,6 +18,9 @@ from sklearn.preprocessing import StandardScaler
 
 from lol_bets.prediction_models.gbdt_model import (
     BINARY_CLASS_UNIQUE_VALUES,
+    HIGH_CORR_THRESHOLD,
+    LOW_STD_THRESHOLD,
+    MAX_MISSING_FRAC,
     MIN_CALIBRATION_SAMPLES,
 )
 from lol_bets.prediction_models.lightgbm_model import LightGBMModel
@@ -213,6 +216,8 @@ class WinnerLightGBMModel(LightGBMModel):
         X_val: pd.DataFrame,
         y_val: pd.Series,
         categorical_features: list[str] | None,
+        raw_development: tuple[pd.DataFrame, pd.DataFrame] | None = None,
+        preprocessing_thresholds: dict[str, float] | None = None,
     ) -> WinnerBlendClassifier:
         params = self._maybe_load_cached_hparams()
         if params is None:
@@ -221,7 +226,15 @@ class WinnerLightGBMModel(LightGBMModel):
                     f"No reviewed Winner V2 parameters for {self.model_name}; "
                     "run an explicit research retune first."
                 )
-            params = self._optimize_hyperparameters(X_train, y_train, X_val, y_val)
+            if raw_development is None or preprocessing_thresholds is None:
+                raise ValueError("Winner retuning requires raw development features")
+            params = self._optimize_hyperparameters(
+                raw_development[0],
+                y_train,
+                raw_development[1],
+                y_val,
+                **preprocessing_thresholds,
+            )
         rating_columns = tuple(
             column for column in X_train.columns if is_direct_rating_feature(column)
         )
@@ -378,6 +391,10 @@ class WinnerLightGBMModel(LightGBMModel):
         y_train: pd.Series,
         X_val: pd.DataFrame,
         y_val: pd.Series,
+        *,
+        drop_missing_threshold: float = MAX_MISSING_FRAC,
+        drop_low_std_threshold: float = LOW_STD_THRESHOLD,
+        drop_high_corr_threshold: float = HIGH_CORR_THRESHOLD,
     ) -> dict[str, Any]:
         """Search only expanding rolling-origin folds inside the 60% dev window."""
         X_development = pd.concat([X_train, X_val])
@@ -397,11 +414,27 @@ class WinnerLightGBMModel(LightGBMModel):
                 "Winner V2 retuning requires at least four historical weeks"
             )
         blocks = np.array_split(unique_weeks, 4)
-        categorical = [
-            column
-            for column in X_development
-            if str(X_development[column].dtype) == "category"
-        ]
+        folds = []
+        for fold_index in range(1, len(blocks)):
+            train_index = weeks.index[
+                weeks.isin(set(np.concatenate(blocks[:fold_index])))
+            ]
+            validation_index = weeks.index[weeks.isin(set(blocks[fold_index]))]
+            fold_train, pipeline = self._fit_feature_pipeline(
+                X_development.loc[train_index],
+                drop_missing_threshold=drop_missing_threshold,
+                drop_low_std_threshold=drop_low_std_threshold,
+                drop_high_corr_threshold=drop_high_corr_threshold,
+            )
+            folds.append(
+                (
+                    fold_train,
+                    y_development.loc[train_index],
+                    pipeline.transform(X_development.loc[validation_index]),
+                    y_development.loc[validation_index],
+                    pipeline.categorical_features,
+                )
+            )
 
         def objective(trial: optuna.Trial) -> float:
             params: dict[str, Any] = {
@@ -421,27 +454,24 @@ class WinnerLightGBMModel(LightGBMModel):
                 "n_jobs": -1,
             }
             losses: list[float] = []
-            for fold_index in range(1, len(blocks)):
-                train_weeks = set(np.concatenate(blocks[:fold_index]))
-                validation_weeks = set(blocks[fold_index])
-                train_index = weeks.index[weeks.isin(train_weeks)]
-                validation_index = weeks.index[weeks.isin(validation_weeks)]
+            for fold_index, fold in enumerate(folds, start=1):
+                fold_train, fold_y_train, fold_validation, fold_y_val, categorical = (
+                    fold
+                )
                 model = self._fit_member(
                     params,
-                    X_development.loc[train_index],
-                    y_development.loc[train_index],
-                    X_development.loc[validation_index],
-                    y_development.loc[validation_index],
+                    fold_train,
+                    fold_y_train,
+                    fold_validation,
+                    fold_y_val,
                     categorical,
                     seed=RANDOM_STATE + fold_index,
                 )
                 probability = np.asarray(
-                    model.predict_proba(X_development.loc[validation_index]),
+                    model.predict_proba(fold_validation),
                     dtype=float,
                 )[:, 1]
-                losses.append(
-                    float(log_loss(y_development.loc[validation_index], probability))
-                )
+                losses.append(float(log_loss(fold_y_val, probability)))
             return float(np.mean(losses))
 
         logger.info(

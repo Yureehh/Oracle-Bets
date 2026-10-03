@@ -426,6 +426,25 @@ class LightGBMModel(GradientBoostingModel):
 
     def _maybe_load_cached_hparams(self) -> dict[str, Any] | None:
         """Load reviewed production hyperparameters from tracked JSON."""
+        if self.research_hparams_path is not None:
+            payload = json.loads(self.research_hparams_path.read_text(encoding="utf-8"))
+            metadata = payload.get("metadata") or {}
+            current = self._hparam_cache_metadata()
+            keys = (
+                "version",
+                "model_type",
+                "model_name",
+                "problem_type",
+                "feature_set",
+                "max_features",
+                "feature_schema_fingerprint",
+            )
+            if any(metadata.get(key) != current[key] for key in keys):
+                raise ValueError("research parameter schema or model identity changed")
+            params = self._validate_cached_hparams(payload.get("params"))
+            if params is None:
+                raise ValueError("research parameter payload is invalid")
+            return params
         if self.force_retune:
             logger.info(
                 "Ignoring production hyperparameters for explicit retuning of %s.",

@@ -50,8 +50,10 @@ def record_daily_evidence(
     market_actions: Sequence[dict[str, Any]] = (),
     run_type: str = "daily_lol",
     run_key: str | None = None,
+    observed_at: datetime | None = None,
 ) -> str:
     """Record predictions and honest no-bet outcomes without upgrading prices."""
+    captured_at = _as_utc(observed_at or datetime.now(UTC))
     store.initialize_schema()
     evidence_key = run_key or daily_run_key(
         "lol", scheduled_for=scheduled_for, config=effective_config
@@ -68,6 +70,8 @@ def record_daily_evidence(
             "idempotency_key": evidence_key,
             "payload_json": {
                 "run_key": evidence_key,
+                "scheduled_for": scheduled_for.isoformat(),
+                "recorded_at": captured_at.isoformat(),
                 "steps": [
                     {"name": step.name, "ok": step.ok, "detail": step.detail}
                     for step in steps
@@ -78,23 +82,33 @@ def record_daily_evidence(
     _record_daily_step_events(
         store,
         run_id=run_id,
-        scheduled_for=scheduled_for,
+        scheduled_for=captured_at,
         steps=steps,
     )
     sync_schedule_identity_graph(
         store,
         schedule,
-        observed_at=scheduled_for,
+        observed_at=captured_at,
     )
-    _record_schedule_source(store, run_id, scheduled_for, schedule)
+    _record_schedule_source(store, run_id, captured_at, schedule)
     fixtures, fixture_supersessions = _record_fixtures(
         store,
         run_id,
         schedule,
-        observed_at=scheduled_for,
+        observed_at=captured_at,
     )
+    if run_type == "daily_lol" and not snapshot_rows and not market_actions:
+        _enroll_daily_cohort(
+            store, run_id, schedule, captured_at, effective_config, fixtures
+        )
+    serving_ids = {row.get("serving_model_id") for row in snapshot_rows}
+    if len(serving_ids) > 1:
+        raise ValueError("One evidence run must pin one serving model")
+    serving_id = next(iter(serving_ids), None)
     model_ids = {
-        target: _record_model(store, scheduled_for, target=target)
+        target: _record_model(
+            store, captured_at, target=target, serving_model_id=serving_id
+        )
         for target in (
             "map_win",
             "series_winner",
@@ -145,7 +159,7 @@ def record_daily_evidence(
                 ],
                 "selection_id": selection_id,
                 "mode": "prematch",
-                "created_at": _as_utc(row["run_ts"]),
+                "created_at": _as_utc(row.get("decision_at") or row["run_ts"]),
                 "probability_point": str(point),
                 "probability_lower": str(lower),
                 "probability_upper": str(upper),
@@ -153,6 +167,10 @@ def record_daily_evidence(
                 "idempotency_key": prediction_id,
                 "payload_json": {
                     "target": row.get("market"),
+                    "raw_model_probability": row.get("raw_model_probability"),
+                    "serving_model_id": row.get("serving_model_id"),
+                    "feature_snapshot_id": row.get("feature_snapshot_id"),
+                    "decision_at": row.get("decision_at"),
                     "probability_source": row.get("probability_source"),
                     "uncertainty_method": row.get("uncertainty_method"),
                     "uncertainty_confidence": row.get("uncertainty_confidence"),
@@ -186,13 +204,13 @@ def record_daily_evidence(
             fixtures=fixtures,
             schedule=schedule,
             actions=market_actions,
-            created_at=scheduled_for,
+            created_at=captured_at,
             model_ids=model_ids,
         )
     _supersede_fixture_dependents(
         store,
         fixture_supersessions,
-        created_at=scheduled_for,
+        created_at=captured_at,
     )
     return run_id
 
@@ -250,6 +268,7 @@ def _record_typed_market_actions(
             if str(prediction["id"]) not in existing_prediction_ids:
                 all_records.append((EvidenceTable.PREDICTIONS, prediction))
                 existing_prediction_ids.add(str(prediction["id"]))
+            prediction_id = str(prediction["id"])
         candidate_id = _id(
             "market",
             f"{run_id}|{action['market_id']}|{action['token_id']}",
@@ -262,6 +281,7 @@ def _record_typed_market_actions(
                         "id": candidate_id,
                         "run_id": run_id,
                         "fixture_id": fixture_id,
+                        "prediction_id": prediction_id,
                         "provider": action.get("provider") or "polymarket",
                         "provider_market_id": action["market_id"],
                         "provider_selection_id": action["token_id"],
@@ -278,6 +298,7 @@ def _record_typed_market_actions(
                         "idempotency_key": candidate_id,
                         "payload_json": {
                             "target": action["target"],
+                            "prediction_id": prediction_id,
                             "selection": action["selection"],
                             "url": action.get("market_url"),
                             "resolution_source": action.get("resolution_source"),
@@ -335,6 +356,16 @@ def _record_typed_market_actions(
                         "idempotency_key": snapshot_id,
                         "payload_json": {
                             "book_hash": observation["book_hash"],
+                            "semantic_fingerprint": action.get("semantic_fingerprint"),
+                            "terms_verified": (action.get("semantic_key") or {}).get(
+                                "terms_verified"
+                            )
+                            is True,
+                            # Currency-sized quotes are supplied by confirmation
+                            # capture, never inferred from normalized paper units.
+                            "stake_currency": observation.get("stake_currency"),
+                            "stake_amount": observation.get("stake_amount"),
+                            "provider_timestamp": observation.get("provider_timestamp"),
                             "complete": observation["complete"],
                             "quote_basis": action.get("quote_basis")
                             or "minimum_order_shares",
@@ -434,6 +465,62 @@ def _record_daily_step_events(
                 },
             },
         )
+
+
+def _enroll_daily_cohort(
+    store: EvidenceStore,
+    run_id: str,
+    schedule: pd.DataFrame,
+    captured_at: datetime,
+    config: dict[str, Any],
+    fixtures: dict[str, str],
+) -> None:
+    """Persist the first prospective membership before recording any forecast."""
+    existing = {
+        payload.get("sporting_event_key")
+        for event in store.list(EvidenceTable.RUN_EVENTS)
+        if event["event_type"] == "cohort_enrollment"
+        for payload in [json.loads(event["payload_json"])]
+    }
+    forecast_fixture_ids = {
+        row["fixture_id"] for row in store.list(EvidenceTable.PREDICTIONS)
+    }
+    for _, row in schedule.iterrows():
+        fixture_key = _fixture_lookup_key(row)
+        fixture_id = fixtures.get(fixture_key)
+        if fixture_id is None:
+            continue
+        sporting_key = _optional_text(row.get("serie_id")) or _optional_text(
+            row.get("match_key")
+        )
+        if not sporting_key or sporting_key in existing:
+            continue
+        if fixture_id in forecast_fixture_ids:
+            raise ValueError("Cannot enroll a fixture after its first forecast")
+        start = _as_utc(row["start_utc"])
+        if start <= captured_at:
+            raise ValueError("Cannot enroll a fixture after its scheduled start")
+        event_id = _id("cohort-enrollment", sporting_key)
+        _append_if_missing(
+            store,
+            EvidenceTable.RUN_EVENTS,
+            {
+                "id": event_id,
+                "run_id": run_id,
+                "event_at": captured_at,
+                "event_type": "cohort_enrollment",
+                "status": "enrolled",
+                "idempotency_key": event_id,
+                "payload_json": {
+                    "sporting_event_key": sporting_key,
+                    "first_fixture_key": fixture_key,
+                    "first_start_utc": start.isoformat(),
+                    "horizon_hours": config.get("horizon_hours"),
+                    "policy": "daily_lol_v1",
+                },
+            },
+        )
+        existing.add(sporting_key)
 
 
 def _record_schedule_source(
@@ -776,10 +863,11 @@ def _record_model(
     created_at: datetime,
     *,
     target: str,
+    serving_model_id: str | None = None,
 ) -> str:
     registry = ModelRegistry(MODEL_REGISTRY_DIR)
-    champion = registry.champion_id()
-    model_id = champion or "legacy-current"
+    champion = serving_model_id
+    model_id = champion or "unverified-legacy"
     if champion:
         artifact_uri = str(registry.candidates / champion)
         checksum = _path_hash(registry.candidates / champion / "manifest.json")
@@ -829,6 +917,7 @@ def _record_model(
             "payload_json": {
                 "registry_model_id": champion,
                 "bootstrap_legacy": champion is None,
+                "serving_provenance_verified": champion is not None,
                 "calibrator_uri": str(calibrator) if calibrator else None,
             },
         },
@@ -865,7 +954,7 @@ def _record_scalar_forecast(
             "fixture_id": fixture_id,
             "model_version_id": model_ids[target],
             "target": target,
-            "created_at": _as_utc(row["run_ts"]),
+            "created_at": _as_utc(row.get("decision_at") or row["run_ts"]),
             "point_value": str(float(row["model_value"])),
             "uncertainty_json": {
                 "method": row.get("uncertainty_method"),
@@ -875,6 +964,9 @@ def _record_scalar_forecast(
             "idempotency_key": forecast_id,
             "payload_json": {
                 "calibrator_uri": model_payload.get("calibrator_uri"),
+                "serving_model_id": row.get("serving_model_id"),
+                "feature_snapshot_id": row.get("feature_snapshot_id"),
+                "decision_at": row.get("decision_at"),
                 "calibration_metadata": {
                     "league": row.get("league"),
                     "bo_format": row.get("match_type"),

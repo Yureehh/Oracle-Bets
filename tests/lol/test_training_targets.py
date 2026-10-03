@@ -15,6 +15,19 @@ SCHEDULE_DAY_COUNT = 7
 EXPECTED_BRIER = 0.19
 
 
+@pytest.fixture(autouse=True)
+def isolated_exposure_history(tmp_path, monkeypatch):
+    import datetime as dt
+
+    from lol_bets.operations.training_exposure import initialize_history
+
+    monkeypatch.setattr(training, "MODEL_REGISTRY_DIR", tmp_path / "registry")
+    initialize_history(
+        tmp_path / "reports" / "training" / "runs",
+        now=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+    )
+
+
 def _targets(selector: str) -> list[str]:
     return [cfg.target_name for cfg in parse_training_targets(selector)]
 
@@ -614,6 +627,8 @@ def test_promote_tuning_run_atomically_publishes_requested_targets(
     for name in names:
         payload = json.loads((tuned / f"{name}.json").read_text())
         assert payload["metadata"]["model_name"] == name
+        assert payload["metadata"]["source"] == "optuna_reviewed"
+        assert payload["metadata"]["promoted_tuning_run_id"] == "complete"
 
 
 def test_promote_tuning_run_rejects_mixed_provenance(tmp_path, monkeypatch):

@@ -7,17 +7,12 @@ import json
 import os
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
 
-from oracle_bets_core.config import load_product_config
 from oracle_bets_core.evidence import EvidenceStore
 from oracle_bets_core.io_utils import atomic_write_text
-from oracle_bets_core.league_selection import (
-    actionable_leagues,
-    selected_leagues,
-)
+from oracle_bets_core.league_selection import actionable_leagues
 from oracle_bets_core.logger import logger
 from oracle_bets_core.operations import (
     EvidenceWorkflowJournal,
@@ -29,6 +24,7 @@ from oracle_bets_core.paths import (
     EVIDENCE_DB,
     INTERIM_PLAYER_DATA,
     MODEL_REGISTRY_DIR,
+    PROCESSED_DIR,
     RAW_CURRENT_POINTER,
     RAW_DATA,
     REPORTS_DIR,
@@ -65,6 +61,7 @@ from lol_bets.inference.roster import (
     evaluate_roster_gate,
     infer_historical_roster,
 )
+from lol_bets.inference.snapshots import load_feature_snapshot
 from lol_bets.inference.team import InsufficientRosterHistoryError, Team
 from lol_bets.inference.team_resolver import (
     TeamResolutionError,
@@ -73,15 +70,12 @@ from lol_bets.inference.team_resolver import (
 from lol_bets.module import LoLBetsModule
 from lol_bets.operations.evidence import record_daily_evidence
 from lol_bets.operations.identity import sync_history_identity_graph
-from lol_bets.operations.models import (
-    ModelRegistry,
-    evaluate_training_triggers_from_history,
-)
 from lol_bets.pipeline import DataGenerator
-from lol_bets.training import train_models, validate_training_tables
+from lol_bets.training import validate_training_tables
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from pathlib import Path
 
     from oracle_bets_core.interfaces import ArtifactHealth
 
@@ -127,10 +121,6 @@ class DailyWorkflowConfig:
     leagues: str | None = None
     delivery_mode: str | None = None
     dry_run: bool = False
-    skip_retrain: bool = False
-    targets: str = "all"
-    feature_set: str = "compact"
-    max_features: int = 120
 
 
 def _resolve_daily_config(
@@ -569,6 +559,10 @@ def build_match_prediction_snapshot(  # noqa: PLR0915
     resolution_sink: list[dict[str, str]] | None = None,
 ) -> None:
     """Run prematch inference and append its structured snapshot rows."""
+    decision_at = dt.datetime.now(dt.UTC)
+    feature_snapshot = load_feature_snapshot(
+        PROCESSED_DIR / "serving", decision_at=decision_at
+    )
     team_a_name = str(row.get("team_a") or "").strip()
     team_b_name = str(row.get("team_b") or "").strip()
     match_type = match_type_from_best_of(row.get("best_of"))
@@ -595,6 +589,8 @@ def build_match_prediction_snapshot(  # noqa: PLR0915
         side="Blue",
         first_pick=None,
         as_of_date=row.get("start_utc"),
+        decision_at=decision_at,
+        feature_snapshot=feature_snapshot,
         roster=team_a_roster,
     )
     team_b = Team(
@@ -602,6 +598,8 @@ def build_match_prediction_snapshot(  # noqa: PLR0915
         side="Red",
         first_pick=None,
         as_of_date=row.get("start_utc"),
+        decision_at=decision_at,
+        feature_snapshot=feature_snapshot,
         roster=team_b_roster,
     )
     if resolution_sink is not None:
@@ -696,6 +694,10 @@ def build_match_prediction_snapshot(  # noqa: PLR0915
                 team_a_name=team_a_name,
                 team_b_name=team_b_name,
                 match_type=match_type,
+                decision_at=decision_at,
+                feature_snapshot_id=feature_snapshot.snapshot_id,
+                serving_model_id=getattr(predictor, "serving_model_id", None),
+                raw_model_team_a=prediction.get("raw_model_probability"),
                 team_a_win=team_a_win,
                 team_b_win=team_b_win,
                 team_a_lower=team_a_lower,
@@ -740,6 +742,10 @@ def build_prediction_snapshot_rows(
     team_b_win: float,
     probability_source: str,
     prop_values: dict[str, float],
+    decision_at: dt.datetime | None = None,
+    feature_snapshot_id: str | None = None,
+    serving_model_id: str | None = None,
+    raw_model_team_a: float | None = None,
     map_prediction: dict[str, Any] | None = None,
     team_a_lower: float | None = None,
     team_a_upper: float | None = None,
@@ -779,6 +785,9 @@ def build_prediction_snapshot_rows(
     }
     base = {
         "run_ts": run_ts,
+        "decision_at": decision_at.isoformat() if decision_at else None,
+        "feature_snapshot_id": feature_snapshot_id,
+        "serving_model_id": serving_model_id,
         "run_date": run_ts.date().isoformat(),
         "team_a": team_a_name,
         "team_b": team_b_name,
@@ -855,6 +864,13 @@ def build_prediction_snapshot_rows(
                 "market": "series_winner",
                 "selection": selection,
                 "model_value": float(probability),
+                "raw_model_probability": (
+                    raw_model_team_a
+                    if selection == team_a_name
+                    else 1.0 - raw_model_team_a
+                    if raw_model_team_a is not None
+                    else None
+                ),
                 "probability_lower": probability_lower,
                 "probability_upper": probability_upper,
                 "rating_baseline_probability": (
@@ -894,6 +910,7 @@ def build_prediction_snapshot_rows(
             }
         )
     if map_prediction is not None:
+        raw_map = map_prediction.get("raw_model_probability")
         for selection, probability, lower, upper in (
             (
                 team_a_name,
@@ -914,6 +931,13 @@ def build_prediction_snapshot_rows(
                     "market": "map_winner",
                     "selection": selection,
                     "model_value": float(probability),
+                    "raw_model_probability": (
+                        raw_map
+                        if selection == team_a_name
+                        else 1.0 - raw_map
+                        if raw_map is not None
+                        else None
+                    ),
                     "probability_lower": float(lower or probability),
                     "probability_upper": float(upper or probability),
                     "probability_source": "independent_map_winner_model",
@@ -966,10 +990,8 @@ def format_step_summary(steps: Sequence[DailyStepResult]) -> str:
 
 
 def _run_mutating_steps(
-    cfg: DailyWorkflowConfig,
     *,
     data_generator_factory: Callable[[], DataGenerator],
-    train_fn: Callable[..., Path | None],
     module_factory: Callable[[], LoLBetsModule],
     store: EvidenceStore,
     scheduled_for: dt.datetime,
@@ -1032,18 +1054,21 @@ def _run_mutating_steps(
         return f"inference={_health_detail(inference)}, training={_health_detail(training)}"
 
     store.initialize_schema()
+    started_at = dt.datetime.now(dt.UTC)
+    # A completed daily step is not evidence that source, transforms, or outputs
+    # remain unchanged. Recompute on each invocation until a validated cache exists.
     workflow_key = (
         daily_run_key(
             "lol",
             scheduled_for=scheduled_for,
             config=effective_config,
         )
-        + ":core"
+        + f":{started_at.isoformat()}:core"
     )
     journal = EvidenceWorkflowJournal(
         store,
         run_type="daily_lol_core",
-        started_at=dt.datetime.now(dt.UTC),
+        started_at=started_at,
     )
     outcome = run_workflow(
         workflow_key,
@@ -1064,17 +1089,15 @@ def _run_mutating_steps(
             WorkflowStep("identity-graph", _sync_identities, writes=True),
             WorkflowStep("validate-data", _validate, writes=False),
             WorkflowStep("build-series", _build_series, writes=True),
-            WorkflowStep(
-                "train",
-                (
-                    (lambda: "skipped by option")
-                    if cfg.skip_retrain
-                    else lambda: _train_triggered_candidate(cfg, train_fn)
-                ),
-                writes=not cfg.skip_retrain,
-            ),
-            WorkflowStep("health", _health, writes=False),
         ),
+        journal=journal,
+        dry_run=False,
+    )
+    # Read the current champion even when source refresh or validation failed.
+    # Health is independent of the ordered writes, but retains their journal.
+    health = run_workflow(
+        workflow_key,
+        (WorkflowStep("health", _health, writes=False),),
         journal=journal,
         dry_run=False,
     )
@@ -1092,64 +1115,8 @@ def _run_mutating_steps(
                 )
             ),
         )
-        for step in outcome.steps
+        for step in (*outcome.steps, *health.steps)
     ]
-
-
-def _train_triggered_candidate(
-    cfg: DailyWorkflowConfig,
-    train_fn: Callable[..., Path | None],
-) -> str:
-    evaluated_at = dt.datetime.now(dt.UTC)
-    product = load_product_config()
-    registry = ModelRegistry(MODEL_REGISTRY_DIR)
-    champion_id = registry.champion_id()
-    if champion_id is None or not registry.is_actionable(champion_id):
-        return (
-            "skipped: no actionable Winner V2 champion; complete the explicit "
-            "retune, fixed-parameter rebuild, review, and manual first promotion"
-        )
-    history = pd.read_parquet(
-        current_history_data_path(
-            RAW_DATA,
-            pointer_path=RAW_CURRENT_POINTER,
-        ),
-        columns=["gameid", "date", "league", "datacompleteness"],
-    )
-    evaluation = evaluate_training_triggers_from_history(
-        history,
-        registry=registry,
-        evaluated_at=evaluated_at,
-        major_leagues=selected_leagues("tier1_current"),
-        valid_map_threshold=product.training.new_valid_maps_trigger,
-        major_map_threshold=product.training.new_major_maps_trigger,
-    )
-    if not evaluation.triggered:
-        state = evaluation.state
-        return (
-            "not triggered: "
-            f"{state.new_valid_maps} new valid maps, "
-            f"{state.new_major_maps} new major maps"
-        )
-    report_root = train_fn(
-        targets=cfg.targets,
-        force_retune=False,
-        feature_set=cfg.feature_set,
-        max_features=cfg.max_features,
-    )
-    if report_root is None:
-        raise ValueError("training did not return its immutable run report")
-    manifest = json.loads((Path(report_root) / "manifest.json").read_text())
-    candidate_id = manifest.get("candidate_id")
-    if not candidate_id or not registry.verify_bundle(candidate_id):
-        raise ValueError("training did not register a complete immutable candidate")
-    reasons = ", ".join(evaluation.reasons)
-    promotion = str(manifest.get("promotion_status") or "review_unavailable")
-    failures = ", ".join(manifest.get("promotion_reasons") or [])
-    suffix = f"; promotion={promotion}"
-    if failures:
-        suffix += f" ({failures})"
-    return f"registered immutable {candidate_id}; triggers: {reasons}{suffix}"
 
 
 def _build_prediction_snapshots(
@@ -1316,7 +1283,6 @@ def _refresh_expected_lineups(
     schedule: pd.DataFrame,
     *,
     schedule_available: bool,
-    observed_at: dt.datetime,
     refresher_factory: Callable[[], PandaScoreLineupRefresher] | None,
 ) -> tuple[pd.DataFrame, DailyStepResult]:
     if not schedule_available or schedule.empty:
@@ -1334,7 +1300,7 @@ def _refresh_expected_lineups(
                 True,
                 "skipped: PandaScore API key unavailable",
             )
-        refreshed = refresher.refresh(schedule, observed_at=observed_at)
+        refreshed = refresher.refresh(schedule)
         errors = int(
             refreshed["lineup_refresh_error"].fillna("").astype(str).ne("").sum()
         )
@@ -1393,12 +1359,11 @@ def run_daily_lol_workflow(
     *,
     schedule_fetcher: Callable[..., pd.DataFrame] = fetch_and_store_schedule,
     data_generator_factory: Callable[[], DataGenerator] = DataGenerator,
-    train_fn: Callable[..., Path | None] = train_models,
     module_factory: Callable[[], LoLBetsModule] = LoLBetsModule,
     lineup_refresher_factory: (Callable[[], PandaScoreLineupRefresher] | None) = None,
     series_builder_fn: Callable[[], dict[str, Any]] = build_series_artifacts,
 ) -> DailyWorkflowResult:
-    """Run data, model, schedule, and report maintenance without market review."""
+    """Refresh data and schedule, check the champion, and report without training."""
     cfg = _resolve_daily_config(config)
     delivery_mode = DiscordDeliveryMode(str(cfg.delivery_mode))
     steps: list[DailyStepResult] = []
@@ -1409,9 +1374,7 @@ def run_daily_lol_workflow(
     if not cfg.dry_run:
         steps.extend(
             _run_mutating_steps(
-                cfg,
                 data_generator_factory=data_generator_factory,
-                train_fn=train_fn,
                 module_factory=module_factory,
                 store=EvidenceStore(EVIDENCE_DB),
                 scheduled_for=scheduled_for,
@@ -1425,6 +1388,7 @@ def run_daily_lol_workflow(
     # other step: a PandaScore outage should produce a FAILED step and a
     # report, never a stack trace. When the fetch fails but a stored schedule
     # exists, fall back to it (marked in the step detail).
+    run_now = dt.datetime.now(dt.UTC)
     fetch_state: dict[str, pd.DataFrame] = {}
 
     def _fetch_schedule() -> str:
@@ -1442,13 +1406,12 @@ def run_daily_lol_workflow(
     schedule, lineup_step = _refresh_expected_lineups(
         schedule,
         schedule_available=schedule_step.ok,
-        observed_at=run_now,
         refresher_factory=lineup_refresher_factory,
     )
     daily_schedule = _actionable_schedule(
         filter_daily_schedule(
             schedule,
-            now=run_now,
+            now=dt.datetime.now(dt.UTC),
             horizon_hours=cfg.horizon_hours,
         )
     ).reset_index(drop=True)
@@ -1477,6 +1440,7 @@ def run_daily_lol_workflow(
             run_id = record_daily_evidence(
                 store=EvidenceStore(EVIDENCE_DB),
                 scheduled_for=scheduled_for,
+                observed_at=dt.datetime.now(dt.UTC),
                 effective_config=effective_config,
                 schedule=daily_schedule,
                 snapshot_rows=(),

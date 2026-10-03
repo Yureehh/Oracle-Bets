@@ -6,22 +6,26 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from oracle_bets_core.paths import (
-    INTERIM_TEAM_DATA,
     NEXT_MAP_PLAYER_DATA,
     NEXT_MAP_TEAM_DATA,
     SERIES_MANIFEST,
     SERIES_REJECTIONS,
     SERIES_WINNER_PLAYER_DATA,
     SERIES_WINNER_TEAM_DATA,
-    TRAINING_PLAYER_DATA,
-    TRAINING_TEAM_DATA,
 )
 from oracle_bets_core.pd import pd
 
 from lol_bets.data_generation.ingestion.quality import normalize_result
+from lol_bets.operations.training_inputs import (
+    SERIES_INPUT_MANIFEST,
+    file_evidence,
+    load_training_inputs,
+    publish_generation,
+)
 
 MAX_MAP_GAP = timedelta(hours=6)
 MIN_BO1_PHASE_SERIES = 20
@@ -134,24 +138,37 @@ def reconstruct_series(team_rows: pd.DataFrame) -> SeriesBuildResult:
 
 def build_series_artifacts() -> dict[str, Any]:
     """Build series manifests plus Map-1-frozen supervised tables."""
-    result = reconstruct_series(pd.read_parquet(INTERIM_TEAM_DATA))
-    team = pd.read_parquet(TRAINING_TEAM_DATA)
-    players = pd.read_parquet(TRAINING_PLAYER_DATA)
+    inputs = load_training_inputs()
+    result = reconstruct_series(inputs.frames["interim_teams"])
+    team = inputs.frames["map_teams"]
+    players = inputs.frames["map_players"]
     series_team, series_players = _series_winner_training_tables(
         result.series, team, players
     )
     next_team, next_players = _next_map_training_tables(result.series, team, players)
 
-    for path, frame in (
-        (SERIES_MANIFEST, result.series),
-        (SERIES_REJECTIONS, result.rejections),
-        (SERIES_WINNER_TEAM_DATA, series_team),
-        (SERIES_WINNER_PLAYER_DATA, series_players),
-        (NEXT_MAP_TEAM_DATA, next_team),
-        (NEXT_MAP_PLAYER_DATA, next_players),
+    files = {}
+    for key, path, frame in (
+        ("series_manifest", SERIES_MANIFEST, result.series),
+        ("series_rejections", SERIES_REJECTIONS, result.rejections),
+        ("series_teams", SERIES_WINNER_TEAM_DATA, series_team),
+        ("series_players", SERIES_WINNER_PLAYER_DATA, series_players),
+        ("next_map_teams", NEXT_MAP_TEAM_DATA, next_team),
+        ("next_map_players", NEXT_MAP_PLAYER_DATA, next_players),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(path, index=False)
+        files.update(file_evidence({key: path}))
+    inputs.assert_unchanged()
+    parent = inputs.manifests["map"]
+    publish_generation(
+        SERIES_INPUT_MANIFEST,
+        {key: Path(item["path"]) for key, item in files.items()},
+        source=parent["source"],
+        code=parent["code_sha256"],
+        parent_generation=parent["generation_id"],
+        expected_files=files,
+    )
     return {
         "accepted_series": int(len(result.series)),
         "rejected_groups": int(len(result.rejections)),

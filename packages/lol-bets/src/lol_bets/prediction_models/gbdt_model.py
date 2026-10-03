@@ -891,6 +891,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
     max_features: int = DEFAULT_SELECTED_MAX_FEATURES
     force_retune: bool = False
     allow_hparam_schema_drift: bool = False
+    research_hparams_path: Path | None = None
     calibration: CalibrationMode = "auto"
     calibration_method: CalibrationMethod = "auto"
     calibration_size: float = CALIBRATION_SIZE
@@ -1628,16 +1629,18 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         exclude_cols: list[str] | None = None,
         categorical_columns: list[str] | None = None,
     ) -> tuple[pd.DataFrame, list[str]]:
-        """Cast object columns to category; respect exclude list."""
+        """Freeze categories from observed training values; respect exclude list."""
         X = X.copy()
         exclude_cols = exclude_cols or []
         if categorical_columns is None:
             categorical_columns = [
-                c for c in X.columns if X[c].dtype == "object" and c not in exclude_cols
+                c
+                for c in X.columns
+                if X[c].dtype.name in {"object", "category"} and c not in exclude_cols
             ]
         for c in categorical_columns:
             X[c] = X[c].astype("category")
-            X[c] = X[c].cat.set_categories(X[c].cat.categories)  # freeze categories
+            X[c] = X[c].cat.remove_unused_categories()
         return X, categorical_columns
 
     # ─────────────────────────── Feature pipeline ─────────────────────────── #
@@ -3177,6 +3180,18 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         eval_gameids = _safe_meta_col("gameid")
         eval_sides = _safe_meta_col("side")
 
+        # Winner research must fit preprocessing within each inner temporal fold.
+        winner_tuning_kwargs: dict[str, Any] = {}
+        if self.model_name in WINNER_V2_MODEL_NAMES and self.force_retune:
+            winner_tuning_kwargs = {
+                "raw_development": (X_train, X_val),
+                "preprocessing_thresholds": {
+                    "drop_missing_threshold": drop_missing_threshold,
+                    "drop_low_std_threshold": drop_low_std_threshold,
+                    "drop_high_corr_threshold": drop_high_corr_threshold,
+                },
+            }
+
         # Fit feature pipeline on TRAIN (drop/missing/variance/corr/cats/impute)
         # and reapply it to val/test to guarantee feature parity.
         X_train, feature_pipeline = self._fit_feature_pipeline(
@@ -3264,6 +3279,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
             X_val=X_val,
             y_val=y_val,
             categorical_features=categorical_features,
+            **winner_tuning_kwargs,
         )
         if self.problem_type == "classification":
             self.probability_calibrator = self.fit_probability_calibrator(

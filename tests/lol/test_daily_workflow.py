@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+from types import SimpleNamespace
 
 import pytest
 from lol_bets.daily import (
@@ -15,6 +16,7 @@ from lol_bets.daily import (
 )
 from oracle_bets_core.cli import build_parser
 from oracle_bets_core.evidence import EvidenceStore
+from oracle_bets_core.interfaces import ArtifactHealth
 from oracle_bets_core.operations import StepOutcome, WorkflowOutcome
 from oracle_bets_core.pd import pd
 from oracle_bets_discord.predictions.lol import format_schedule_messages
@@ -31,6 +33,7 @@ def _isolate_daily_reports(tmp_path, monkeypatch):
     import lol_bets.daily as daily_module
 
     monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(daily_module, "EVIDENCE_DB", tmp_path / "evidence.db")
 
 
 def _schedule_frame() -> pd.DataFrame:
@@ -262,7 +265,7 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     import lol_bets.daily as daily_module
 
     monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
-    called = {"ingest": False, "train": False}
+    called = {"ingest": False}
 
     def schedule_fetcher(**kwargs):
         assert kwargs["save_path"] is None
@@ -274,15 +277,10 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
         called["ingest"] = True
         raise AssertionError("dry run must not ingest")
 
-    def train_fn(**_kwargs):
-        called["train"] = True
-        raise AssertionError("dry run must not train")
-
     result = run_daily_lol_workflow(
         DailyWorkflowConfig(dry_run=True, delivery_mode="off"),
         schedule_fetcher=schedule_fetcher,
         data_generator_factory=data_generator_factory,
-        train_fn=train_fn,
     )
 
     assert result.ok
@@ -441,8 +439,8 @@ def test_daily_refreshes_match_detail_before_filtering(monkeypatch):
         return schedule
 
     class _Refresher:
-        def refresh(self, schedule, *, observed_at):
-            called["refresh"] = observed_at.tzinfo is not None
+        def refresh(self, schedule):
+            called["refresh"] = True
             refreshed = schedule.copy()
             refreshed["lineup_refresh_error"] = ""
             refreshed["fixture_version"] = "fixture-refreshed"
@@ -462,15 +460,15 @@ def test_daily_refreshes_match_detail_before_filtering(monkeypatch):
     assert result.schedule.empty
 
 
-def test_daily_lol_cli_defaults_to_no_retune():
+def test_daily_lol_cli_has_no_training_options():
     args = build_parser().parse_args(["daily", "lol", "--dry-run"])
 
     assert args.domain == "daily"
     assert args.action == "lol"
     assert args.dry_run is True
-    assert args.skip_retrain is False
+    assert not hasattr(args, "skip_retrain")
     assert args.horizon_hours == EXPECTED_HORIZON_HOURS
-    assert args.feature_set == "compact"
+    assert not hasattr(args, "feature_set")
 
 
 def test_daily_core_steps_use_the_resumable_evidence_journal(
@@ -483,7 +481,7 @@ def test_daily_core_steps_use_the_resumable_evidence_journal(
 
     def fake_workflow(run_key, steps, *, journal, dry_run):
         captured["run_key"] = run_key
-        captured["names"] = [step.name for step in steps]
+        captured.setdefault("names", []).extend(step.name for step in steps)
         captured["journal"] = journal
         assert dry_run is False
         return WorkflowOutcome(
@@ -497,9 +495,7 @@ def test_daily_core_steps_use_the_resumable_evidence_journal(
     scheduled_for = dt.datetime(2026, 7, 26, tzinfo=dt.UTC)
 
     result = _run_mutating_steps(
-        DailyWorkflowConfig(skip_retrain=True),
         data_generator_factory=lambda: object(),
-        train_fn=lambda **_kwargs: None,
         module_factory=lambda: object(),
         store=store,
         scheduled_for=scheduled_for,
@@ -514,15 +510,14 @@ def test_daily_core_steps_use_the_resumable_evidence_journal(
         "identity-graph",
         "validate-data",
         "build-series",
-        "train",
         "health",
     ]
     assert captured["journal"].store.path == store.path
     assert all(step.ok for step in result)
 
 
-def test_daily_source_failure_blocks_ingest_and_training(tmp_path):
-    called = {"ingest": False, "train": False}
+def test_daily_source_failure_blocks_ingest_but_still_checks_health(tmp_path):
+    called = {"ingest": False}
 
     def fail_source():
         raise RuntimeError("current_year_file_stale")
@@ -534,15 +529,15 @@ def test_daily_source_failure_blocks_ingest_and_training(tmp_path):
         called["ingest"] = True
         raise AssertionError("stale source must block ingestion")
 
-    def train_fn(**_kwargs):
-        called["train"] = True
-        raise AssertionError("stale source must block training")
+    def check_health():
+        called["health"] = True
+        return ArtifactHealth("lol")
 
     result = _run_mutating_steps(
-        DailyWorkflowConfig(),
         data_generator_factory=data_generator_factory,
-        train_fn=train_fn,
-        module_factory=lambda: object(),
+        module_factory=lambda: SimpleNamespace(
+            artifact_health=check_health, training_artifact_health=check_health
+        ),
         store=EvidenceStore(tmp_path / "daily-journal.db"),
         scheduled_for=dt.datetime(2026, 8, 10, tzinfo=dt.UTC),
         effective_config={"horizon_hours": 36},
@@ -551,30 +546,44 @@ def test_daily_source_failure_blocks_ingest_and_training(tmp_path):
     )
 
     assert not called["ingest"]
-    assert not called["train"]
+    assert called["health"]
     assert result[0].name == "source-refresh"
     assert result[0].ok
     assert result[1].name == "source-check"
     assert not result[1].ok
     assert result[1].detail.endswith("current_year_file_stale")
-    assert all(step.detail == "skipped after failure" for step in result[2:])
+    assert all(step.detail == "skipped after failure" for step in result[2:-1])
+    assert result[-1].name == "health"
+    assert result[-1].ok
+    assert result[-1].detail == "inference=ok, training=ok"
 
 
-def test_daily_never_bootstraps_training_without_actionable_champion(
-    tmp_path, monkeypatch
-):
-    import lol_bets.daily as daily_module
+def test_repeated_daily_maintenance_does_not_reuse_unverified_artifacts(tmp_path):
+    calls = []
 
-    called = False
+    class RefreshResult:
+        files = ()
 
-    def train_fn(**_kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("daily must not bootstrap Winner V2")
+    def refresh():
+        calls.append("source")
+        return RefreshResult()
 
-    monkeypatch.setattr(daily_module, "MODEL_REGISTRY_DIR", tmp_path / "registry")
+    def stop_after_source():
+        raise RuntimeError("stop before production artifacts")
 
-    detail = daily_module._train_triggered_candidate(DailyWorkflowConfig(), train_fn)
+    store = EvidenceStore(tmp_path / "daily-journal.db")
+    for _ in range(2):
+        _run_mutating_steps(
+            data_generator_factory=lambda: object(),
+            module_factory=lambda: SimpleNamespace(
+                artifact_health=lambda: ArtifactHealth("lol"),
+                training_artifact_health=lambda: ArtifactHealth("lol"),
+            ),
+            store=store,
+            scheduled_for=dt.datetime(2026, 9, 25, tzinfo=dt.UTC),
+            effective_config={"horizon_hours": 36},
+            source_refresh_fn=refresh,
+            source_check_fn=stop_after_source,
+        )
 
-    assert detail.startswith("skipped: no actionable Winner V2 champion")
-    assert not called
+    assert calls == ["source", "source"]

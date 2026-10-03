@@ -244,3 +244,71 @@ def test_snapshot_rows_cover_both_selections_and_props():
     prop_rows = [r for r in rows if r["market"] == "total_kills_mean"]
     assert len(prop_rows) == 1
     assert prop_rows[0]["model_value"] == EXPECTED_TOTAL_KILLS
+
+
+def test_daily_uses_fresh_clocks_after_maintenance_and_schedule_fetch(monkeypatch):
+    import lol_bets.daily as daily_module
+
+    started = dt.datetime(2026, 9, 20, 0, tzinfo=dt.UTC)
+    refreshed = started + dt.timedelta(hours=12)
+    fetched = refreshed + dt.timedelta(minutes=2)
+    current = started
+    captured = {}
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current.astimezone(tz)
+
+    class ReadySource:
+        def to_dict(self):
+            return {"ready": True}
+
+    def maintain(*_args, **_kwargs):
+        nonlocal current
+        current = refreshed
+        return []
+
+    def fetch(**kwargs):
+        nonlocal current
+        captured["fetch_at"] = kwargs["start_datetime"]
+        current = fetched
+        return pd.DataFrame(
+            [
+                {
+                    "match_key": "already-started",
+                    "league": "LCK",
+                    "team_a": "T1",
+                    "team_b": "Gen.G",
+                    "start_utc": started + dt.timedelta(hours=6),
+                    "best_of": 3,
+                },
+            ]
+        )
+
+    class Refresher:
+        def refresh(self, schedule):
+            captured["lineup_at"] = current
+            schedule["lineup_refresh_error"] = ""
+            return schedule
+
+    def record(**kwargs):
+        captured["evidence"] = kwargs
+        return "run-test"
+
+    monkeypatch.setattr(daily_module.dt, "datetime", Clock)
+    monkeypatch.setattr(daily_module, "_run_mutating_steps", maintain)
+    monkeypatch.setattr(daily_module, "_daily_source_readiness", ReadySource)
+    monkeypatch.setattr(daily_module, "record_daily_evidence", record)
+    monkeypatch.setattr(daily_module, "_latest_model_drift_review", lambda: None)
+    result = run_daily_lol_workflow(
+        DailyWorkflowConfig(delivery_mode="off"),
+        schedule_fetcher=fetch,
+        lineup_refresher_factory=Refresher,
+    )
+
+    assert captured["fetch_at"] == refreshed
+    assert captured["lineup_at"] == fetched
+    assert captured["evidence"]["scheduled_for"] == started
+    assert captured["evidence"]["observed_at"] == fetched
+    assert result.schedule.empty

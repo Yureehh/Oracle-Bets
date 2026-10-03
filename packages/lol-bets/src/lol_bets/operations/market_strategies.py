@@ -9,10 +9,12 @@ from enum import StrEnum
 from typing import Any
 
 from oracle_bets_core.betting import expected_edge, kelly_fraction
+from oracle_bets_core.evidence.portfolio import KellyPolicy
 
 RECOMMENDATION_MINIMUM_FAVORITE = 0.51
 ONE_UNIT_BANKROLL_FRACTION = 0.01
-MARKET_POLICY_VERSION = "lol-market-policy-v1"
+MARKET_POLICY_VERSION = "lol-market-policy-v2"
+BALANCED_POLICY = KellyPolicy()
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class SizingPaths:
     half_kelly: float
     quarter_kelly: float
     selected_path: str | None
+    balanced_kelly: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         fractions = {
@@ -47,6 +50,7 @@ class SizingPaths:
             "full_kelly": self.full_kelly,
             "half_kelly": self.half_kelly,
             "quarter_kelly": self.quarter_kelly,
+            "balanced_kelly": self.balanced_kelly,
         }
         return {
             "bankroll_fractions": fractions,
@@ -55,6 +59,14 @@ class SizingPaths:
                 for name, value in fractions.items()
             },
             "selected_path": self.selected_path,
+            "policy": {
+                "name": BALANCED_POLICY.name,
+                "fraction": BALANCED_POLICY.fraction,
+                "ticket_cap": BALANCED_POLICY.ticket_cap,
+                "fixture_cap": BALANCED_POLICY.fixture_cap,
+                "total_cap": BALANCED_POLICY.total_cap,
+                "status": "provisional_until_temporal_research",
+            },
         }
 
 
@@ -156,18 +168,17 @@ def decide_market(
 def sizing_paths(
     *, decimal_odds: float, probability: float, classification: DecisionClass
 ) -> SizingPaths:
-    """Calculate every requested paper sizing path from one frozen forecast."""
+    """Size with capped fractional Kelly; retain uncapped paths as diagnostics."""
     full = kelly_fraction(decimal_odds, probability, fraction=1.0)
     return SizingPaths(
         flat_1u=ONE_UNIT_BANKROLL_FRACTION,
         full_kelly=full,
         half_kelly=full / 2.0,
         quarter_kelly=full / 4.0,
+        balanced_kelly=min(full * BALANCED_POLICY.fraction, BALANCED_POLICY.ticket_cap),
         selected_path=(
-            "full_kelly"
-            if full > 0
-            else "flat_1u"
-            if classification is DecisionClass.EXPLORATION
+            "balanced_kelly"
+            if full > 0 and classification is DecisionClass.RECOMMENDED
             else None
         ),
     )
@@ -181,7 +192,10 @@ def rank_market_decisions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]
         classification = action.get("classification")
         action["bet_type"] = classification
         action["exploration_sampled"] = False
-        action["ticket_eligible"] = classification == DecisionClass.RECOMMENDED
+        action["ticket_eligible"] = (
+            classification == DecisionClass.RECOMMENDED
+            and _sortable_ev(action.get("point_ev")) > 0
+        )
         semantic = action.get("semantic_key")
         if classification != DecisionClass.EXPLORATION or not isinstance(
             semantic, dict
@@ -204,7 +218,9 @@ def rank_market_decisions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]
             ),
         )
         output[selected]["exploration_sampled"] = True
-        output[selected]["ticket_eligible"] = True
+        output[selected]["ticket_eligible"] = (
+            _sortable_ev(output[selected].get("point_ev")) > 0
+        )
         for index in indices:
             if index != selected:
                 reasons = list(output[index].get("reason_codes") or [])

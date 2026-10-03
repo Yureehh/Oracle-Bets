@@ -608,15 +608,9 @@ class PandaScoreLineupRefresher:
             "Authorization": f"Bearer {self.api_key}",
         }
 
-    def refresh(
-        self,
-        schedule: pd.DataFrame,
-        *,
-        observed_at: dt.datetime | None = None,
-    ) -> pd.DataFrame:
+    def refresh(self, schedule: pd.DataFrame) -> pd.DataFrame:
         """Refresh each fixture independently; preserve explicit per-row errors."""
         refreshed = normalize_schedule_frame(schedule)
-        observation = (observed_at or dt.datetime.now(dt.UTC)).astimezone(dt.UTC)
         authoritative_fields = (
             "league",
             "serie",
@@ -655,7 +649,7 @@ class PandaScoreLineupRefresher:
                 for field_name in authoritative_fields:
                     refreshed.at[index, field_name] = detail_row[field_name]
                 refreshed.at[index, "lineup_source"] = "pandascore_match_detail"
-                refreshed.at[index, "lineup_observed_at"] = observation
+                refreshed.at[index, "lineup_observed_at"] = dt.datetime.now(dt.UTC)
                 refreshed.at[index, "lineup_refresh_error"] = ""
             except requests.HTTPError as exc:
                 status = getattr(exc.response, "status_code", None)

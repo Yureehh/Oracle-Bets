@@ -322,7 +322,9 @@ def test_map_prediction_is_research_only_and_exactly_complementary() -> None:
 
     predictor = MatchPredictor.__new__(MatchPredictor)
     predictor.outcome_model = _MapModel()
-    predictor.outcome_calibrator = None
+    predictor.outcome_calibrator = SimpleNamespace(
+        predict=lambda values, **_kwargs: np.asarray(values) + 0.1
+    )
     predictor.outcome_uncertainty = _Uncertainty()
     predictor.outcome_pipeline = _IdentityPipeline()
     predictor._outcome_team_features = lambda team, _opponent, **_kwargs: pd.DataFrame(
@@ -339,6 +341,9 @@ def test_map_prediction_is_research_only_and_exactly_complementary() -> None:
     assert forward["team1_probability_lower"] == reverse["team2_probability_lower"]
     assert forward["model_target"] == "map_winner"
     assert forward["research_mode"] == "shadow_only"
+    assert forward["raw_model_probability"] == pytest.approx(0.3)
+    assert forward["team1_win_probability"] == pytest.approx(0.4)
+    assert reverse["raw_model_probability"] == pytest.approx(0.7)
 
 
 def test_next_map_prediction_is_shadow_only_and_exactly_complementary() -> None:

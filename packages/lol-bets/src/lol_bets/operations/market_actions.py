@@ -297,6 +297,8 @@ def _interpret_market(
                 ),
                 game_number=market.game_number,
                 line=line,
+                provider="polymarket",
+                resolution_terms=market.resolution_terms,
             )
         except MarketDataError as error:
             outcome_blocks.append(f"semantic_contract:{error}")
@@ -469,6 +471,8 @@ def price_manual_lines(
                     else None
                 ),
                 line=line,
+                provider="thunderpick",
+                resolution_terms=str(raw.get("terms") or ""),
             )
         except (MarketDataError, TypeError, ValueError) as error:
             hard_blocks.append(f"semantic_contract:{error}")

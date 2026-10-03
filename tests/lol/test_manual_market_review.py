@@ -17,7 +17,7 @@ from oracle_bets_core.pd import pd
 
 NOW = datetime(2026, 8, 21, 8, tzinfo=UTC)
 EXPECTED_REPORT_FILES = 2
-REPORT_SCHEMA_VERSION = 5
+REPORT_SCHEMA_VERSION = 6
 EXPECTED_COMPARISONS = 2
 BEST_ODDS = 1.9
 BEST_OF_FIVE = 5
@@ -122,7 +122,7 @@ def test_manual_review_uses_exact_event_and_writes_one_report_pair(
     assert len(list((tmp_path / "reports").iterdir())) == EXPECTED_REPORT_FILES
     payload = json.loads(result.report_paths[0].read_text())
     assert payload["schema_version"] == REPORT_SCHEMA_VERSION
-    assert payload["workflow"] == "owner_market_review_v5"
+    assert payload["workflow"] == "owner_market_review_v6"
     assert payload["fixture"]["league"] == "LPL"
     assert payload["fixture"]["team_a"] == "Team WE"
     assert payload["evidence_run_id"] == "run-1"
@@ -352,6 +352,8 @@ def test_provider_comparison_groups_only_identical_semantics_and_picks_best_odds
         selection="Top Esports",
         game_number=None,
         line=None,
+        resolution_terms="Completed series settle on official winner; cancellation voids.",
+        terms_verified=True,
     )
     total_semantic = market_semantic_key(
         target="series_total_maps",
@@ -418,10 +420,20 @@ def test_provider_comparison_groups_only_identical_semantics_and_picks_best_odds
 
 def test_provider_comparison_never_merges_equal_labels_across_map_periods():
     map_one = market_semantic_key(
-        target="map_winner", selection="Top Esports", game_number=1, line=None
+        target="map_winner",
+        selection="Top Esports",
+        game_number=1,
+        line=None,
+        resolution_terms="Unplayed map void.",
+        terms_verified=True,
     )
     map_two = market_semantic_key(
-        target="map_winner", selection="Top Esports", game_number=2, line=None
+        target="map_winner",
+        selection="Top Esports",
+        game_number=2,
+        line=None,
+        resolution_terms="Unplayed map void.",
+        terms_verified=True,
     )
     rows = [
         {
@@ -614,3 +626,56 @@ def test_mismatched_thunderpick_fixture_stops_the_review(tmp_path, monkeypatch):
 def test_thunderpick_manual_lines_reject_non_finite_numbers(value):
     with pytest.raises(MarketDataError, match="finite"):
         manual_market.parse_manual_lines_text(value)
+
+
+def test_manual_review_passes_live_capture_clock_after_inference(tmp_path, monkeypatch):
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    schedule_path = tmp_path / "schedule.parquet"
+    _approved_schedule(schedule_path)
+    monkeypatch.setattr(manual_market, "SCHEDULE", schedule_path)
+    capture_time = NOW + timedelta(minutes=10)
+    captured = []
+
+    def fake_build(_schedule, **kwargs):
+        kwargs["snapshot_sink"].append(
+            {"market": "series_winner", "selection": "Team WE"}
+        )
+        return []
+
+    def fake_evaluate(**kwargs):
+        captured.append(kwargs["clock"]())
+        return SimpleNamespace(actions=[])
+
+    monkeypatch.setattr(manual_market, "_build_prediction_snapshots", fake_build)
+    monkeypatch.setattr(manual_market, "evaluate_daily_market_actions", fake_evaluate)
+    monkeypatch.setattr(
+        manual_market, "record_daily_evidence", lambda **_kwargs: "run-1"
+    )
+    monkeypatch.setattr(manual_market, "active_strategy_readiness", dict)
+    manual_market.review_polymarket_events(
+        [URL],
+        gamma=_Gamma(),
+        report_dir=tmp_path / "reports",
+        now=NOW,
+        clock=lambda: capture_time,
+    )
+    assert captured == [capture_time]
+
+
+def test_provider_comparison_does_not_merge_legacy_unknown_rules():
+    rows = [
+        {
+            "fixture_key": "fixture-1",
+            "provider": provider,
+            "semantic_fingerprint": "legacy-shared-key",
+            "semantic_key": {"version": 1},
+            "decimal_odds": 1.9,
+            "probability": 0.6,
+        }
+        for provider in ("polymarket", "thunderpick")
+    ]
+    comparisons = manual_market.provider_comparisons(rows)
+    assert len(comparisons) == EXPECTED_COMPARISONS
+    assert all(len(row["providers"]) == 1 for row in comparisons)

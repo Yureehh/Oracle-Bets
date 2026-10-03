@@ -270,6 +270,8 @@ class MatchPredictor:
       - trained GBDT outcome model (lightgbm)
     """
 
+    model_id: str | None = None
+    registry_root: Path = MODEL_REGISTRY_DIR
     outcome_model: Any = field(default=None, init=False, repr=False)
     outcome_calibrator: Any = field(default=None, init=False, repr=False)
     outcome_uncertainty: Any = field(default=None, init=False, repr=False)
@@ -319,8 +321,8 @@ class MatchPredictor:
 
     def __post_init__(self) -> None:
         # Pin one immutable champion before resolving any bundle path.
-        registry = ModelRegistry(MODEL_REGISTRY_DIR)
-        self.serving_model_id = registry.champion_id()
+        registry = ModelRegistry(self.registry_root)
+        self.serving_model_id = self.model_id or registry.champion_id()
         if self.serving_model_id is not None:
             self.serving_artifacts = registry.verified_artifact_paths(
                 model_id=self.serving_model_id
@@ -1028,6 +1030,7 @@ class MatchPredictor:
         )
         X_matchup = self.series_winner_pipeline.transform(X_matchup)
         proba = self.series_winner_model.predict_proba(X_matchup)[:, 1]
+        raw_probability = float(proba[0])
         _, full = self.series_winner_model.component_probabilities(X_matchup)
         baseline = self.series_winner_model.rating_baseline_probability(X_matchup)
         if self.series_winner_calibrator is not None:
@@ -1086,6 +1089,9 @@ class MatchPredictor:
         )
         return {
             "team1_win_probability": team1_probability,
+            "raw_model_probability": (
+                raw_probability if team1_is_canonical else 1.0 - raw_probability
+            ),
             "team2_win_probability": team2_probability,
             "team1_probability_lower": team1_lower,
             "team1_probability_upper": team1_upper,
@@ -1131,6 +1137,7 @@ class MatchPredictor:
             raise RuntimeError("Map-winner feature pipeline is missing.")
         X_matchup = self.outcome_pipeline.transform(X_matchup)
         probability = self.outcome_model.predict_proba(X_matchup)[:, 1]
+        raw_probability = float(probability[0])
         if self.outcome_calibrator is not None:
             probability = self.outcome_calibrator.predict(
                 probability,
@@ -1160,6 +1167,9 @@ class MatchPredictor:
             "team2_probability_lower": team2_lower,
             "team2_probability_upper": team2_upper,
             "model_target": "map_winner",
+            "raw_model_probability": (
+                raw_probability if team1_is_canonical else 1.0 - raw_probability
+            ),
             "research_mode": "shadow_only",
             "uncertainty_method": getattr(self.outcome_uncertainty, "method", None),
             "uncertainty_confidence": getattr(

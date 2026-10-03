@@ -1,7 +1,7 @@
 """
 Team model: fast, safe access to team & player snapshots.
 
-- Caches parquet reads (single-process) to avoid repeated disk I/O.
+- Pins paired historical feature tables at the actual decision cutoff.
 - Case-insensitive matching with .casefold() (better than .lower() for i18n).
 - Partial roster updates allowed; missing roles autocompleted from last roster.
 - Strong validation + clear errors, but minimal noise in logs.
@@ -10,55 +10,18 @@ Team model: fast, safe access to team & player snapshots.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from oracle_bets_core.logger import logger
-from oracle_bets_core.paths import FLATTENED_PLAYERS, FLATTENED_TEAMS, PROCESSED_PLAYERS
+from oracle_bets_core.paths import PROCESSED_DIR
 from oracle_bets_core.pd import pd
 
 from lol_bets.inference.roster import EXPECTED_ROLES
+from lol_bets.inference.snapshots import FeatureSnapshot, load_feature_snapshot
 from lol_bets.inference.team_resolver import TeamResolutionError, resolve_team_name
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-# ── small IO helper with engine fallback + caching ───────────────────────── #
-
-
-@lru_cache(maxsize=4)
-def _read_parquet_version(path_str: str, mtime_ns: int, size: int) -> pd.DataFrame:
-    _ = mtime_ns, size
-    # sourcery skip: remove-unnecessary-cast
-    path = str(path_str)
-    try:
-        return pd.read_parquet(path, engine="fastparquet")
-    except (ImportError, ValueError):
-        # fall back to pyarrow if available
-        return pd.read_parquet(path)
-
-
-def _read_parquet_cached(path_str: str) -> pd.DataFrame:
-    stat = Path(path_str).stat()
-    return _read_parquet_version(path_str, stat.st_mtime_ns, stat.st_size)
-
-
-@lru_cache(maxsize=2)
-def _read_roster_history_version(
-    path_str: str, mtime_ns: int, size: int
-) -> pd.DataFrame:
-    _ = mtime_ns, size
-    columns = ["teamname", "playername", "position", "date"]
-    try:
-        return pd.read_parquet(path_str, columns=columns, engine="fastparquet")
-    except (ImportError, ValueError):
-        return pd.read_parquet(path_str, columns=columns)
-
-
-def _read_roster_history_cached(path_str: str) -> pd.DataFrame:
-    stat = Path(path_str).stat()
-    return _read_roster_history_version(path_str, stat.st_mtime_ns, stat.st_size)
 
 
 def _require_columns(df: pd.DataFrame, required: Iterable[str], where: str) -> None:
@@ -94,7 +57,7 @@ def _days_ago(value, as_of: pd.Timestamp) -> float:
         return float("nan")
     if getattr(timestamp, "tzinfo", None) is not None:
         timestamp = timestamp.tz_convert(None)
-    return float(max(0, (as_of - timestamp.normalize()).days))
+    return float(max(0, (as_of - timestamp).days))
 
 
 def _rating_uncertainty(row: pd.Series) -> float:
@@ -116,6 +79,8 @@ class Team:
     side: str | None = None
     first_pick: bool | None = None
     as_of_date: object | None = None
+    decision_at: object | None = None
+    feature_snapshot: FeatureSnapshot | None = None
     roster: dict[str, str | None] = field(
         default_factory=lambda: dict.fromkeys(_EXPECTED_POS)
     )
@@ -131,16 +96,7 @@ class Team:
     _as_of: pd.Timestamp = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        # load dataframes once (cached globally by lru_cache)
-        self._team_df = _read_parquet_cached(str(FLATTENED_TEAMS))
-        self._player_df = _read_parquet_cached(str(FLATTENED_PLAYERS))
-        self._as_of = pd.to_datetime(cast("Any", self.as_of_date), errors="coerce")
-        if pd.isna(self._as_of):
-            self._as_of = pd.Timestamp.now()
-        if getattr(self._as_of, "tzinfo", None) is not None:
-            self._as_of = self._as_of.tz_convert(None)
-        self._as_of = self._as_of.normalize()
-
+        self._load_snapshot()
         _require_columns(self._team_df, ["teamname"], "FLATTENED_TEAMS")
         _require_columns(
             self._player_df,
@@ -214,16 +170,43 @@ class Team:
             _rating_uncertainty, axis=1
         )
 
+    def _load_snapshot(self) -> None:
+        decision = pd.to_datetime(cast("Any", self.decision_at), utc=True)
+        if pd.isna(decision):
+            decision = pd.Timestamp.now(tz="UTC")
+        if self.feature_snapshot is None:
+            self.feature_snapshot = load_feature_snapshot(
+                PROCESSED_DIR / "serving", decision_at=decision.to_pydatetime()
+            )
+        if (
+            pd.to_datetime(self.feature_snapshot.manifest["observed_at"], utc=True)
+            > decision
+        ):
+            raise ValueError("Feature snapshot not available at the decision time")
+        self._team_df = self.feature_snapshot.read("teams")
+        self._player_df = self.feature_snapshot.read("players")
+        self._decision_at = decision
+        self._as_of = pd.to_datetime(
+            cast("Any", self.as_of_date), errors="coerce", utc=True
+        )
+        if pd.isna(self._as_of):
+            self._as_of = decision
+        if getattr(self._as_of, "tzinfo", None) is not None:
+            self._as_of = self._as_of.tz_convert(None)
+
     # ── lookups ──────────────────────────────────────────────────────────── #
 
     def _at_or_before_as_of(self, df: pd.DataFrame) -> pd.DataFrame:
         as_of = getattr(self, "_as_of", None)
         if "date" not in df or as_of is None:
             return df
-        dates = pd.to_datetime(df["date"], errors="coerce")
-        if getattr(dates.dt, "tz", None) is not None:
-            dates = dates.dt.tz_convert(None)
-        return df.loc[dates.dt.normalize() <= as_of]
+        column = "state_available_at" if "state_available_at" in df else "date"
+        dates = pd.to_datetime(df[column], errors="coerce", utc=True)
+        cutoff = pd.to_datetime(as_of, utc=True)
+        decision = getattr(self, "_decision_at", None)
+        if decision is not None:
+            cutoff = min(cutoff, decision)
+        return df.loc[dates <= cutoff]
 
     def _lookup_team_row(self, team_name: str) -> pd.Series:
         known_names = self._team_df["teamname"].dropna().astype(str).unique().tolist()
@@ -276,11 +259,7 @@ class Team:
         return out
 
     def _get_last_roster(self, team_name: str) -> dict[str, str]:
-        try:
-            return self._last_roster_from(self._player_df, team_name)
-        except ValueError:
-            history = _read_roster_history_cached(str(PROCESSED_PLAYERS))
-            return self._last_roster_from(history, team_name)
+        return self._last_roster_from(self._player_df, team_name)
 
     def _lookup_players(self, roster: dict[str, str | None]) -> pd.DataFrame:
         # expect fully-populated roster already validated

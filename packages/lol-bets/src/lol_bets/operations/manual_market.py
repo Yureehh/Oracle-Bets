@@ -48,6 +48,10 @@ from lol_bets.operations.market_actions import (
     evaluate_daily_market_actions,
     price_manual_lines,
 )
+from lol_bets.operations.market_capture import (
+    capture_checklist,
+    required_market_capture,
+)
 from lol_bets.operations.market_strategies import rank_market_decisions
 
 if TYPE_CHECKING:
@@ -93,6 +97,8 @@ class ManualMarketReviewResult:
     ignored_links: tuple[dict[str, str], ...] = ()
     discord_message: str = ""
     market_ids: tuple[str, ...] = ()
+    required_market_capture: tuple[dict[str, str], ...] = ()
+    cohort_status: str = "unregistered"
 
     @property
     def ok(self) -> bool:
@@ -111,6 +117,9 @@ class ManualMarketReviewResult:
             "ignored_links": list(self.ignored_links),
             "discord_message": self.discord_message,
             "market_ids": list(self.market_ids),
+            "capture_fixture_count": self.fixtures,
+            "required_market_capture": list(self.required_market_capture),
+            "cohort_status": self.cohort_status,
         }
 
 
@@ -126,11 +135,12 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
     store: EvidenceStore | None = None,
     now: dt.datetime | None = None,
     review_key: str | None = None,
+    clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC),
 ) -> ManualMarketReviewResult:
     """Review one fixture from explicit owner-selected provider URLs."""
     started = time.perf_counter()
     normalized_urls = normalize_market_urls(urls)
-    reviewed_at = _as_utc(now or dt.datetime.now(dt.UTC))
+    reviewed_at = _as_utc(now or clock())
     run_key = review_key or _manual_run_key(normalized_urls, reviewed_at=reviewed_at)
     tracked_run_id = _begin_review(store, run_key, normalized_urls, reviewed_at)
     adapter = gamma or PolymarketGammaAdapter()
@@ -273,12 +283,23 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
     prediction_details: list[dict[str, Any]] = []
     inference_started = time.perf_counter()
     if not schedule.empty:
-        prediction_details = _build_prediction_snapshots(
-            schedule,
-            cfg=DailyWorkflowConfig(dry_run=True),
-            predictor_factory=predictor_factory,
-            snapshot_sink=snapshots,
-        )
+        try:
+            prediction_details = _build_prediction_snapshots(
+                schedule,
+                cfg=DailyWorkflowConfig(dry_run=True),
+                predictor_factory=predictor_factory,
+                snapshot_sink=snapshots,
+            )
+        except Exception as exc:
+            logger.exception("Market review inference failed")
+            snapshots.clear()
+            failures.append(
+                {
+                    "url": ", ".join(normalized_urls),
+                    "reason": "inference_failed",
+                    "detail": str(exc),
+                }
+            )
     model_inference_seconds = time.perf_counter() - inference_started
 
     provider_started = time.perf_counter()
@@ -297,7 +318,7 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
                 model_healthy=True,
                 strategy_readiness=readiness,
                 run_key=run_key,
-                clock=lambda: reviewed_at,
+                clock=clock,
                 rank=False,
             ).actions
         )
@@ -308,7 +329,7 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
                 fixture=schedule.iloc[0],
                 snapshot_rows=snapshots,
                 lines=manual_lines,
-                reviewed_at=reviewed_at,
+                reviewed_at=_as_utc(clock()),
                 strategy_readiness=readiness,
                 rank=False,
             )
@@ -321,6 +342,7 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         evidence_run_id = record_daily_evidence(
             store=evidence_store,
             scheduled_for=reviewed_at,
+            observed_at=_as_utc(clock()),
             effective_config={"market_urls": list(normalized_urls)},
             schedule=schedule,
             snapshot_rows=snapshots,
@@ -336,8 +358,16 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
             run_key=run_key,
         )
 
+    capture = [
+        cell
+        for row in rows
+        for cell in required_market_capture(
+            str(row["match_key"]), actions=market_actions
+        )
+    ]
     candidate_refs = _candidate_refs(evidence_store, evidence_run_id)
     comparisons = provider_comparisons(market_actions)
+    cohort_status = _review_cohort_status(evidence_store, rows, reviewed_at)
     summary = discord_review_summary(
         schedule,
         snapshots,
@@ -346,7 +376,10 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         failures=failures,
         unsupported_contracts=_unsupported_contract_count(market_actions),
         warnings=_review_warnings(market_actions),
+        capture=capture,
     )
+    if rows:
+        summary += f"\n**Prospective cohort:** {cohort_status}"
     paths = _write_report(
         report_dir=report_dir or REPORTS_DIR / "market_reviews",
         reviewed_at=reviewed_at,
@@ -361,6 +394,8 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         comparisons=comparisons,
         evidence_run_id=evidence_run_id,
         bet_references=candidate_refs,
+        capture=capture,
+        cohort_status=cohort_status,
         timings={
             "fixture_resolution_seconds": fixture_resolution_seconds,
             "model_inference_seconds": model_inference_seconds,
@@ -401,6 +436,8 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         ignored_links=tuple(ignored_links),
         discord_message=summary,
         market_ids=tuple(item["market_id"] for item in candidate_refs),
+        required_market_capture=tuple(capture),
+        cohort_status=cohort_status,
     )
 
 
@@ -592,6 +629,7 @@ def discord_review_summary(
     failures: Sequence[dict[str, str]] = (),
     unsupported_contracts: int = 0,
     warnings: Sequence[str] = (),
+    capture: Sequence[dict[str, str]] = (),
 ) -> str:
     """Build one compact owner review without proposal or recovery boilerplate."""
     if schedule.empty:
@@ -606,7 +644,7 @@ def discord_review_summary(
         lines.extend(f"• Failed: {item['detail']}" for item in failures)
         return "\n".join(lines)
 
-    lines: list[str] = []
+    lines: list[str] = [capture_checklist(capture), ""] if capture else []
     for _, fixture in schedule.iterrows():
         fixture_key = str(fixture.get("match_key") or "")
         fixture_rows = [
@@ -709,7 +747,7 @@ def provider_comparisons(
     actions: Sequence[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Group only semantically identical provider outcomes and select best odds."""
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for action in actions:
         odds = action.get("decimal_odds")
         if odds is None or action.get("hard_blocks"):
@@ -717,11 +755,21 @@ def provider_comparisons(
         semantic_fingerprint = str(action.get("semantic_fingerprint") or "")
         if not semantic_fingerprint:
             continue
-        key = (str(action.get("fixture_key") or ""), semantic_fingerprint)
+        semantic = action.get("semantic_key") or {}
+        provider_scope = (
+            ""
+            if semantic.get("terms_verified") is True
+            else str(action.get("provider") or "polymarket")
+        )
+        key = (
+            str(action.get("fixture_key") or ""),
+            semantic_fingerprint,
+            provider_scope,
+        )
         grouped.setdefault(key, []).append(action)
 
     output: list[dict[str, Any]] = []
-    for (fixture_key, semantic_fingerprint), rows in grouped.items():
+    for (fixture_key, semantic_fingerprint, _), rows in grouped.items():
         best = max(rows, key=lambda row: float(row["decimal_odds"]))
         probability = best.get("probability")
         odds = float(best["decimal_odds"])
@@ -764,6 +812,29 @@ def provider_comparisons(
     return output
 
 
+def _review_cohort_status(
+    store: EvidenceStore, rows: Sequence[dict[str, Any]], reviewed_at: dt.datetime
+) -> str:
+    if not rows:
+        return "no_fixture"
+    enrolled = set()
+    for event in store.list(EvidenceTable.RUN_EVENTS):
+        if event["event_type"] != "cohort_enrollment":
+            continue
+        if _as_utc(dt.datetime.fromisoformat(str(event["event_at"]))) > reviewed_at:
+            continue
+        payload = json.loads(event["payload_json"])
+        enrolled.add(str(payload.get("sporting_event_key") or ""))
+    return (
+        "enrolled_before_review"
+        if all(
+            str(row.get("serie_id") or row.get("match_key") or "") in enrolled
+            for row in rows
+        )
+        else "unregistered_research_only"
+    )
+
+
 def _write_report(
     *,
     report_dir: Path,
@@ -780,6 +851,8 @@ def _write_report(
     evidence_run_id: str | None,
     bet_references: Sequence[dict[str, str]],
     timings: dict[str, float],
+    capture: Sequence[dict[str, str]],
+    cohort_status: str,
 ) -> tuple[Path, Path]:
     persistence_started = time.perf_counter()
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -788,8 +861,11 @@ def _write_report(
     markdown_path = report_dir / f"{stem}.md"
     quotes, unsupported_contracts = _compact_report_actions(market_actions)
     payload = {
-        "schema_version": 5,
-        "workflow": "owner_market_review_v5",
+        "schema_version": 6,
+        "workflow": "owner_market_review_v6",
+        "capture_fixture_count": len(schedule),
+        "required_market_capture": list(capture),
+        "cohort_status": cohort_status,
         "generated_at": reviewed_at.isoformat(),
         "evidence_run_id": evidence_run_id,
         "input_links": list(urls),
@@ -870,6 +946,20 @@ def _write_report(
             warnings=_review_warnings(market_actions),
         ).splitlines()
     )
+    if capture:
+        lines.extend(
+            [
+                "",
+                "## Required market capture",
+                "",
+                "| Provider | Target | State | Reason |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
+        lines.extend(
+            f"| {cell['provider']} | {cell['target']} | {cell['state']} | {cell['reason'].replace('|', '/')} |"
+            for cell in capture
+        )
     if comparisons:
         lines.extend(
             [
@@ -908,6 +998,7 @@ def _write_report(
             "## Evidence",
             "",
             f"- Review ID: `{evidence_run_id or 'none'}`",
+            f"- Prospective cohort: {cohort_status}",
             f"- Supported comparisons: {len(comparisons)}",
             "- Polymarket access: read-only; no trading surface exists.",
         ]
@@ -1224,6 +1315,7 @@ def _compact_action(action: dict[str, Any]) -> dict[str, Any]:
             key: observation.get(key)
             for key in (
                 "observed_at",
+                "provider_timestamp",
                 "book_hash",
                 "decimal_odds",
                 "minimum_order_size",

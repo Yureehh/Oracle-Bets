@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 from dotenv import load_dotenv
@@ -87,11 +89,18 @@ from lol_bets.data_generation.ingestion.quality import (
     write_quality_report,
 )
 from lol_bets.data_generation.ingestion.source import source_snapshot_id
+from lol_bets.inference.snapshots import publish_feature_snapshot
+from lol_bets.operations.training_inputs import (
+    MAP_INPUT_MANIFEST,
+    code_fingerprint,
+    current_source,
+    file_evidence,
+    publish_generation,
+)
 from lol_bets.prediction_models.feature_contract import default_feature_registry
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 # ───────────────────────────────  env / logging  ──────────────────────────────
 load_dotenv()
@@ -161,6 +170,10 @@ class DataGenerator:
 
     team_data: pd.DataFrame = field(default_factory=pd.DataFrame, init=False)
     player_data: pd.DataFrame = field(default_factory=pd.DataFrame, init=False)
+    source_manifest: dict = field(default_factory=dict, init=False)
+    generation_code: str = field(default="", init=False)
+    training_file_evidence: dict = field(default_factory=dict, init=False)
+    training_generation_id: str = field(default="", init=False)
 
     # ───────────────────────  initialisation  ────────────────────────────
     def __post_init__(self) -> None:
@@ -171,6 +184,9 @@ class DataGenerator:
 
     # ───────────────────────  ingest  ────────────────────────────────────
     def ingest_data(self) -> pd.DataFrame:
+        self.generation_code = code_fingerprint()
+        self.training_file_evidence.clear()
+        self.training_generation_id = ""
         years = _years_to_process(self.history_mode)
         _dbl(f"Ingesting seasons: {years}")
         try:
@@ -201,7 +217,7 @@ class DataGenerator:
                 f"{len(raw):,} rows: +{manifest.added_rows:,}, "
                 f"updated {manifest.updated_rows:,}."
             )
-            publish_history_snapshot(
+            history_id = publish_history_snapshot(
                 raw,
                 manifest,
                 raw_path=RAW_DATA,
@@ -209,6 +225,11 @@ class DataGenerator:
                 generations_dir=RAW_GENERATIONS_DIR,
                 pointer_path=RAW_CURRENT_POINTER,
             )
+            self.source_manifest = current_source(RAW_CURRENT_POINTER)
+            if self.source_manifest["snapshot_id"] != history_id:
+                raise DataGeneratorError(
+                    "Raw history changed during ingestion; rerun generation."
+                )
             return raw
         except (OraclesElixirError, SourceHistoryError) as exc:
             msg = f"Oracle Elixir ingest failed: {exc}"
@@ -313,6 +334,10 @@ class DataGenerator:
         safe_store_df_as_parquet(
             self.player_data, player_path, [logger, data_pipeline_logger]
         )
+        if team_path == INTERIM_TEAM_DATA:
+            self.training_file_evidence.update(
+                file_evidence({"interim_teams": INTERIM_TEAM_DATA})
+            )
         _dbl(log_msg)
 
     # ───────────────────────  training / flattened  ──────────────────────
@@ -367,41 +392,70 @@ class DataGenerator:
             dest = PROCESSED_DIR / f"{entity}s" / f"training_{entity}s.parquet"
 
         safe_store_df_as_parquet(out, dest, [logger, data_pipeline_logger])
+        if kind == "training":
+            self.training_file_evidence.update(file_evidence({f"map_{entity}s": dest}))
         _dbl(f"{kind.title()} {entity} saved: {len(out)} rows.")
 
     def extract_training_data(self) -> None:
         self._extract(self.team_data, TRAINING_TEAM_CONFIG, "team", "training")
         self._extract(self.player_data, TRAINING_PLAYER_CONFIG, "player", "training")
 
+        generation = publish_generation(
+            MAP_INPUT_MANIFEST,
+            {
+                key: Path(item["path"])
+                for key, item in self.training_file_evidence.items()
+            },
+            source=self.source_manifest,
+            code=self.generation_code,
+            expected_files=self.training_file_evidence,
+        )
+        self.training_generation_id = generation["generation_id"]
+
     def flatten_both_inference_data(self) -> None:
         self._extract(self.team_data, FLATTENED_TEAM_CONFIG, "team", "flattened")
         self._extract(self.player_data, FLATTENED_PLAYER_CONFIG, "player", "flattened")
+        publish_feature_snapshot(
+            self.team_data,
+            self.player_data,
+            team_columns=json_loader(FLATTENED_TEAM_CONFIG)["flattened_cols"],
+            player_columns=json_loader(FLATTENED_PLAYER_CONFIG)["flattened_cols"],
+            source_manifest=self.source_manifest,
+            code_sha256=self.generation_code,
+            training_generation_id=self.training_generation_id,
+            root=PROCESSED_DIR / "serving",
+        )
 
     # ───────────────────────  driver  ────────────────────────────────────
     def run(self) -> None:
-        start = dt.datetime.now()
+        start = time.perf_counter()
+        stage_wall = start
+        stage_cpu = time.process_time()
         _dbl("=== Data generation started ===")
 
-        def _timed(_: str) -> float:
-            return (dt.datetime.now() - start).total_seconds()
+        def _timed(label: str) -> None:
+            nonlocal stage_wall, stage_cpu
+            wall, cpu = time.perf_counter(), time.process_time()
+            _dbl(f"  {label}: wall={wall - stage_wall:.1f}s cpu={cpu - stage_cpu:.1f}s")
+            stage_wall, stage_cpu = wall, cpu
 
         raw = self.ingest_data()
-        _dbl(f"  [1/5] Ingestion: {_timed('ingest'):.1f}s")
+        _timed("[1/5] Ingestion")
 
         self.clean_and_store_data(raw)
-        _dbl(f"  [2/5] Cleaning: {_timed('clean'):.1f}s")
+        _timed("[2/5] Cleaning")
         del raw  # Free memory early
 
         self.enrich_datasets()
-        _dbl(f"  [3/5] Enrichment: {_timed('enrich'):.1f}s")
+        _timed("[3/5] Enrichment")
 
         self.extract_training_data()
-        _dbl(f"  [4/5] Training extraction: {_timed('train'):.1f}s")
+        _timed("[4/5] Training extraction")
 
         self.flatten_both_inference_data()
-        _dbl(f"  [5/5] Flattening: {_timed('flatten'):.1f}s")
+        _timed("[5/5] Flattening and snapshot publication")
 
-        elapsed = (dt.datetime.now() - start).total_seconds()
+        elapsed = time.perf_counter() - start
         _dbl(f"=== Data generation finished in {elapsed:.1f}s ===")
 
 
