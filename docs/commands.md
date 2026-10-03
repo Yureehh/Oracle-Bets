@@ -3,7 +3,7 @@
 This is the canonical usage guide. Run commands from the repository root:
 
 ```bash
-cd /Users/yureeh/dev/oracle_bets
+cd Oracle-Bets
 source .venv/bin/activate
 ```
 
@@ -17,7 +17,7 @@ never contacts Thunderpick automatically, and never places a bet.
 1. Keep one Gateway process running.
 2. Run `daily lol` once after the public source has updated. It refreshes
    history/features, validates artifacts, fetches the actionable schedule,
-   evaluates the fixed-parameter retraining trigger, and writes one compact
+   checks model health, and writes one compact
    maintenance report. It never discovers markets, predicts fixtures, opens
    bets, settles bets, or invokes an LLM.
 3. Open `/oracle` and inspect **Schedule**.
@@ -79,7 +79,8 @@ launchctl bootstrap gui/$(id -u) \
    `target | selection | decimal odds | line | game number`.
 5. Read the compact comparison and attached Markdown report.
 6. Use **Record Bet**, choose paper mode, and confirm the actual accepted odds,
-   bankroll, deterministic lane, and frozen flat/full/half/quarter-Kelly paths.
+   bankroll, deterministic lane, and capped fractional-Kelly proposal. Flat and
+   alternative Kelly paths are diagnostic comparisons only.
 7. Review the confirmation screen. Real mode only records a bet already placed
    manually outside Oracle Bets; it is not recommendation-enabled during the
    paper epoch.
@@ -189,6 +190,8 @@ These are CLI-only operations:
 | `lol build-series` | Reconstruct BO1/3/5 direct-series rows. |
 | `lol train` | Retrain with reviewed fixed parameters. Never runs Optuna. |
 | `lol retune` | Explicit isolated Optuna research. Never auto-promotes. |
+| `lol refit-research` | Refit research-only models from one completed independent study per target; never promotes weights or parameters. |
+| `lol replay-features` | Compare sealed candidate features with the historical serving path; retrospective parity does not establish prior source availability. |
 | `lol research` | Run separate target studies; add `--include-next-map` only after OOF close-series labels exist. |
 | `lol review-tuning` | Review one tuning run on sealed evidence. |
 | `lol promote-tuning` | Promote reviewed parameter files, not model weights. |
@@ -239,18 +242,22 @@ launchctl bootout gui/$(id -u) \
 
 ## Daily and Discord
 
-`daily lol` handles data refresh, validation, schedule, optional fixed-parameter
-retraining, and one daily report pair. It does not discover markets, create
+`daily lol` handles data refresh, validation, schedule, champion health, and one
+daily report pair. It does not discover markets, create
 proposals, record bets, or settle bets.
 
 ```bash
 uv run oracle-bets daily lol --dry-run
-uv run oracle-bets daily lol --skip-retrain
+uv run oracle-bets daily lol
 ```
 
 `--dry-run` performs read-only checks and writes only its one reviewable report
-pair. `--skip-retrain` still refreshes/validates data and schedule but suppresses
-the fixed-parameter training trigger. Never use daily for Optuna.
+pair. Daily refreshes data and schedule, validates them, and checks champion health.
+Training is explicit through `lol research` and `lol train`; daily never trains.
+Each maintenance invocation refreshes and recomputes artifacts. A previous
+same-day success does not prove that sources, transforms, or output files are
+unchanged. Pipeline logs report wall and process CPU time separately for each
+stage; use an awake run before attributing elapsed time to slow computation.
 
 Public commands are `discord doctor` and `discord run`. The first is diagnostic;
 `--live` adds read-only Discord API checks. The second starts the owner-only
@@ -305,22 +312,15 @@ uv run oracle-bets lol sync-identities
 uv run oracle-bets lol validate-data
 uv run oracle-bets lol build-series
 
-# Isolated research/Optuna: never promotes automatically.
-uv run oracle-bets lol research --targets all --include-next-map
+# Isolated research/Optuna: one study for each supported target.
+uv run oracle-bets lol research --targets all
 
-# The command prints one RUN_ID per target. Review both winner targets.
-uv run oracle-bets lol review-tuning <SERIES_RUN_ID> --format json
-uv run oracle-bets lol review-tuning <NEXT_MAP_RUN_ID> --format json
+# Use the five independent RUN_IDs printed by that command.
+uv run oracle-bets lol refit-research \
+  <MAP_RUN_ID> <SERIES_RUN_ID> <LENGTH_RUN_ID> <KILLS_RUN_ID> <TOWERS_RUN_ID>
 
-# Promote only reviewed/accepted winner runs and inspected map/prop runs.
-uv run oracle-bets lol promote-tuning <TARGET_RUN_ID>
-
-# One fixed-parameter serving bundle from reviewed parameters.
-uv run oracle-bets lol train --targets all --feature-set compact
-uv run oracle-bets model list --format json
-uv run oracle-bets model review <CANDIDATE_ID> --format json
-uv run oracle-bets model promote <CANDIDATE_ID> \
-  --reason "fresh epoch; structural and sealed evidence gates passed"
+# Inspect research reports, feature replay, and separate review gates before
+# any parameter or model promotion. A research refit never activates weights.
 
 uv run oracle-bets lol validate-winner-model
 uv run oracle-bets lol validate-market-strategies
@@ -330,8 +330,8 @@ uv run oracle-bets discord doctor --live
 uv run oracle-bets discord run
 ```
 
-`lol research --targets all --include-next-map` already performs one isolated
-Optuna study per target. Do not follow it with `retune --targets all`; `retune`
+`lol research --targets all` already performs one isolated Optuna study per
+supported target. Do not follow it with `retune --targets all`; `retune`
 is for rerunning one explicitly named target, such as
 `--targets series_winner`.
 

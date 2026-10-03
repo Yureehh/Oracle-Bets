@@ -4,7 +4,8 @@ version = "1.0.0"
 description = "Esports analytics betting suite"
 authors = [{ name = "yureeh", email = "yureefabbri@gmail.com" }]
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 
 dependencies = [
@@ -177,6 +178,7 @@ docstring-code-line-length = "dynamic"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 filterwarnings = [
   "ignore:The set_(bad|over|under) function will be deprecated:PendingDeprecationWarning:shap\\.plots\\.colors\\._colors",
 ]

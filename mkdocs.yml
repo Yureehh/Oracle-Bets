@@ -24,6 +24,7 @@ nav:
   - Home: index.md
   - System: system.md
   - Commands: commands.md
+  - Pipeline status: pipeline-status.md
   - Roadmap: roadmap.md
 
 markdown_extensions:

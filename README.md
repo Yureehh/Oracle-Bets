@@ -11,8 +11,10 @@ targets. The direct Winner V2 model is symmetric, calibrated, and compared with
 a rating-only baseline. The owner submits exact Polymarket/Thunderpick links;
 Polymarket books are read publicly while Thunderpick lines are entered manually.
 One deterministic policy labels comparable outcomes `recommended`,
-`exploration`, or `not_comparable`, records every reason, and freezes flat 1u,
-full-, half-, and quarter-Kelly paths in one paper ticket. An optional LLM may
+`exploration`, or `not_comparable` and records every reason. Positive-edge paper
+proposals use provisional quarter-Kelly sizing with ticket, fixture, and total
+exposure caps; other fractions are research comparisons, not active policies.
+An optional LLM may
 later explain stored decisions but can never create or alter them.
 
 There is no automated betting, wallet, signing, private-key, order-submission,
@@ -21,7 +23,8 @@ or fund-movement code.
 ## Install
 
 ```bash
-cd /Users/yureeh/dev/oracle_bets
+git clone https://github.com/Yureehh/Oracle-Bets.git
+cd Oracle-Bets
 uv sync --extra dev --extra discord-bot --extra ai-review
 source .venv/bin/activate
 ```
@@ -72,22 +75,23 @@ first row contains Review Markets, Record Bet, Open Bets, and Closed Bets; the
 second contains Schedule, Performance, and Health. Every paper or real entry is
 owner-confirmed and settlement is manual.
 
+The [pipeline status](docs/pipeline-status.md) distinguishes implemented code,
+local generated artifacts, and live paper evidence. A healthy model or a passed
+backtest does not establish a profitable betting strategy.
+
 ## Explicit research retuning
 
 ```bash
-uv run oracle-bets lol retune \
-  --targets series_winner --feature-set full
-uv run oracle-bets lol review-tuning <series-run-id> --format json
-uv run oracle-bets lol promote-tuning <series-run-id>
-uv run oracle-bets lol train --targets all --feature-set full
+uv run oracle-bets lol research --targets all
+uv run oracle-bets lol refit-research \
+  <MAP_RUN_ID> <SERIES_RUN_ID> <LENGTH_RUN_ID> <KILLS_RUN_ID> <TOWERS_RUN_ID>
 ```
 
-Winner tuning remains an explicit research action. Continue only when the
-series review is `approved` or `approved_with_warnings` and every hard safety
-gate passes. Warnings remain recorded for later evidence review. Routine
-training refits with reviewed parameters and never runs Optuna. The experimental
-next-map model is trained only when named explicitly and is not required by the
-normal bundle.
+These commands require a clean, reviewed Git worktree. `research` runs one
+independent Optuna study per supported target; `refit-research` validates the
+five study inputs and trains a research-only bundle. Neither promotes a model
+or parameters. Serving changes require separate replay, review, and promotion
+gates. The experimental next-map model is not part of the normal bundle.
 
 ## Repository layout
 

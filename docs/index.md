@@ -22,3 +22,5 @@ the canonical CLI and Discord guide from setup through review, confirmation,
 settlement, and performance. Read the [system design and operating
 decisions](system.md) for why the pipeline works this way, and check the
 [roadmap](roadmap.md) before changing strategy or promoting a model.
+The [pipeline status](pipeline-status.md) separates verified code and local
+artifacts from the live evidence still needed before any profit claim.
