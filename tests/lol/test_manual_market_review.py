@@ -90,6 +90,13 @@ class _Gamma:
         return _event()
 
 
+@pytest.fixture(autouse=True)
+def isolated_evidence_database(tmp_path, monkeypatch):
+    path = tmp_path / "evidence.db"
+    EvidenceStore(path).initialize_schema()
+    monkeypatch.setattr(manual_market, "EVIDENCE_DB", path)
+
+
 def test_manual_review_uses_exact_event_and_writes_one_report_pair(
     tmp_path, monkeypatch
 ):
