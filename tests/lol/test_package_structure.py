@@ -1,6 +1,5 @@
+import tomllib
 from pathlib import Path
-
-from setuptools import find_namespace_packages
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -10,15 +9,15 @@ def test_legacy_src_tree_removed():
 
 
 def test_package_discovery_excludes_legacy_src():
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
     package_roots = [
-        ROOT / "packages/oracle-bets-core/src",
-        ROOT / "packages/lol-bets/src",
-        ROOT / "packages/oracle-bets-discord/src",
+        ROOT / path
+        for path in config["tool"]["setuptools"]["packages"]["find"]["where"]
     ]
     packages = {
-        package
+        ".".join(package.parent.relative_to(root).parts)
         for root in package_roots
-        for package in find_namespace_packages(str(root))
+        for package in root.rglob("__init__.py")
     }
 
     assert "oracle_bets_core" in packages
