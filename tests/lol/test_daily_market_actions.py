@@ -6,6 +6,7 @@ import pytest
 from lol_bets.daily import build_prediction_snapshot_rows
 from lol_bets.operations import market_actions
 from lol_bets.operations.market_actions import evaluate_daily_market_actions
+from lol_bets.operations.market_capture import required_market_capture
 from oracle_bets_core.markets import OrderBook, PolymarketGammaAdapter
 from oracle_bets_core.pd import pd
 
@@ -145,6 +146,14 @@ def test_exact_event_markets_use_one_snapshot_and_rank_correlated_contracts():
     )
 
     quoted = [row for row in result.actions if row.get("decimal_odds")]
+    assert all(row["provider"] == "polymarket" for row in quoted)
+    coverage = required_market_capture("pandascore:1", actions=result.actions)
+    assert any(
+        row["provider"] == "polymarket"
+        and row["target"] == "series_winner"
+        and row["state"] == "captured"
+        for row in coverage
+    )
     assert books.calls == len({row["token_id"] for row in quoted})
     assert result.reviews
     assert all(row["state"] == "exploration" for row in quoted)

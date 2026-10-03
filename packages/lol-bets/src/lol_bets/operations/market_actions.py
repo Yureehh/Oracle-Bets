@@ -1188,6 +1188,7 @@ def _action_payload(
         else None
     )
     payload = asdict(item) | {
+        "provider": "polymarket",
         "state": state,
         "reason": reason,
         "hard_blocks": list(dict.fromkeys(hard_blocks)),
