@@ -123,6 +123,18 @@ def _add_lol_commands(sub) -> None:
         default="auto",
     )
     retune.add_argument("--max-features", type=int, default=120)
+    refit_research = lol_sub.add_parser(
+        "refit-research",
+        help="Refit research-only models from independent Optuna studies",
+    )
+    refit_research.add_argument("run_ids", nargs="+")
+    refit_research.add_argument("--targets", default="all")
+    replay_features = lol_sub.add_parser(
+        "replay-features",
+        help="Compare sealed training values with retrospective serving features",
+    )
+    replay_features.add_argument("candidate_id")
+    replay_features.add_argument("--samples", type=int, default=8)
     promote_tuning = lol_sub.add_parser(
         "promote-tuning",
         help="Promote one reviewed complete retuning run",
@@ -303,7 +315,7 @@ def _add_delivery_commands(sub) -> None:
     from oracle_bets_core.config import load_product_config
 
     product = load_product_config()
-    daily = sub.add_parser("daily", help="Daily report and retraining workflows")
+    daily = sub.add_parser("daily", help="Daily data maintenance and reports")
     daily_sub = daily.add_subparsers(dest="action", required=True)
     daily_lol = daily_sub.add_parser("lol", help="Run the daily LoL workflow")
     daily_lol.add_argument("--dry-run", action="store_true")
@@ -318,14 +330,6 @@ def _add_delivery_commands(sub) -> None:
         choices=["gateway", "off"],
         default=None,
     )
-    daily_lol.add_argument("--skip-retrain", action="store_true")
-    daily_lol.add_argument("--targets", default="all")
-    daily_lol.add_argument(
-        "--feature-set",
-        choices=["full", "compact", "selected"],
-        default="compact",
-    )
-    daily_lol.add_argument("--max-features", type=int, default=120)
     discord = sub.add_parser("discord", help="Discord delivery operations")
     discord_sub = discord.add_subparsers(dest="action", required=True)
     doctor = discord_sub.add_parser("doctor", help="Validate Discord configuration")
@@ -381,6 +385,8 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
         return _print_lol_source_check(args.format)
     if args.action == "source-refresh":
         return _refresh_lol_source(args.format)
+    if args.action == "replay-features":
+        return _replay_lol_features(args)
     if args.action in {"ingest", "reconcile-history"}:
         from lol_bets.data_generation.ingestion.history import HistoryRefreshMode
         from lol_bets.data_generation.ingestion.source import (
@@ -562,7 +568,7 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
                 f"Tuning review: {report['status']}\nReasons: {reason_text or 'none'}\n"
             )
         return 0 if report["status"] == "approved" else 2
-    if args.action in {"train", "retune", "research"}:
+    if args.action in {"train", "retune", "research", "refit-research"}:
         from lol_bets.data_generation.ingestion.source import (
             OracleSourceReadinessError,
             require_oracle_source_ready,
@@ -575,6 +581,14 @@ def _main_lol(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR09
             return 2
         if args.action == "research":
             _research_lol(args)
+        elif args.action == "refit-research":
+            from lol_bets.training import train_models
+
+            report_root = train_models(
+                targets=args.targets,
+                research_tuning_runs=tuple(args.run_ids),
+            )
+            sys.stdout.write(f"Research refit report: {report_root}\n")
         else:
             _train_lol(args)
         return 0
@@ -956,6 +970,41 @@ def _research_lol(args: argparse.Namespace) -> None:
         sys.stdout.write(f"{target}: {report}\n")
 
 
+def _replay_lol_features(args: argparse.Namespace) -> int:
+    import json
+    from datetime import UTC, datetime
+
+    from lol_bets.inference.serving_replay import replay_digest, replay_sealed_features
+    from lol_bets.inference.snapshots import load_feature_snapshot
+    from lol_bets.operations.training_inputs import (
+        SERIES_INPUT_MANIFEST,
+        load_training_inputs,
+    )
+
+    from oracle_bets_core.io_utils import atomic_write_text
+    from oracle_bets_core.paths import PROCESSED_DIR, REPORTS_DIR
+
+    inputs = load_training_inputs(series_manifest=SERIES_INPUT_MANIFEST)
+    snapshot = load_feature_snapshot(PROCESSED_DIR / "serving")
+    result = replay_sealed_features(
+        args.candidate_id,
+        inputs=inputs,
+        snapshot=snapshot,
+        sample_per_target=args.samples,
+    )
+    result["digest"] = replay_digest(result)
+    report = (
+        REPORTS_DIR
+        / "training"
+        / "replay"
+        / f"{args.candidate_id}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+    )
+    report.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(report, json.dumps(result, sort_keys=True, indent=2) + "\n")
+    sys.stdout.write(f"Feature replay report: {report}\n")
+    return 0 if result["value_parity_passed"] else 2
+
+
 def _main_model(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915
     import json
     from datetime import UTC, datetime
@@ -1282,10 +1331,6 @@ def _main_daily(args: argparse.Namespace) -> int:
             leagues=args.leagues,
             delivery_mode=args.discord_delivery_mode,
             dry_run=args.dry_run,
-            skip_retrain=args.skip_retrain,
-            targets=args.targets,
-            feature_set=args.feature_set,
-            max_features=args.max_features,
         )
     )
     sys.stdout.write(f"Daily LoL workflow: {'OK' if result.ok else 'FAILED'}\n")

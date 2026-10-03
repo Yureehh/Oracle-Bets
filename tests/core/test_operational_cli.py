@@ -3,6 +3,7 @@ import json
 import re
 import sqlite3
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,22 @@ from oracle_bets_core.pd import pd
 NOW = datetime(2026, 7, 27, 8, tzinfo=UTC)
 BEST_OF_THREE = 3
 BLOCKED_EXIT = 2
+
+
+@pytest.fixture(autouse=True)
+def _isolate_operation_locks(tmp_path, monkeypatch):
+    from oracle_bets_core import maintenance
+
+    monkeypatch.setattr(
+        maintenance,
+        "maintenance_lock",
+        partial(maintenance.maintenance_lock, root=tmp_path),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "operation_lock",
+        partial(maintenance.operation_lock, root=tmp_path),
+    )
 
 
 def test_parser_exposes_required_operational_commands():
@@ -440,3 +457,24 @@ def test_system_health_and_monthly_audit_cli_record_reports(tmp_path, capsys):
     assert (audit_dir / "monthly-2026-07.json").is_file()
     assert (audit_dir / "monthly-2026-07.md").is_file()
     assert "Owner review and sign-off are still required" in capsys.readouterr().out
+
+
+def test_daily_refuses_concurrent_pipeline_without_removing_lock(tmp_path, capsys):
+    from oracle_bets_core import maintenance
+
+    path = maintenance.operation_lock_path("pipeline", root=tmp_path)
+    with maintenance.operation_lock("pipeline"):
+        inode = path.stat().st_ino
+        owner = path.read_text()
+        assert main(["daily", "lol"]) == BLOCKED_EXIT
+        assert "already running" in capsys.readouterr().err
+        assert path.stat().st_ino == inode
+        assert path.read_text() == owner
+        with (
+            pytest.raises(maintenance.MaintenanceBusyError),
+            maintenance.operation_lock("pipeline"),
+        ):
+            pytest.fail("the first owner's lock was released")
+
+    with maintenance.operation_lock("pipeline"):
+        assert path.stat().st_ino == inode

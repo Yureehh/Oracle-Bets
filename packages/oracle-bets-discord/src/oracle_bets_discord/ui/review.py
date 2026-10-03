@@ -14,6 +14,10 @@ from lol_bets.operations.manual_market import (
     review_polymarket_events,
     thunderpick_fixture_options,
 )
+from lol_bets.operations.market_capture import (
+    capture_checklist,
+    required_market_capture,
+)
 
 from oracle_bets_discord.formatting import DELIVERY_TARGET, sanitize_discord_text
 from oracle_bets_discord.ui.common import require_owner
@@ -79,8 +83,16 @@ def build_review_views(
             label="Selection", placeholder="Team or Over/Under"
         )
         odds = discord.ui.TextInput(label="Decimal odds", placeholder="1.90")
-        line = discord.ui.TextInput(label="Line (optional)", required=False)
-        game = discord.ui.TextInput(label="Game number (optional)", required=False)
+        line_game = discord.ui.TextInput(
+            label="Line | game number (optional)",
+            placeholder="25.5 | 1",
+            required=False,
+        )
+        terms = discord.ui.TextInput(
+            label="Settlement terms",
+            style=discord.TextStyle.paragraph,
+            placeholder="Copy the market's settlement, void and overtime rules",
+        )
 
         def __init__(self, setup: Any) -> None:
             super().__init__()
@@ -89,6 +101,13 @@ def build_review_views(
         async def on_submit(self, interaction: Any) -> None:
             if not await require_owner(interaction, owner_id):
                 return
+            line_game = str(self.line_game).split("|")
+            if len(line_game) > 2:  # noqa: PLR2004
+                await interaction.response.send_message(
+                    "Enter line | game number, for example 25.5 | 1.", ephemeral=True
+                )
+                return
+            line_game += [""] * (2 - len(line_game))
             try:
                 line = parse_manual_lines_text(
                     " | ".join(
@@ -96,8 +115,9 @@ def build_review_views(
                             str(self.target),
                             str(self.selection),
                             str(self.odds),
-                            str(self.line),
-                            str(self.game),
+                            *line_game,
+                            "",
+                            str(self.terms),
                         )
                     )
                 )[0]
@@ -106,11 +126,7 @@ def build_review_views(
                 return
             self.setup.manual_lines.append(line)
             await interaction.response.edit_message(
-                content=(
-                    "Thunderpick is manual-only. "
-                    f"**{len(self.setup.manual_lines)} line(s)** added. "
-                    "Add another or finish the review."
-                ),
+                content=self.setup.summary(),
                 view=self.setup,
             )
 
@@ -144,15 +160,31 @@ def build_review_views(
                         )
                         for row in fixtures[:25]
                     ],
-                    row=0,
+                    row=1,
                 )
 
                 async def choose_fixture(interaction: Any) -> None:
                     self.fixture_key = select.values[0]
-                    await interaction.response.defer()
+                    await interaction.response.edit_message(
+                        content=self.summary(), view=self
+                    )
 
                 select.callback = choose_fixture
                 self.add_item(select)
+
+        def summary(self) -> str:
+            coverage = required_market_capture(
+                self.fixture_key or "unselected",
+                actions=[
+                    row | {"provider": "thunderpick"} for row in self.manual_lines
+                ],
+            )
+            return (
+                "Thunderpick is manual-only. Select the fixture, add visible lines and settlement "
+                "terms, then finish the review. Missing targets remain recorded.\n"
+                f"**{len(self.manual_lines)} line(s)** entered; review pending.\n\n"
+                + capture_checklist(coverage)
+            )
 
         @discord.ui.button(
             label="Add Thunderpick line", style=discord.ButtonStyle.primary
@@ -216,12 +248,10 @@ def build_review_views(
                     fixtures = await asyncio.to_thread(
                         thunderpick_fixture_options, thunderpick_url
                     )
+                    setup = ThunderpickSetupView(urls, fixtures, self.review_key)
                     await interaction.edit_original_response(
-                        content=(
-                            "Thunderpick is manual-only. Select the fixture, add "
-                            "visible lines, then finish the review."
-                        ),
-                        view=ThunderpickSetupView(urls, fixtures, self.review_key),
+                        content=setup.summary(),
+                        view=setup,
                     )
                 except Exception:
                     logger.exception("Thunderpick fixture selection failed")
@@ -239,7 +269,7 @@ def build_review_views(
         lines = discord.ui.TextInput(
             label="One line per market",
             style=discord.TextStyle.paragraph,
-            placeholder="target | selection | odds | line | game",
+            placeholder="target | selection | odds | line | game | observed_at | terms",
         )
 
         def __init__(self, setup: Any) -> None:
@@ -266,7 +296,8 @@ def build_review_views(
             await interaction.response.edit_message(
                 content=(
                     f"Added **{len(parsed)}** line(s); "
-                    f"**{len(failures)}** row(s) rejected.{failure_text}"
+                    f"**{len(failures)}** row(s) rejected.{failure_text}\n\n"
+                    + self.setup.summary()
                 ),
                 view=self.setup,
             )

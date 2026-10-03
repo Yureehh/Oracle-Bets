@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from oracle_bets_core.evidence import EvidenceTable
 from oracle_bets_core.operations.bets import (
     BetEvidenceError,
+    paper_stake_limit,
     prepare_bet,
     preview_bet_result,
     record_bet,
-    record_bet_result,
+    record_closing_observation,
+    record_fixture_results,
     settle_bet,
+    show_bet,
 )
+from oracle_bets_core.operations.quotes import capture_paper_quote
 
 from oracle_bets_discord.ui.common import require_owner
 from oracle_bets_discord.ui.presentation import bet_pages
@@ -93,10 +98,61 @@ def build_bet_views(
 
             return callback
 
+        @discord.ui.button(label="Capture close", style=discord.ButtonStyle.primary)
+        async def capture_close(self, interaction: Any, _button: Any) -> None:
+            await interaction.response.send_modal(ClosingQuoteModal(self.bet_id))
+
+    class ClosingQuoteModal(discord.ui.Modal, title="Capture pre-start closing quote"):
+        odds = discord.ui.TextInput(label="Current net odds at original stake")
+        attestation = discord.ui.TextInput(
+            label="Rules, stake, costs checked: VERIFIED"
+        )
+        source = discord.ui.TextInput(label="Quote source reference")
+
+        def __init__(self, bet_id: str) -> None:
+            super().__init__()
+            self.bet_id = bet_id
+
+        async def on_submit(self, interaction: Any) -> None:
+            if not await require_owner(interaction, owner_id):
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                bet = await asyncio.to_thread(show_bet, store, self.bet_id)
+                quote = await asyncio.to_thread(
+                    capture_paper_quote,
+                    store,
+                    review_id=bet["review_id"],
+                    market_id=bet["market_candidate_id"],
+                    stake_amount=bet["stake_amount"],
+                    currency=bet["currency"],
+                    net_decimal_odds=str(self.odds),
+                    terms_attested=str(self.attestation).strip().upper() == "VERIFIED",
+                    actor_id=str(interaction.user.id),
+                )
+                await asyncio.to_thread(
+                    record_closing_observation,
+                    store,
+                    bet_id=self.bet_id,
+                    snapshot_id=quote["id"],
+                    source_reference=str(self.source),
+                    actor_id=str(interaction.user.id),
+                )
+            except BetEvidenceError as error:
+                await interaction.edit_original_response(
+                    content=str(error), view=SettlementView(self.bet_id)
+                )
+                return
+            await interaction.edit_original_response(
+                content="Closing quote captured. Record the result after the fixture finishes.",
+                view=SettlementView(self.bet_id),
+            )
+
     class BetConfirmationView(OwnerView):
-        def __init__(self, **entry: Any) -> None:
+        def __init__(self, *, ready: bool = True, **entry: Any) -> None:
             super().__init__(timeout=120)
             self.entry = entry
+            self.confirm.disabled = not ready
 
         @discord.ui.button(label="Confirm record", style=discord.ButtonStyle.success)
         async def confirm(self, interaction: Any, _button: Any) -> None:
@@ -108,7 +164,7 @@ def build_bet_views(
                     **self.entry,
                 )
             except BetEvidenceError as error:
-                await interaction.edit_original_response(content=str(error), view=None)
+                await interaction.edit_original_response(content=str(error), view=self)
                 return
             mode = str(self.entry["mode"])
             warning = (
@@ -128,11 +184,28 @@ def build_bet_views(
                 content="Bet record cancelled.", view=None
             )
 
-    class BetRecordModal(discord.ui.Modal, title="Record manually placed bet"):
-        accepted_odds = discord.ui.TextInput(label="Accepted decimal odds")
+        @discord.ui.button(label="Refresh quote", style=discord.ButtonStyle.primary)
+        async def refresh(self, interaction: Any, _button: Any) -> None:
+            await interaction.response.send_modal(
+                BetRecordModal(
+                    review_id=self.entry["review_id"],
+                    market_id=self.entry["market_id"],
+                    mode=self.entry["mode"],
+                    currency=self.entry["currency"],
+                    stake_percent=self.entry["stake_percent"],
+                )
+            )
+
+    class BetRecordModal(discord.ui.Modal, title="Capture quote / record real bet"):
+        accepted_odds = discord.ui.TextInput(label="Current net odds (after all costs)")
         bankroll = discord.ui.TextInput(label="Bankroll before bet")
         stake_amount = discord.ui.TextInput(
-            label="Stake amount (optional; must match strategy)", required=False
+            label="Stake amount quoted at these odds", required=True
+        )
+        attestation = discord.ui.TextInput(
+            label="Rules, stake, costs checked: VERIFIED",
+            placeholder="Paper: check source rules unchanged, live size and all costs.",
+            required=False,
         )
         reason = discord.ui.TextInput(
             label="Rationale", style=discord.TextStyle.paragraph
@@ -158,8 +231,7 @@ def build_bet_views(
             if not await require_owner(interaction, owner_id):
                 return
             await interaction.response.defer(ephemeral=True, thinking=True)
-            opened_at = datetime.now(UTC)
-            arguments = {
+            arguments: dict[str, Any] = {
                 "review_id": self.review_id,
                 "market_id": self.market_id,
                 "mode": self.mode,
@@ -170,14 +242,61 @@ def build_bet_views(
                 "accepted_odds": str(self.accepted_odds),
                 "reason": str(self.reason),
                 "actor_id": str(interaction.user.id),
-                "opened_at": opened_at,
                 "idempotency_key": f"discord-bet:{interaction.id}",
             }
             try:
+                bankroll = Decimal(str(self.bankroll))
+                amount = Decimal(str(self.stake_amount))
+                if (
+                    not bankroll.is_finite()
+                    or not amount.is_finite()
+                    or bankroll <= 0
+                    or amount <= 0
+                ):
+                    raise BetEvidenceError(  # noqa: TRY301
+                        "Bankroll and stake must be positive finite amounts."
+                    )
+                arguments["stake_percent"] = str(amount / bankroll * 100)
+                if self.mode == "paper":
+                    limit = await asyncio.to_thread(
+                        paper_stake_limit,
+                        store,
+                        market_id=self.market_id,
+                        currency=self.currency,
+                        bankroll_before=str(bankroll),
+                        accepted_odds=str(self.accepted_odds),
+                    )
+                    if amount > limit["allowed_stake_amount"]:
+                        raise BetEvidenceError(  # noqa: TRY301
+                            f"Current Kelly maximum: {limit['allowed_stake_amount']} {self.currency}. "
+                            "Recheck the provider quote at that stake or a smaller amount."
+                        )
+                    quote = await asyncio.to_thread(
+                        capture_paper_quote,
+                        store,
+                        review_id=self.review_id,
+                        market_id=self.market_id,
+                        stake_amount=amount,
+                        currency=self.currency,
+                        net_decimal_odds=str(self.accepted_odds),
+                        terms_attested=str(self.attestation).strip().upper()
+                        == "VERIFIED",
+                        actor_id=str(interaction.user.id),
+                    )
+                    arguments["accepted_snapshot_id"] = quote["id"]
+                    arguments["accepted_odds"] = quote["expected_decimal_odds"]
                 entry = await asyncio.to_thread(prepare_bet, store, **arguments)
-            except BetEvidenceError as error:
-                await interaction.edit_original_response(content=str(error))
+            except (BetEvidenceError, InvalidOperation) as error:
+                message = (
+                    str(error)
+                    if isinstance(error, BetEvidenceError)
+                    else "Enter valid bankroll and stake amounts."
+                )
+                await interaction.edit_original_response(
+                    content=message, view=BetConfirmationView(ready=False, **arguments)
+                )
                 return
+            arguments["accepted_snapshot_id"] = entry.get("accepted_snapshot_id")
             await interaction.edit_original_response(
                 content=bet_confirmation_text(entry),
                 view=BetConfirmationView(**arguments),
@@ -230,7 +349,7 @@ def build_bet_views(
                     discord.SelectOption(
                         label=value, value=value, default=value == "EUR"
                     )
-                    for value in ("EUR", "USD", "USDT", "UNIT")
+                    for value in ("EUR", "USD", "USDT", "PUSD", "UNIT")
                 ],
                 row=2,
             )
@@ -299,28 +418,14 @@ def build_bet_views(
         @discord.ui.button(label="Confirm results", style=discord.ButtonStyle.success)
         async def confirm(self, interaction: Any, _button: Any) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            event_ids = []
             try:
-                for item in self.resolved:
-                    await asyncio.to_thread(
-                        record_bet_result,
-                        store,
-                        bet_id=item["bet_id"],
-                        source_reference=self.source,
-                        winning_selection=item.get("winning_selection"),
-                        observed_value=item.get("observed_value"),
-                        actor_id=str(interaction.user.id),
-                    )
-                    event_ids.append(
-                        await asyncio.to_thread(
-                            settle_bet,
-                            store,
-                            bet_id=item["bet_id"],
-                            result=item["result"],
-                            source_reference=self.source,
-                            actor_id=str(interaction.user.id),
-                        )
-                    )
+                event_ids = await asyncio.to_thread(
+                    record_fixture_results,
+                    store,
+                    self.resolved,
+                    source_reference=self.source,
+                    actor_id=str(interaction.user.id),
+                )
             except BetEvidenceError as error:
                 await interaction.edit_original_response(content=str(error), view=None)
                 return
@@ -333,7 +438,7 @@ def build_bet_views(
         facts = discord.ui.TextInput(
             label="Result facts",
             style=discord.TextStyle.paragraph,
-            placeholder="series_winner=Team A\nmap1_kills=28",
+            placeholder="series_winner=Team A\nseries_maps=2\nmap1_kills=28",
         )
         source = discord.ui.TextInput(label="Result source reference")
 
@@ -406,7 +511,7 @@ def preview_fixture_results(
             "series_winner": "series_winner",
             "map_winner": f"map{game}_winner",
             "series_total_maps": "series_maps",
-            "series_handicap": "series_margin",
+            "series_handicap": "series_maps",
             "gamelength_mean": f"map{game}_length",
             "total_kills_mean": f"map{game}_kills",
             "total_towers_mean": f"map{game}_towers",
@@ -415,9 +520,46 @@ def preview_fixture_results(
             unresolved.append(row)
             continue
         winner_target = target in {"series_winner", "map_winner"}
+        observed_value = None if winner_target else facts[key]
+        if target == "series_handicap":
+            winner = facts.get("series_winner")
+            fixture = store.get(EvidenceTable.FIXTURES, str(row["fixture_id"]))
+            if not winner or fixture is None:
+                unresolved.append(row)
+                continue
+            team_names = {
+                str(team["canonical_name"]).casefold()
+                for identity_id in (
+                    fixture["team_a_identity_id"],
+                    fixture["team_b_identity_id"],
+                )
+                if (team := store.get(EvidenceTable.IDENTITIES, str(identity_id)))
+                is not None
+            }
+            if (
+                winner.casefold() not in team_names
+                or str(row["selection"]).casefold() not in team_names
+            ):
+                raise BetEvidenceError(
+                    "Handicap winner and selection must match the fixture teams."
+                )
+            try:
+                maps = int(facts[key])
+            except ValueError as error:
+                raise BetEvidenceError("Series maps must be an integer.") from error
+            best_of = int(fixture["best_of"])
+            winner_maps = best_of // 2 + 1
+            if not winner_maps <= maps <= best_of:
+                raise BetEvidenceError("Series maps fall outside the fixture format.")
+            margin = 2 * winner_maps - maps
+            observed_value = str(
+                margin
+                if str(row["selection"]).casefold() == winner.casefold()
+                else -margin
+            )
         arguments = {
             "winning_selection": facts[key] if winner_target else None,
-            "observed_value": None if winner_target else facts[key],
+            "observed_value": observed_value,
         }
         result = preview_bet_result(store, bet_id=str(row["id"]), **arguments)
         resolved.append(
@@ -444,10 +586,10 @@ def bet_confirmation_text(entry: dict[str, Any]) -> str:
     sizing_lines = "\n".join(
         f"> {label}: **{float(stake_units.get(key, 0)):.2f}u**"
         for key, label in (
+            ("balanced_kelly", "Balanced Kelly (capped)"),
             ("full_kelly", "Full Kelly"),
             ("half_kelly", "Half Kelly"),
             ("quarter_kelly", "Quarter Kelly"),
-            ("flat_1u", "Flat"),
         )
     )
     probability = payload.get("model_probability")

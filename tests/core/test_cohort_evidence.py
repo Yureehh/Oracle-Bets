@@ -48,7 +48,12 @@ def _cohort_store(tmp_path, fixture_count=10):
     return store
 
 
-def test_cohort_enrollment_precedes_forecasts_and_tracks_intention_to_treat(tmp_path):
+def test_cohort_enrollment_precedes_forecasts_and_tracks_intention_to_treat(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.bets._utc_now", lambda: ENROLLED_AT
+    )
     store = _cohort_store(tmp_path)
     fixtures = tuple(f"fixture-{number}" for number in range(10))
     cohort_id = enroll_strategy_cohort(
@@ -58,10 +63,38 @@ def test_cohort_enrollment_precedes_forecasts_and_tracks_intention_to_treat(tmp_
         fixture_ids=fixtures,
         cells=("series_winner|prematch|0.50-0.60",),
         policy_version="lol-market-policy-v1",
-        enrolled_at=ENROLLED_AT,
+    )
+    store.append(
+        EvidenceTable.RUNS,
+        {
+            "id": "review-1",
+            "run_type": "market_review",
+            "started_at": ENROLLED_AT,
+            "status": "completed",
+            "idempotency_key": "review-1",
+            "payload_json": {"fixture_ids": fixtures},
+        },
+    )
+    store.append(
+        EvidenceTable.MARKET_CANDIDATES,
+        {
+            "id": "series-a",
+            "run_id": "review-1",
+            "fixture_id": "fixture-0",
+            "provider": "thunderpick",
+            "provider_market_id": "series-a",
+            "provider_selection_id": "team-a",
+            "discovered_at": ENROLLED_AT,
+            "match_status": "matched",
+            "rejection_reason": None,
+            "idempotency_key": "series-a",
+            "payload_json": {"classification": "recommended"},
+        },
     )
     for fixture_id in fixtures[:9]:
-        record_cohort_stage(store, cohort_id, fixture_id, "reviewed")
+        record_cohort_stage(
+            store, cohort_id, fixture_id, "reviewed", payload={"review_id": "review-1"}
+        )
     record_cohort_stage(
         store,
         cohort_id,
@@ -82,7 +115,7 @@ def test_cohort_enrollment_precedes_forecasts_and_tracks_intention_to_treat(tmp_
         "fixture-0",
         "shadow_result",
         opportunity_id="series-a",
-        payload={"result": "win"},
+        payload={"result": "win", "source_reference": "official result"},
     )
 
     coverage = cohort_coverage(store, cohort_id)
@@ -103,11 +136,16 @@ def test_cohort_enrollment_precedes_forecasts_and_tracks_intention_to_treat(tmp_
         "fixture-0",
         "shadow_result",
         opportunity_id="series-a",
-        payload={"result": "win"},
+        payload={"result": "win", "source_reference": "official result"},
     )
 
 
-def test_cohort_enrollment_fails_after_any_prediction_or_price_evidence(tmp_path):
+def test_cohort_enrollment_fails_after_any_prediction_or_price_evidence(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.bets._utc_now", lambda: ENROLLED_AT
+    )
     store = _cohort_store(tmp_path, fixture_count=1)
     store.append(
         EvidenceTable.RUNS,
@@ -145,5 +183,55 @@ def test_cohort_enrollment_fails_after_any_prediction_or_price_evidence(tmp_path
             fixture_ids=("fixture-0",),
             cells=("series_winner|prematch|0.50-0.60",),
             policy_version="lol-market-policy-v1",
-            enrolled_at=ENROLLED_AT,
         )
+
+
+def test_cohort_rejects_wrong_week_or_past_fixture(tmp_path, monkeypatch):
+    store = _cohort_store(tmp_path, fixture_count=1)
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.bets._utc_now", lambda: ENROLLED_AT
+    )
+    with pytest.raises(BetEvidenceError, match="declared week"):
+        enroll_strategy_cohort(
+            store,
+            league="LPL",
+            week_start="2026-08-31",
+            fixture_ids=("fixture-0",),
+            cells=("series_winner",),
+            policy_version="v1",
+        )
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.bets._utc_now",
+        lambda: datetime(2026, 8, 26, tzinfo=UTC),
+    )
+    with pytest.raises(BetEvidenceError, match="after enrollment"):
+        enroll_strategy_cohort(
+            store,
+            league="LPL",
+            week_start="2026-08-24",
+            fixture_ids=("fixture-0",),
+            cells=("series_winner",),
+            policy_version="v1",
+        )
+
+
+def test_cohort_cannot_claim_unlinked_recommendation_result(tmp_path, monkeypatch):
+    store = _cohort_store(tmp_path, fixture_count=1)
+    monkeypatch.setattr(
+        "oracle_bets_core.operations.bets._utc_now", lambda: ENROLLED_AT
+    )
+    cohort_id = enroll_strategy_cohort(
+        store,
+        league="LPL",
+        week_start="2026-08-24",
+        fixture_ids=("fixture-0",),
+        cells=("series_winner",),
+        policy_version="v1",
+    )
+    with pytest.raises(BetEvidenceError, match="completed fixture review"):
+        record_cohort_stage(store, cohort_id, "fixture-0", "reviewed")
+    with pytest.raises(BetEvidenceError, match="market for this fixture"):
+        record_cohort_stage(
+            store, cohort_id, "fixture-0", "recommended", opportunity_id="invented"
+        )
+    assert cohort_coverage(store, cohort_id)["activation_evidence_complete"] is False

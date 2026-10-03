@@ -348,7 +348,9 @@ def _unified_performance_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     clv = [
         1 / float(row["settlement"]["closing_odds"]) - 1 / float(row["accepted_odds"])
         for row in ordered
-        if row["settlement"].get("closing_odds") is not None
+        if row["settlement"].get("clv_verified") is True
+        and row["settlement"].get("closing_odds") is not None
+        and float(row["settlement"]["closing_odds"]) > 1
     ]
     equity = peak = Decimal(0)
     maximum_drawdown = Decimal(0)

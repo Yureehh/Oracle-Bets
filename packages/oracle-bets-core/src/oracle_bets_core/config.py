@@ -82,12 +82,12 @@ class StrategyConfig:
         }
         _expect_keys(value, expected, "strategy")
         required = {
-            "policy_version": "lol-market-policy-v1",
+            "policy_version": "lol-market-policy-v2",
             "recommendation_target": "series_winner",
             "minimum_model_favorite": 0.51,
             "unit_bankroll_fraction": 0.01,
-            "paper_positive_ev_path": "full_kelly",
-            "paper_negative_ev_exploration_path": "flat_1u",
+            "paper_positive_ev_path": "balanced_kelly",
+            "paper_negative_ev_exploration_path": "observe_only",
         }
         if any(
             value.get(key) != expected_value for key, expected_value in required.items()

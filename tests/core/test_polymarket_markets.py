@@ -601,6 +601,7 @@ def test_confirmation_reuses_fresh_review_quote_and_refreshes_stale_quote_once()
         client,
         token_id=T1_ASSET_ID,
         review_observation=review,
+        stake_amount="15.80",
         clock=lambda: START + timedelta(seconds=119),
         ttl_seconds=120,
     )
@@ -608,14 +609,72 @@ def test_confirmation_reuses_fresh_review_quote_and_refreshes_stale_quote_once()
         client,
         token_id=T1_ASSET_ID,
         review_observation=review,
+        stake_amount="15.80",
         clock=lambda: START + timedelta(seconds=121),
         ttl_seconds=120,
     )
 
     assert fresh.source == "review_snapshot"
-    assert fresh.observation is review
+    assert fresh.observation.fill.total_cost == Decimal("15.80")
+    assert fresh.observation.fill.filled_shares == Decimal(25)
+    assert fresh.observation.fill.decimal_odds == pytest.approx(25 / 15.8)
     assert stale.source == "confirmation_snapshot"
-    assert stale.observation is not review
+    assert stale.observation is None
+    assert stale.failure.reason == "provider_timestamp_old"
+    assert client.calls == EXPECTED_CONFIRMATION_CALLS
+
+
+@pytest.mark.parametrize("stake", ["0", "-1", "NaN", "Infinity"])
+def test_confirmation_rejects_invalid_budgets_before_fetch(stake):
+    client = _BookClient()
+    with pytest.raises((MarketDataError, ValueError), match="stake"):
+        capture_confirmation_order_book(
+            client,
+            token_id=T1_ASSET_ID,
+            review_observation=None,
+            stake_amount=stake,
+            clock=lambda: START,
+        )
+    assert client.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("stake", "reason"),
+    [("1", "below_minimum_order"), ("20", "insufficient_depth")],
+)
+def test_confirmation_rejects_unexecutable_budget(stake, reason):
+    result = capture_confirmation_order_book(
+        _BookClient(),
+        token_id=T1_ASSET_ID,
+        review_observation=None,
+        stake_amount=stake,
+        clock=lambda: START,
+    )
+    assert result.observation is None
+    assert result.failure.reason == reason
+
+
+def test_confirmation_recaptures_stale_provider_even_with_recent_observation():
+    from dataclasses import replace
+
+    client = _BookClient()
+    review = capture_current_order_books(
+        client,
+        token_ids=(T1_ASSET_ID,),
+        clock=lambda: START,
+    ).observations[T1_ASSET_ID]
+    review = replace(review, book=replace(review.book, timestamp=None))
+    result = capture_confirmation_order_book(
+        client,
+        token_id=T1_ASSET_ID,
+        review_observation=review,
+        stake_amount="15.80",
+        clock=lambda: START,
+    )
+    assert result.source == "confirmation_snapshot"
+    assert result.failure is None
+    assert result.observation.book.token_id == T1_ASSET_ID
+    assert result.observation.fill.total_cost == Decimal("15.80")
     assert client.calls == EXPECTED_CONFIRMATION_CALLS
 
 
@@ -818,3 +877,60 @@ def test_polymarket_clients_expose_read_methods_only():
 
     assert clob_methods == {"get_order_book"}
     assert gamma_methods == {"event", "search_markets"}
+
+
+def test_semantic_identity_requires_actual_terms_for_cross_provider_matching():
+    shape = {
+        "target": "series_winner",
+        "selection": "T1",
+        "game_number": None,
+        "line": None,
+    }
+    unknown_poly = market_semantic_key(**shape, provider="polymarket")
+    unknown_tp = market_semantic_key(**shape, provider="thunderpick")
+    assert unknown_poly.fingerprint != unknown_tp.fingerprint
+    played = market_semantic_key(
+        **shape,
+        provider="polymarket",
+        resolution_terms="Cancelled matches void.",
+        terms_verified=True,
+    )
+    awarded = market_semantic_key(
+        **shape,
+        provider="thunderpick",
+        resolution_terms="Awarded matches settle.",
+        terms_verified=True,
+    )
+    assert played.fingerprint != awarded.fingerprint
+    same = market_semantic_key(
+        **shape,
+        provider="thunderpick",
+        resolution_terms="Cancelled matches void.",
+        terms_verified=True,
+    )
+    assert same.fingerprint == played.fingerprint
+
+
+def test_gamma_preserves_actual_contract_description():
+    payload = _market()
+    payload["description"] = "Unplayed maps are void."
+    market = PolymarketGammaAdapter()._market_from_payload(
+        payload, event={"id": "event-1"}
+    )
+    assert market.resolution_terms == payload["description"]
+
+
+def test_supplied_terms_do_not_assert_cross_provider_equivalence():
+    shape = {
+        "target": "map_winner",
+        "selection": "T1",
+        "game_number": 1,
+        "line": None,
+        "resolution_terms": "Unplayed maps void.",
+    }
+    poly = market_semantic_key(**shape, provider="polymarket")
+    thunderpick = market_semantic_key(**shape, provider="thunderpick")
+    assert poly.terms_verified is False
+    assert poly.fingerprint != thunderpick.fingerprint
+    with pytest.raises(MarketDataError, match="require source terms"):
+        market_semantic_key(**(shape | {"resolution_terms": ""}), terms_verified=True)

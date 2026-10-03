@@ -181,6 +181,7 @@ TABLE_COLUMNS: dict[EvidenceTable, frozenset[str]] = {
             "id",
             "run_id",
             "fixture_id",
+            "prediction_id",
             "provider",
             "provider_market_id",
             "provider_selection_id",
@@ -263,6 +264,7 @@ TABLE_COLUMNS: dict[EvidenceTable, frozenset[str]] = {
             "review_id",
             "fixture_id",
             "market_candidate_id",
+            "accepted_snapshot_id",
             "mode",
             "provider",
             "target",
@@ -283,6 +285,7 @@ TABLE_COLUMNS: dict[EvidenceTable, frozenset[str]] = {
         {
             "id",
             "bet_id",
+            "closing_snapshot_id",
             "event_at",
             "event_type",
             "actor_id",
@@ -366,6 +369,7 @@ class EvidenceStore:
         self.path = Path(path)
         self.dry_run = dry_run
         self.lock_writes = lock_writes
+        self._transaction_connection: sqlite3.Connection | None = None
 
     @contextmanager
     def connection(
@@ -373,6 +377,9 @@ class EvidenceStore:
         *,
         read_only: bool = False,
     ) -> Iterator[sqlite3.Connection]:
+        if self._transaction_connection is not None:
+            yield self._transaction_connection
+            return
         lock = (
             maintenance_lock(exclusive=False)
             if not read_only and self.lock_writes
@@ -407,18 +414,35 @@ class EvidenceStore:
                     for suffix in ("", "-wal", "-shm"):
                         _secure_file(Path(f"{self.path}{suffix}"))
 
+    @contextmanager
+    def transaction(self) -> Iterator[EvidenceStore]:
+        """Serialize a read-validate-append operation on one scoped connection."""
+        if self._transaction_connection is not None:
+            raise RuntimeError("Nested evidence transactions are not supported.")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            scoped = EvidenceStore(
+                self.path, dry_run=self.dry_run, lock_writes=self.lock_writes
+            )
+            scoped._transaction_connection = connection
+            try:
+                yield scoped
+            finally:
+                scoped._transaction_connection = None
+
     def initialize_schema(self) -> None:
         if self.dry_run and not self.path.exists():
             msg = "Dry-run evidence store must already be initialized."
             raise EvidenceSchemaError(msg)
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             version_table_exists = conn.execute(
                 "SELECT 1 FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'evidence_schema_version'"
             ).fetchone()
             if not version_table_exists:
-                conn.executescript(SCHEMA_SQL)
-                conn.executescript(append_only_triggers_sql())
+                _execute_schema_sql(conn, SCHEMA_SQL)
+                _execute_schema_sql(conn, append_only_triggers_sql())
                 conn.execute(
                     "INSERT INTO evidence_schema_version (version, installed_at) "
                     "VALUES (?, ?)",
@@ -441,14 +465,15 @@ class EvidenceStore:
                 )
             if current < SCHEMA_VERSION:
                 self._migrate_schema(conn, current)
-            conn.executescript(append_only_triggers_sql())
+            _execute_schema_sql(conn, append_only_triggers_sql())
 
     @staticmethod
     def _migrate_schema(conn: sqlite3.Connection, current: int) -> None:
         """Create additive schema objects, validate, and record each transition."""
-        conn.executescript(SCHEMA_SQL)
+        _execute_schema_sql(conn, SCHEMA_SQL)
         if current < _BET_LEDGER_SCHEMA_VERSION:
-            conn.executescript(
+            _execute_schema_sql(
+                conn,
                 """
                 DROP TRIGGER IF EXISTS prevent_corrections_update;
                 DROP TRIGGER IF EXISTS prevent_corrections_delete;
@@ -476,7 +501,7 @@ class EvidenceStore:
                 DROP TABLE corrections_before_v5;
                 CREATE INDEX idx_corrections_target
                     ON corrections(target_table, target_id);
-                """
+                """,
             )
         existing_tables = {
             str(row[0])
@@ -484,6 +509,18 @@ class EvidenceStore:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+        # Nullable references preserve every legacy row and its content hash.
+        # Existing payloads are not backfilled with inferred provenance.
+        for table, column, target in (
+            ("market_candidates", "prediction_id", "predictions"),
+            ("bets", "accepted_snapshot_id", "market_snapshots"),
+            ("bet_events", "closing_snapshot_id", "market_snapshots"),
+        ):
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} TEXT REFERENCES {target}(id)"
+                )
         missing_tables = {table.value for table in EvidenceTable} - existing_tables
         if missing_tables:
             raise EvidenceSchemaError(
@@ -500,6 +537,10 @@ class EvidenceStore:
                     f"Evidence migration found missing {table.value} columns: "
                     f"{sorted(missing_columns)}"
                 )
+        if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise EvidenceSchemaError(
+                "Evidence migration found invalid foreign-key references."
+            )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS evidence_schema_migrations ("
             "from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, "
@@ -719,3 +760,15 @@ class EvidenceStore:
 
 
 assert set(EVIDENCE_TABLES) == {table.value for table in EvidenceTable}
+
+
+def _execute_schema_sql(conn: sqlite3.Connection, script: str) -> None:
+    """Execute bundled DDL without executescript's implicit transaction commit."""
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise EvidenceSchemaError("Incomplete bundled schema statement.")

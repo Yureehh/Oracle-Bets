@@ -15,7 +15,8 @@ from oracle_bets_core.evidence.schema import SCHEMA_SQL
 
 NOW = datetime(2026, 7, 26, 8, 15, tzinfo=UTC)
 BATCH_SIZE = 3
-EVIDENCE_SCHEMA_VERSION = 6
+EVIDENCE_SCHEMA_VERSION = 7
+LEGACY_SCHEMA_VERSION = 6
 
 
 @pytest.fixture
@@ -92,7 +93,7 @@ def test_schema_upgrade_records_auditable_transactional_migration(tmp_path):
             "SELECT from_version, to_version FROM evidence_schema_migrations "
             "ORDER BY from_version"
         ).fetchall()
-    assert [tuple(row) for row in rows] == [(4, 5), (5, 6)]
+    assert [tuple(row) for row in rows] == [(4, 5), (5, 6), (6, 7)]
     assert {"bets", "bet_events"} <= store.table_names()
     store.append(
         EvidenceTable.CORRECTIONS,
@@ -389,3 +390,157 @@ def test_exports_are_stable_and_do_not_mutate_evidence(evidence_store, tmp_path)
     assert json_rows[0]["id"] == "run-1"
     assert csv_rows[0]["id"] == "run-1"
     assert evidence_store.count(EvidenceTable.RUNS) == 1
+
+
+def _legacy_quote_database(path):
+    store = EvidenceStore(path, lock_writes=False)
+    store.initialize_schema()
+    store.append(EvidenceTable.RUNS, _run_record())
+    for team in ("a", "b"):
+        store.append(
+            EvidenceTable.IDENTITIES,
+            {
+                "id": team,
+                "entity_type": "team",
+                "canonical_name": team,
+                "created_at": NOW,
+                "idempotency_key": team,
+                "payload_json": {},
+            },
+        )
+    store.append(
+        EvidenceTable.FIXTURES,
+        {
+            "id": "fixture",
+            "run_id": "run-1",
+            "sport": "lol",
+            "competition_id": "LPL",
+            "team_a_identity_id": "a",
+            "team_b_identity_id": "b",
+            "start_time": NOW,
+            "status": "not_started",
+            "idempotency_key": "fixture",
+            "payload_json": {},
+        },
+    )
+    store.append(
+        EvidenceTable.MARKET_CANDIDATES,
+        {
+            "id": "market",
+            "run_id": "run-1",
+            "fixture_id": "fixture",
+            "provider": "thunderpick",
+            "provider_market_id": "winner",
+            "discovered_at": NOW,
+            "match_status": "matched",
+            "idempotency_key": "market",
+            "payload_json": {"selection": "a"},
+        },
+    )
+    store.append(
+        EvidenceTable.BETS,
+        {
+            "id": "bet",
+            "review_id": "run-1",
+            "fixture_id": "fixture",
+            "market_candidate_id": "market",
+            "mode": "paper",
+            "provider": "thunderpick",
+            "target": "series_winner",
+            "selection": "a",
+            "opened_at": NOW,
+            "currency": "EUR",
+            "bankroll_before": "1000",
+            "stake_percent": "1",
+            "stake_amount": "10",
+            "accepted_odds": "2",
+            "actor_id": "owner",
+            "evidence_classification": "model_positive_ev",
+            "idempotency_key": "bet",
+            "payload_json": {"reason": "legacy fact"},
+        },
+    )
+    store.append(
+        EvidenceTable.BET_EVENTS,
+        {
+            "id": "event",
+            "bet_id": "bet",
+            "event_at": NOW,
+            "event_type": "settlement",
+            "actor_id": "owner",
+            "idempotency_key": "event",
+            "payload_json": {"result": "win", "closing_odds": "1.8"},
+        },
+    )
+    with sqlite3.connect(path) as conn:
+        for table, column in (
+            ("market_candidates", "prediction_id"),
+            ("bets", "accepted_snapshot_id"),
+            ("bet_events", "closing_snapshot_id"),
+        ):
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        conn.execute("UPDATE evidence_schema_version SET version = 6")
+    return store
+
+
+def test_v6_copy_migration_preserves_legacy_hashes(tmp_path):
+    legacy = _legacy_quote_database(tmp_path / "original.db")
+    before = {table: legacy.list(table) for table in EvidenceTable}
+    path = tmp_path / "copy.db"
+    with sqlite3.connect(legacy.path) as source, sqlite3.connect(path) as destination:
+        source.backup(destination)
+    migrated = EvidenceStore(path, lock_writes=False)
+    migrated.initialize_schema()
+    for table, rows in before.items():
+        actual = migrated.list(table)
+        assert len(actual) == len(rows)
+        for old, new in zip(rows, actual, strict=True):
+            assert {key: new[key] for key in old} == old
+            assert all(new[key] is None for key in new.keys() - old.keys())
+    assert legacy.schema_version() == LEGACY_SCHEMA_VERSION
+    with migrated.connection(read_only=True) as conn:
+        for table, column in (
+            ("market_candidates", "prediction_id"),
+            ("bets", "accepted_snapshot_id"),
+            ("bet_events", "closing_snapshot_id"),
+        ):
+            assert column in {
+                row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+            }
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_failed_migration_rolls_back_columns_and_version(tmp_path, monkeypatch):
+    from oracle_bets_core.evidence import repository
+
+    store = _legacy_quote_database(tmp_path / "legacy.db")
+    before = store.list(EvidenceTable.RUNS)
+    monkeypatch.setitem(
+        repository.TABLE_COLUMNS,
+        EvidenceTable.RUNS,
+        (*repository.TABLE_COLUMNS[EvidenceTable.RUNS], "deliberately_missing"),
+    )
+    with pytest.raises(repository.EvidenceSchemaError, match="deliberately_missing"):
+        store.initialize_schema()
+    assert store.schema_version() == LEGACY_SCHEMA_VERSION
+    assert store.list(EvidenceTable.RUNS) == before
+    with store.connection(read_only=True) as conn:
+        assert "prediction_id" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(market_candidates)")
+        }
+
+
+def test_migration_refuses_invalid_legacy_foreign_key_without_partial_columns(tmp_path):
+    from oracle_bets_core.evidence.repository import EvidenceSchemaError
+
+    store = _legacy_quote_database(tmp_path / "invalid-legacy.db")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER prevent_bets_update")
+        connection.execute("UPDATE bets SET market_candidate_id = 'missing-market'")
+    with pytest.raises(EvidenceSchemaError, match="foreign-key"):
+        store.initialize_schema()
+    assert store.schema_version() == LEGACY_SCHEMA_VERSION
+    with store.connection(read_only=True) as connection:
+        assert "accepted_snapshot_id" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(bets)")
+        }

@@ -75,7 +75,7 @@ _SEMANTIC_RULES = {
         "unplayed_map_void",
     ),
 }
-MARKET_SEMANTIC_VERSION = 1
+MARKET_SEMANTIC_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -90,6 +90,8 @@ class MarketSemanticKey:
     push_rule: str
     void_rule: str
     resolution_fingerprint: str
+    terms_verified: bool = False
+    resolution_terms: str = ""
     version: int = MARKET_SEMANTIC_VERSION
 
     @property
@@ -110,6 +112,8 @@ class MarketSemanticKey:
             "push_rule": self.push_rule,
             "void_rule": self.void_rule,
             "resolution_fingerprint": self.resolution_fingerprint,
+            "terms_verified": self.terms_verified,
+            "resolution_terms": self.resolution_terms,
         }
 
 
@@ -119,6 +123,9 @@ def market_semantic_key(
     selection: str,
     game_number: int | None,
     line: float | Decimal | None,
+    provider: str = "unknown",
+    resolution_terms: str = "",
+    terms_verified: bool = False,
 ) -> MarketSemanticKey:
     """Build one strict semantic key or reject an unsupported settlement shape."""
     try:
@@ -158,6 +165,11 @@ def market_semantic_key(
     normalized_selection = " ".join(selection.casefold().split())
     if not normalized_selection:
         raise MarketDataError("Market selection cannot be empty")
+    # Supplied prose is evidence, not a claim that the full rules were checked.
+    # Only explicitly verified, identical terms permit cross-provider matching.
+    normalized_terms = " ".join(resolution_terms.split())
+    if terms_verified and not normalized_terms:
+        raise MarketDataError("Verified settlement rules require source terms")
     resolution = "|".join(
         (
             str(MARKET_SEMANTIC_VERSION),
@@ -166,6 +178,10 @@ def market_semantic_key(
             stat_definition,
             push_rule,
             void_rule,
+            normalized_terms,
+            "verified"
+            if terms_verified
+            else f"unverified:{provider.casefold().strip()}",
         )
     )
     fingerprint = hashlib.sha256(resolution.encode()).hexdigest()
@@ -178,6 +194,8 @@ def market_semantic_key(
         push_rule=push_rule,
         void_rule=void_rule,
         resolution_fingerprint=fingerprint,
+        terms_verified=terms_verified,
+        resolution_terms=normalized_terms,
     )
 
 
@@ -224,6 +242,7 @@ class PolymarketMarket:
     resolution_source: str
     liquidity: Decimal | None
     volume: Decimal | None
+    resolution_terms: str = ""
 
     @property
     def url(self) -> str:
@@ -500,6 +519,7 @@ class PolymarketGammaAdapter:
             resolution_source=str(
                 market.get("resolutionSource") or event.get("resolutionSource") or ""
             ).strip(),
+            resolution_terms=str(market.get("description") or "").strip(),
             liquidity=_optional_decimal(
                 market.get("liquidity") or market.get("liquidityNum"),
                 field="liquidity",
@@ -905,6 +925,41 @@ def walk_buy_book(
     )
 
 
+def quote_buy_budget(
+    book: OrderBook, stake_amount: Decimal | str | float
+) -> ExpectedFill:
+    """Price a whole stake in the book's collateral currency, before fees."""
+    budget = _required_decimal(stake_amount, field="stake amount")
+    if budget <= 0:
+        raise MarketDataError("stake amount must be positive")
+    remaining = budget
+    shares = Decimal(0)
+    worst_price = None
+    for level in book.asks:
+        cost = min(remaining, level.price * level.size)
+        shares += cost / level.price
+        remaining -= cost
+        worst_price = level.price
+        if remaining == 0:
+            break
+    if remaining:
+        raise MarketDataError("insufficient_depth: full stake was unavailable")
+    if shares < book.minimum_order_size:
+        raise MarketDataError("below_minimum_order: stake buys too few shares")
+    average = budget / shares
+    return ExpectedFill(
+        token_id=book.token_id,
+        requested_shares=shares,
+        filled_shares=shares,
+        unfilled_shares=Decimal(0),
+        total_cost=budget,
+        average_price=average,
+        worst_price=worst_price,
+        complete=True,
+        decimal_odds=float(shares / budget),
+    )
+
+
 class OrderBookClient(Protocol):
     """Read-only order-book provider surface used by observation capture."""
 
@@ -1067,12 +1122,16 @@ def capture_confirmation_order_book(
     *,
     token_id: str,
     review_observation: BookObservation | None,
+    stake_amount: Decimal | str | float,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ttl_seconds: int = 120,
 ) -> ConfirmationOrderBook:
-    """Reuse a fresh review quote; otherwise fetch exactly one current book."""
+    """Price the full stake on a fresh book, recapturing the same token if stale."""
     if ttl_seconds <= 0:
         raise ValueError("quote TTL must be positive")
+    budget = _required_decimal(stake_amount, field="stake amount")
+    if budget <= 0:
+        raise MarketDataError("stake amount must be positive")
     normalized_token = _required_text(token_id, "CLOB token id")
     now = clock()
     _require_utc_observation(now)
@@ -1080,30 +1139,61 @@ def capture_confirmation_order_book(
         age = (now - review_observation.observed_at).total_seconds()
         if (
             review_observation.book.token_id == normalized_token
-            and review_observation.fill.complete
             and 0 <= age <= ttl_seconds
-        ):
-            return ConfirmationOrderBook(
-                source="review_snapshot",
-                observation=review_observation,
-                failure=None,
-                warnings=_provider_timestamp_warnings(
-                    review_observation.book,
-                    observed_at=now,
-                    maximum_book_age_seconds=ttl_seconds,
-                ),
+            and not _provider_timestamp_warnings(
+                review_observation.book,
+                observed_at=now,
+                maximum_book_age_seconds=ttl_seconds,
             )
+        ):
+            return _budget_confirmation("review_snapshot", review_observation, budget)
     batch = capture_current_order_books(
         client,
         token_ids=(normalized_token,),
         clock=clock,
         maximum_book_age_seconds=ttl_seconds,
     )
+    observation = batch.observations.get(normalized_token)
+    warnings = batch.warnings.get(normalized_token, ())
+    if observation is not None and not warnings:
+        return _budget_confirmation("confirmation_snapshot", observation, budget)
+    failure = batch.failures.get(normalized_token)
+    if warnings:
+        failure = BookCaptureFailure(
+            normalized_token, warnings[0], "Provider timestamp is not fresh.", 1
+        )
     return ConfirmationOrderBook(
         source="confirmation_snapshot",
-        observation=batch.observations.get(normalized_token),
-        failure=batch.failures.get(normalized_token),
-        warnings=batch.warnings.get(normalized_token, ()),
+        observation=None,
+        failure=failure,
+        warnings=warnings,
+    )
+
+
+def _budget_confirmation(
+    source: str, observation: BookObservation, budget: Decimal
+) -> ConfirmationOrderBook:
+    try:
+        fill = quote_buy_budget(observation.book, budget)
+    except MarketDataError as error:
+        return ConfirmationOrderBook(
+            source,
+            None,
+            BookCaptureFailure(
+                observation.book.token_id,
+                str(error).split(":", 1)[0],
+                str(error),
+                observation.sequence_number,
+            ),
+            (),
+        )
+    return ConfirmationOrderBook(
+        source,
+        BookObservation(
+            observation.sequence_number, observation.observed_at, observation.book, fill
+        ),
+        None,
+        (),
     )
 
 
@@ -1117,7 +1207,11 @@ def _provider_timestamp_warnings(
         return (book.timestamp_warning,)
     if book.timestamp is None:
         return ("provider_timestamp_missing",)
-    if abs((observed_at - book.timestamp).total_seconds()) > maximum_book_age_seconds:
+    if (
+        not 0
+        <= (observed_at - book.timestamp).total_seconds()
+        <= maximum_book_age_seconds
+    ):
         return ("provider_timestamp_old",)
     return ()
 

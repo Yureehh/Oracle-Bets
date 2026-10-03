@@ -89,8 +89,10 @@ def market_options(
         odds = payload.get("decimal_odds")
         line = f" {payload['line']}" if payload.get("line") is not None else ""
         sizing = payload.get("sizing") or {}
-        selected_path = str(sizing.get("selected_path") or "flat_1u")
-        fraction = (sizing.get("bankroll_fractions") or {}).get(selected_path, 0.01)
+        selected_path = sizing.get("selected_path")
+        fraction = (sizing.get("bankroll_fractions") or {}).get(selected_path, 0.0)
+        if not selected_path or fraction <= 0:
+            continue
         output.append(
             {
                 "market_id": str(row["id"]),

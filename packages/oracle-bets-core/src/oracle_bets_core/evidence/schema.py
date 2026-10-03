@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 EVIDENCE_TABLES = (
     "runs",
@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS market_candidates (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id),
     fixture_id TEXT NOT NULL REFERENCES fixtures(id),
+    prediction_id TEXT REFERENCES predictions(id),
     provider TEXT NOT NULL,
     provider_market_id TEXT NOT NULL,
     provider_selection_id TEXT,
@@ -249,6 +250,7 @@ CREATE TABLE IF NOT EXISTS bets (
     review_id TEXT NOT NULL,
     fixture_id TEXT NOT NULL REFERENCES fixtures(id),
     market_candidate_id TEXT REFERENCES market_candidates(id),
+    accepted_snapshot_id TEXT REFERENCES market_snapshots(id),
     mode TEXT NOT NULL CHECK (mode IN ('paper', 'real')),
     provider TEXT NOT NULL,
     target TEXT NOT NULL,
@@ -271,6 +273,7 @@ CREATE TABLE IF NOT EXISTS bets (
 CREATE TABLE IF NOT EXISTS bet_events (
     id TEXT PRIMARY KEY,
     bet_id TEXT NOT NULL REFERENCES bets(id),
+    closing_snapshot_id TEXT REFERENCES market_snapshots(id),
     event_at TEXT NOT NULL,
     event_type TEXT NOT NULL,
     actor_id TEXT NOT NULL,
