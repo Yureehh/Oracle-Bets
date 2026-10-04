@@ -1639,10 +1639,6 @@ def _register_training_candidate(
 
     from lol_bets.operations.models import ModelRegistry, register_current_candidate
 
-    history_path = current_history_data_path(
-        RAW_DATA,
-        pointer_path=RAW_CURRENT_POINTER,
-    )
     summary = json.loads((report_root / "summary.json").read_text(encoding="utf-8"))
     metrics = {
         f"{model['target']}.{name}": float(value)
@@ -1685,17 +1681,22 @@ def _register_training_candidate(
         metrics=metrics,
         created_at=dt.datetime.now(dt.UTC),
         model_root=staging_root,
-        training_paths=(
-            history_path,
-            TRAINING_TEAM_DATA,
-            TRAINING_PLAYER_DATA,
-            SERIES_MANIFEST,
-            SERIES_REJECTIONS,
-            SERIES_WINNER_TEAM_DATA,
-            SERIES_WINNER_PLAYER_DATA,
-        ),
+        training_paths=_candidate_training_paths(),
     )
     return candidate_id
+
+
+def _candidate_training_paths() -> tuple[Path, ...]:
+    """Return the exact data files fingerprinted for a full candidate bundle."""
+    return (
+        current_history_data_path(RAW_DATA, pointer_path=RAW_CURRENT_POINTER),
+        TRAINING_TEAM_DATA,
+        TRAINING_PLAYER_DATA,
+        SERIES_MANIFEST,
+        SERIES_REJECTIONS,
+        SERIES_WINNER_TEAM_DATA,
+        SERIES_WINNER_PLAYER_DATA,
+    )
 
 
 def _stage_shared_inference_artifacts(staging_root: Path) -> None:

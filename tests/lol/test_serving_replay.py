@@ -78,34 +78,37 @@ def test_value_replay_rejects_candidate_from_another_training_table(
         verified_artifact_paths=lambda **_kwargs: {},
     )
     monkeypatch.setattr(serving_replay, "ModelRegistry", lambda _root: registry)
+    monkeypatch.setattr(
+        serving_replay, "_candidate_training_paths", lambda: (map_table,)
+    )
     with pytest.raises(ValueError, match="different data generation"):
         replay_sealed_features("candidate", inputs=inputs, snapshot=snapshot)
 
 
-def test_candidate_generation_uses_model_training_tables_only(tmp_path):
+def test_candidate_generation_uses_complete_registered_training_bundle(
+    tmp_path, monkeypatch
+):
     candidate = tmp_path / "candidates" / "candidate"
     candidate.mkdir(parents=True)
-    team_table = tmp_path / "teams.parquet"
-    player_table = tmp_path / "players.parquet"
-    for table in (team_table, player_table):
+    training_paths = tuple(tmp_path / f"table-{index}.parquet" for index in range(7))
+    for table in training_paths:
         table.write_bytes(b"current")
     candidate.joinpath("manifest.json").write_text(
-        '{"data_manifest":"' + _paths_fingerprint((team_table, player_table)) + '"}'
+        '{"data_manifest":"' + _paths_fingerprint(training_paths) + '"}'
     )
-    generation = {
-        "files": {
-            "map_teams": {"path": str(team_table)},
-            "map_players": {"path": str(player_table)},
-            "interim_teams": {"path": str(tmp_path / "other.parquet")},
-        }
-    }
+    monkeypatch.setattr(
+        serving_replay, "_candidate_training_paths", lambda: training_paths
+    )
     registry = SimpleNamespace(
         candidates=tmp_path / "candidates",
-        verified_artifact_paths=lambda **_kwargs: {"artifact": team_table},
+        verified_artifact_paths=lambda **_kwargs: {"artifact": training_paths[1]},
     )
-    assert _verified_candidate_paths(registry, "candidate", generation) == {
-        "artifact": team_table
+    assert _verified_candidate_paths(registry, "candidate") == {
+        "artifact": training_paths[1]
     }
+    training_paths[-1].write_bytes(b"changed")
+    with pytest.raises(ValueError, match="different data generation"):
+        _verified_candidate_paths(registry, "candidate")
 
 
 def test_value_replay_runs_historical_team_path_and_reports_mismatch(
