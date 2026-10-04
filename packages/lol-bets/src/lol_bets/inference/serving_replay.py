@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -17,9 +16,11 @@ from lol_bets.inference.match_predictor import MatchPredictor
 from lol_bets.inference.roster import EXPECTED_ROLES
 from lol_bets.inference.team import Team
 from lol_bets.operations.models import ModelRegistry, _paths_fingerprint
-from lol_bets.training import ALL_MODEL_CONFIGS
+from lol_bets.training import ALL_MODEL_CONFIGS, _candidate_training_paths
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from lol_bets.inference.snapshots import FeatureSnapshot
     from lol_bets.operations.training_inputs import TrainingInputs
 
@@ -75,7 +76,7 @@ def replay_sealed_features(
         raise ValueError("Serving snapshot and training inputs have different lineage")
     inputs.assert_unchanged()
     registry = ModelRegistry(registry_root)
-    paths = _verified_candidate_paths(registry, candidate_id, map_generation)
+    paths = _verified_candidate_paths(registry, candidate_id)
     predictor = MatchPredictor(model_id=candidate_id, registry_root=registry_root)
     history_path, history_manifest = read_history_snapshot(
         pointer_path=RAW_CURRENT_POINTER
@@ -160,7 +161,7 @@ def replay_sealed_features(
 
 
 def _verified_candidate_paths(
-    registry: ModelRegistry, candidate_id: str, map_generation: dict[str, Any]
+    registry: ModelRegistry, candidate_id: str
 ) -> dict[str, Path]:
     paths = registry.verified_artifact_paths(model_id=candidate_id)
     candidate_manifest = json.loads(
@@ -168,11 +169,9 @@ def _verified_candidate_paths(
             encoding="utf-8"
         )
     )
-    map_paths = tuple(
-        Path(map_generation["files"][key]["path"])
-        for key in ("map_teams", "map_players")
-    )
-    if candidate_manifest["data_manifest"] != _paths_fingerprint(map_paths):
+    if candidate_manifest["data_manifest"] != _paths_fingerprint(
+        _candidate_training_paths()
+    ):
         raise ValueError("Candidate was trained from a different data generation")
     return paths
 
