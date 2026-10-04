@@ -42,7 +42,7 @@ from lol_bets.data_generation.ingestion.schedule import (
     normalize_schedule_frame,
 )
 from lol_bets.inference.team_resolver import canonical_team_name, team_name_variants
-from lol_bets.operations.evidence import record_daily_evidence
+from lol_bets.operations.evidence import _fixture_lookup_key, record_daily_evidence
 from lol_bets.operations.market_actions import (
     active_strategy_readiness,
     evaluate_daily_market_actions,
@@ -824,11 +824,19 @@ def _review_cohort_status(
         if _as_utc(dt.datetime.fromisoformat(str(event["event_at"]))) > reviewed_at:
             continue
         payload = json.loads(event["payload_json"])
-        enrolled.add(str(payload.get("sporting_event_key") or ""))
+        enrolled.update(
+            str(key)
+            for key in (
+                payload.get("sporting_event_key"),
+                payload.get("first_fixture_key"),
+            )
+            if key
+        )
     return (
         "enrolled_before_review"
         if all(
-            str(row.get("serie_id") or row.get("match_key") or "") in enrolled
+            str(row.get("match_key") or "") in enrolled
+            or _fixture_lookup_key(row) in enrolled
             for row in rows
         )
         else "unregistered_research_only"
