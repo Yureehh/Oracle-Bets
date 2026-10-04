@@ -11,6 +11,8 @@ EVEN_PROBABILITY = 0.5
 MODEL_PROBABILITY = 0.87654321
 FIRST_MAP = 1
 SECOND_MAP = 2
+OWN_EMA_KDA = 3.0
+OPP_EMA_KDA = 2.0
 
 
 def _players(strength: float) -> pd.DataFrame:
@@ -113,6 +115,46 @@ def test_player_pivot_drops_target_columns_for_inference() -> None:
     assert "top_gamelength" not in out.columns
     assert "top_total_kills" not in out.columns
     assert "top_total_towers" not in out.columns
+
+
+def test_player_ema_opponent_uses_training_feature_names() -> None:
+    predictor = MatchPredictor.__new__(MatchPredictor)
+    players = pd.DataFrame(
+        {
+            "gameid": ["future"],
+            "side": ["Blue"],
+            "position": ["top"],
+            "ema_kda": [OWN_EMA_KDA],
+            "opp_ema_kda": [OPP_EMA_KDA],
+        }
+    )
+    teams = pd.DataFrame({"gameid": ["future"], "side": ["Blue"]})
+
+    out = predictor.preprocess_data(teams, players)
+
+    assert out.loc[0, "top_opp_ema_kda"] == OPP_EMA_KDA
+    assert out.loc[0, "top_diff_ema_kda"] == OWN_EMA_KDA - OPP_EMA_KDA
+
+
+def test_player_pivot_preserves_missing_opponent_ema() -> None:
+    predictor = MatchPredictor.__new__(MatchPredictor)
+    roles = ("top", "jng", "mid", "bot", "sup")
+    players = pd.DataFrame(
+        {
+            "gameid": ["future"] * len(roles),
+            "side": ["Blue"] * len(roles),
+            "position": roles,
+            "ema_kda": [OWN_EMA_KDA] * len(roles),
+            "opp_ema_kda": [np.nan, *([OPP_EMA_KDA] * (len(roles) - 1))],
+        }
+    )
+    teams = pd.DataFrame({"gameid": ["future"], "side": ["Blue"]})
+
+    out = predictor.preprocess_data(teams, players)
+
+    assert np.isnan(out.loc[0, "top_opp_ema_kda"])
+    assert np.isnan(out.loc[0, "top_diff_ema_kda"])
+    assert out.loc[0, "jng_diff_ema_kda"] == OWN_EMA_KDA - OPP_EMA_KDA
 
 
 def test_player_feature_assembly_rejects_duplicate_or_missing_roles() -> None:
