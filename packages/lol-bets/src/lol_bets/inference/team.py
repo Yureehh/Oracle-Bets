@@ -16,6 +16,9 @@ from oracle_bets_core.logger import logger
 from oracle_bets_core.paths import PROCESSED_DIR
 from oracle_bets_core.pd import pd
 
+from lol_bets.data_generation.feature_engineering.features_generator import (
+    BREAK_THRESHOLD_DAYS,
+)
 from lol_bets.inference.roster import EXPECTED_ROLES
 from lol_bets.inference.snapshots import FeatureSnapshot, load_feature_snapshot
 from lol_bets.inference.team_resolver import TeamResolutionError, resolve_team_name
@@ -161,6 +164,9 @@ class Team:
         )
         self.team_stats["days_since_last_game"] = _days_ago(
             self.team_stats.get("date"), self._as_of
+        )
+        self.team_stats["is_after_break"] = int(
+            self.team_stats["days_since_last_game"] > BREAK_THRESHOLD_DAYS
         )
         self.team_stats["rating_uncertainty"] = _rating_uncertainty(self.team_stats)
         self.player_stats["days_since_last_game"] = self.player_stats["date"].map(
