@@ -8,6 +8,7 @@ from lol_bets.daily import DailyStepResult
 from lol_bets.operations import evidence as evidence_module
 from lol_bets.operations.evidence import record_daily_evidence
 from lol_bets.operations.identity import canonical_team_identity_id
+from lol_bets.operations.manual_market import _review_cohort_status
 from oracle_bets_core.evidence import EvidenceStore, EvidenceTable
 from oracle_bets_core.pd import pd
 
@@ -48,6 +49,48 @@ def test_daily_cohort_enrolls_before_forecasts_and_survives_reschedule(tmp_path)
     assert payload["sporting_event_key"] == "pandascore:1"
     assert payload["first_start_utc"] == START.isoformat()
     assert payload["horizon_hours"] == HORIZON_HOURS
+
+
+def test_daily_cohort_distinguishes_matches_sharing_provider_series_id(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.db")
+    first = _schedule()
+    first["serie_id"] = "shared-league-series"
+    second = _schedule()
+    second["serie_id"] = "shared-league-series"
+    second["provider_match_id"] = "2"
+    second["match_key"] = "pandascore:2"
+    second["team_a"] = "DK"
+    options = {
+        "store": store,
+        "effective_config": {"horizon_hours": HORIZON_HOURS},
+        "snapshot_rows": (),
+        "steps": [DailyStepResult("schedule", True, "complete")],
+    }
+    record_daily_evidence(**options, scheduled_for=NOW, observed_at=NOW, schedule=first)
+    assert _review_cohort_status(store, second.to_dict("records"), NOW) == (
+        "unregistered_research_only"
+    )
+    record_daily_evidence(
+        **options,
+        scheduled_for=NOW + timedelta(hours=1),
+        observed_at=NOW + timedelta(hours=1),
+        schedule=second,
+    )
+    enrollments = [
+        json.loads(row["payload_json"])
+        for row in store.list(EvidenceTable.RUN_EVENTS)
+        if row["event_type"] == "cohort_enrollment"
+    ]
+    assert {row["sporting_event_key"] for row in enrollments} == {
+        "pandascore:1",
+        "pandascore:2",
+    }
+    assert (
+        _review_cohort_status(
+            store, second.to_dict("records"), NOW + timedelta(hours=1)
+        )
+        == "enrolled_before_review"
+    )
 
 
 def test_daily_cohort_refuses_enrollment_after_existing_forecast(tmp_path):

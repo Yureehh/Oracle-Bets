@@ -477,10 +477,12 @@ def _enroll_daily_cohort(
 ) -> None:
     """Persist the first prospective membership before recording any forecast."""
     existing = {
-        payload.get("sporting_event_key")
+        key
         for event in store.list(EvidenceTable.RUN_EVENTS)
         if event["event_type"] == "cohort_enrollment"
         for payload in [json.loads(event["payload_json"])]
+        for key in (payload.get("sporting_event_key"), payload.get("first_fixture_key"))
+        if key
     }
     forecast_fixture_ids = {
         row["fixture_id"] for row in store.list(EvidenceTable.PREDICTIONS)
@@ -490,10 +492,8 @@ def _enroll_daily_cohort(
         fixture_id = fixtures.get(fixture_key)
         if fixture_id is None:
             continue
-        sporting_key = _optional_text(row.get("serie_id")) or _optional_text(
-            row.get("match_key")
-        )
-        if not sporting_key or sporting_key in existing:
+        sporting_key = _optional_text(row.get("match_key")) or fixture_key
+        if sporting_key in existing or fixture_key in existing:
             continue
         if fixture_id in forecast_fixture_ids:
             raise ValueError("Cannot enroll a fixture after its first forecast")
