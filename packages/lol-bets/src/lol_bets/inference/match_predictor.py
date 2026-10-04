@@ -801,7 +801,7 @@ class MatchPredictor:
         """
         Pivot per-role players into wide columns, matching training naming:
         - own:        <pos>_<field>      (e.g., top_ema_kda)
-        - opponent:   opp_<pos>_<field>  (e.g., opp_top_ema_kda)
+        - opponent:   <pos>_opp_<field>  (e.g., top_opp_ema_kda)
         Pivot index matches training parity: (gameid, side).
         """
         player_data = player_data.drop(columns=list(TARGET_COLUMNS), errors="ignore")
@@ -818,18 +818,18 @@ class MatchPredictor:
             index=["gameid", "side"],
             columns="position",
             aggfunc=cast("Any", agg),
-            fill_value=0,
+            dropna=False,
         )
 
         # Columns are MultiIndex like (field, position). We want:
-        #   - if field starts with 'opp_', name -> 'opp_<pos>_<field[4:]>',
+        #   - if field starts with 'opp_', name -> '<pos>_opp_<field[4:]>',
         #   - else name -> '<pos>_<field>'
         new_cols = []
         for field, pos in pivot.columns.to_flat_index():  # noqa: F402
             field = str(field)  # noqa: PLW2901
             pos = str(pos)  # noqa: PLW2901
             if field.startswith("opp_"):
-                new_cols.append(f"opp_{pos}_{field[4:]}")
+                new_cols.append(f"{pos}_opp_{field[4:]}")
             else:
                 new_cols.append(f"{pos}_{field}")
         pivot.columns = new_cols
