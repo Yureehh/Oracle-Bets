@@ -38,7 +38,6 @@
     "league_elo_win_likelihood",
     "strength_pool_win_likelihood",
     "season_win_likelihood",
-    "h2h_win_rate_before",
     "ema_season_win_rate_before",
     "ema_season_games_before",
     "ema_gamelength_before",

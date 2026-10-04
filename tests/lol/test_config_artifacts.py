@@ -208,6 +208,8 @@ def test_winner_configs_exclude_unavailable_and_constant_matchup_features():
         "is_bo5",
         "is_deciding_game",
         "h2h_games_before",
+        "h2h_wins_before",
+        "h2h_win_rate_before",
         "season_avg_gamelength",
     }
 
