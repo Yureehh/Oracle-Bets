@@ -5,7 +5,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from lol_bets.inference.match_predictor import MatchPredictor
+from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
+from lol_bets.prediction_models.prop_features import build_game_level_outcome_features
 from oracle_bets_core.pd import pd
+from pandas.api.types import is_numeric_dtype
 
 EVEN_PROBABILITY = 0.5
 MODEL_PROBABILITY = 0.87654321
@@ -13,6 +16,10 @@ FIRST_MAP = 1
 SECOND_MAP = 2
 OWN_EMA_KDA = 3.0
 OPP_EMA_KDA = 2.0
+OWN_SEASON_WIN_RATE = 0.8
+OPP_SEASON_WIN_RATE = 0.2
+OWN_GOLD_EMA = 10.0
+OPP_GOLD_EMA = 8.0
 
 
 def _players(strength: float) -> pd.DataFrame:
@@ -155,6 +162,65 @@ def test_player_pivot_preserves_missing_opponent_ema() -> None:
     assert np.isnan(out.loc[0, "top_opp_ema_kda"])
     assert np.isnan(out.loc[0, "top_diff_ema_kda"])
     assert out.loc[0, "jng_diff_ema_kda"] == OWN_EMA_KDA - OPP_EMA_KDA
+
+
+def test_team_likelihood_remains_numeric_and_is_not_fused_with_opponent() -> None:
+    predictor = MatchPredictor.__new__(MatchPredictor)
+    predictor.league_elo_prediction = lambda *_: EVEN_PROBABILITY
+    predictor.strength_pool_prediction = lambda *_: EVEN_PROBABILITY
+    own = SimpleNamespace(
+        name="Alpha",
+        side="Blue",
+        team_stats=pd.Series(
+            {
+                "teamid": "alpha",
+                "gameid": "future",
+                "side": "Blue",
+                "league": "LCK",
+                "ema_season_win_rate": OWN_SEASON_WIN_RATE,
+                "ema_gold": OWN_GOLD_EMA,
+            }
+        ),
+    )
+    opponent = SimpleNamespace(
+        name="Beta",
+        side="Red",
+        team_stats=pd.Series(
+            {
+                "teamid": "beta",
+                "gameid": "future",
+                "side": "Red",
+                "league": "LCK",
+                "ema_season_win_rate": OPP_SEASON_WIN_RATE,
+                "ema_gold": OPP_GOLD_EMA,
+            }
+        ),
+    )
+
+    team_row = predictor.calculate_team_stats(own, opponent, False, "bo3")
+    fused = GradientBoostingModel.fuse_opposing_team_features(team_row)
+
+    assert is_numeric_dtype(team_row["season_win_likelihood"])
+    assert "opp_season_win_likelihood" not in team_row
+    assert fused.loc[0, "season_win_likelihood"] == OWN_SEASON_WIN_RATE
+    assert fused.loc[0, "diff_ema_gold"] == OWN_GOLD_EMA - OPP_GOLD_EMA
+    opposite_row = predictor.calculate_team_stats(opponent, own, False, "bo3")
+    sides = pd.concat(
+        [fused, GradientBoostingModel.fuse_opposing_team_features(opposite_row)],
+        ignore_index=True,
+    )
+    sides = sides.drop(columns=GradientBoostingModel._meta_columns(), errors="ignore")
+    metadata = pd.DataFrame(
+        {
+            "gameid": ["future", "future"],
+            "teamid": ["alpha", "beta"],
+            "teamname": ["Alpha", "Beta"],
+        }
+    )
+    matchup, _, _ = build_game_level_outcome_features(sides, metadata)
+    assert matchup.loc[0, "delta_season_win_likelihood"] == pytest.approx(
+        OWN_SEASON_WIN_RATE - OPP_SEASON_WIN_RATE
+    )
 
 
 def test_player_feature_assembly_rejects_duplicate_or_missing_roles() -> None:
