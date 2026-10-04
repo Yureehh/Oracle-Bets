@@ -694,13 +694,12 @@ class MatchPredictor:
         gid = t1_stats.get("gameid", np.nan)
         sde = (team1.side or str(t1_stats.get("side", ""))).strip()
 
-        left = t1_fwd.to_frame().T
+        left = t1_fwd.to_frame().T.infer_objects()
         left["gameid"] = gid
         left["side"] = sde
 
-        # 4) Right row (opponent features) — keep all *_win_likelihood + any ema_* used in training
-        opp_keep = [c for c in t2_mirr.index if c.endswith("_win_likelihood")]
-        opp_keep += [c for c in t2_mirr.index if c.startswith("ema_")]
+        # 4) Right row (opponent EMA features used in training)
+        opp_keep = [c for c in t2_mirr.index if c.startswith("ema_")]
 
         opp_payload = {f"opp_{c}": t2_mirr.get(c, np.nan) for c in opp_keep}
         right = pd.DataFrame([{**opp_payload, "gameid": gid, "side": sde}])
