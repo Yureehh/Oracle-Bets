@@ -8,6 +8,7 @@ from oracle_bets_core.pd import pd
 
 TEAM_A_SHARED_ELO = 1500
 LATEST_TEAM_ELO = 1700
+EXPECTED_BREAK_THRESHOLD_DAYS = 45.0
 
 
 def test_default_as_of_uses_the_utc_decision_clock(tmp_path) -> None:
@@ -45,7 +46,27 @@ def test_default_as_of_uses_the_utc_decision_clock(tmp_path) -> None:
     )
     # Only 22 hours elapsed; midnight rounding would incorrectly add a day.
     assert team.team_stats["days_since_last_game"] == 0.0
+    assert team.team_stats["is_after_break"] == 0
     assert team.player_stats["days_since_last_game"].tolist() == [0.0] * 5
+
+    at_threshold = Team(
+        "Team A",
+        feature_snapshot=snapshot,
+        as_of_date="2026-02-16T11:00:00Z",
+        decision_at="2026-02-16T11:00:00Z",
+    )
+    assert (
+        at_threshold.team_stats["days_since_last_game"] == EXPECTED_BREAK_THRESHOLD_DAYS
+    )
+    assert at_threshold.team_stats["is_after_break"] == 0
+
+    after_break = Team(
+        "Team A",
+        feature_snapshot=snapshot,
+        as_of_date="2026-02-17T12:00:00Z",
+        decision_at="2026-02-17T12:00:00Z",
+    )
+    assert after_break.team_stats["is_after_break"] == 1
 
 
 def test_lookup_players_prefers_requested_team_before_global_latest() -> None:
