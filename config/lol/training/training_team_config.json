@@ -19,8 +19,6 @@
     "is_first_season_game",
     "roster_continuity",
     "roster_uncertainty",
-    "league_elo_win_likelihood",
-    "strength_pool_win_likelihood",
     "season_win_likelihood",
     "glicko2_phi_before",
     "trueskill_sigma_before",

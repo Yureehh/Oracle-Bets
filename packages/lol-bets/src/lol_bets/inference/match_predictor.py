@@ -61,6 +61,13 @@ from oracle_bets_core.paths import (
 )
 from oracle_bets_core.pd import pd
 
+from lol_bets.data_generation.feature_engineering.performance_features.season_win_rate import (
+    EPSILON as SEASON_WIN_EPSILON,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
+    DEFAULT_POSITION_WEIGHT,
+    POSITION_WEIGHTS,
+)
 from lol_bets.data_generation.feature_engineering.ratings_features.glicko import (
     DEFAULT_MU,
     DEFAULT_PHI,
@@ -201,8 +208,18 @@ def _glicko2_prob(team1_mus, team1_phis, team2_mus, team2_phis) -> float:
     model = Glicko2(mu=DEFAULT_MU, phi=DEFAULT_PHI, sigma=DEFAULT_SIGMA)
     mean_blue = calculate_mean_rating(blue)
     mean_red = calculate_mean_rating(red)
-    mean_impact = sum(model.reduce_impact(r) for r in blue) / max(1, len(blue))
-    return float(_clip01(model.expect_score(mean_blue, mean_red, mean_impact)))
+    return float(
+        _clip01(model.expect_score(mean_blue, mean_red, model.reduce_impact(mean_red)))
+    )
+
+
+def _player_elo_total(rows: pd.DataFrame) -> float:
+    weights = (
+        rows["position"]
+        .str.lower()
+        .map(lambda role: POSITION_WEIGHTS.get(role, DEFAULT_POSITION_WEIGHT))
+    )
+    return float((rows["elo"] * weights).sum() / weights.sum() * len(rows))
 
 
 def _pl_prob(team1_mus, team1_sigmas, team2_mus, team2_sigmas) -> float:
@@ -556,8 +573,8 @@ class MatchPredictor:
 
     @staticmethod
     def patch_season_wr_prediction(team1_wr: float, team2_wr: float) -> float:
-        total = team1_wr + team2_wr
-        return 0.5 if total <= 0.0 else round(team1_wr / total, RATING_DECIMALS)
+        total = team1_wr + team2_wr + SEASON_WIN_EPSILON
+        return float(np.clip(team1_wr / total, 0.0, 1.0))
 
     # ── feature assembly (teams) ────────────────────────────────────────── #
 
@@ -607,22 +624,27 @@ class MatchPredictor:
             "trueskill_sigma",
         }
         if rating_columns.issubset(t1.index) and rating_columns.issubset(t2.index):
-            t1["elo_win_likelihood"] = float(_elo_prob(t1["elo"], t2["elo"]))
-            t1["glicko2_win_likelihood"] = _glicko2_prob(
-                t1["glicko2_mu"],
-                t1["glicko2_phi"],
-                t2["glicko2_mu"],
-                t2["glicko2_phi"],
-            )
-            t1["pl_win_likelihood"] = _pl_prob(
-                t1["pl_mu"], t1["pl_sigma"], t2["pl_mu"], t2["pl_sigma"]
-            )
-            t1["trueskill_win_likelihood"] = _ts_prob(
-                t1["trueskill_mu"],
-                t1["trueskill_sigma"],
-                t2["trueskill_mu"],
-                t2["trueskill_sigma"],
-            )
+            blue, red = (t1, t2) if t1.get("side") != "Red" else (t2, t1)
+            blue_likelihoods = {
+                "elo_win_likelihood": float(_elo_prob(blue["elo"], red["elo"])),
+                "glicko2_win_likelihood": _glicko2_prob(
+                    blue["glicko2_mu"],
+                    blue["glicko2_phi"],
+                    red["glicko2_mu"],
+                    red["glicko2_phi"],
+                ),
+                "pl_win_likelihood": _pl_prob(
+                    blue["pl_mu"], blue["pl_sigma"], red["pl_mu"], red["pl_sigma"]
+                ),
+                "trueskill_win_likelihood": _ts_prob(
+                    blue["trueskill_mu"],
+                    blue["trueskill_sigma"],
+                    red["trueskill_mu"],
+                    red["trueskill_sigma"],
+                ),
+            }
+            for name, likelihood in blue_likelihoods.items():
+                t1[name] = likelihood if blue is t1 else 1.0 - likelihood
 
         # Side and First Selection are retained as source context, not model
         # signals, until separately timestamped data earns promotion.
@@ -712,7 +734,7 @@ class MatchPredictor:
     # ── feature assembly (players) ──────────────────────────────────────── #
 
     def apply_player_stat_modifications(
-        self, p1: pd.DataFrame, p2: pd.DataFrame
+        self, p1: pd.DataFrame, p2: pd.DataFrame, *, side: str = "Blue"
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Row-wise modifications for players; returns copies.
@@ -721,28 +743,32 @@ class MatchPredictor:
         b = p2.copy()
 
         if not a.empty and not b.empty:
-            a["elo_win_likelihood"] = _elo_prob(
-                a["elo"].mean(),
-                b["elo"].mean(),
-            )
-            a["glicko2_win_likelihood"] = _glicko2_prob(
-                a["glicko2_mu"],
-                a["glicko2_phi"],
-                b["glicko2_mu"],
-                b["glicko2_phi"],
-            )
-            a["pl_win_likelihood"] = _pl_prob(
-                a["pl_mu"],
-                a["pl_sigma"],
-                b["pl_mu"],
-                b["pl_sigma"],
-            )
-            a["trueskill_win_likelihood"] = _ts_prob(
-                a["trueskill_mu"],
-                a["trueskill_sigma"],
-                b["trueskill_mu"],
-                b["trueskill_sigma"],
-            )
+            blue, red = (a, b) if side != "Red" else (b, a)
+            blue_likelihoods = {
+                "elo_win_likelihood": _elo_prob(
+                    _player_elo_total(blue), _player_elo_total(red)
+                ),
+                "glicko2_win_likelihood": _glicko2_prob(
+                    blue["glicko2_mu"],
+                    blue["glicko2_phi"],
+                    red["glicko2_mu"],
+                    red["glicko2_phi"],
+                ),
+                "pl_win_likelihood": _pl_prob(
+                    blue["pl_mu"],
+                    blue["pl_sigma"],
+                    red["pl_mu"],
+                    red["pl_sigma"],
+                ),
+                "trueskill_win_likelihood": _ts_prob(
+                    blue["trueskill_mu"],
+                    blue["trueskill_sigma"],
+                    red["trueskill_mu"],
+                    red["trueskill_sigma"],
+                ),
+            }
+            for name, likelihood in blue_likelihoods.items():
+                a[name] = likelihood if blue is a else 1.0 - likelihood
 
         # Drop raw rating columns (keep id/meta like gameid/side/teamname/position on 'a')
         drop_cols = [
@@ -780,7 +806,7 @@ class MatchPredictor:
                     f"Player features for {label} require exactly one row per role."
                 )
         a, b = self.apply_player_stat_modifications(
-            team1.player_stats, team2.player_stats
+            team1.player_stats, team2.player_stats, side=team1.side or "Blue"
         )
 
         # Nuke any stale 'side' from parquet & stamp the current orientation
@@ -1459,6 +1485,12 @@ class MatchPredictor:
             red_team, blue_team, account_for_side
         )
         X_side = pd.concat([blue_row, red_row], ignore_index=True)
+        X_side = GradientBoostingModel.add_explicit_ema_diffs(
+            X_side, drop_opponents=True
+        )
+        X_side = GradientBoostingModel.fuse_opposing_team_features(X_side)
+        X_side = GradientBoostingModel.process_players_likelihood_columns(X_side)
+        X_side = GradientBoostingModel.add_rating_consensus_features(X_side)
         meta_side = pd.DataFrame(
             {
                 "gameid": ["live", "live"],

@@ -587,6 +587,7 @@ def build_match_prediction_snapshot(  # noqa: PLR0915
     team_a = Team(
         name=team_a_name,
         side="Blue",
+        league=str(row["league"]) if pd.notna(row.get("league")) else None,
         first_pick=None,
         as_of_date=row.get("start_utc"),
         decision_at=decision_at,
@@ -596,6 +597,7 @@ def build_match_prediction_snapshot(  # noqa: PLR0915
     team_b = Team(
         name=team_b_name,
         side="Red",
+        league=str(row["league"]) if pd.notna(row.get("league")) else None,
         first_pick=None,
         as_of_date=row.get("start_utc"),
         decision_at=decision_at,

@@ -35,8 +35,6 @@
     "trueskill_mu_before",
     "trueskill_sigma_before",
     "trueskill_win_likelihood",
-    "league_elo_win_likelihood",
-    "strength_pool_win_likelihood",
     "season_win_likelihood",
     "ema_season_win_rate_before",
     "ema_season_games_before",

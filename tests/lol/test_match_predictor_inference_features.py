@@ -4,7 +4,22 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from lol_bets.inference.match_predictor import MatchPredictor
+from lol_bets.data_generation.feature_engineering.performance_features.season_win_rate import (
+    EPSILON as SEASON_WIN_EPSILON,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
+    DEFAULT_POSITION_WEIGHT,
+    POSITION_WEIGHTS,
+    expected_outcome,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.glicko import (
+    DEFAULT_MU,
+    DEFAULT_PHI,
+    DEFAULT_SIGMA,
+    Glicko2,
+    Rating,
+)
+from lol_bets.inference.match_predictor import MatchPredictor, _glicko2_prob
 from lol_bets.prediction_models.gbdt_model import GradientBoostingModel
 from lol_bets.prediction_models.prop_features import build_game_level_outcome_features
 from oracle_bets_core.pd import pd
@@ -78,6 +93,78 @@ def test_player_lineup_likelihoods_are_available_for_inference() -> None:
 
     assert "glicko2_mu" not in weaker.columns
     assert "opp_ema_kda" in stronger.columns
+
+
+def test_player_elo_likelihood_matches_weighted_training_total() -> None:
+    predictor = MatchPredictor.__new__(MatchPredictor)
+    own = _full_players(0)
+    opponent = _full_players(200)
+    actual, _ = predictor.apply_player_stat_modifications(own, opponent)
+
+    def rating_total(rows: pd.DataFrame) -> float:
+        weights = rows["position"].map(
+            lambda role: POSITION_WEIGHTS.get(role, DEFAULT_POSITION_WEIGHT)
+        )
+        return float((rows["elo"] * weights).sum() / weights.sum() * len(rows))
+
+    expected = expected_outcome(rating_total(own), rating_total(opponent), 400.0)
+    assert actual["elo_win_likelihood"].iloc[0] == pytest.approx(expected, abs=1e-12)
+
+
+def test_glicko_likelihood_uses_opponent_mean_impact() -> None:
+    model = Glicko2(mu=DEFAULT_MU, phi=DEFAULT_PHI, sigma=DEFAULT_SIGMA)
+    blue = Rating(1600.0, 50.0)
+    red = Rating(1500.0, 150.0)
+    expected = model.expect_score(blue, red, model.reduce_impact(red))
+
+    assert _glicko2_prob(1600.0, 50.0, 1500.0, 150.0) == pytest.approx(
+        expected, abs=1e-12
+    )
+
+
+def test_red_player_likelihood_is_blue_complement() -> None:
+    predictor = MatchPredictor.__new__(MatchPredictor)
+    blue, _ = predictor.apply_player_stat_modifications(
+        _players(0), _players(200), side="Blue"
+    )
+    red, _ = predictor.apply_player_stat_modifications(
+        _players(200), _players(0), side="Red"
+    )
+
+    for name in (
+        "elo_win_likelihood",
+        "glicko2_win_likelihood",
+        "pl_win_likelihood",
+        "trueskill_win_likelihood",
+    ):
+        assert red[name].iloc[0] == pytest.approx(1.0 - blue[name].iloc[0])
+
+
+def test_prop_features_include_player_and_rating_consensus() -> None:
+    predictor = MatchPredictor.__new__(MatchPredictor)
+    blue = SimpleNamespace(side="Blue", team_stats={"league": "LCK"})
+    red = SimpleNamespace(side="Red", team_stats={"league": "LCK"})
+
+    def side_features(team, _opponent, _account_for_side):
+        _ = _opponent, _account_for_side
+        strength = 0.7 if team.side == "Blue" else 0.3
+        return pd.DataFrame(
+            {
+                "gameid": ["live"],
+                "side": [team.side],
+                "elo_win_likelihood": [strength],
+                "glicko2_win_likelihood": [strength],
+                "top_elo_win_likelihood": [strength],
+                "jng_elo_win_likelihood": [strength],
+            }
+        )
+
+    predictor.calculate_team_and_player_stats = side_features
+    features = predictor.calculate_prop_features(blue, red, account_for_side=False)
+
+    assert features.loc[0, "blue_players_elo_win_likelihood"] == pytest.approx(0.7)
+    assert features.loc[0, "red_players_elo_win_likelihood"] == pytest.approx(0.3)
+    assert features.loc[0, "blue_rating_consensus"] == pytest.approx(0.7)
 
 
 def test_predict_outcomes_preserves_probability_precision() -> None:
@@ -202,7 +289,11 @@ def test_team_likelihood_remains_numeric_and_is_not_fused_with_opponent() -> Non
 
     assert is_numeric_dtype(team_row["season_win_likelihood"])
     assert "opp_season_win_likelihood" not in team_row
-    assert fused.loc[0, "season_win_likelihood"] == OWN_SEASON_WIN_RATE
+    assert fused.loc[0, "season_win_likelihood"] == pytest.approx(
+        OWN_SEASON_WIN_RATE
+        / (OWN_SEASON_WIN_RATE + OPP_SEASON_WIN_RATE + SEASON_WIN_EPSILON),
+        abs=1e-12,
+    )
     assert fused.loc[0, "diff_ema_gold"] == OWN_GOLD_EMA - OPP_GOLD_EMA
     opposite_row = predictor.calculate_team_stats(opponent, own, False, "bo3")
     sides = pd.concat(
@@ -219,7 +310,9 @@ def test_team_likelihood_remains_numeric_and_is_not_fused_with_opponent() -> Non
     )
     matchup, _, _ = build_game_level_outcome_features(sides, metadata)
     assert matchup.loc[0, "delta_season_win_likelihood"] == pytest.approx(
-        OWN_SEASON_WIN_RATE - OPP_SEASON_WIN_RATE
+        (OWN_SEASON_WIN_RATE - OPP_SEASON_WIN_RATE)
+        / (OWN_SEASON_WIN_RATE + OPP_SEASON_WIN_RATE + SEASON_WIN_EPSILON),
+        abs=1e-12,
     )
 
 

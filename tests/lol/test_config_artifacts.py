@@ -154,7 +154,7 @@ def test_team_configs_use_strength_pool_and_drop_noisy_economy_columns():
     values = json.dumps([import_config, team_config, flattened_config])
 
     assert "strength_pool" in team_config["team_features"]
-    assert "strength_pool_win_likelihood" in team_config["team_features"]
+    assert "strength_pool_win_likelihood" not in team_config["team_features"]
     assert "gspd" not in values
     assert "gpr" not in values
 
@@ -210,6 +210,8 @@ def test_winner_configs_exclude_unavailable_and_constant_matchup_features():
         "h2h_games_before",
         "h2h_wins_before",
         "h2h_win_rate_before",
+        "league_elo_win_likelihood",
+        "strength_pool_win_likelihood",
         "season_avg_gamelength",
     }
 

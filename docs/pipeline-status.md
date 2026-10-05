@@ -1,6 +1,6 @@
 # Pipeline status
 
-_Local verification snapshot: 2026-10-04. Generated datasets, model bundles,
+_Local verification snapshot: 2026-10-05. Generated datasets, model bundles,
 quotes, and the evidence database are local state; cloning GitHub does not
 include them._
 
@@ -10,14 +10,14 @@ parallel, but a later milestone cannot compensate for a failed earlier gate.
 
 | Milestone | What happens | Current evidence | Next gate |
 | --- | --- | --- | --- |
-| 0 — Source and configuration | Install locked dependencies; keep provider credentials outside Git. | Lock, CLI, and CI pass on merged `main`; the latest local suite passed 721 tests with 1 skipped. | Check setup on a second machine. |
+| 0 — Source and configuration | Install locked dependencies; keep provider credentials outside Git. | The latest local suite passed 730 tests with 1 skipped, plus lint, formatting, and type checks; this serving-parity patch still needs CI and merge. | Check setup on a second machine. |
 | 10 — Ingest | Refresh the public Oracle's Elixir source and retain a versioned raw snapshot. | Source check ready through 2026-10-04 08:57 UTC. | Continue checking source freshness before each rebuild. |
 | 20 — Clean data and identities | Quarantine bad rows; normalize teams, players, maps, and series. | Latest local rebuild: 24,386 games, 10,184 accepted series, and 1,770 quarantined groups. | Review quarantined groups when source or rules change. |
-| 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | Paired map, series, and serving snapshots were built. A later evidence-code commit changed the broad code fingerprint, so the tables require a new generation before training on current `main`. | Rebuild after the serving-feature corrections, then validate source, code, and table hashes together. |
+| 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | The October 5 rebuild produced 24,386 games and 10,184 accepted series. The serving-parity edits change the code fingerprint, so these tables require a new generation before training. | Rebuild after the serving-feature corrections, then validate source, code, and table hashes together. |
 | 40 — Research splits | Fit preprocessing inside temporal development folds; reserve sealed evaluation and record prior exposure. | Leakage and lineage guards are implemented and covered by tests; the October 4 research run used sealed temporal splits. | Keep the split and exposure checks in the next generation. |
 | 50 — Fresh search | Run a separate Optuna study for each supported target. | Five 100-trial studies completed on commit `cc93624`, one each for map winner, series winner, game length, kills, and towers. They are stale after code and source changes. | Repeat only after serving-feature parity is corrected. |
 | 60 — Full refit | Apply the selected study parameters to research-only models. | Research-only refit `20261004T153158_723319Z` completed all five targets with no failures and no promotion; it is stale against current `main`. | Review the sealed evidence, then refit on the corrected generation. |
-| 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | The candidate lineage check was fixed in PR #5. Diagnostic replay reached the values and found broad mismatches: 229 of 243 model-input columns differed on the first sampled map row. No candidate was promoted. | Align training and serving transforms, run the official replay on a fresh generation, and review calibration before promotion. |
+| 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | The serving-parity patch corrects state timing, rating transitions, and prop transforms. A diagnostic of the stale candidate compared 39 servable sampled rows across five targets: only the H2H and league-Elo inputs removed from the next configuration differed. One first-appearance team had no prior serving state. This bypassed candidate lineage and is **not** an official replay; no candidate was promoted. | Merge the patch, rebuild, refit, run official replay on the new candidate, and review calibration before promotion. |
 | 80 — Prospective fixture population | Enroll scheduled fixtures before forecasts and prices. | Cloud9–LYON was enrolled for October 3. Team Liquid–LYON was enrolled at 16:34 UTC before its October 4 20:00 UTC start after PR #6 corrected a shared provider-series ID collision. | Continue complete enrollment and record missing markets and no-bet decisions. |
 | 90 — Market and paper cycle | Capture exact Polymarket/Thunderpick contracts, owner-confirm quotes, size positive-edge paper entries, record close and result. | The October 4 Polymarket review captured 55 contracts and 42 quote observations before start; four required market families have observed quotes. All priced actions remain exploration-only. No verified Thunderpick line, paper entry, close, or settlement exists. | Obtain owner-observed executable lines and terms; then complete a paper entry-to-settlement cycle. |
 | 100 — Decision evidence | Evaluate all enrolled fixtures, net paper returns, calibration, closing-line value, exposure, and drawdown before extending to tennis or real stakes. | **Pending.** No observed earnings claim is justified. | Accumulate enough prospective, settled, representative samples and compare locked policies on later data. |
@@ -52,8 +52,8 @@ returns. This project currently has no verified live edge or income stream.
 
 ## Performance work after correctness
 
-The October 4 full rebuild took 1,847.4 seconds; enrichment alone took
-1,661.7 seconds. An earlier daily run with no changed history also spent about
+The October 5 full rebuild took 1,990.3 seconds; enrichment alone took
+1,771.9 seconds. An earlier daily run with no changed history also spent about
 30 minutes rebuilding features. The next optimization is a no-change shortcut
 guarded by source identity, code/configuration fingerprint, manifest integrity,
 and output hashes. Benchmark an awake before/after run and keep the full path
