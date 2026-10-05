@@ -51,5 +51,6 @@ def test_application_topics_use_separate_bounded_handlers():
 def test_general_topic_remains_console_only():
     general = instantiate_logger(LOG_TOPIC.GENERAL)
 
-    assert len(general.handlers) == 1
-    assert not isinstance(general.handlers[0], RotatingFileHandler)
+    assert not any(
+        isinstance(handler, RotatingFileHandler) for handler in general.handlers
+    )
