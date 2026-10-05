@@ -2,8 +2,24 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
+    INACTIVITY_GRACE_DAYS,
+    INACTIVITY_HALF_LIFE_DAYS,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.plackett_luce import (
+    DEFAULT_SIGMA as PL_SIGMA,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.trueskill import (
+    DEFAULT_SIGMA as TS_SIGMA,
+)
+from lol_bets.inference import team as team_module
 from lol_bets.inference.snapshots import publish_feature_snapshot
-from lol_bets.inference.team import Team
+from lol_bets.inference.team import (
+    Team,
+    _advance_inactive_ratings,
+    _latest_rating_leagues,
+)
 from oracle_bets_core.pd import pd
 
 TEAM_A_SHARED_ELO = 1500
@@ -69,6 +85,138 @@ def test_default_as_of_uses_the_utc_decision_clock(tmp_path) -> None:
     assert after_break.team_stats["is_after_break"] == 1
 
 
+def test_same_day_activity_does_not_advance_frozen_feature_state(tmp_path) -> None:
+    teams = pd.DataFrame(
+        {
+            "teamname": ["Team A", "Team A"],
+            "date": ["2026-01-01T10:00Z", "2026-01-02T10:00Z"],
+            "gamelength": [30.0, 30.0],
+            "elo_after": [1500.0, 1700.0],
+            "glicko2_mu_after": [1500.0, 1600.0],
+            "glicko2_phi_after": [100.0, 80.0],
+        }
+    )
+    players = pd.concat(
+        [
+            teams.assign(playername=role, position=role)
+            for role in ("top", "jng", "mid", "bot", "sup")
+        ],
+        ignore_index=True,
+    )
+    snapshot = publish_feature_snapshot(
+        teams,
+        players,
+        team_columns=[
+            "teamname",
+            "date",
+            "elo_after",
+            "glicko2_mu_after",
+            "glicko2_phi_after",
+        ],
+        player_columns=[
+            "teamname",
+            "date",
+            "elo_after",
+            "glicko2_mu_after",
+            "glicko2_phi_after",
+            "playername",
+            "position",
+        ],
+        source_manifest={},
+        code_sha256="test-code",
+        training_generation_id="test-generation",
+        root=tmp_path,
+        observed_at=datetime(2026, 1, 2, 13, tzinfo=UTC),
+    )
+    team = Team(
+        "Team A",
+        as_of_date="2026-01-02T12:00Z",
+        decision_at="2026-01-02T14:00Z",
+        feature_snapshot=snapshot,
+    )
+
+    assert team.team_stats["elo"] == TEAM_A_SHARED_ELO
+    assert team.player_stats["elo"].tolist() == [TEAM_A_SHARED_ELO] * 5
+    assert team.team_stats["days_since_last_game"] == 0.0
+    assert team.player_stats["days_since_last_game"].tolist() == [0.0] * 5
+
+    tomorrow = Team(
+        "Team A",
+        as_of_date="2026-01-03T12:00Z",
+        decision_at="2026-01-02T14:00Z",
+        feature_snapshot=snapshot,
+    )
+    assert tomorrow.team_stats["elo"] == LATEST_TEAM_ELO
+    assert tomorrow.player_stats["elo"].tolist() == [LATEST_TEAM_ELO] * 5
+
+    later_at = pd.Timestamp("2026-04-01T12:00Z")
+    later = Team(
+        "Team A",
+        league="LEC",
+        as_of_date=later_at,
+        decision_at=later_at,
+        feature_snapshot=snapshot,
+    )
+    inactive_days = max(
+        0,
+        (later_at - pd.Timestamp("2026-01-02T10:00Z")).days - INACTIVITY_GRACE_DAYS,
+    )
+    retention = 0.5 ** (inactive_days / INACTIVITY_HALF_LIFE_DAYS)
+    assert later.team_stats["elo"] == pytest.approx(1500 + 200 * retention)
+    assert later.team_stats["glicko2_mu"] == pytest.approx(1500 + 100 * retention)
+    assert later.team_stats["glicko2_phi"] == pytest.approx(
+        350 - (350 - 80) * retention
+    )
+    assert later.player_stats["elo"].tolist() == pytest.approx(
+        [1500 + 200 * retention] * 5
+    )
+    assert later.team_stats["league"] == "LEC"
+    assert later.team_stats["strength_pool"] == "major"
+
+
+def test_player_league_transfer_uses_last_non_cross_league(
+    tmp_path, monkeypatch
+) -> None:
+    player_id = "oe:player:example"
+    history = pd.DataFrame(
+        {
+            "playerid": [player_id, player_id],
+            "league": ["LFL", "EWC"],
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+        }
+    )
+    assert _latest_rating_leagues(history, "playerid")[player_id] == "LFL"
+
+    league_path = tmp_path / "league_elo.parquet"
+    pd.DataFrame({"league": ["LFL", "LEC"], "elo": [1700.0, 1600.0]}).to_parquet(
+        league_path
+    )
+    monkeypatch.setattr(team_module, "RATING_LEAGUE_ELO", league_path)
+    team_module._league_elo_values.cache_clear()
+    row = pd.Series(
+        {
+            "playerid": player_id,
+            "date": "2026-01-02T10:00Z",
+            "elo": 1600.0,
+            "glicko2_mu": 1600.0,
+            "glicko2_phi": 100.0,
+            "pl_mu": 30.0,
+            "pl_sigma": 2.0,
+            "trueskill_mu": 30.0,
+            "trueskill_sigma": 2.0,
+        }
+    )
+    advanced = _advance_inactive_ratings(row, pd.Timestamp("2026-01-03"), "LEC", "LFL")
+
+    assert advanced["elo"] == pytest.approx(1640.0)
+    assert advanced["glicko2_mu"] == pytest.approx(1640.0)
+    assert advanced["pl_mu"] == pytest.approx(25.0)
+    assert advanced["pl_sigma"] == PL_SIGMA
+    assert advanced["trueskill_mu"] == pytest.approx(25.0)
+    assert advanced["trueskill_sigma"] == TS_SIGMA
+    team_module._league_elo_values.cache_clear()
+
+
 def test_lookup_players_prefers_requested_team_before_global_latest() -> None:
     team = Team.__new__(Team)
     team.name = "Team A"
@@ -83,6 +231,7 @@ def test_lookup_players_prefers_requested_team_before_global_latest() -> None:
                 "Team A",
             ],
             "playername": ["Shared", "Shared", "Jng", "Mid", "Bot", "Sup"],
+            "playerid": ["shared-a", "shared-b", "jng", "mid", "bot", "sup"],
             "position": ["top", "top", "jng", "mid", "bot", "sup"],
             "date": pd.to_datetime(
                 [
@@ -110,6 +259,7 @@ def test_lookup_players_prefers_requested_team_before_global_latest() -> None:
 
     assert top["teamname"] == "Team A"
     assert top["elo"] == TEAM_A_SHARED_ELO
+    assert team._player_activity_dates["shared-a"] == pd.Timestamp("2026-01-01")
 
 
 def test_lookup_team_row_prefers_latest_snapshot() -> None:

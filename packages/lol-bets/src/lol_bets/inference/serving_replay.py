@@ -8,13 +8,14 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from oracle_bets_core.io_utils import load_model
 from oracle_bets_core.paths import MODEL_REGISTRY_DIR, RAW_CURRENT_POINTER
 from oracle_bets_core.pd import pd
 
 from lol_bets.data_generation.ingestion.history import read_history_snapshot
 from lol_bets.inference.match_predictor import MatchPredictor
 from lol_bets.inference.roster import EXPECTED_ROLES
-from lol_bets.inference.team import Team
+from lol_bets.inference.team import Team, TeamStateUnavailableError
 from lol_bets.operations.models import ModelRegistry, _paths_fingerprint
 from lol_bets.training import ALL_MODEL_CONFIGS, _candidate_training_paths
 
@@ -51,7 +52,21 @@ def compare_feature_values(
     return mismatches
 
 
-def replay_sealed_features(
+def _selected_model_features(
+    paths: dict[str, Path], model_name: str, expected: pd.DataFrame
+) -> pd.DataFrame:
+    selected = load_model(paths[f"{model_name}/{model_name}_final_features.pkl"])
+    if (
+        not isinstance(selected, list)
+        or not selected
+        or not all(isinstance(name, str) for name in selected)
+        or not set(selected).issubset(expected.columns)
+    ):
+        raise ValueError(f"Sealed {model_name} model features are invalid")
+    return expected.loc[:, selected]
+
+
+def replay_sealed_features(  # noqa: PLR0915
     candidate_id: str,
     *,
     inputs: TrainingInputs,
@@ -91,7 +106,9 @@ def replay_sealed_features(
     for cfg in ALL_MODEL_CONFIGS:
         model_name = f"{cfg.model_name}_LightGBM"
         prefix = f"_evaluation/{model_name}"
-        expected = pd.read_parquet(paths[f"{prefix}/features.parquet"])
+        expected = _selected_model_features(
+            paths, model_name, pd.read_parquet(paths[f"{prefix}/features.parquet"])
+        )
         labels = pd.read_parquet(paths[f"{prefix}/labels.parquet"])
         if len(expected) != len(labels) or expected.empty:
             raise ValueError(f"Sealed {cfg.target_name} evaluation is misaligned")
@@ -101,6 +118,7 @@ def replay_sealed_features(
             0, len(expected) - 1, min(sample_per_target, len(expected)), dtype=int
         )
         failures: list[dict[str, Any]] = []
+        unavailable: list[dict[str, str]] = []
         compared = 0
         for index in sampled:
             label = labels.iloc[int(index)]
@@ -137,6 +155,8 @@ def replay_sealed_features(
                             "different_count": len(mismatches),
                         }
                     )
+            except TeamStateUnavailableError as error:
+                unavailable.append({"gameid": gameid, "reason": str(error)})
             except (KeyError, TypeError, ValueError) as error:
                 failures.append({"gameid": gameid, "error": str(error)})
         results[cfg.target_name] = {
@@ -144,6 +164,7 @@ def replay_sealed_features(
             "compared": compared,
             "matching": compared
             - sum("different_columns" in item for item in failures),
+            "unavailable": unavailable,
             "failures": failures,
         }
     inputs.assert_unchanged()
@@ -155,7 +176,9 @@ def replay_sealed_features(
         "code_sha256": map_generation["code_sha256"],
         "observed_at": datetime.now(UTC).isoformat(),
         "availability_status": "retrospective_calculation_only",
-        "value_parity_passed": all(not row["failures"] for row in results.values()),
+        "value_parity_passed": all(
+            row["compared"] > 0 and not row["failures"] for row in results.values()
+        ),
         "targets": results,
     }
 
@@ -198,6 +221,7 @@ def _historical_team(
     return Team(
         name=str(row["teamname"]),
         side=str(row["side"]),
+        league=str(row["league"]) if pd.notna(row.get("league")) else None,
         as_of_date=match_at,
         decision_at=datetime.now(UTC),
         feature_snapshot=snapshot,

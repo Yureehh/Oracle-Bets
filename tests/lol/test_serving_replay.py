@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from lol_bets.inference.serving_replay import (
     compare_feature_values,
     replay_sealed_features,
 )
+from lol_bets.inference.team import TeamStateUnavailableError
 from lol_bets.operations.models import _paths_fingerprint
 from oracle_bets_core.pd import pd
 
@@ -168,7 +170,7 @@ def test_value_replay_runs_historical_team_path_and_reports_mismatch(
     prefix = "_evaluation/Winner_LightGBM"
     feature_path = tmp_path / "features.parquet"
     label_path = tmp_path / "labels.parquet"
-    pd.DataFrame({"elo_diff": [100]}).to_parquet(feature_path)
+    pd.DataFrame({"elo_diff": [100], "unused": [999]}).to_parquet(feature_path)
     pd.DataFrame(
         {"gameid": ["match-1"], "source_gameid": ["match-1"], "date": [match_at]}
     ).to_parquet(label_path)
@@ -176,6 +178,10 @@ def test_value_replay_runs_historical_team_path_and_reports_mismatch(
         f"{prefix}/features.parquet": feature_path,
         f"{prefix}/labels.parquet": label_path,
     }
+    selected_path = tmp_path / "selected.pkl"
+    with selected_path.open("wb") as output:
+        pickle.dump(["elo_diff"], output)
+    paths["Winner_LightGBM/Winner_LightGBM_final_features.pkl"] = selected_path
 
     class Predictor:
         def __init__(self, **_kwargs):
@@ -222,4 +228,15 @@ def test_value_replay_runs_historical_team_path_and_reports_mismatch(
     assert mismatched["value_parity_passed"] is False
     assert mismatched["targets"]["winner"]["failures"][0]["different_columns"] == [
         "elo_diff"
+    ]
+
+    def no_prior_state(*_args):
+        raise TeamStateUnavailableError("no prior team state")
+
+    monkeypatch.setattr(serving_replay, "_historical_team", no_prior_state)
+    unavailable = replay_sealed_features("candidate", inputs=inputs, snapshot=snapshot)
+    assert unavailable["value_parity_passed"] is False
+    assert unavailable["targets"]["winner"]["compared"] == 0
+    assert unavailable["targets"]["winner"]["unavailable"] == [
+        {"gameid": "match-1", "reason": "no prior team state"}
     ]

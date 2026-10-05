@@ -10,14 +10,64 @@ Team model: fast, safe access to team & player snapshots.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 
+from oracle_bets_core.league_taxonomy import get_league_taxonomy
 from oracle_bets_core.logger import logger
-from oracle_bets_core.paths import PROCESSED_DIR
+from oracle_bets_core.paths import PROCESSED_DIR, RATING_LEAGUE_ELO
 from oracle_bets_core.pd import pd
 
 from lol_bets.data_generation.feature_engineering.features_generator import (
     BREAK_THRESHOLD_DAYS,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.common import (
+    is_cross_league_competition,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
+    apply_inactivity_decay as apply_elo_inactivity_decay,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
+    config as rating_config,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
+    handle_league_swap as swap_elo_league,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.glicko import (
+    DEFAULT_MU,
+    DEFAULT_PHI,
+    DEFAULT_SIGMA,
+    Rating,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.glicko import (
+    apply_inactivity_decay as apply_glicko_inactivity_decay,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.glicko import (
+    handle_league_swap as swap_glicko_league,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.plackett_luce import (
+    DEFAULT_MU as PL_MU,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.plackett_luce import (
+    DEFAULT_SIGMA as PL_SIGMA,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.plackett_luce import (
+    handle_league_swap as swap_pl_league,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.plackett_luce import (
+    initialize_pl_model,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.trueskill import (
+    DEFAULT_MU as TS_MU,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.trueskill import (
+    DEFAULT_SIGMA as TS_SIGMA,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.trueskill import (
+    create_ts_rating,
+)
+from lol_bets.data_generation.feature_engineering.ratings_features.trueskill import (
+    handle_league_swap as swap_ts_league,
 )
 from lol_bets.inference.roster import EXPECTED_ROLES
 from lol_bets.inference.snapshots import FeatureSnapshot, load_feature_snapshot
@@ -76,10 +126,150 @@ def _rating_uncertainty(row: pd.Series) -> float:
     return float(sum(values) / len(values)) if values else float("nan")
 
 
+@lru_cache(maxsize=2)
+def _league_elo_values(mtime_ns: int, size: int) -> dict[str, float]:
+    _ = mtime_ns, size
+    frame = pd.read_parquet(RATING_LEAGUE_ELO, columns=["league", "elo"])
+    return dict(zip(frame["league"].astype(str), frame["elo"], strict=True))
+
+
+def _latest_rating_leagues(frame: pd.DataFrame, identity: str) -> dict[str, str]:
+    if not {identity, "league", "date"}.issubset(frame.columns):
+        return {}
+    ordinary = frame.loc[
+        frame["league"].notna()
+        & ~frame["league"].astype(str).map(is_cross_league_competition)
+    ]
+    latest = ordinary.sort_values("date").drop_duplicates(identity, keep="last")
+    return dict(
+        zip(latest[identity].astype(str), latest["league"].astype(str), strict=True)
+    )
+
+
+def _advance_inactive_ratings(
+    row: pd.Series,
+    as_of: pd.Timestamp,
+    fixture_league: str | None = None,
+    prior_league: str | None = None,
+) -> pd.Series:
+    """Apply the training rating systems' league and inactivity steps."""
+    last_active = pd.to_datetime(row.get("date"), errors="coerce", utc=True)
+    if pd.isna(last_active):
+        return row
+    last_active = last_active.tz_convert(None)
+    if (
+        fixture_league
+        and prior_league
+        and fixture_league != prior_league
+        and not is_cross_league_competition(fixture_league)
+    ):
+        stat = RATING_LEAGUE_ELO.stat()
+        league_elo = _league_elo_values(stat.st_mtime_ns, stat.st_size)
+        transfer = float(rating_config["shared"]["transfer_factor"])
+        identity = str(row.get("playerid") or row.get("teamid"))
+        if pd.notna(row.get("elo")):
+            elo_swap_state: dict[int | str, dict[str, Any]] = {
+                identity: {"elo": float(row["elo"]), "league": prior_league}
+            }
+            swap_elo_league(
+                identity,
+                fixture_league,
+                elo_swap_state,
+                league_elo,
+                float(rating_config["elo"]["initial"]),
+                transfer,
+            )
+            row["elo"] = elo_swap_state[identity]["elo"]
+        if pd.notna(row.get("glicko2_mu")) and pd.notna(row.get("glicko2_phi")):
+            glicko_swap_state: dict[int | str, dict[str, Any]] = {
+                identity: {
+                    "rating": Rating(
+                        float(row["glicko2_mu"]),
+                        float(row["glicko2_phi"]),
+                        DEFAULT_SIGMA,
+                    ),
+                    "league": prior_league,
+                }
+            }
+            swap_glicko_league(
+                identity,
+                fixture_league,
+                glicko_swap_state,
+                league_elo,
+                DEFAULT_MU,
+                transfer,
+            )
+            row["glicko2_mu"] = glicko_swap_state[identity]["rating"].mu
+        if pd.notna(row.get("pl_mu")) and pd.notna(row.get("pl_sigma")):
+            pl_state: dict[int | str, dict[str, Any]] = {
+                identity: {
+                    "rating": initialize_pl_model(PL_MU, PL_SIGMA).rating(
+                        float(row["pl_mu"]), float(row["pl_sigma"])
+                    ),
+                    "league": prior_league,
+                }
+            }
+            swap_pl_league(
+                identity,
+                fixture_league,
+                pl_state,
+                league_elo,
+                PL_MU,
+                PL_SIGMA,
+                transfer,
+            )
+            row["pl_mu"] = pl_state[identity]["rating"].mu
+            row["pl_sigma"] = pl_state[identity]["rating"].sigma
+        if pd.notna(row.get("trueskill_mu")) and pd.notna(row.get("trueskill_sigma")):
+            ts_state: dict[int | str, dict[str, Any]] = {
+                identity: {
+                    "rating": create_ts_rating(
+                        float(row["trueskill_mu"]), float(row["trueskill_sigma"])
+                    ),
+                    "league": prior_league,
+                }
+            }
+            swap_ts_league(
+                identity,
+                fixture_league,
+                ts_state,
+                league_elo,
+                TS_MU,
+                TS_SIGMA,
+                transfer,
+            )
+            row["trueskill_mu"] = ts_state[identity]["rating"].mu
+            row["trueskill_sigma"] = ts_state[identity]["rating"].sigma
+    if pd.notna(row.get("elo")):
+        elo_state = {"elo": float(row["elo"]), "last_active": last_active}
+        apply_elo_inactivity_decay(
+            elo_state, as_of, float(rating_config["elo"]["initial"])
+        )
+        row["elo"] = elo_state["elo"]
+    if pd.notna(row.get("glicko2_mu")) and pd.notna(row.get("glicko2_phi")):
+        glicko_state = {
+            "rating": Rating(
+                mu=float(row["glicko2_mu"]),
+                phi=float(row["glicko2_phi"]),
+                sigma=DEFAULT_SIGMA,
+            ),
+            "last_active": last_active,
+        }
+        apply_glicko_inactivity_decay(glicko_state, as_of, DEFAULT_MU, DEFAULT_PHI)
+        row["glicko2_mu"] = glicko_state["rating"].mu
+        row["glicko2_phi"] = glicko_state["rating"].phi
+    return row
+
+
+class TeamStateUnavailableError(ValueError):
+    """The team has no completed historical state before this fixture."""
+
+
 @dataclass
 class Team:
     name: str
     side: str | None = None
+    league: str | None = None
     first_pick: bool | None = None
     as_of_date: object | None = None
     decision_at: object | None = None
@@ -97,6 +287,10 @@ class Team:
     _team_df: pd.DataFrame = field(init=False, repr=False)
     _player_df: pd.DataFrame = field(init=False, repr=False)
     _as_of: pd.Timestamp = field(init=False, repr=False)
+    _team_activity_date: pd.Timestamp = field(init=False, repr=False)
+    _player_activity_dates: dict[str, pd.Timestamp] = field(init=False, repr=False)
+    _team_rating_league: str | None = field(init=False, repr=False)
+    _player_rating_leagues: dict[str, str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._load_snapshot()
@@ -109,6 +303,14 @@ class Team:
 
         # set team_stats
         self.team_stats = self._lookup_team_row(self.name).copy()
+        self.team_stats = _advance_inactive_ratings(
+            self.team_stats, self._as_of, self.league, self._team_rating_league
+        )
+        if self.league:
+            self.team_stats["league"] = self.league
+            self.team_stats["strength_pool"] = get_league_taxonomy(self.league)[
+                "strength_pool"
+            ]
         # Canonicalize the name so roster/player lookups use the Oracle's
         # Elixir teamname even when the caller passed an external alias.
         canonical_name = self.team_stats.get("teamname")
@@ -152,6 +354,17 @@ class Team:
         self.roster = filled
         self._validate_roster(strict=True)
         self.player_stats = self._lookup_players(self.roster)
+        self.player_stats = self.player_stats.apply(
+            lambda row: _advance_inactive_ratings(
+                row,
+                self._as_of,
+                self.league,
+                self._player_rating_leagues.get(str(row.get("playerid"))),
+            ),
+            axis=1,
+        )
+        if self.league:
+            self.player_stats["league"] = self.league
         continuity = sum(
             str(self.roster[role]).casefold()
             == str(last_roster.get(role, "")).casefold()
@@ -163,14 +376,24 @@ class Team:
             1.0 - continuity, 1.0 - known_fraction
         )
         self.team_stats["days_since_last_game"] = _days_ago(
-            self.team_stats.get("date"), self._as_of
+            self._team_activity_date, self._as_of
         )
         self.team_stats["is_after_break"] = int(
             self.team_stats["days_since_last_game"] > BREAK_THRESHOLD_DAYS
         )
         self.team_stats["rating_uncertainty"] = _rating_uncertainty(self.team_stats)
-        self.player_stats["days_since_last_game"] = self.player_stats["date"].map(
-            lambda value: _days_ago(value, self._as_of)
+        self.player_stats["days_since_last_game"] = self.player_stats.apply(
+            lambda row: _days_ago(
+                self._player_activity_dates[
+                    str(
+                        row.get("playerid")
+                        if pd.notna(row.get("playerid"))
+                        else row["playername"]
+                    ).casefold()
+                ],
+                self._as_of,
+            ),
+            axis=1,
         )
         self.player_stats["rating_uncertainty"] = self.player_stats.apply(
             _rating_uncertainty, axis=1
@@ -202,7 +425,9 @@ class Team:
 
     # ── lookups ──────────────────────────────────────────────────────────── #
 
-    def _at_or_before_as_of(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _at_or_before_as_of(
+        self, df: pd.DataFrame, *, frozen_state: bool = False
+    ) -> pd.DataFrame:
         as_of = getattr(self, "_as_of", None)
         if "date" not in df or as_of is None:
             return df
@@ -212,6 +437,9 @@ class Team:
         decision = getattr(self, "_decision_at", None)
         if decision is not None:
             cutoff = min(cutoff, decision)
+        if frozen_state and column == "state_available_at":
+            day_start = pd.to_datetime(as_of, utc=True).normalize()
+            return df.loc[(dates < day_start) & (dates <= cutoff)]
         return df.loc[dates <= cutoff]
 
     def _lookup_team_row(self, team_name: str) -> pd.Series:
@@ -224,13 +452,21 @@ class Team:
             raise TeamResolutionError(resolved)
         key = resolved_name.casefold()
         rows = self._team_df[self._team_df["teamname"].str.casefold() == key]
-        rows = self._at_or_before_as_of(rows)
+        activity_rows = self._at_or_before_as_of(rows)
+        if activity_rows.empty:
+            msg = f"Team '{team_name}' not found in teams table."
+            raise TeamStateUnavailableError(msg)
+        self._team_activity_date = activity_rows.sort_values("date").iloc[-1]["date"]
+        rows = self._at_or_before_as_of(rows, frozen_state=True)
         if rows.empty:  # defensive: resolver guarantees membership
             msg = f"Team '{team_name}' not found in teams table."
-            raise ValueError(msg)
+            raise TeamStateUnavailableError(msg)
+        rating_leagues = _latest_rating_leagues(rows, "teamid")
         if "date" in rows.columns:
             rows = rows.sort_values("date", ascending=False)
-        return rows.iloc[0]
+        selected = rows.iloc[0]
+        self._team_rating_league = rating_leagues.get(str(selected.get("teamid")))
+        return selected
 
     def _last_roster_from(self, df: pd.DataFrame, team_name: str) -> dict[str, str]:
         key = team_name.casefold()
@@ -277,7 +513,17 @@ class Team:
         df = self._player_df[
             self._player_df["playername"].str.casefold().isin(requested_names)
         ].copy()
-        df = self._at_or_before_as_of(df)
+        activity_rows = self._at_or_before_as_of(df)
+        activity_key = "playerid" if "playerid" in activity_rows else "playername"
+        self._player_activity_dates = (
+            activity_rows.groupby(
+                activity_rows[activity_key].astype(str).str.casefold()
+            )["date"]
+            .max()
+            .to_dict()
+        )
+        df = self._at_or_before_as_of(df, frozen_state=True)
+        self._player_rating_leagues = _latest_rating_leagues(df, "playerid")
 
         if df.empty:
             msg = f"No player stats found for roster of team '{self.name}'."
