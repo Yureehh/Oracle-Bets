@@ -176,9 +176,7 @@ def test_same_day_activity_does_not_advance_frozen_feature_state(tmp_path) -> No
     assert later.team_stats["strength_pool"] == "major"
 
 
-def test_player_league_transfer_uses_last_non_cross_league(
-    tmp_path, monkeypatch
-) -> None:
+def test_player_league_transfer_uses_last_non_cross_league() -> None:
     player_id = "oe:player:example"
     history = pd.DataFrame(
         {
@@ -189,12 +187,6 @@ def test_player_league_transfer_uses_last_non_cross_league(
     )
     assert _latest_rating_leagues(history, "playerid")[player_id] == "LFL"
 
-    league_path = tmp_path / "league_elo.parquet"
-    pd.DataFrame({"league": ["LFL", "LEC"], "elo": [1700.0, 1600.0]}).to_parquet(
-        league_path
-    )
-    monkeypatch.setattr(team_module, "RATING_LEAGUE_ELO", league_path)
-    team_module._league_elo_values.cache_clear()
     row = pd.Series(
         {
             "playerid": player_id,
@@ -210,13 +202,12 @@ def test_player_league_transfer_uses_last_non_cross_league(
     )
     advanced = _advance_inactive_ratings(row, pd.Timestamp("2026-01-03"), "LEC", "LFL")
 
-    assert advanced["elo"] == pytest.approx(1640.0)
-    assert advanced["glicko2_mu"] == pytest.approx(1640.0)
-    assert advanced["pl_mu"] == pytest.approx(25.0)
+    assert advanced["elo"] == pytest.approx(1600.0)
+    assert advanced["glicko2_mu"] == pytest.approx(1600.0)
+    assert advanced["pl_mu"] == pytest.approx(30.0)
     assert advanced["pl_sigma"] == PL_SIGMA
-    assert advanced["trueskill_mu"] == pytest.approx(25.0)
+    assert advanced["trueskill_mu"] == pytest.approx(30.0)
     assert advanced["trueskill_sigma"] == TS_SIGMA
-    team_module._league_elo_values.cache_clear()
 
 
 def test_lookup_players_prefers_requested_team_before_global_latest() -> None:
@@ -635,15 +626,7 @@ def test_same_day_role_switch_keeps_first_game_rating_inputs(tmp_path) -> None:
     )
 
 
-def test_same_day_league_switch_keeps_first_game_rating_inputs(
-    tmp_path, monkeypatch
-) -> None:
-    league_path = tmp_path / "leagues.parquet"
-    pd.DataFrame({"league": ["LFL", "LEC"], "elo": [1700.0, 1600.0]}).to_parquet(
-        league_path
-    )
-    monkeypatch.setattr(team_module, "RATING_LEAGUE_ELO", league_path)
-    team_module._league_elo_values.cache_clear()
+def test_same_day_league_switch_keeps_first_game_rating_inputs(tmp_path) -> None:
     teams = pd.DataFrame(
         {
             "teamname": ["Team A", "Team A"],
@@ -652,6 +635,8 @@ def test_same_day_league_switch_keeps_first_game_rating_inputs(
             "league": ["LFL", "LFL"],
             "gamelength": [30.0, 30.0],
             "elo_after": [1700.0, 1800.0],
+            "pl_sigma_after": [2.0, 3.0],
+            "trueskill_sigma_after": [2.0, 3.0],
         }
     )
     roles = ("top", "jng", "mid", "bot", "sup")
@@ -659,7 +644,15 @@ def test_same_day_league_switch_keeps_first_game_rating_inputs(
         [teams.assign(playername=role, playerid=role, position=role) for role in roles],
         ignore_index=True,
     )
-    columns = ["teamname", "teamid", "date", "league", "elo_after"]
+    columns = [
+        "teamname",
+        "teamid",
+        "date",
+        "league",
+        "elo_after",
+        "pl_sigma_after",
+        "trueskill_sigma_after",
+    ]
     snapshot = publish_feature_snapshot(
         teams,
         players,
@@ -682,7 +675,11 @@ def test_same_day_league_switch_keeps_first_game_rating_inputs(
     assert actual.player_stats["elo"].tolist() == [LATEST_TEAM_ELO] * 5
     assert actual.team_stats["league"] == "LEC"
     assert actual.player_stats["league"].tolist() == ["LEC"] * 5
-    team_module._league_elo_values.cache_clear()
+
+    assert actual.team_stats["pl_sigma"] == pytest.approx(2.0)
+    assert actual.team_stats["trueskill_sigma"] == pytest.approx(2.0)
+    assert actual.player_stats["pl_sigma"].tolist() == [2.0] * 5
+    assert actual.player_stats["trueskill_sigma"].tolist() == [2.0] * 5
 
 
 @pytest.mark.parametrize("name", ["Fenrir", "fenrir", "FenRir"])

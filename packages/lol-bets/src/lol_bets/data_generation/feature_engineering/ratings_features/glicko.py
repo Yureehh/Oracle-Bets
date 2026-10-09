@@ -19,7 +19,6 @@ from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
     ENTITY_GLICKO_HYPERPARAMETERS,
-    RATING_LEAGUE_ELO,
 )
 from oracle_bets_core.pd import pd
 from sklearn.metrics import log_loss
@@ -682,11 +681,9 @@ def calculate_glicko2(
     """
     df_pre = _preprocess_rating_dataframe(df, entity, data_pipeline_logger)
 
+    # Neutral priors cannot import league results from the end of history.
     if league_elo_dict is None:
         league_elo_dict = {}
-        if RATING_LEAGUE_ELO.exists():
-            league_elo_df = pd.read_parquet(RATING_LEAGUE_ELO)
-            league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 
     hyperparameters_path = Path(
         str(ENTITY_GLICKO_HYPERPARAMETERS).replace("entity", entity)

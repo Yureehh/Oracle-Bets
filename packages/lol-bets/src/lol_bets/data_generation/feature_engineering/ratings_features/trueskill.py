@@ -22,7 +22,6 @@ from oracle_bets_core.logger import LOG_TOPIC, instantiate_logger, logger
 from oracle_bets_core.paths import (
     DEFAULT_MODELS_PARAMETERS,
     ENTITY_TRUESKILL_HYPERPARAMETERS,
-    RATING_LEAGUE_ELO,
 )
 from oracle_bets_core.pd import pd
 from sklearn.metrics import log_loss
@@ -671,12 +670,9 @@ def calculate_trueskill(
     """
     df_pre = _preprocess_rating_dataframe(df, entity, data_pipeline_logger)
 
-    # If league_elo_dict is not provided, load the mutable training-time table.
+    # Neutral priors cannot import league results from the end of history.
     if league_elo_dict is None:
         league_elo_dict = {}
-        if RATING_LEAGUE_ELO.exists():
-            league_elo_df = pd.read_parquet(RATING_LEAGUE_ELO)
-            league_elo_dict = league_elo_df.set_index("league")["elo"].to_dict()
 
     # Attempt to load or tune hyperparameters
     hyperparameters_path = Path(
