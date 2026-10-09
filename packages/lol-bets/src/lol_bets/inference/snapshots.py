@@ -9,6 +9,8 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,6 +19,14 @@ from oracle_bets_core.pd import pd
 from lol_bets.data_generation.ingestion.snapshot_io import atomic_json, sha256_file
 
 _FEATURE_SNAPSHOT_SCHEMA_VERSION = 2
+
+
+@lru_cache(maxsize=2)
+def _read_verified_table(path: Path, expected_hash: str) -> pd.DataFrame:
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != expected_hash:
+        raise ValueError(f"Feature snapshot checksum mismatch: {path.stem}")
+    return pd.read_parquet(BytesIO(data))
 
 
 @dataclass(frozen=True)
@@ -31,7 +41,9 @@ class FeatureSnapshot:
         path = self.directory / f"{entity}.parquet"
         if sha256_file(path) != self.manifest["files"][path.name]:
             raise ValueError(f"Feature snapshot checksum mismatch: {entity}")
-        return pd.read_parquet(path)
+        return _read_verified_table(path, self.manifest["files"][path.name]).copy(
+            deep=True
+        )
 
 
 def publish_feature_snapshot(
