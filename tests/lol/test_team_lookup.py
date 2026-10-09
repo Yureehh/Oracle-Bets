@@ -488,3 +488,198 @@ def test_inactivity_uses_first_completed_game_of_frozen_day(tmp_path) -> None:
     expected = 1500 + 300 * 0.5 ** (inactive / INACTIVITY_HALF_LIFE_DAYS)
     assert actual.team_stats["elo"] == pytest.approx(expected)
     assert actual.player_stats["elo"].tolist() == pytest.approx([expected] * 5)
+
+
+@pytest.mark.parametrize("prior_position", ["jng", "sup"])
+def test_player_role_switch_resets_ratings_after_inactivity(
+    prior_position: str,
+) -> None:
+    row = pd.Series(
+        {
+            "date": "2026-04-22T16:11:48Z",
+            "position": "sup",
+            "elo": 1700.0,
+            "glicko2_mu": 1700.0,
+            "glicko2_phi": 100.0,
+            "pl_mu": 30.0,
+            "pl_sigma": 2.0,
+            "trueskill_mu": 30.0,
+            "trueskill_sigma": 2.0,
+        }
+    )
+    at = pd.Timestamp("2026-08-25T16:15:59")
+    inactivity = 0.5 ** (
+        ((at - pd.Timestamp(row["date"]).tz_convert(None)).days - INACTIVITY_GRACE_DAYS)
+        / INACTIVITY_HALF_LIFE_DAYS
+    )
+    reset = 0.8 if prior_position != "sup" else 1.0
+    actual = _advance_inactive_ratings(row, at, prior_position=prior_position)
+    assert actual["elo"] == pytest.approx(1500 + 200 * inactivity * reset)
+    assert actual["glicko2_mu"] == pytest.approx(1500 + 200 * inactivity * reset)
+    assert actual["glicko2_phi"] == pytest.approx(350 - 250 * inactivity)
+    assert actual["pl_mu"] == pytest.approx(25 + 5 * reset)
+    assert actual["pl_sigma"] == pytest.approx(PL_SIGMA + (2 - PL_SIGMA) * reset)
+    assert actual["trueskill_mu"] == pytest.approx(25 + 5 * reset)
+    assert actual["trueskill_sigma"] == pytest.approx(TS_SIGMA + (2 - TS_SIGMA) * reset)
+
+
+def test_roster_continuity_counts_returning_members_after_role_switch(tmp_path) -> None:
+    roles = ("top", "jng", "mid", "bot", "sup")
+    teams = pd.DataFrame(
+        {
+            "teamname": ["Team A", "Team A"],
+            "date": ["2026-09-19T10:00Z", "2026-09-20T07:00Z"],
+            "gamelength": [30.0, 30.0],
+            "elo_after": [1500.0, 1500.0],
+        }
+    )
+    players = pd.concat(
+        [teams.assign(playername=role, playerid=role, position=role) for role in roles],
+        ignore_index=True,
+    )
+    latest = players.date.eq("2026-09-20T07:00Z")
+    players.loc[latest & players.position.eq("bot"), ["playername", "playerid"]] = (
+        "NewBot"
+    )
+    players.loc[latest & players.position.eq("sup"), ["playername", "playerid"]] = "bot"
+    columns = ["teamname", "date", "elo_after"]
+    roster = dict(zip(roles, roles, strict=True))
+    roster["bot"] = "NewBot"
+    roster["sup"] = "bot"
+    # A new member needs earlier global statistics, from another team.
+    earlier = players.iloc[[0]].assign(
+        teamname="Team B", playername="NewBot", playerid="NewBot", position="bot"
+    )
+    players = pd.concat([players, earlier], ignore_index=True)
+    snapshot = publish_feature_snapshot(
+        teams,
+        players,
+        team_columns=columns,
+        player_columns=[*columns, "playername", "playerid", "position"],
+        source_manifest={},
+        code_sha256="test",
+        training_generation_id="test",
+        root=tmp_path,
+        observed_at=datetime(2026, 9, 20, 9, tzinfo=UTC),
+    )
+    actual = Team(
+        "Team A",
+        roster=roster,
+        as_of_date="2026-09-20T08:00Z",
+        decision_at="2026-09-20T09:00Z",
+        feature_snapshot=snapshot,
+    )
+    # Latest completed roster already includes the same five members.
+    assert actual.team_stats["roster_continuity"] == 1.0
+    prior = Team(
+        "Team A",
+        roster=roster,
+        as_of_date="2026-09-20T07:00Z",
+        decision_at="2026-09-20T09:00Z",
+        feature_snapshot=snapshot,
+    )
+    assert prior.team_stats["roster_continuity"] == pytest.approx(0.8)
+    assert prior.team_stats["roster_uncertainty"] == pytest.approx(0.2)
+
+
+def test_same_day_role_switch_keeps_first_game_rating_inputs(tmp_path) -> None:
+    roles = ("top", "jng", "mid", "bot", "sup")
+    teams = pd.DataFrame(
+        {
+            "teamname": ["Team A", "Team A"],
+            "date": ["2026-01-01T10:00Z", "2026-01-02T10:00Z"],
+            "gamelength": [30.0, 30.0],
+            "elo_after": [1500.0, 1500.0],
+        }
+    )
+    players = pd.concat(
+        [
+            teams.assign(
+                playername=role,
+                playerid=role,
+                position=role,
+                elo_after=1700.0 if role == "jng" else 1500.0,
+            )
+            for role in roles
+        ],
+        ignore_index=True,
+    )
+    columns = ["teamname", "date", "elo_after"]
+    snapshot = publish_feature_snapshot(
+        teams,
+        players,
+        team_columns=columns,
+        player_columns=[*columns, "playername", "playerid", "position"],
+        source_manifest={},
+        code_sha256="test",
+        training_generation_id="test",
+        root=tmp_path,
+        observed_at=datetime(2026, 1, 2, 13, tzinfo=UTC),
+    )
+    roster = dict(zip(roles, roles, strict=True))
+    roster["jng"], roster["sup"] = roster["sup"], roster["jng"]
+    actual = Team(
+        "Team A",
+        roster=roster,
+        as_of_date="2026-01-02T12:00Z",
+        decision_at="2026-01-02T13:00Z",
+        feature_snapshot=snapshot,
+    )
+    support = actual.player_stats.loc[actual.player_stats.role.eq("sup")].iloc[0]
+    assert support["position"] == "sup"
+    assert support["elo"] == LATEST_TEAM_ELO
+    assert actual.team_stats["roster_continuity"] == 1.0
+    assert not any(
+        column.startswith(("_prior", "_rating_"))
+        for column in actual.player_stats.columns
+    )
+
+
+def test_same_day_league_switch_keeps_first_game_rating_inputs(
+    tmp_path, monkeypatch
+) -> None:
+    league_path = tmp_path / "leagues.parquet"
+    pd.DataFrame({"league": ["LFL", "LEC"], "elo": [1700.0, 1600.0]}).to_parquet(
+        league_path
+    )
+    monkeypatch.setattr(team_module, "RATING_LEAGUE_ELO", league_path)
+    team_module._league_elo_values.cache_clear()
+    teams = pd.DataFrame(
+        {
+            "teamname": ["Team A", "Team A"],
+            "teamid": ["a", "a"],
+            "date": ["2026-01-01T10:00Z", "2026-01-02T10:00Z"],
+            "league": ["LFL", "LFL"],
+            "gamelength": [30.0, 30.0],
+            "elo_after": [1700.0, 1800.0],
+        }
+    )
+    roles = ("top", "jng", "mid", "bot", "sup")
+    players = pd.concat(
+        [teams.assign(playername=role, playerid=role, position=role) for role in roles],
+        ignore_index=True,
+    )
+    columns = ["teamname", "teamid", "date", "league", "elo_after"]
+    snapshot = publish_feature_snapshot(
+        teams,
+        players,
+        team_columns=columns,
+        player_columns=[*columns, "playername", "playerid", "position"],
+        source_manifest={},
+        code_sha256="test",
+        training_generation_id="test",
+        root=tmp_path,
+        observed_at=datetime(2026, 1, 2, 13, tzinfo=UTC),
+    )
+    actual = Team(
+        "Team A",
+        league="LEC",
+        as_of_date="2026-01-02T12:00Z",
+        decision_at="2026-01-02T13:00Z",
+        feature_snapshot=snapshot,
+    )
+    assert actual.team_stats["elo"] == LATEST_TEAM_ELO
+    assert actual.player_stats["elo"].tolist() == [LATEST_TEAM_ELO] * 5
+    assert actual.team_stats["league"] == "LEC"
+    assert actual.player_stats["league"].tolist() == ["LEC"] * 5
+    team_module._league_elo_values.cache_clear()

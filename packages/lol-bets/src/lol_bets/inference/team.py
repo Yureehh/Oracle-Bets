@@ -146,19 +146,7 @@ def _latest_rating_leagues(frame: pd.DataFrame, identity: str) -> dict[str, str]
     )
 
 
-def _advance_inactive_ratings(
-    row: pd.Series,
-    as_of: pd.Timestamp,
-    fixture_league: str | None = None,
-    prior_league: str | None = None,
-) -> pd.Series:
-    """Apply training season resets, league transfers, and inactivity in order."""
-    last_active = pd.to_datetime(row.get("date"), errors="coerce", utc=True)
-    if pd.isna(last_active):
-        return row
-    last_active = last_active.tz_convert(None)
-    seasons = max(0, as_of.year - last_active.year)
-    retention = float(rating_config["shared"]["decay_factor"]) ** seasons
+def _reset_ratings_toward_baseline(row: pd.Series, retention: float) -> None:
     for column, baseline in (
         ("elo", float(rating_config["elo"]["initial"])),
         ("glicko2_mu", DEFAULT_MU),
@@ -167,8 +155,29 @@ def _advance_inactive_ratings(
         ("trueskill_mu", TS_MU),
         ("trueskill_sigma", TS_SIGMA),
     ):
-        if seasons and pd.notna(row.get(column)):
+        if pd.notna(row.get(column)):
             row[column] = baseline + (float(row[column]) - baseline) * retention
+
+
+def _advance_inactive_ratings(
+    row: pd.Series,
+    as_of: pd.Timestamp,
+    fixture_league: str | None = None,
+    prior_league: str | None = None,
+    prior_position: str | None = None,
+) -> pd.Series:
+    """Apply training season, league, inactivity, and role steps in order."""
+    last_active = pd.to_datetime(row.get("date"), errors="coerce", utc=True)
+    if pd.isna(last_active):
+        return row
+    last_active = last_active.tz_convert(None)
+    frozen_league = row.get("_rating_league")
+    if pd.notna(frozen_league):
+        fixture_league = str(frozen_league)
+    seasons = max(0, as_of.year - last_active.year)
+    retention = float(rating_config["shared"]["decay_factor"]) ** seasons
+    if seasons:
+        _reset_ratings_toward_baseline(row, retention)
     if (
         fixture_league
         and prior_league
@@ -270,6 +279,12 @@ def _advance_inactive_ratings(
         apply_glicko_inactivity_decay(glicko_state, as_of, DEFAULT_MU, DEFAULT_PHI)
         row["glicko2_mu"] = glicko_state["rating"].mu
         row["glicko2_phi"] = glicko_state["rating"].phi
+    if prior_position and prior_position != row.get(
+        "_rating_position", row.get("position")
+    ):
+        _reset_ratings_toward_baseline(
+            row, 1.0 - float(rating_config["shared"]["position_reset_factor"])
+        )
     return row
 
 
@@ -300,6 +315,9 @@ class Team:
     _player_df: pd.DataFrame = field(init=False, repr=False)
     _as_of: pd.Timestamp = field(init=False, repr=False)
     _team_activity_date: pd.Timestamp = field(init=False, repr=False)
+    _established_roster_ids: set[str] = field(
+        init=False, default_factory=set, repr=False
+    )
     _team_rating_as_of: pd.Timestamp = field(init=False, repr=False)
     _player_rating_as_of: dict[str, pd.Timestamp] = field(init=False, repr=False)
     _player_activity_dates: dict[str, pd.Timestamp] = field(init=False, repr=False)
@@ -322,7 +340,7 @@ class Team:
             self._team_rating_as_of,
             self.league,
             self._team_rating_league,
-        )
+        ).drop(labels=["_rating_league"])
         if self.league:
             self.team_stats["league"] = self.league
             self.team_stats["strength_pool"] = get_league_taxonomy(self.league)[
@@ -380,16 +398,18 @@ class Team:
                 ),
                 self.league,
                 self._player_rating_leagues.get(str(row.get("playerid"))),
+                row.get("_prior_position"),
             ),
             axis=1,
-        )
+        ).drop(columns=["_prior_position", "_rating_position", "_rating_league"])
         if self.league:
             self.player_stats["league"] = self.league
-        continuity = sum(
-            str(self.roster[role]).casefold()
-            == str(last_roster.get(role, "")).casefold()
-            for role in _EXPECTED_POS
-        ) / len(_EXPECTED_POS)
+        current_members = {str(name).casefold() for name in self.roster.values()}
+        prior_members = {str(name).casefold() for name in last_roster.values()}
+        if self._established_roster_ids and "playerid" in self.player_stats:
+            current_members = set(self.player_stats["playerid"].astype(str))
+            prior_members = self._established_roster_ids
+        continuity = len(current_members & prior_members) / len(_EXPECTED_POS)
         known_fraction = len(supplied_roles) / len(_EXPECTED_POS)
         self.team_stats["roster_continuity"] = continuity
         self.team_stats["roster_uncertainty"] = max(
@@ -498,7 +518,14 @@ class Team:
         rating_leagues = _latest_rating_leagues(rows, "teamid")
         if "date" in rows.columns:
             rows = rows.sort_values("date", ascending=False)
-        selected = rows.iloc[0]
+        selected = rows.iloc[0].copy()
+        dates = pd.to_datetime(activity_rows["date"], utc=True)
+        first = activity_rows.loc[
+            dates.eq(pd.to_datetime(self._team_rating_as_of, utc=True))
+        ]
+        selected["_rating_league"] = (
+            first.iloc[0].get("league") if not first.empty else None
+        )
         self._team_rating_league = rating_leagues.get(str(selected.get("teamid")))
         return selected
 
@@ -524,6 +551,12 @@ class Team:
         if missing:
             msg = f"Could not determine last roster for roles: {sorted(missing)}"
             raise ValueError(msg)
+
+        self._established_roster_ids = (
+            set(latest["playerid"].astype(str))
+            if "playerid" in latest and latest["playerid"].notna().all()
+            else set()
+        )
 
         # build canonical mapping role -> playername
         out: dict[str, str] = {}
@@ -560,6 +593,32 @@ class Team:
             str(identity).casefold(): self._frozen_rating_as_of(rows)
             for identity, rows in activity_rows.groupby(activity_key)
         }
+        rating_positions: dict[str, str] = {}
+        rating_leagues: dict[str, str] = {}
+        as_of = getattr(self, "_as_of", None)
+        if as_of is not None:
+            dates = pd.to_datetime(activity_rows["date"], utc=True)
+            day = pd.to_datetime(as_of, utc=True).normalize()
+            first = (
+                activity_rows.loc[dates.dt.normalize().eq(day)]
+                .sort_values("date")
+                .drop_duplicates(activity_key, keep="first")
+            )
+            rating_positions = dict(
+                zip(
+                    first[activity_key].astype(str).str.casefold(),
+                    first["position"],
+                    strict=True,
+                )
+            )
+            if "league" in first:
+                rating_leagues = dict(
+                    zip(
+                        first[activity_key].astype(str).str.casefold(),
+                        first["league"],
+                        strict=True,
+                    )
+                )
         df = self._at_or_before_as_of(df, frozen_state=True)
         self._player_rating_leagues = _latest_rating_leagues(df, "playerid")
 
@@ -609,6 +668,17 @@ class Team:
         if set(df["role"]) != set(_EXPECTED_POS) or df["role"].duplicated().any():
             msg = f"Roster for '{self.name}' does not resolve to exactly one player per role."
             raise ValueError(msg)
+        df["_rating_position"] = (
+            df[activity_key]
+            .astype(str)
+            .str.casefold()
+            .map(rating_positions)
+            .fillna(df["role"])
+        )
+        df["_rating_league"] = (
+            df[activity_key].astype(str).str.casefold().map(rating_leagues)
+        )
+        df["_prior_position"] = df["position"]
         df["position"] = df["role"]
 
         # re-order helpful columns if present
