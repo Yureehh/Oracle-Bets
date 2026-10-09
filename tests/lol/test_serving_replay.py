@@ -12,7 +12,10 @@ from lol_bets.inference.serving_replay import (
     compare_feature_values,
     replay_sealed_features,
 )
-from lol_bets.inference.team import TeamStateUnavailableError
+from lol_bets.inference.team import (
+    InsufficientRosterHistoryError,
+    TeamStateUnavailableError,
+)
 from lol_bets.operations.models import _paths_fingerprint
 from oracle_bets_core.pd import pd
 
@@ -230,13 +233,18 @@ def test_value_replay_runs_historical_team_path_and_reports_mismatch(
         "elo_diff"
     ]
 
-    def no_prior_state(*_args):
-        raise TeamStateUnavailableError("no prior team state")
+    for exception in (TeamStateUnavailableError, InsufficientRosterHistoryError):
 
-    monkeypatch.setattr(serving_replay, "_historical_team", no_prior_state)
-    unavailable = replay_sealed_features("candidate", inputs=inputs, snapshot=snapshot)
-    assert unavailable["value_parity_passed"] is False
-    assert unavailable["targets"]["winner"]["compared"] == 0
-    assert unavailable["targets"]["winner"]["unavailable"] == [
-        {"gameid": "match-1", "reason": "no prior team state"}
-    ]
+        def no_prior_state(*_args, error=exception):
+            raise error("no prior state")
+
+        monkeypatch.setattr(serving_replay, "_historical_team", no_prior_state)
+        unavailable = replay_sealed_features(
+            "candidate", inputs=inputs, snapshot=snapshot
+        )
+        assert unavailable["value_parity_passed"] is False
+        assert unavailable["targets"]["winner"]["compared"] == 0
+        assert unavailable["targets"]["winner"]["failures"] == []
+        assert unavailable["targets"]["winner"]["unavailable"] == [
+            {"gameid": "match-1", "reason": "no prior state"}
+        ]

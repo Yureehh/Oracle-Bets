@@ -439,7 +439,8 @@ class Team:
             cutoff = min(cutoff, decision)
         if frozen_state and column == "state_available_at":
             day_start = pd.to_datetime(as_of, utc=True).normalize()
-            return df.loc[(dates < day_start) & (dates <= cutoff)]
+            starts = pd.to_datetime(df["date"], errors="coerce", utc=True)
+            return df.loc[(starts < day_start) & (dates <= cutoff)]
         return df.loc[dates <= cutoff]
 
     def _lookup_team_row(self, team_name: str) -> pd.Series:
@@ -527,7 +528,7 @@ class Team:
 
         if df.empty:
             msg = f"No player stats found for roster of team '{self.name}'."
-            raise ValueError(msg)
+            raise InsufficientRosterHistoryError(msg)
 
         df["_player_key"] = df["playername"].str.casefold()
         df["_team_match"] = df["teamname"].str.casefold().eq(team_key)
@@ -555,7 +556,7 @@ class Team:
         missing = [nm for nm in requested_names if nm not in have_lower]
         if missing:
             msg = f"Missing statistics for players: {sorted(set(missing))}"
-            raise ValueError(msg)
+            raise InsufficientRosterHistoryError(msg)
 
         # attach canonical roles (by matching case-insensitive names back to roster)
         name_to_role = {wanted_lower[r]: r for r in _EXPECTED_POS}

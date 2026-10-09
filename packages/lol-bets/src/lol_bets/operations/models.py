@@ -1610,6 +1610,11 @@ def _replay_bundle_target(
     model_root = root / model_name
     pipeline = load_model(model_root / f"{model_name}_feature_pipeline.pkl")
     model = load_model(model_root / f"{model_name}.pkl")
+    missing = sorted(set(pipeline.train_columns) - set(raw_features.columns))
+    if missing:
+        raise ValueError(
+            f"{root.name}/{model_name} sealed replay is missing trained features: {missing}"
+        )
     transformed = pipeline.transform(raw_features.copy())
     if not classification:
         return np.asarray(model.predict(transformed), dtype=float)
