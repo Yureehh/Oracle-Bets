@@ -1,4 +1,9 @@
+import pytest
 from glicko2 import Rating
+from lol_bets.data_generation.feature_engineering.ratings_features import (
+    plackett_luce,
+    trueskill,
+)
 from lol_bets.data_generation.feature_engineering.ratings_features.elo import (
     apply_inactivity_decay as apply_elo_inactivity_decay,
 )
@@ -159,3 +164,50 @@ def test_all_rating_families_freeze_inputs_across_same_date_games():
         team_a = output.loc[output["teamid"] == "a"]
         assert team_a[rating_column].nunique() == 1
         assert team_a[probability_column].nunique() == 1
+
+
+@pytest.mark.parametrize("module", [plackett_luce, trueskill])
+def test_missing_league_initialization_matches_explicit_neutral_elo(module):
+    absent = {}
+    explicit = {}
+    values = {"LFL": 1600.0, "LEC": 1400.0}
+    for state, mapping in ((absent, values), (explicit, values | {"EM": 1500.0})):
+        module.handle_new_entity(
+            "player",
+            state,
+            mapping,
+            "EM",
+            2026,
+            module.DEFAULT_MU,
+            module.DEFAULT_SIGMA,
+            0.5,
+        )
+    assert absent["player"]["rating"].mu == pytest.approx(
+        explicit["player"]["rating"].mu
+    )
+    assert absent["player"]["rating"].sigma == explicit["player"]["rating"].sigma
+
+
+@pytest.mark.parametrize("module", [plackett_luce, trueskill])
+@pytest.mark.parametrize(("old", "new"), [("UNKNOWN", "HM"), ("HM", "UNKNOWN")])
+def test_missing_league_transfer_matches_explicit_neutral_elo(module, old, new):
+    def initial():
+        rating = (
+            module.initialize_pl_model(module.DEFAULT_MU, module.DEFAULT_SIGMA).rating(
+                30.0, 2.0
+            )
+            if module is plackett_luce
+            else module.create_ts_rating(30.0, 2.0)
+        )
+        return {"player": {"rating": rating, "league": old}}
+
+    absent, explicit = initial(), initial()
+    values = {"HM": 1400.0}
+    for state, mapping in ((absent, values), (explicit, values | {"UNKNOWN": 1500.0})):
+        module.handle_league_swap(
+            "player", new, state, mapping, module.DEFAULT_MU, module.DEFAULT_SIGMA, 0.5
+        )
+    assert absent["player"]["rating"].mu == pytest.approx(
+        explicit["player"]["rating"].mu
+    )
+    assert absent["player"]["rating"].sigma == explicit["player"]["rating"].sigma

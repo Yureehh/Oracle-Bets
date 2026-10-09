@@ -734,3 +734,39 @@ def test_global_name_fallback_resolves_casefolded_identities_safely(name: str) -
             match=r"(Ambiguous player|Missing statistics).*fenrir",
         ):
             team._lookup_players(roster)
+
+
+def test_initial_cross_league_is_retained_until_first_domestic_game() -> None:
+    history = pd.DataFrame(
+        {
+            "playerid": ["player", "player"],
+            "league": ["EM", "EM"],
+            "date": pd.to_datetime(["2026-03-10", "2026-03-12"]),
+        }
+    )
+    assert _latest_rating_leagues(history, "playerid")["player"] == "EM"
+
+
+@pytest.mark.parametrize("date", ["2025-12-31", "2026-01-01"])
+def test_season_form_resets_only_at_year_boundary(date: str) -> None:
+    row = pd.Series(
+        {
+            "date": date,
+            "season": pd.Timestamp(date).year,
+            "ema_season_win_rate": 0.8,
+            "ema_season_games": 20.0,
+            "team_season_avg_gamelength": 33.0,
+        }
+    )
+    as_of = pd.Timestamp("2026-01-02")
+    neutral_prior = 0.5
+    actual = _advance_inactive_ratings(row, as_of)
+    assert actual["season"] == as_of.year
+    if date.startswith("2025"):
+        assert actual["ema_season_win_rate"] == neutral_prior
+        assert actual["ema_season_games"] == 0.0
+        assert pd.isna(actual["team_season_avg_gamelength"])
+    else:
+        assert actual["ema_season_win_rate"] == row["ema_season_win_rate"]
+        assert actual["ema_season_games"] == row["ema_season_games"]
+        assert actual["team_season_avg_gamelength"] == row["team_season_avg_gamelength"]

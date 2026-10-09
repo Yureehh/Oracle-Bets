@@ -136,12 +136,19 @@ def _league_elo_values(mtime_ns: int, size: int) -> dict[str, float]:
 def _latest_rating_leagues(frame: pd.DataFrame, identity: str) -> dict[str, str]:
     if not {identity, "league", "date"}.issubset(frame.columns):
         return {}
+    initial = (
+        frame.loc[frame["league"].notna()]
+        .sort_values("date")
+        .drop_duplicates(identity, keep="first")
+    )
     ordinary = frame.loc[
         frame["league"].notna()
         & ~frame["league"].astype(str).map(is_cross_league_competition)
     ]
     latest = ordinary.sort_values("date").drop_duplicates(identity, keep="last")
     return dict(
+        zip(initial[identity].astype(str), initial["league"].astype(str), strict=True)
+    ) | dict(
         zip(latest[identity].astype(str), latest["league"].astype(str), strict=True)
     )
 
@@ -178,6 +185,17 @@ def _advance_inactive_ratings(
     retention = float(rating_config["shared"]["decay_factor"]) ** seasons
     if seasons:
         _reset_ratings_toward_baseline(row, retention)
+        row.update(
+            pd.Series(
+                {
+                    "season": as_of.year,
+                    "ema_season_win_rate": 0.5,
+                    "ema_season_games": 0.0,
+                },
+                dtype="object",
+            )
+        )
+        row.loc[row.index == "team_season_avg_gamelength"] = float("nan")
     if (
         fixture_league
         and prior_league

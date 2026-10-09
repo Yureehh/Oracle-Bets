@@ -54,6 +54,7 @@ from lol_bets.data_generation.feature_engineering.ratings_features.common import
 # 1. Global Config / Constants
 # ------------------------------------------------------------------------------
 config = json_loader(DEFAULT_MODELS_PARAMETERS)
+LEAGUE_ELO_BASELINE = float(config["leagues_elo"]["initial_elo"])
 ts_config = config.get("trueskill", {})
 DEFAULT_MU = float(ts_config.get("mu", 25.0))
 DEFAULT_SIGMA = float(ts_config.get("sigma", 8.333))
@@ -160,9 +161,9 @@ def handle_new_entity(
     avg_league_elo = (
         (sum(league_elo_dict.values()) / len(league_elo_dict))
         if league_elo_dict
-        else baseline_mu
+        else LEAGUE_ELO_BASELINE
     )
-    league_elo = league_elo_dict.get(new_league, baseline_mu)
+    league_elo = league_elo_dict.get(new_league, LEAGUE_ELO_BASELINE)
 
     init_adjust = (league_elo - avg_league_elo) * init_adjust_factor
     initial_mu = baseline_mu + clamp(init_adjust, -max_diff, max_diff)
@@ -196,8 +197,8 @@ def handle_league_swap(
 
     curr_is_major = is_major_league(curr_league)
     new_is_major = is_major_league(new_league)
-    curr_elo_val = league_elo_dict.get(curr_league, baseline_mu)
-    new_elo_val = league_elo_dict.get(new_league, baseline_mu)
+    curr_elo_val = league_elo_dict.get(curr_league, LEAGUE_ELO_BASELINE)
+    new_elo_val = league_elo_dict.get(new_league, LEAGUE_ELO_BASELINE)
     diff = new_elo_val - curr_elo_val
 
     old_mu = ts_ratings[ent_id]["rating"].mu
