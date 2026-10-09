@@ -15,7 +15,11 @@ from oracle_bets_core.pd import pd
 from lol_bets.data_generation.ingestion.history import read_history_snapshot
 from lol_bets.inference.match_predictor import MatchPredictor
 from lol_bets.inference.roster import EXPECTED_ROLES
-from lol_bets.inference.team import Team, TeamStateUnavailableError
+from lol_bets.inference.team import (
+    InsufficientRosterHistoryError,
+    Team,
+    TeamStateUnavailableError,
+)
 from lol_bets.operations.models import ModelRegistry, _paths_fingerprint
 from lol_bets.training import ALL_MODEL_CONFIGS, _candidate_training_paths
 
@@ -155,7 +159,7 @@ def replay_sealed_features(  # noqa: PLR0915
                             "different_count": len(mismatches),
                         }
                     )
-            except TeamStateUnavailableError as error:
+            except (TeamStateUnavailableError, InsufficientRosterHistoryError) as error:
                 unavailable.append({"gameid": gameid, "reason": str(error)})
             except (KeyError, TypeError, ValueError) as error:
                 failures.append({"gameid": gameid, "error": str(error)})

@@ -16,6 +16,7 @@ from lol_bets.data_generation.feature_engineering.ratings_features.trueskill imp
 from lol_bets.inference import team as team_module
 from lol_bets.inference.snapshots import publish_feature_snapshot
 from lol_bets.inference.team import (
+    InsufficientRosterHistoryError,
     Team,
     _advance_inactive_ratings,
     _latest_rating_leagues,
@@ -308,6 +309,55 @@ def test_lookup_rejects_same_day_future_and_unfinished_match_state() -> None:
         }
     )
     assert team._at_or_before_as_of(frame)["gameid"].tolist() == ["completed"]
+
+
+def test_frozen_state_includes_prior_day_game_completed_after_midnight() -> None:
+    team = Team.__new__(Team)
+    team._as_of = pd.Timestamp("2026-10-07T00:34:50Z")
+    frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                ["2026-10-06T23:46:59Z", "2026-10-06T23:55:00Z", "2026-10-07T00:05:00Z"]
+            ),
+            "state_available_at": pd.to_datetime(
+                ["2026-10-07T00:16:40Z", "2026-10-07T00:40:00Z", "2026-10-07T00:25:00Z"]
+            ),
+            "gameid": ["completed_prior_day", "unfinished_prior_day", "same_day"],
+        }
+    )
+    assert team._at_or_before_as_of(frame, frozen_state=True)["gameid"].tolist() == [
+        "completed_prior_day"
+    ]
+
+
+@pytest.mark.parametrize("prior_count", [0, 4])
+def test_lookup_players_without_prior_state_reports_unavailable_history(
+    prior_count,
+) -> None:
+    team = Team.__new__(Team)
+    team.name = "Team A"
+    team._as_of = pd.Timestamp("2026-10-07T12:00Z")
+    roles = ("top", "jng", "mid", "bot", "sup")
+    team._player_df = pd.DataFrame(
+        {
+            "teamname": ["Team A"] * len(roles),
+            "playername": list(roles),
+            "playerid": list(roles),
+            "position": list(roles),
+            "date": pd.to_datetime(
+                ["2026-10-06T10:00Z"] * prior_count
+                + ["2026-10-07T10:00Z"] * (len(roles) - prior_count)
+            ),
+            "state_available_at": pd.to_datetime(
+                ["2026-10-06T10:30Z"] * prior_count
+                + ["2026-10-07T10:30Z"] * (len(roles) - prior_count)
+            ),
+        }
+    )
+    with pytest.raises(
+        InsufficientRosterHistoryError, match=r"No player stats|Missing statistics"
+    ):
+        team._lookup_players(dict(zip(roles, roles, strict=True)))
 
 
 def test_last_roster_ignores_blank_latest_player_names() -> None:
