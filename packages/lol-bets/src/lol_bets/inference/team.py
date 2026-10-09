@@ -152,11 +152,23 @@ def _advance_inactive_ratings(
     fixture_league: str | None = None,
     prior_league: str | None = None,
 ) -> pd.Series:
-    """Apply the training rating systems' league and inactivity steps."""
+    """Apply training season resets, league transfers, and inactivity in order."""
     last_active = pd.to_datetime(row.get("date"), errors="coerce", utc=True)
     if pd.isna(last_active):
         return row
     last_active = last_active.tz_convert(None)
+    seasons = max(0, as_of.year - last_active.year)
+    retention = float(rating_config["shared"]["decay_factor"]) ** seasons
+    for column, baseline in (
+        ("elo", float(rating_config["elo"]["initial"])),
+        ("glicko2_mu", DEFAULT_MU),
+        ("pl_mu", PL_MU),
+        ("pl_sigma", PL_SIGMA),
+        ("trueskill_mu", TS_MU),
+        ("trueskill_sigma", TS_SIGMA),
+    ):
+        if seasons and pd.notna(row.get(column)):
+            row[column] = baseline + (float(row[column]) - baseline) * retention
     if (
         fixture_league
         and prior_league
@@ -288,6 +300,8 @@ class Team:
     _player_df: pd.DataFrame = field(init=False, repr=False)
     _as_of: pd.Timestamp = field(init=False, repr=False)
     _team_activity_date: pd.Timestamp = field(init=False, repr=False)
+    _team_rating_as_of: pd.Timestamp = field(init=False, repr=False)
+    _player_rating_as_of: dict[str, pd.Timestamp] = field(init=False, repr=False)
     _player_activity_dates: dict[str, pd.Timestamp] = field(init=False, repr=False)
     _team_rating_league: str | None = field(init=False, repr=False)
     _player_rating_leagues: dict[str, str] = field(init=False, repr=False)
@@ -304,7 +318,10 @@ class Team:
         # set team_stats
         self.team_stats = self._lookup_team_row(self.name).copy()
         self.team_stats = _advance_inactive_ratings(
-            self.team_stats, self._as_of, self.league, self._team_rating_league
+            self.team_stats,
+            self._team_rating_as_of,
+            self.league,
+            self._team_rating_league,
         )
         if self.league:
             self.team_stats["league"] = self.league
@@ -357,7 +374,10 @@ class Team:
         self.player_stats = self.player_stats.apply(
             lambda row: _advance_inactive_ratings(
                 row,
-                self._as_of,
+                self._player_rating_as_of.get(
+                    str(row.get("playerid", row.get("playername"))).casefold(),
+                    self._as_of,
+                ),
                 self.league,
                 self._player_rating_leagues.get(str(row.get("playerid"))),
             ),
@@ -443,6 +463,18 @@ class Team:
             return df.loc[(starts < day_start) & (dates <= cutoff)]
         return df.loc[dates <= cutoff]
 
+    def _frozen_rating_as_of(self, activity_rows: pd.DataFrame) -> pd.Timestamp:
+        as_of = getattr(self, "_as_of", None)
+        if as_of is None:
+            return activity_rows["date"].max()
+        starts = pd.to_datetime(activity_rows["date"], errors="coerce", utc=True)
+        same_day = starts.loc[
+            starts.dt.normalize().eq(pd.to_datetime(as_of, utc=True).normalize())
+        ]
+        # Training freezes the day's ratings at its first game, even when a
+        # later game crosses another whole day of inactivity.
+        return same_day.min().tz_convert(None) if not same_day.empty else as_of
+
     def _lookup_team_row(self, team_name: str) -> pd.Series:
         known_names = self._team_df["teamname"].dropna().astype(str).unique().tolist()
         resolved = resolve_team_name(team_name, known_names)
@@ -458,6 +490,7 @@ class Team:
             msg = f"Team '{team_name}' not found in teams table."
             raise TeamStateUnavailableError(msg)
         self._team_activity_date = activity_rows.sort_values("date").iloc[-1]["date"]
+        self._team_rating_as_of = self._frozen_rating_as_of(activity_rows)
         rows = self._at_or_before_as_of(rows, frozen_state=True)
         if rows.empty:  # defensive: resolver guarantees membership
             msg = f"Team '{team_name}' not found in teams table."
@@ -523,6 +556,10 @@ class Team:
             .max()
             .to_dict()
         )
+        self._player_rating_as_of = {
+            str(identity).casefold(): self._frozen_rating_as_of(rows)
+            for identity, rows in activity_rows.groupby(activity_key)
+        }
         df = self._at_or_before_as_of(df, frozen_state=True)
         self._player_rating_leagues = _latest_rating_leagues(df, "playerid")
 
@@ -533,14 +570,22 @@ class Team:
         df["_player_key"] = df["playername"].str.casefold()
         df["_team_match"] = df["teamname"].str.casefold().eq(team_key)
 
-        # Prefer the latest row with the requested team. If an explicit future roster
-        # contains a transferred player with no row for this team yet, fall back to
-        # that player's latest global row.
+        # Team history disambiguates identical names. State follows the resolved
+        # player identity globally, including spells with a different team.
         team_rows = (
             df[df["_team_match"]]
             .sort_values(["_player_key", "date"], ascending=[True, False])
             .drop_duplicates(subset=["_player_key"], keep="first")
         )
+        if "playerid" in df:
+            identities = team_rows[["_player_key", "playerid"]]
+            team_rows = (
+                df.merge(
+                    identities, on=["_player_key", "playerid"], validate="many_to_one"
+                )
+                .sort_values("date", ascending=False)
+                .drop_duplicates("_player_key", keep="first")
+            )
         found_team_rows = set(team_rows["_player_key"])
         fallback_rows = (
             df[~df["_player_key"].isin(found_team_rows)]

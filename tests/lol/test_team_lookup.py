@@ -23,6 +23,7 @@ from lol_bets.inference.team import (
 )
 from oracle_bets_core.pd import pd
 
+RETURNED_PLAYER_ELO = 1800.0
 TEAM_A_SHARED_ELO = 1500
 LATEST_TEAM_ELO = 1700
 EXPECTED_BREAK_THRESHOLD_DAYS = 45.0
@@ -385,3 +386,105 @@ def test_last_roster_ignores_blank_latest_player_names() -> None:
     roster = team._get_last_roster("Team A")
 
     assert roster["top"] == "Top"
+
+
+@pytest.mark.parametrize("years", [1, 2])
+def test_inactive_ratings_apply_each_season_reset(years: int) -> None:
+    row = pd.Series(
+        {
+            "date": f"{2026 - years}-12-31T12:00Z",
+            "elo": 1700.0,
+            "glicko2_mu": 1700.0,
+            "glicko2_phi": 100.0,
+            "pl_mu": 30.0,
+            "pl_sigma": 2.0,
+            "trueskill_mu": 30.0,
+            "trueskill_sigma": 2.0,
+        }
+    )
+    at = pd.Timestamp("2026-01-01T12:00")
+    days = max(
+        0,
+        (at - pd.Timestamp(row["date"]).tz_convert(None)).days - INACTIVITY_GRACE_DAYS,
+    )
+    inactivity = 0.5 ** (days / INACTIVITY_HALF_LIFE_DAYS)
+    reset = float(team_module.rating_config["shared"]["decay_factor"]) ** years
+    actual = _advance_inactive_ratings(row, at)
+    assert actual["elo"] == pytest.approx(1500 + 200 * reset * inactivity)
+    assert actual["glicko2_mu"] == pytest.approx(1500 + 200 * reset * inactivity)
+    assert actual["glicko2_phi"] == pytest.approx(350 - (350 - 100) * inactivity)
+    assert actual["pl_mu"] == pytest.approx(25 + 5 * reset)
+    assert actual["pl_sigma"] == pytest.approx(PL_SIGMA + (2 - PL_SIGMA) * reset)
+    assert actual["trueskill_mu"] == pytest.approx(25 + 5 * reset)
+    assert actual["trueskill_sigma"] == pytest.approx(TS_SIGMA + (2 - TS_SIGMA) * reset)
+
+
+def test_returning_player_uses_latest_state_for_same_identity() -> None:
+    team = Team.__new__(Team)
+    team.name = "Team A"
+    roles = ("top", "jng", "mid", "bot", "sup")
+    team._player_df = pd.DataFrame(
+        [
+            {
+                "teamname": "Team A",
+                "playername": role,
+                "playerid": role,
+                "position": role,
+                "date": pd.Timestamp("2026-01-01"),
+                "elo": 1500.0,
+            }
+            for role in roles
+        ]
+        + [
+            {
+                "teamname": "Team B",
+                "playername": "top",
+                "playerid": "top",
+                "position": "top",
+                "date": pd.Timestamp("2026-02-01"),
+                "elo": 1800.0,
+            }
+        ]
+    )
+    actual = team._lookup_players(dict(zip(roles, roles, strict=True)))
+    top = actual.loc[actual.role.eq("top")].iloc[0]
+    assert top["elo"] == RETURNED_PLAYER_ELO
+    assert top["date"] == pd.Timestamp("2026-02-01")
+
+
+def test_inactivity_uses_first_completed_game_of_frozen_day(tmp_path) -> None:
+    teams = pd.DataFrame(
+        {
+            "teamname": ["Team A", "Team A"],
+            "date": ["2026-04-30T15:46:19Z", "2026-08-01T15:08:25Z"],
+            "gamelength": [30.0, 30.0],
+            "elo_after": [1800.0, 1900.0],
+        }
+    )
+    roles = ("top", "jng", "mid", "bot", "sup")
+    players = pd.concat(
+        [teams.assign(playername=role, playerid=role, position=role) for role in roles],
+        ignore_index=True,
+    )
+    columns = ["teamname", "date", "elo_after"]
+    snapshot = publish_feature_snapshot(
+        teams,
+        players,
+        team_columns=columns,
+        player_columns=[*columns, "playername", "playerid", "position"],
+        source_manifest={},
+        code_sha256="test",
+        training_generation_id="test",
+        root=tmp_path,
+        observed_at=datetime(2026, 8, 1, 17, tzinfo=UTC),
+    )
+    actual = Team(
+        "Team A",
+        as_of_date="2026-08-01T16:09:56Z",
+        decision_at="2026-08-01T17:00Z",
+        feature_snapshot=snapshot,
+    )
+    inactive = 92 - INACTIVITY_GRACE_DAYS
+    expected = 1500 + 300 * 0.5 ** (inactive / INACTIVITY_HALF_LIFE_DAYS)
+    assert actual.team_stats["elo"] == pytest.approx(expected)
+    assert actual.player_stats["elo"].tolist() == pytest.approx([expected] * 5)
