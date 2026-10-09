@@ -86,3 +86,29 @@ def test_snapshot_rejects_corrupt_files_and_path_escape(tmp_path):
         load_feature_snapshot(tmp_path)
     with pytest.raises(ValueError, match="snapshot ID"):
         load_feature_snapshot(tmp_path, snapshot_id="../other")
+
+
+def test_cached_snapshot_reads_are_isolated_and_remain_checksum_checked(
+    tmp_path, monkeypatch
+):
+    snapshot = _publish(tmp_path)
+    original = pd.read_parquet
+    calls = []
+
+    def read(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(pd, "read_parquet", read)
+    first = snapshot.read("teams")
+    first.loc[0, "elo"] = 9999
+    assert snapshot.read("teams")["elo"].tolist() == [1500, 1600]
+    assert len(calls) == 1
+    second = _publish(tmp_path, observed_at=datetime(2026, 9, 4, tzinfo=UTC))
+    assert second.read("teams")["elo"].tolist() == [1500, 1600]
+    expected_decodes = 2
+    assert len(calls) == expected_decodes
+    assert snapshot.read("teams")["elo"].tolist() == [1500, 1600]
+    (snapshot.directory / "teams.parquet").write_bytes(b"broken")
+    with pytest.raises(ValueError, match="checksum"):
+        snapshot.read("teams")

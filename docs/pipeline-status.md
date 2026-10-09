@@ -10,15 +10,15 @@ parallel, but a later milestone cannot compensate for a failed earlier gate.
 
 | Milestone | What happens | Current evidence | Next gate |
 | --- | --- | --- | --- |
-| 0 — Source and configuration | Install locked dependencies; keep provider credentials outside Git. | The serving-parity and pytest security fixes are merged, with 730 tests passing and 1 skipped locally; CI, lint, formatting, and type checks passed for those changes. | Check setup on a second machine. |
+| 0 — Source and configuration | Install locked dependencies; keep provider credentials outside Git. | The serving and rating corrections pass 756 tests, with 1 skipped locally; lint, formatting, and types pass. | Require green final PR checks and check setup on a second machine. |
 | 10 — Ingest | Refresh the public Oracle's Elixir source and retain a versioned raw snapshot. | The validated source is current through 2026-10-07 11:58 UTC. | Continue checking source freshness before each rebuild. |
 | 20 — Clean data and identities | Quarantine bad rows; normalize teams, players, maps, and series. | The October 8 rebuild has 24,430 games, 10,196 accepted series, and 1,770 quarantined groups. | Review quarantined groups when source or rules change. |
-| 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | Map generation `d0335193`, series generation `e088b017`, and serving snapshot `features-e9cfedc2dc0f9424b5f20252` passed source, code, and table lineage checks. | Preserve paired lineage on every refresh. |
+| 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | The October 9 serving rebuild preserved the October 8 model inputs byte-for-byte. A subsequent correction changes missing-league skill ratings, so another signed rebuild is running. | Verify source, code, and all output hashes on the corrected numerical generation. |
 | 40 — Research splits | Fit preprocessing inside temporal development folds; reserve sealed evaluation and record prior exposure. | Leakage and lineage guards are implemented and covered by tests; the October 8 studies used sealed temporal splits and recorded prior exposure. | Keep the split and exposure checks in each new generation. |
-| 50 — Fresh search | Run a separate Optuna study for each supported target. | Five independent 100-trial studies completed on clean commit `3e64767`, one each for map winner, series winner, game length, kills, and towers. All use the October 8 source and map generation; the series study also records the matching series generation. | Keep the study parameters research-only until review. |
-| 60 — Full refit | Apply the selected study parameters to research-only models. | Refit `20261008T170701_385063Z` completed all five targets with no failures. Its manifest is clean, research-only, and explicitly non-promotable. | Review calibration, baseline comparisons, and serving replay before considering any separate candidate promotion. |
-| 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | A registered temporary candidate passed bundle integrity and data-lineage checks, but the 16-row-per-target serving replay **failed**. Several historical rosters lack earlier serving statistics; one non-actionable game crossing midnight has feature differences. The live champion remains the August bundle. | Resolve replay availability and cross-midnight parity, then repeat the full replay on a lineage-valid candidate. Do not promote this research refit. |
-| 80 — Prospective fixture population | Enroll scheduled fixtures before forecasts and prices. | The October 8 daily report enrolled two LCS fixtures before their scheduled starts. Earlier fixture cohorts remain recorded. | Continue complete enrollment and record missing markets and no-bet decisions. |
+| 50 — Fresh search | Run a separate Optuna study for each supported target. | Five independent 100-trial studies completed on October 8. They predate the missing-league rating-unit correction and are archived research evidence. | Run five fresh studies on the corrected generation. |
+| 60 — Full refit | Apply selected study parameters to research-only models. | October 8 refit `20261008T170701_385063Z` completed five targets. Its registered candidate is now research-only because it predates the rating-unit correction. | Fit all five targets from the new studies; keep training success separate from promotion. |
+| 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | Wider calculation checks exposed season, team-transfer, role, league-context, and source-ID defects. Regression fixes pass; the August champion and pre-correction October candidate are disabled for owner-facing use. | Run signed replay on the new candidate and require a passing sealed-row review before promotion. |
+| 80 — Prospective fixture population | Enroll scheduled fixtures before forecasts and prices. | Earlier fixture cohorts remain recorded. The owner will choose relevant leagues and fixtures after model validation. | Confirm the prospective population and collect complete coverage, including missing markets and no-bet decisions. |
 | 90 — Market and paper cycle | Capture exact Polymarket/Thunderpick contracts, owner-confirm quotes, size positive-edge paper entries, record close and result. | The evidence database passes integrity checks, but contains zero bets and zero settlements. The latest local market observations are from October 4; the October 8 Polymarket check found no supported open LoL market from Italy. No verified Thunderpick line or complete quote-to-settlement cycle exists. | Obtain an owner-observed executable contract and price, then record a real prospective paper cycle, including the closing quote and sourced result. |
 | 100 — Decision evidence | Evaluate all enrolled fixtures, net paper returns, calibration, closing-line value, exposure, and drawdown before extending to tennis or real stakes. | **Pending.** No observed earnings claim is justified. | Accumulate enough prospective, settled, representative samples and compare locked policies on later data. |
 
@@ -50,7 +50,11 @@ Historical prediction accuracy is not betting profit. Odds, fees, failed
 captures, correlated positions, changed lines, and losses all affect realized
 returns. This project currently has no verified live edge or income stream.
 
-## Current research results
+## Archived research results
+
+The results below predate the October 9 league-rating unit correction. Their
+models are research-only and are not approved for owner-facing paper proposals.
+New generation results must replace them after refitting and review.
 
 The October 8 sealed evaluations returned map-winner accuracy 65.5%, AUC
 0.714, and Brier 0.215 on 3,663 games; series-winner accuracy 71.3%, AUC
@@ -70,9 +74,9 @@ changed history still spent about 30 minutes rebuilding features. The next
 optimization is a no-change shortcut
 guarded by source identity, code/configuration fingerprint, manifest integrity,
 and output hashes. Benchmark an awake before/after run and keep the full path
-for changed or damaged inputs. Serving also verifies and reads the paired
-snapshot for both teams; measure fixture latency before caching a verified
-read-only pair. Profile memory and CPU before changing the dataframe backend or
+for changed or damaged inputs. Serving retains checksum validation on every snapshot read and caches at most
+two decoded tables, returning isolated copies. A ten-team construction profile
+improved from 4.76 to 3.92 seconds; this is not a benchmark of the full daily run. Profile memory and CPU before changing the dataframe backend or
 adding infrastructure. FireDucks remains opt-in and is not in the locked
 installation while its dependency pins an Arrow version flagged by the
 repository's dependency review.
