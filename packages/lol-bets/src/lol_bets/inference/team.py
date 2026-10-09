@@ -10,12 +10,11 @@ Team model: fast, safe access to team & player snapshots.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 
 from oracle_bets_core.league_taxonomy import get_league_taxonomy
 from oracle_bets_core.logger import logger
-from oracle_bets_core.paths import PROCESSED_DIR, RATING_LEAGUE_ELO
+from oracle_bets_core.paths import PROCESSED_DIR
 from oracle_bets_core.pd import pd
 
 from lol_bets.data_generation.feature_engineering.features_generator import (
@@ -126,13 +125,6 @@ def _rating_uncertainty(row: pd.Series) -> float:
     return float(sum(values) / len(values)) if values else float("nan")
 
 
-@lru_cache(maxsize=2)
-def _league_elo_values(mtime_ns: int, size: int) -> dict[str, float]:
-    _ = mtime_ns, size
-    frame = pd.read_parquet(RATING_LEAGUE_ELO, columns=["league", "elo"])
-    return dict(zip(frame["league"].astype(str), frame["elo"], strict=True))
-
-
 def _latest_rating_leagues(frame: pd.DataFrame, identity: str) -> dict[str, str]:
     if not {identity, "league", "date"}.issubset(frame.columns):
         return {}
@@ -202,8 +194,8 @@ def _advance_inactive_ratings(
         and fixture_league != prior_league
         and not is_cross_league_competition(fixture_league)
     ):
-        stat = RATING_LEAGUE_ELO.stat()
-        league_elo = _league_elo_values(stat.st_mtime_ns, stat.st_size)
+        # Match the neutral league priors used to build entity ratings.
+        league_elo: dict[str, float] = {}
         transfer = float(rating_config["shared"]["transfer_factor"])
         identity = str(row.get("playerid") or row.get("teamid"))
         if pd.notna(row.get("elo")):

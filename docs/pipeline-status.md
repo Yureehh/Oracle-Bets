@@ -10,13 +10,13 @@ parallel, but a later milestone cannot compensate for a failed earlier gate.
 
 | Milestone | What happens | Current evidence | Next gate |
 | --- | --- | --- | --- |
-| 0 — Source and configuration | Install locked dependencies; keep provider credentials outside Git. | The serving and rating corrections pass 756 tests, with 1 skipped locally; lint, formatting, and types pass. | Require green final PR checks and check setup on a second machine. |
+| 0 — Source and configuration | Install locked dependencies; keep provider credentials outside Git. | The serving and rating corrections pass 760 tests, with 1 skipped locally; lint, formatting, and types pass. | Require green final PR checks and check setup on a second machine. |
 | 10 — Ingest | Refresh the public Oracle's Elixir source and retain a versioned raw snapshot. | The validated source is current through 2026-10-07 11:58 UTC. | Continue checking source freshness before each rebuild. |
 | 20 — Clean data and identities | Quarantine bad rows; normalize teams, players, maps, and series. | The October 8 rebuild has 24,430 games, 10,196 accepted series, and 1,770 quarantined groups. | Review quarantined groups when source or rules change. |
-| 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | The October 9 serving rebuild preserved the October 8 model inputs byte-for-byte. A subsequent correction changes missing-league skill ratings, so another signed rebuild is running. | Verify source, code, and all output hashes on the corrected numerical generation. |
+| 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | The October 9 rating-unit rebuild changed four model-input tables. Review then found that entity ratings imported end-of-history league Elo, leaking later results into earlier inputs. Default entity priors are now neutral in training and serving; a new signed rebuild is required. | Verify source, code, and all output hashes on the corrected numerical generation. |
 | 40 — Research splits | Fit preprocessing inside temporal development folds; reserve sealed evaluation and record prior exposure. | Leakage and lineage guards are implemented and covered by tests; the October 8 studies used sealed temporal splits and recorded prior exposure. | Keep the split and exposure checks in each new generation. |
-| 50 — Fresh search | Run a separate Optuna study for each supported target. | Five independent 100-trial studies completed on October 8. They predate the missing-league rating-unit correction and are archived research evidence. | Run five fresh studies on the corrected generation. |
-| 60 — Full refit | Apply selected study parameters to research-only models. | October 8 refit `20261008T170701_385063Z` completed five targets. Its registered candidate is now research-only because it predates the rating-unit correction. | Fit all five targets from the new studies; keep training success separate from promotion. |
+| 50 — Fresh search | Run a separate Optuna study for each supported target. | Five independent 100-trial studies completed on October 8. They predate the rating-unit and causal league-prior corrections and are archived research evidence. | Run five fresh studies on the corrected generation. |
+| 60 — Full refit | Apply selected study parameters to research-only models. | October 8 refit `20261008T170701_385063Z` completed five targets. Its registered candidate is now research-only because it predates the rating-unit and causal league-prior corrections. | Fit all five targets from the new studies; keep training success separate from promotion. |
 | 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | Wider calculation checks exposed season, team-transfer, role, league-context, and source-ID defects. Regression fixes pass; the August champion and pre-correction October candidate are disabled for owner-facing use. | Run signed replay on the new candidate and require a passing sealed-row review before promotion. |
 | 80 — Prospective fixture population | Enroll scheduled fixtures before forecasts and prices. | Earlier fixture cohorts remain recorded. The owner will choose relevant leagues and fixtures after model validation. | Confirm the prospective population and collect complete coverage, including missing markets and no-bet decisions. |
 | 90 — Market and paper cycle | Capture exact Polymarket/Thunderpick contracts, owner-confirm quotes, size positive-edge paper entries, record close and result. | The evidence database passes integrity checks, but contains zero bets and zero settlements. The latest local market observations are from October 4; the October 8 Polymarket check found no supported open LoL market from Italy. No verified Thunderpick line or complete quote-to-settlement cycle exists. | Obtain an owner-observed executable contract and price, then record a real prospective paper cycle, including the closing quote and sourced result. |
@@ -52,7 +52,7 @@ returns. This project currently has no verified live edge or income stream.
 
 ## Archived research results
 
-The results below predate the October 9 league-rating unit correction. Their
+The results below predate the October 9 rating-unit and causal league-prior corrections. Their
 models are research-only and are not approved for owner-facing paper proposals.
 New generation results must replace them after refitting and review.
 
@@ -85,3 +85,16 @@ See the [research readiness plan](plans/2026-09-24-1117-fix-paper-research-readi
 for detailed gates and the separate
 [tennis plan](plans/2026-09-06-0050-feat-tennis-betting-module-plan.md) for
 the later expansion.
+
+## Causal entity-rating priors
+
+Elo, Glicko, Plackett–Luce, and TrueSkill use neutral, predeclared league
+priors by default. They no longer load the final league-Elo table, whose
+results include games later than historical training rows. Serving uses the
+same neutral transfer priors. League changes still reset skill uncertainty;
+separate chronological league-strength features remain available. Explicit
+caller-supplied priors must themselves be fixed before the evaluated games.
+Four regression tests verify that modifying only the final league table cannot
+change earlier default entity ratings. Freshness guards stopped the queued
+search before any trials because the cached source had aged past its limit;
+refresh the source before rebuilding and starting the replacement studies.

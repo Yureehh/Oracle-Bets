@@ -1,6 +1,8 @@
 import pytest
 from glicko2 import Rating
 from lol_bets.data_generation.feature_engineering.ratings_features import (
+    elo,
+    glicko,
     plackett_luce,
     trueskill,
 )
@@ -211,3 +213,40 @@ def test_missing_league_transfer_matches_explicit_neutral_elo(module, old, new):
         explicit["player"]["rating"].mu
     )
     assert absent["player"]["rating"].sigma == explicit["player"]["rating"].sigma
+
+
+@pytest.mark.parametrize(
+    ("module", "function"),
+    [
+        (elo, "calculate_elo"),
+        (glicko, "calculate_glicko2"),
+        (plackett_luce, "calculate_plackett_luce"),
+        (trueskill, "calculate_trueskill"),
+    ],
+)
+def test_entity_ratings_do_not_depend_on_mutable_future_league_table(
+    tmp_path, monkeypatch, module, function
+):
+    future_table = tmp_path / "league_elo.parquet"
+    monkeypatch.setattr(module, "RATING_LEAGUE_ELO", future_table, raising=False)
+    history = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-01-01T12:00Z"] * 2),
+            "season": [2026, 2026],
+            "gameid": ["past", "past"],
+            "teamid": ["a", "b"],
+            "league": ["LFL", "LFL"],
+            "side": ["Blue", "Red"],
+            "result": [1.0, 0.0],
+        }
+    )
+    pd.DataFrame({"league": ["LFL", "LEC"], "elo": [1800.0, 1200.0]}).to_parquet(
+        future_table
+    )
+    first = getattr(module, function)(history, "team")
+    # These represent later outcomes, not a predeclared historical prior.
+    pd.DataFrame({"league": ["LFL", "LEC"], "elo": [1200.0, 1800.0]}).to_parquet(
+        future_table
+    )
+    second = getattr(module, function)(history, "team")
+    pd.testing.assert_frame_equal(first, second)
