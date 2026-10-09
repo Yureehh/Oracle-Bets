@@ -10,14 +10,14 @@ parallel, but a later milestone cannot compensate for a failed earlier gate.
 
 | Milestone | What happens | Current evidence | Next gate |
 | --- | --- | --- | --- |
-| 0 — Source and configuration | Install locked dependencies; keep provider credentials outside Git. | The serving and rating corrections pass 760 tests, with 1 skipped locally; lint, formatting, and types pass. | Require green final PR checks and check setup on a second machine. |
-| 10 — Ingest | Refresh the public Oracle's Elixir source and retain a versioned raw snapshot. | The validated source is current through 2026-10-07 11:58 UTC. | Continue checking source freshness before each rebuild. |
-| 20 — Clean data and identities | Quarantine bad rows; normalize teams, players, maps, and series. | The October 8 rebuild has 24,430 games, 10,196 accepted series, and 1,770 quarantined groups. | Review quarantined groups when source or rules change. |
-| 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | The October 9 rating-unit rebuild changed four model-input tables. Review then found that entity ratings imported end-of-history league Elo, leaking later results into earlier inputs. Default entity priors are now neutral in training and serving; a new signed rebuild is required. | Verify source, code, and all output hashes on the corrected numerical generation. |
-| 40 — Research splits | Fit preprocessing inside temporal development folds; reserve sealed evaluation and record prior exposure. | Leakage and lineage guards are implemented and covered by tests; the October 8 studies used sealed temporal splits and recorded prior exposure. | Keep the split and exposure checks in each new generation. |
-| 50 — Fresh search | Run a separate Optuna study for each supported target. | Five independent 100-trial studies completed on October 8. They predate the rating-unit and causal league-prior corrections and are archived research evidence. | Run five fresh studies on the corrected generation. |
-| 60 — Full refit | Apply selected study parameters to research-only models. | October 8 refit `20261008T170701_385063Z` completed five targets. Its registered candidate is now research-only because it predates the rating-unit and causal league-prior corrections. | Fit all five targets from the new studies; keep training success separate from promotion. |
-| 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | Wider calculation checks exposed season, team-transfer, role, league-context, and source-ID defects. Regression fixes pass; the August champion and pre-correction October candidate are disabled for owner-facing use. | Run signed replay on the new candidate and require a passing sealed-row review before promotion. |
+| 0 — Source and configuration | Install locked dependencies; keep provider credentials outside Git. | The serving and rating corrections pass 761 tests, with 1 skipped locally; lint, formatting, and types pass. | Require green final PR checks and check setup on a second machine. |
+| 10 — Ingest | Refresh the public Oracle's Elixir source and retain a versioned raw snapshot. | The validated source is current through 2026-10-08 22:56 UTC. | Continue checking source freshness before each rebuild. |
+| 20 — Clean data and identities | Quarantine bad rows; normalize teams, players, maps, and series. | The corrected October 9 generation has 24,458 games, 10,203 accepted series, and 1,770 quarantined groups. | Review quarantined groups when source or rules change. |
+| 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | The corrected generation uses neutral entity-rating league priors, signed training tables, and a paired serving snapshot. All 581 available comparisons in the 128-per-target replay matched; 59 sampled rows were unavailable because of insufficient roster history. | Verify source, code, and all output hashes on the corrected numerical generation. |
+| 40 — Research splits | Fit preprocessing inside temporal development folds; reserve sealed evaluation and record prior exposure. | Leakage and lineage guards pass. The next preregistered recency experiment changes only the earlier winner partitions; it preserves the exact uncertainty and final test rows from the corrected candidate. | Keep the split and exposure checks; the reused historical holdout is research evidence, not untouched prospective validation. |
+| 50 — Fresh search | Run a separate Optuna study for each supported target. | Five independent 100-trial studies completed on the corrected October 9 generation. The failed candidate and its studies remain archived research evidence. | Run one capped replacement cycle with the preregistered winner-recency recipe. |
+| 60 — Full refit | Apply selected study parameters to research-only models. | Corrected refit `20261009T204634_650850Z` completed all five targets. Its candidate is research-only after the sealed promotion review failed. | Fit all five targets from the new studies; keep training success separate from promotion. |
+| 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | Corrected serving replay passed all 581 available comparisons. Series log loss was 0.590897 versus 0.556720 for the benchmark; the tier-one/ERL cohort also regressed. August and both October candidates are disabled for owner-facing use. | Require the next candidate to pass the same replay, improvement, and cohort gates; do not promote a bundle just because its creation date is newer. |
 | 80 — Prospective fixture population | Enroll scheduled fixtures before forecasts and prices. | Earlier fixture cohorts remain recorded. The owner will choose relevant leagues and fixtures after model validation. | Confirm the prospective population and collect complete coverage, including missing markets and no-bet decisions. |
 | 90 — Market and paper cycle | Capture exact Polymarket/Thunderpick contracts, owner-confirm quotes, size positive-edge paper entries, record close and result. | The evidence database passes integrity checks, but contains zero bets and zero settlements. The latest local market observations are from October 4; the October 8 Polymarket check found no supported open LoL market from Italy. No verified Thunderpick line or complete quote-to-settlement cycle exists. | Obtain an owner-observed executable contract and price, then record a real prospective paper cycle, including the closing quote and sourced result. |
 | 100 — Decision evidence | Evaluate all enrolled fixtures, net paper returns, calibration, closing-line value, exposure, and drawdown before extending to tennis or real stakes. | **Pending.** No observed earnings claim is justified. | Accumulate enough prospective, settled, representative samples and compare locked policies on later data. |
@@ -98,3 +98,32 @@ Four regression tests verify that modifying only the final league table cannot
 change earlier default entity ratings. Freshness guards stopped the queued
 search before any trials because the cached source had aged past its limit;
 refresh the source before rebuilding and starting the replacement studies.
+
+## Winner-recency research cycle
+
+The corrected October 9 run is fresh as an artifact, but its original 55%
+training partition stops the series base learner on May 13, 2025. Its
+calibration then spans much of the following year. The candidate passed
+calculation parity but failed model promotion: series log loss was 6.14% worse
+than the benchmark, with tier-one/ERL regression. No new champion was promoted.
+
+One replacement research cycle is preregistered with timestamp-atomic
+73/2/2.5/2.5/5/15 partitions for training, tuning, calibration fitting,
+calibration selection, uncertainty fitting, and testing. On the retained
+source this moves series training to 7,447 rows through February 1, 2026.
+The original uncertainty window and all 1,529 final series test IDs remain
+exactly unchanged. The calibration periods become smaller and more recent;
+minimum support, calibration diversity, timestamp separation, and all model
+promotion and market-readiness checks still apply. This is an experiment,
+not an assurance of improved performance.
+
+The research cap is one new five-target search/refit/replay cycle. If it still
+fails the unchanged promotion gates, record that failure rather than repeatedly
+selecting against the same test outcomes. The reused historical holdout has
+known prior exposure and cannot establish an independent earning claim.
+Prospective owner-selected fixtures, executable quotes, closes, and settled
+results remain necessary before stronger strategy claims.
+
+The splitter also now reserves a timestamp for every remaining partition,
+fixing its previous failure on the documented six-timestamp minimum.
+The running Discord worker was refreshed silently after the code fixes.

@@ -180,7 +180,9 @@ def test_winner_v2_uses_predeclared_temporal_partitions() -> None:
 
     splits = GradientBoostingModel.temporal_winner_v2_split(X, y)
 
-    assert [len(frame) for frame in splits[:6]] == [55, 5, 10, 10, 5, 15]
+    assert [len(frame) for frame in splits[:6]] == [73, 2, 3, 2, 5, 15]
+    assert splits[4]["gameid"].tolist() == [f"series-{i}" for i in range(80, 85)]
+    assert splits[5]["gameid"].tolist() == [f"series-{i}" for i in range(85, 100)]
 
 
 def test_map_winner_uses_the_dedicated_uncertainty_partition() -> None:
@@ -507,3 +509,19 @@ def test_prop_calibrator_artifact_paths_exist_for_all_prop_targets() -> None:
     assert GAMELENGTH_PREDICTION_PROP_CALIBRATOR.name.endswith("_prop_calibrator.pkl")
     assert TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR.name.endswith("_prop_calibrator.pkl")
     assert TOTAL_TOWERS_PREDICTION_PROP_CALIBRATOR.name.endswith("_prop_calibrator.pkl")
+
+
+def test_winner_temporal_split_accepts_six_unique_timestamps() -> None:
+    frame = pd.DataFrame(
+        {
+            "gameid": [f"series-{i}" for i in range(6)],
+            "date": pd.date_range("2026-01-01", periods=6, freq="D"),
+        }
+    )
+    labels = pd.Series([0, 1, 0, 1, 0, 1])
+    splits = GradientBoostingModel.temporal_winner_v2_split(frame, labels)
+    assert [part["gameid"].tolist() for part in splits[:6]] == [
+        [f"series-{i}"] for i in range(6)
+    ]
+    for part, target in zip(splits[:6], splits[6:], strict=True):
+        pd.testing.assert_series_equal(target, labels.loc[part.index])

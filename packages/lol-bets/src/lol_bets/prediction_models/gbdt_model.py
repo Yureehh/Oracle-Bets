@@ -1519,7 +1519,7 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         pd.Series,
         pd.Series,
     ]:
-        """Create timestamp-atomic 55/5/10/10/5/15 Winner V2 partitions."""
+        """Create timestamp-atomic 73/2/2.5/2.5/5/15 Winner V2 partitions."""
         required = {group_col, date_col}
         if not required.issubset(X_with_meta.columns):
             raise ValueError(f"Missing required columns {sorted(required)}")
@@ -1529,12 +1529,17 @@ class GradientBoostingModel(MLObservabilityMixin, ABC):
         timestamps = pd.Index(groups[date_col].drop_duplicates())
         if len(timestamps) < MIN_CALIBRATION_SPLITS:
             raise ValueError("Winner V2 requires at least six unique timestamps.")
-        fractions = (0.55, 0.05, 0.10, 0.10, 0.05)
+        # Keep the uncertainty/test cutoffs at 80%/85%; move earlier data into training.
+        fractions = (0.73, 0.02, 0.025, 0.025, 0.05)
         boundaries = [0]
         cumulative = 0.0
-        for fraction in fractions:
+        for index, fraction in enumerate(fractions):
             cumulative += fraction
-            boundary = max(boundaries[-1] + 1, int(round(len(timestamps) * cumulative)))
+            remaining = len(fractions) - index
+            boundary = min(
+                max(boundaries[-1] + 1, int(round(len(timestamps) * cumulative))),
+                len(timestamps) - remaining,
+            )
             boundaries.append(boundary)
         boundaries[-1] = min(boundaries[-1], len(timestamps) - 1)
         date_partitions = [
