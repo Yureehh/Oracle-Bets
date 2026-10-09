@@ -683,3 +683,54 @@ def test_same_day_league_switch_keeps_first_game_rating_inputs(
     assert actual.team_stats["league"] == "LEC"
     assert actual.player_stats["league"].tolist() == ["LEC"] * 5
     team_module._league_elo_values.cache_clear()
+
+
+@pytest.mark.parametrize("name", ["Fenrir", "fenrir", "FenRir"])
+def test_global_name_fallback_resolves_casefolded_identities_safely(name: str) -> None:
+    team = Team.__new__(Team)
+    team.name = "Team A"
+    team._as_of = pd.Timestamp("2026-02-01")
+    roles = ("top", "jng", "mid", "bot", "sup")
+    team._player_df = pd.DataFrame(
+        [
+            {
+                "teamname": "Team A",
+                "playername": role,
+                "playerid": role,
+                "position": role,
+                "date": pd.Timestamp("2026-01-01"),
+                "elo": 1500.0,
+            }
+            for role in roles
+            if role != "bot"
+        ]
+        + [
+            {
+                "teamname": "Team B",
+                "playername": "FenRir",
+                "playerid": "veteran",
+                "position": "bot",
+                "date": pd.Timestamp("2026-01-01"),
+                "elo": 1700.0,
+            },
+            {
+                "teamname": "Team A",
+                "playername": "Fenrir",
+                "playerid": "debutant",
+                "position": "bot",
+                "date": pd.Timestamp("2026-02-02"),
+                "elo": 1500.0,
+            },
+        ]
+    )
+    roster = dict(zip(roles, roles, strict=True))
+    roster["bot"] = name
+    if name == "FenRir":
+        actual = team._lookup_players(roster)
+        assert actual.loc[actual.role.eq("bot"), "playerid"].tolist() == ["veteran"]
+    else:
+        with pytest.raises(
+            InsufficientRosterHistoryError,
+            match=r"(Ambiguous player|Missing statistics).*fenrir",
+        ):
+            team._lookup_players(roster)

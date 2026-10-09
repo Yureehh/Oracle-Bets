@@ -2,7 +2,7 @@
 Team model: fast, safe access to team & player snapshots.
 
 - Pins paired historical feature tables at the actual decision cutoff.
-- Case-insensitive matching with .casefold() (better than .lower() for i18n).
+- Case-insensitive matching with exact-spelling identity disambiguation.
 - Partial roster updates allowed; missing roles autocompleted from last roster.
 - Strong validation + clear errors, but minimal noise in logs.
 """
@@ -572,14 +572,46 @@ class Team:
 
     def _lookup_players(self, roster: dict[str, str | None]) -> pd.DataFrame:
         # expect fully-populated roster already validated
-        wanted = {role: (name or "") for role, name in roster.items()}
-        wanted_lower = {role: name.casefold() for role, name in wanted.items()}
+        wanted_lower = {role: (name or "").casefold() for role, name in roster.items()}
         requested_names = set(wanted_lower.values())
-        team_key = self.name.casefold()
 
         df = self._player_df[
             self._player_df["playername"].str.casefold().isin(requested_names)
         ].copy()
+        # Exact published spelling can disambiguate IDs; future rows never
+        # supply numerical player state.
+        exact_names = (
+            df.groupby("playername", observed=True)["playerid"].agg(
+                lambda ids: ids.iloc[0] if ids.nunique() == 1 else None
+            )
+            if "playerid" in df
+            else pd.Series(dtype="object")
+        )
+        exact_ids = {
+            str(name).casefold(): exact_names[name]
+            for name in roster.values()
+            if name in exact_names and pd.notna(exact_names[name])
+        }
+        df = (
+            df.loc[
+                df["playername"].str.casefold().map(exact_ids).isna()
+                | df["playerid"].eq(df["playername"].str.casefold().map(exact_ids))
+            ]
+            if "playerid" in df
+            else df
+        )
+        identity_counts = (
+            df.groupby(df["playername"].str.casefold(), observed=True).agg(
+                identities=("playerid", "nunique"), spellings=("playername", "nunique")
+            )
+            if "playerid" in df
+            else pd.DataFrame(
+                {
+                    "identities": pd.Series(dtype="int64"),
+                    "spellings": pd.Series(dtype="int64"),
+                }
+            )
+        )
         activity_rows = self._at_or_before_as_of(df)
         activity_key = "playerid" if "playerid" in activity_rows else "playername"
         self._player_activity_dates = (
@@ -626,8 +658,10 @@ class Team:
             msg = f"No player stats found for roster of team '{self.name}'."
             raise InsufficientRosterHistoryError(msg)
 
-        df["_player_key"] = df["playername"].str.casefold()
-        df["_team_match"] = df["teamname"].str.casefold().eq(team_key)
+        df = df.assign(
+            _player_key=df["playername"].str.casefold(),
+            _team_match=df["teamname"].str.casefold().eq(self.name.casefold()),
+        )
 
         # Team history disambiguates identical names. State follows the resolved
         # player identity globally, including spells with a different team.
@@ -646,6 +680,20 @@ class Team:
                 .drop_duplicates("_player_key", keep="first")
             )
         found_team_rows = set(team_rows["_player_key"])
+        ambiguous = sorted(
+            name
+            for name in requested_names
+            if name in identity_counts.index
+            and identity_counts.loc[name, "identities"] > 1
+            and (
+                name not in found_team_rows
+                or identity_counts.loc[name, "spellings"] > 1
+            )
+        )
+        if ambiguous:
+            raise InsufficientRosterHistoryError(
+                f"Ambiguous player names cannot be resolved safely: {ambiguous}"
+            )
         fallback_rows = (
             df[~df["_player_key"].isin(found_team_rows)]
             .sort_values(["_player_key", "date"], ascending=[True, False])
@@ -656,8 +704,7 @@ class Team:
         )
 
         # ensure we have one row per requested player
-        have_lower = set(df["playername"].str.casefold())
-        missing = [nm for nm in requested_names if nm not in have_lower]
+        missing = sorted(requested_names - set(df["playername"].str.casefold()))
         if missing:
             msg = f"Missing statistics for players: {sorted(set(missing))}"
             raise InsufficientRosterHistoryError(msg)
@@ -668,18 +715,19 @@ class Team:
         if set(df["role"]) != set(_EXPECTED_POS) or df["role"].duplicated().any():
             msg = f"Roster for '{self.name}' does not resolve to exactly one player per role."
             raise ValueError(msg)
-        df["_rating_position"] = (
-            df[activity_key]
+        df = df.assign(
+            _rating_position=df[activity_key]
             .astype(str)
             .str.casefold()
             .map(rating_positions)
-            .fillna(df["role"])
+            .fillna(df["role"]),
+            _rating_league=df[activity_key]
+            .astype(str)
+            .str.casefold()
+            .map(rating_leagues),
+            _prior_position=df["position"],
+            position=df["role"],
         )
-        df["_rating_league"] = (
-            df[activity_key].astype(str).str.casefold().map(rating_leagues)
-        )
-        df["_prior_position"] = df["position"]
-        df["position"] = df["role"]
 
         # re-order helpful columns if present
         cols = ["role", "playername", "teamname", "position", "date"]
