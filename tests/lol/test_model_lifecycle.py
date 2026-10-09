@@ -15,6 +15,7 @@ from lol_bets.operations.models import (
     PromotionPolicy,
     _clustered_binary_log_losses,
     _cohort_replay_losses,
+    _replay_bundle_target,
     _target_drift_review,
     evaluate_promotion,
     evaluate_training_triggers_from_history,
@@ -546,7 +547,29 @@ def test_routine_review_replays_both_bundles_on_candidate_sealed_rows(tmp_path):
     drift = review.evidence["drift_review"]
     assert drift["status"] == "warning_only"
     assert drift["promotion_gate_effect"] == "none"
-    assert drift["targets"]["series_winner"]["feature_availability"]["columns"] == 1
+    assert drift["targets"]["series_winner"]["feature_availability"]["columns"] == len(
+        _IdentityPipeline.train_columns
+    )
+
+
+def test_promotion_replay_rejects_absent_model_features_before_imputation(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry")
+    _register_replay_bundle(
+        registry,
+        tmp_path / "candidate",
+        "candidate",
+        confidence=0.7,
+        regression_error=0.5,
+        include_evaluation=True,
+    )
+    with pytest.raises(ValueError, match="missing trained features"):
+        _replay_bundle_target(
+            registry.candidates / "candidate",
+            model_name="SeriesWinnerPrediction_LightGBM",
+            raw_features=pd.DataFrame({"signal": [1.0]}),
+            metadata=pd.DataFrame({"league": ["LCK"]}),
+            classification=True,
+        )
 
 
 def test_experimental_next_map_regression_does_not_block_prematch_candidate(tmp_path):
@@ -922,9 +945,10 @@ def _register_replay_bundle(
                 actual = np.tile([1, 0], 40)
             else:
                 actual = np.linspace(10, 20, 80)
-            pd.DataFrame({"signal": actual}).to_parquet(
-                evaluation / "features.parquet", index=False
-            )
+            pd.DataFrame(
+                {"signal": actual}
+                | dict.fromkeys(_IdentityPipeline.train_columns[1:], 0.5)
+            ).to_parquet(evaluation / "features.parquet", index=False)
             pd.DataFrame(
                 {
                     "actual": actual,
