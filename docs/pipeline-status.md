@@ -1,6 +1,6 @@
 # Pipeline status
 
-_Local verification snapshot: 2026-10-09. Generated datasets, model bundles,
+_Local verification snapshot: 2026-10-10 (Europe/Rome). Generated datasets, model bundles,
 quotes, and the evidence database are local state; cloning GitHub does not
 include them._
 
@@ -14,10 +14,10 @@ parallel, but a later milestone cannot compensate for a failed earlier gate.
 | 10 — Ingest | Refresh the public Oracle's Elixir source and retain a versioned raw snapshot. | The validated source is current through 2026-10-08 22:56 UTC. | Continue checking source freshness before each rebuild. |
 | 20 — Clean data and identities | Quarantine bad rows; normalize teams, players, maps, and series. | The corrected October 9 generation has 24,458 games, 10,203 accepted series, and 1,770 quarantined groups. | Review quarantined groups when source or rules change. |
 | 30 — Features and targets | Build chronological team/player features, ratings, and paired serving history. | The corrected generation uses neutral entity-rating league priors, signed training tables, and a paired serving snapshot. All 581 available comparisons in the 128-per-target replay matched; 59 sampled rows were unavailable because of insufficient roster history. | Verify source, code, and all output hashes on the corrected numerical generation. |
-| 40 — Research splits | Fit preprocessing inside temporal development folds; reserve sealed evaluation and record prior exposure. | Leakage and lineage guards pass. The next preregistered recency experiment changes only the earlier winner partitions; it preserves the exact uncertainty and final test rows from the corrected candidate. | Keep the split and exposure checks; the reused historical holdout is research evidence, not untouched prospective validation. |
-| 50 — Fresh search | Run a separate Optuna study for each supported target. | Five independent 100-trial studies completed on the corrected October 9 generation. The failed candidate and its studies remain archived research evidence. | Run one capped replacement cycle with the preregistered winner-recency recipe. |
-| 60 — Full refit | Apply selected study parameters to research-only models. | Corrected refit `20261009T204634_650850Z` completed all five targets. Its candidate is research-only after the sealed promotion review failed. | Fit all five targets from the new studies; keep training success separate from promotion. |
-| 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | Corrected serving replay passed all 581 available comparisons. Series log loss was 0.590897 versus 0.556720 for the benchmark; the tier-one/ERL cohort also regressed. August and both October candidates are disabled for owner-facing use. | Require the next candidate to pass the same replay, improvement, and cohort gates; do not promote a bundle just because its creation date is newer. |
+| 40 — Research splits | Fit preprocessing inside temporal development folds; reserve sealed evaluation and record prior exposure. | Leakage and lineage guards pass. The completed recency experiment preserved the exact uncertainty window and all 1,529 final series test IDs. | Keep the exposure checks; the reused historical holdout is research evidence, not untouched prospective validation. |
+| 50 — Fresh search | Run a separate Optuna study for each supported target. | All five replacement 100-trial studies completed on the frozen, corrected generation. The earlier five studies also remain archived. | The one-cycle research cap is exhausted. Develop further changes on development data and predeclare a later evaluation window. |
+| 60 — Full refit | Apply selected study parameters to research-only models. | Replacement refit `20261009T231405_688954Z` completed all five targets, with no failures. Its candidate is research-only after promotion failed. | Keep successful fitting separate from model and production-parameter approval. |
+| 70 — Replay and model review | Compare sealed feature values with the real serving path; inspect calibration and cohort gates. | Replacement replay passed all 581 available comparisons, with 59 unavailable samples. Series log loss improved to 0.562790 but remained worse than the 0.556720 benchmark; Brier and calibration error also regressed. August and all three October candidates are disabled for owner-facing use. | A new champion remains unapproved. Require the same improvement, calibration, replay, and readiness gates on a future candidate. |
 | 80 — Prospective fixture population | Enroll scheduled fixtures before forecasts and prices. | Earlier fixture cohorts remain recorded. The owner will choose relevant leagues and fixtures after model validation. | Confirm the prospective population and collect complete coverage, including missing markets and no-bet decisions. |
 | 90 — Market and paper cycle | Capture exact Polymarket/Thunderpick contracts, owner-confirm quotes, size positive-edge paper entries, record close and result. | The evidence database passes integrity checks, but contains zero bets and zero settlements. The latest local market observations are from October 4; the October 8 Polymarket check found no supported open LoL market from Italy. No verified Thunderpick line or complete quote-to-settlement cycle exists. | Obtain an owner-observed executable contract and price, then record a real prospective paper cycle, including the closing quote and sourced result. |
 | 100 — Decision evidence | Evaluate all enrolled fixtures, net paper returns, calibration, closing-line value, exposure, and drawdown before extending to tennis or real stakes. | **Pending.** No observed earnings claim is justified. | Accumulate enough prospective, settled, representative samples and compare locked policies on later data. |
@@ -95,9 +95,10 @@ same neutral transfer priors. League changes still reset skill uncertainty;
 separate chronological league-strength features remain available. Explicit
 caller-supplied priors must themselves be fixed before the evaluated games.
 Four regression tests verify that modifying only the final league table cannot
-change earlier default entity ratings. Freshness guards stopped the queued
-search before any trials because the cached source had aged past its limit;
-refresh the source before rebuilding and starting the replacement studies.
+change earlier default entity ratings. Freshness guards stopped an earlier queued
+search before any trials because the cached source had aged past its limit.
+The subsequent refresh and rebuild passed these guards; both corrected research
+cycles used the retained source current through October 8.
 
 ## Winner-recency research cycle
 
@@ -127,3 +128,56 @@ results remain necessary before stronger strategy claims.
 The splitter also now reserves a timestamp for every remaining partition,
 fixing its previous failure on the documented six-timestamp minimum.
 The running Discord worker was refreshed silently after the code fixes.
+
+## Completed replacement review
+
+All five replacement studies and the full refit completed. The immutable
+candidate is `lol-20261009T231405_688954Z`; its base series learner trains
+through February 1, 2026, rather than May 2025. The serving rebuild verified
+that the numerical input files were byte-identical to the preceding corrected
+generation. The recipe changed; the source, uncertainty window, and final
+series test population did not.
+
+| Target | Study run | Refit test result |
+| --- | --- | --- |
+| Map winner | `20261009T222436_913278Z` | Log loss 0.632618; accuracy 65.09%; calibration slope 0.720. |
+| Series winner | `20261009T222945_303975Z` | Log loss 0.562790; accuracy 71.42%; calibration slope 1.135. |
+| Game length | `20261009T223509_551567Z` | MAE 4.246 minutes; R² 0.061. |
+| Total kills | `20261009T224609_486040Z` | MAE 7.520 kills; R² 0.090. |
+| Total towers | `20261009T230527_940573Z` | MAE 1.715 towers; R² 0.00033. |
+
+The actual 128-per-target serving replay matched 117 map rows, 113 series
+rows, and 117 rows for each prop target: **581 matches, zero mismatches**.
+The other 59 samples lacked sufficient roster history and were unavailable,
+not counted as passes. This reconstructs historical calculation values; it
+does not prove that the later-published snapshot was available prospectively.
+
+The unchanged Optuna promotion review **blocked** the replacement:
+
+- Series log loss was 1.09% worse than the archived benchmark, not the required
+  proven improvement. The paired-bootstrap improvement lower bound was −2.095%.
+- Series Brier score was 0.190816 versus 0.188261.
+- Series calibration error was 0.035164 versus 0.024885.
+- The tier-one/ERL cohort had log loss 0.566670 versus 0.558482 on 1,147 series.
+  This remained worse, although it did not trigger the separate cohort-regression gate.
+
+The series parameter review was also blocked by insufficient improvement,
+failed conservative-probability coverage, and prior holdout exposure. No
+replacement parameters were published as production settings. The registry
+still points to the August artifact for historical identity, but that artifact
+is quarantined and cannot issue owner-facing forecasts. Neither failed October
+replacement was promoted. A healthy checksum is not model approval.
+
+Local receipts are retained under `reports/lol/training/replay/`, including
+`recency-research-cycle.json`, `recency-validation-outcome.json`, and
+`lol-20261009T231405_688954Z-corrected-20261009T234448Z.json`. The sealed review
+is under `data/state/model-registry/lol/reviews/`. These generated files are
+not distributed by a GitHub clone.
+
+The remaining model work is to diagnose calibration and conservative-bound
+coverage using development partitions, then preregister a new candidate and
+a later evaluation window before viewing its outcomes. Do not weaken gates or
+repeat selection on this exposed test set. Meaningful owner-selected fixtures
+and complete prospective evidence remain pending; there are still no paper
+bets, settlements, or demonstrated earnings. A second-machine setup check also
+remains unverified.
