@@ -378,6 +378,28 @@ def test_conservative_probability_coverage_avoids_downcasting_warning() -> None:
     assert not any(isinstance(item.message, FutureWarning) for item in captured)
 
 
+@pytest.mark.parametrize("index", [range(500, 570), range(140, 0, -2)])
+def test_conservative_probability_coverage_preserves_cohorts_with_offset_index(
+    index,
+) -> None:
+    metadata = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=70, freq="D"),
+            "actionable": True,
+            "league": "LCK",
+        }
+    )
+    actual = np.tile([0, 1], 35)
+    lower = np.full(70, 0.40)
+    expected = conservative_probability_coverage(actual, lower, metadata)
+    metadata.index = index
+
+    result = conservative_probability_coverage(actual, lower, metadata)
+
+    assert result == expected
+    assert result["cohorts"]["league:LCK"]["rows"] == len(metadata)
+
+
 def test_metadata_probability_calibrator_skips_sparse_segments(
     tmp_path, monkeypatch
 ) -> None:

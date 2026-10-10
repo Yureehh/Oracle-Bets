@@ -439,6 +439,7 @@ def conservative_probability_coverage(
     """Validate lower-bound calibration over preregistered ISO-week cohorts."""
     if "date" not in metadata:
         raise ValueError("Conservative coverage requires fixture timestamps.")
+    metadata = metadata.reset_index(drop=True)
     frame = pd.DataFrame(
         {
             "actual": pd.to_numeric(pd.Series(y_true), errors="coerce").to_numpy(),
