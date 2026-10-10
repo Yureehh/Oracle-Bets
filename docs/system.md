@@ -150,23 +150,29 @@ meaning match exactly. Prices never enter inference.
 
 Every exact semantic comparison is classified by one versioned deterministic
 policy as `recommended`, `exploration`, or `not_comparable`; an LLM never makes
-this decision. The direct series target is the only initial
-`recommendation_active` target. Map 1, score-aware next map, map-path totals and
-handicaps, duration, kills, and towers begin `exploration_only`. Unsupported or
+this decision. The active `lol-20261010-paper-v1` protocol has zero
+`recommendation_active` targets. Direct series remains exploratory until its
+readiness warnings are resolved in a separately registered experiment. Map 1,
+map-path totals and handicaps, duration, kills, and towers remain
+`exploration_only`; score-aware next map remains `display_only`. Unsupported or
 structurally unready targets are `display_only` and cannot create a ticket.
 
 A recommendation requires healthy fixture/model evidence and positive
 conservative net EV after the configured friction allowance. Exploration keeps
 research coverage separate: at most one comparable outcome per target/period is
-sampled when no recommendation exists. Negative-EV exploration remains clearly
-labelled; it is not a claim that the bet should win. All reason codes, warnings,
+sampled when no recommendation exists. Non-positive-EV exploration remains
+an observation without a paper stake. All reason codes, warnings,
 rejected alternatives, and the owner decision are preserved.
 
 One unit is 1% of the pre-bet bankroll. A single immutable ticket freezes the
 accepted quote, probability used for sizing, flat 1u, full Kelly, half Kelly,
-and quarter Kelly. Positive-EV paper research uses full Kelly as the primary
-study path; negative-EV exploration uses flat 1u and zero Kelly fractions. These
-are counterfactual research tracks, not real-money authorization.
+and quarter Kelly. Positive-EV paper entries use capped fractional Kelly as the
+primary path,
+with provisional quarter-Kelly, 2% ticket, 5% sporting-fixture, and 20% total
+open-exposure limits. Acceptance recalculates those limits against unresolved
+positions. Non-positive-edge cases have no paper stake. Flat and alternative
+Kelly paths are counterfactual diagnostics, not real-money authorization or an
+empirically optimized policy.
 
 The append-only schema uses `bets` for immutable entry terms and `bet_events`
 for result, settlement, and correction facts. Settlement is manual
