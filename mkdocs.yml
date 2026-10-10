@@ -25,6 +25,7 @@ nav:
   - System: system.md
   - Commands: commands.md
   - Pipeline status: pipeline-status.md
+  - LoL paper protocol: lol-paper-protocol.md
   - Roadmap: roadmap.md
 
 markdown_extensions:
