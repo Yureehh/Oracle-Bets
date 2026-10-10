@@ -3,7 +3,10 @@
 The protocol is recorded in `config/research/lol-paper-v1.json`. Its evaluation
 window is October 11 through November 30, 2026, Europe/Rome. Model weights,
 hyperparameters, calibration, and uncertainty artifacts remain fixed throughout
-that window. Daily feature state may advance using completed games available
+that window. Eligibility uses each preregistered fixture’s scheduled start: start
+inclusive October 11 at 00:00, end exclusive December 1 at 00:00, Europe/Rome.
+Forecasts must follow package selection and precede fixture start. Daily feature
+state may advance using completed games available
 before each decision. Forecasts retain the model, feature generation, and actual
 decision timestamp; later reconstructions are not prospective forecasts.
 
@@ -24,7 +27,7 @@ the August model's better replay score. August remains quarantined. Historical
 comparisons with it are retained as diagnostics, not treated as a clean causal
 standard that justifies keeping it in service.
 
-## Replacement and explicit paper override
+## Replacement and paper selection
 
 The five fresh studies and full refit have already completed. Their weight
 origin is `lol-20261009T231405_688954Z`; the paper package is
@@ -34,8 +37,15 @@ generation. Repackaging is not another training run. The series base learner
 was fitted through February 1, 2026, and the source extends through October 8.
 
 The owner requested replacing the defective legacy benchmark with the corrected
-model for paper research. This manual selection does not turn failed automatic
-quality gates into passes. Series log loss is 0.562790; Brier is 0.190816;
+model for paper research. The normal registry promotion was subsequently
+verified against the frozen
+causal rating baseline. Its existing first-valid-model noninferiority review
+returned `manual_review_required`, with no blocking reasons: series log loss
+0.562790 versus baseline 0.566831, and a paired-bootstrap degradation upper
+bound of 0.839%, below the existing 1% limit. The owner-authorized selection
+completed through the normal promotion path. This is not proof of a greater
+than 1% improvement, and it does not turn failed strategy-readiness gates into
+passes. Series log loss is 0.562790; Brier is 0.190816;
 calibration error is 0.035164. Its conservative probability bounds failed several
 league coverage checks. Map and prop targets also remain exploratory.
 
@@ -47,9 +57,21 @@ their statistical coverage.
 
 The paper champion permits research forecasts and owner-confirmed exploratory
 paper samples. All recommendation states remain disabled. Model checksum and
-structural correctness checks still apply. The manual transition retains the
-failed review, source/weight provenance, replay receipt, protocol hash, and
-owner-override reason. It makes no claim of proven edge or optimized sizing.
+structural correctness checks still apply. The audit trail retains the earlier
+blocked legacy comparison, the initial
+manual transition, the successful normal promotion confirmation, source/weight
+provenance, replay receipt, protocol hash, and owner selection reason. The
+separate Optuna parameter review remains blocked by insufficient improvement,
+conservative coverage, and prior holdout exposure; no production parameter
+configuration was published. It makes no claim of proven edge or optimized sizing.
+
+The serving replay matched all 581 available sampled rows, with zero
+mismatches; another 59 samples lacked sufficient roster history. Structural
+winner and market validation also pass. The sealed predictions exported under
+`reports/lol/training/runs/20261010-paper-v1/` are byte-identical to the original
+full-refit exports. Their `evaluation_export.json` identifies them as an
+evaluation export, not a new training run. Generated receipts and model bundles
+are local state and are not included in a GitHub clone.
 
 ## Evaluation rules
 
@@ -74,3 +96,5 @@ owner-override reason. It makes no claim of proven edge or optimized sizing.
 This protocol locks the model and dates. The owner still needs to supply the
 fixture population, bankroll, exact markets, and paper confirmations. There
 are currently no settled prospective paper bets or demonstrated earnings.
+
+Follow the [owner checklist](paper-owner-checklist.md) for the remaining steps.
