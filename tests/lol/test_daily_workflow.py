@@ -23,7 +23,7 @@ from oracle_bets_discord.predictions.lol import format_schedule_messages
 
 MESSAGE_SPLIT_LIMIT = 420
 EXPECTED_MIN_SPLIT_MESSAGES = 2
-EXPECTED_HORIZON_HOURS = 36
+EXPECTED_HORIZON_HOURS = 336
 DAILY_REPORT_SCHEMA_VERSION = 6
 EXPECTED_STABLE_SERIES = 3
 
@@ -389,7 +389,7 @@ def test_daily_defaults_to_operational_leagues_and_hides_academy(
     assert {"LCK", "LIT"}.issubset(set(captured["leagues"].split(",")))
     assert "LCKC" not in captured["leagues"].split(",")
     assert "NACL" not in captured["leagues"].split(",")
-    assert result.schedule["league"].tolist() == ["LCK", "LIT"]
+    assert result.schedule["league"].tolist() == ["CBLOL", "LCK", "LCP", "LIT"]
 
 
 def test_daily_explicit_league_filter_overrides_operational_profile(

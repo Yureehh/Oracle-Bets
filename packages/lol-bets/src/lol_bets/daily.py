@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
 
+from oracle_bets_core.config import FIXTURE_WINDOW_HOURS
 from oracle_bets_core.evidence import EvidenceStore
 from oracle_bets_core.io_utils import atomic_write_text
 from oracle_bets_core.league_selection import actionable_leagues
@@ -117,7 +118,7 @@ class Predictor(Protocol):
 class DailyWorkflowConfig:
     """Runtime options for the daily LoL workflow."""
 
-    horizon_hours: int = 36
+    horizon_hours: int = FIXTURE_WINDOW_HOURS
     leagues: str | None = None
     delivery_mode: str | None = None
     dry_run: bool = False
@@ -303,7 +304,7 @@ def filter_daily_schedule(
     schedule_df: pd.DataFrame,
     *,
     now: dt.datetime | None = None,
-    horizon_hours: int = 36,
+    horizon_hours: int = FIXTURE_WINDOW_HOURS,
 ) -> pd.DataFrame:
     """Keep fixtures in the exact rolling UTC horizon."""
     if horizon_hours <= 0:
@@ -940,8 +941,8 @@ def build_prediction_snapshot_rows(
                         if raw_map is not None
                         else None
                     ),
-                    "probability_lower": float(lower or probability),
-                    "probability_upper": float(upper or probability),
+                    "probability_lower": float(probability if lower is None else lower),
+                    "probability_upper": float(probability if upper is None else upper),
                     "probability_source": "independent_map_winner_model",
                     "uncertainty_method": map_prediction.get("uncertainty_method"),
                     "uncertainty_confidence": map_prediction.get(

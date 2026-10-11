@@ -1,5 +1,5 @@
 {
-  "active_profile": "tier1_plus_erls",
+  "active_profile": "paper_selected",
   "profiles": {
     "tier1_current": [
       "CBLOL",
@@ -111,6 +111,33 @@
       "TCL",
       "UL",
       "VCS",
+      "WLDs"
+    ],
+    "paper_selected": [
+      "CBLOL",
+      "DCup",
+      "EBL",
+      "EM",
+      "EWC",
+      "FST",
+      "HLL",
+      "HM",
+      "KeSPA",
+      "LCK",
+      "LCP",
+      "LCS",
+      "LEC",
+      "LES",
+      "LFL",
+      "LIT",
+      "LPL",
+      "LPLOL",
+      "MSI",
+      "NLC",
+      "PRM",
+      "RL",
+      "ROL",
+      "TCL",
       "WLDs"
     ]
   }
