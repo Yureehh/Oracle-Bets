@@ -2,7 +2,7 @@
 
 Oracle Bets is a local-first League of Legends betting-research system focused
 on calibrated probability accuracy, leakage prevention, conservative market
-matching, and real paper-profit evidence.
+matching, and prospective paper evidence.
 
 It validates public 2024–2026 Oracle's Elixir history, generates strictly
 chronological team/player features and ratings, reconstructs complete series,
@@ -65,8 +65,11 @@ Thunderpick is link-plus-manual-lines. The review compares independent series,
 experimental map/derived, and calibrated prop probabilities where compatible.
 Unsupported specials are counted in the compact report and preserved in JSON.
 
-Direct series is the only initial recommendation-capable target. Map, next-map,
-derived totals/handicaps, and props begin as exploration. Forced exploration
+The active champion is `lol-20261010-paper-v1`, with every strategy exploratory
+or display-only and zero recommendation-active cells. The manual daily run
+scans 14 days across the selected 25 competitions, records forecasts after
+enrollment, and discovers Polymarket listing candidates. A listing is not an
+executable quote. Forced exploration
 coverage is kept separate from recommendation evidence and is never proof that
 a wager is profitable.
 
@@ -127,8 +130,10 @@ uv run oracle-bets daily lol --dry-run
 uv run oracle-bets discord doctor
 ```
 
-Start with the [ordered CLI and Discord usage guide](docs/commands.md), then read
-the [system documentation](docs/index.md).
+Start with [daily operation](docs/daily-operation.md), then read the
+[system and long-term guide](docs/system.md). The [command reference](docs/commands.md)
+lists advanced operations. The virtual budget is €500 total, split €250 per
+venue; Polymarket requires an explicit sourced pUSD conversion before entry.
 
 Historical data is supplied by [Oracle's Elixir](https://www.oracleselixir.com).
 This is research software, not financial advice; betting can lose money.

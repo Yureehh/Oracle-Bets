@@ -10,6 +10,22 @@ state may advance using completed games available
 before each decision. Forecasts retain the model, feature generation, and actual
 decision timestamp; later reconstructions are not prospective forecasts.
 
+## Population and capital declaration
+
+The October 12 preparation selects the 25 competitions in the `paper_selected`
+profile and a 336-hour discovery horizon. The [daily guide](daily-operation.md)
+lists the complete population. This declaration does not retroactively turn
+previous unregistered fixtures into prospective samples. Retain every newly
+enrolled fixture, including unavailable forecasts and prices.
+
+Virtual capital is €500, split €250 per venue. The provisional primary policy
+is quarter Kelly with ticket/fixture/open caps of 2%/5%/20% per venue. Polymarket
+conversion and costs require owner evidence before the first ticket freezes
+`config/research/lol-paper-capital.json`. A 20% drawdown research target is not a
+guaranteed limit. No settled sample currently supports choosing an optimum.
+The original model protocol and its hash remain unchanged; the population and
+capital declarations supplement it without changing weights or evaluation dates.
+
 ## Why the August score does not establish a clean champion
 
 The August bundle records source commit

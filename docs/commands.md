@@ -1,6 +1,7 @@
 # Command and Discord runbook
 
-This is the canonical usage guide. Run commands from the repository root:
+This is the command reference. Start with [daily operation](daily-operation.md)
+and [system and long-term operation](system.md). Run commands from the repository root:
 
 ```bash
 cd Oracle-Bets
@@ -17,9 +18,10 @@ never contacts Thunderpick automatically, and never places a bet.
 1. Keep one Gateway process running.
 2. Run `daily lol` once after the public source has updated. It refreshes
    history/features, validates artifacts, fetches the actionable schedule,
-   checks model health, and writes one compact
-   maintenance report. It never discovers markets, predicts fixtures, opens
-   bets, settles bets, or invokes an LLM.
+   checks model health, enrolls fixtures before forecasts, runs supported models,
+   and discovers public Polymarket listing candidates across the next 14 days.
+   It writes one report with missing/failed stages. It never opens or settles
+   bets, reads Thunderpick automatically, trains, or invokes an LLM.
 3. Open `/oracle` and inspect **Schedule**.
 4. Submit one or two exact links for one fixture through **Review Markets**.
 5. Add visible Thunderpick lines manually when present.
@@ -153,7 +155,7 @@ uv run oracle-bets bet record \
   --market-id <MARKET_ID> \
   --mode paper \
   --currency EUR \
-  --bankroll-before 1000 \
+  --bankroll-before 250 \
   --stake-percent 1 \
   --accepted-odds 1.95 \
   --reason "owner review"
@@ -170,6 +172,9 @@ uv run oracle-bets bet performance --mode real --format json
 CLI stake amount must equal bankroll × stake percentage within currency rounding.
 Win PnL is `stake × (odds - 1)`, loss is `-stake`, and push/void are zero.
 Paper and real results are separate; different currencies are never summed.
+Paper bankroll must equal the declared native allocation plus active corrected
+settled PnL, and exposure is reserved per venue. Confirm Polymarket conversion
+and costs in the capital declaration before the first ticket freezes its hash.
 Settlement is always manual and append-only.
 `bet record --idempotency-key <KEY>` is only for retrying the same failed
 record request; omit it for a genuinely separate bet, even when the terms are
@@ -234,6 +239,7 @@ launchctl bootout gui/$(id -u) \
 | --- | --- |
 | `evidence init` | Create or transactionally migrate the append-only database. |
 | `evidence health` | Verify schema and SQLite integrity. |
+| `evidence paper-capital` | Show the €500 declaration, venue allocations, and missing conversion evidence. |
 | `evidence backup` | Create a consistent database backup. |
 | `evidence export` | Export JSON or CSV review copies. |
 | `evidence restore-verify` | Verify a backup without replacing live state. |
@@ -242,9 +248,10 @@ launchctl bootout gui/$(id -u) \
 
 ## Daily and Discord
 
-`daily lol` handles data refresh, validation, schedule, champion health, and one
-daily report pair. It does not discover markets, create
-proposals, record bets, or settle bets.
+`daily lol` handles data refresh, validation, a 336-hour schedule, champion
+health, prospective enrollment, model forecasts, and public listing discovery
+in one daily report pair. Discovery is not an executable quote or approval.
+It does not create proposals, record bets, or settle bets.
 
 ```bash
 uv run oracle-bets daily lol --dry-run
@@ -254,9 +261,10 @@ uv run oracle-bets daily lol
 `--dry-run` performs read-only checks and writes only its one reviewable report
 pair. Daily refreshes data and schedule, validates them, and checks champion health.
 Training is explicit through `lol research` and `lol train`; daily never trains.
-Each maintenance invocation refreshes and recomputes artifacts. A previous
-same-day success does not prove that sources, transforms, or output files are
-unchanged. Pipeline logs report wall and process CPU time separately for each
+Each maintenance invocation checks current source and artifacts. Features are
+reused only when source identity, code/config fingerprints, complete output
+hashes, and the paired snapshot match the recorded build. Changed or damaged
+inputs take the full rebuild. A previous same-day success alone never permits reuse. Pipeline logs report wall and process CPU time separately for each
 stage; use an awake run before attributing elapsed time to slow computation.
 
 Public commands are `discord doctor` and `discord run`. The first is diagnostic;
@@ -335,7 +343,7 @@ supported target. Do not follow it with `retune --targets all`; `retune`
 is for rerunning one explicitly named target, such as
 `--targets series_winner`.
 
-Only direct series begins recommendation-capable. An exploration target passing
+The active paper champion has zero recommendation-active strategy cells. An exploration target passing
 artifact health does not automatically activate recommendations. Failed tuning
 reviews are retained as research and must not be promoted merely because they
 are newer.

@@ -12,55 +12,22 @@ and before fixture start. Daily features can advance with completed games;
 weights, parameters, calibration, and uncertainty remain fixed. See the
 [protocol](lol-paper-protocol.md) and [command runbook](commands.md).
 
-## 1. Declare the population before inspecting forecasts or odds
+## Preparation completed; resume at point 4
 
-Choose the leagues and tournaments you actually want to study, eligible dates,
-fixture rules, and markets. Record those rules before your first forecast or
-quote. Include exact map, series, handicap, duration, kills, and towers contracts
-where supported; unsupported contracts remain observations. Keep every enrolled
-fixture in the denominator, including missing predictions, missing prices, and
-no-entry decisions. Do not drop fixtures after seeing their result.
+The declared population is the 25 competitions in `paper_selected`, with a
+336-hour rolling discovery horizon. The daily workflow enrolls fixtures before
+forecasting with the protocol-pinned model and records public listing observations.
+The [daily guide](daily-operation.md) is the operating reference.
 
-Keep a dated population declaration with your paper records. Use `/oracle` →
-**Schedule** to inspect future fixtures, then run the daily workflow below
-before **Review Markets**. The daily workflow records prospective enrollment
-for its future schedule population. Check that the market report says
-`enrolled_before_review`; an unregistered fixture does not belong to the
-systematic paper sample. Your predeclared league rules select the study subset
-from that complete recorded population. Historical reconstructed forecasts
-cannot replace these prospective records.
+The virtual bankroll is €500: €250 allocated to each venue. Quarter Kelly and
+the 2% ticket / 5% fixture / 20% open caps are provisional, fixed research policy.
+Before the first ticket, complete the owner-verified EUR-to-pUSD conversion and
+cost declaration in `config/research/lol-paper-capital.json`. A first ticket
+locks the complete capital declaration. Missing conversion blocks entry.
 
-## 2. Declare the paper bankroll, currency, and sizing policy
-
-Use a separate virtual bankroll and one declared currency. Record the initial
-bankroll and the policy before the first entry. The implemented provisional
-policy is quarter Kelly with caps of 2% per ticket, 5% per sporting fixture,
-and 20% total open exposure. These are research defaults, not an optimized
-strategy or a promised drawdown ceiling. Existing unsettled positions consume
-exposure capacity. Non-positive-edge cases remain observations with no stake.
-
-Use the existing capped policy consistently for this window; do not select a
-new fraction from the same outcomes used to report performance. Alternative
-fractions can be compared as explicitly identified research tracks. A change
-to the actual entry policy requires a separately registered experiment.
-
-## 3. Check health and refresh the daily data
-
-Back up the evidence database, then check the active model and runtime:
-
-```bash
-uv run oracle-bets evidence backup --output ~/OracleBetsArchives/backups
-uv run oracle-bets daily lol
-uv run oracle-bets model status
-uv run oracle-bets lol health
-uv run oracle-bets evidence health
-uv run oracle-bets discord doctor
-```
-
-Expect champion `lol-20261010-paper-v1`. Run the daily data workflow before
-new decisions; retain its failures rather than forecasting from unchecked
-inputs. Do not run training, Optuna, or model promotion during the window.
-The managed Discord gateway is already running; do not start a second worker.
+Run the daily health/refresh workflow before new decisions and keep failed or
+missing stages. The remaining owner sequence begins below. No preparation step
+creates a quote, ticket, closing observation, or result on your behalf.
 
 ## 4. Capture an exact contract and executable price
 

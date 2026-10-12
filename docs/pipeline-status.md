@@ -1,6 +1,7 @@
 # Pipeline status
 
-_Verified October 10, 2026, Europe/Rome. Datasets, model bundles, quote records,
+_Code verification updated October 12, 2026, Europe/Rome. Historical data/replay
+figures below retain their October 10 observation date. Datasets, model bundles, quote records,
 and the evidence database are local state; a GitHub clone does not include them._
 
 The active paper champion is **`lol-20261010-paper-v1`**. The August artifact is
@@ -11,7 +12,7 @@ The [locked protocol](lol-paper-protocol.md) explains the comparison and selecti
 
 | Milestone | Current evidence | Remaining gate |
 | --- | --- | --- |
-| 0 — Setup | Source fixes pass 763 tests, 1 skipped; lint, formatting, types, strict docs, and GitHub checks pass. | Second-machine setup remains unverified. |
+| 0 — Setup | Current local suite passes 825 tests, 1 skipped; lint, formatting, package types, compilation and strict docs pass. Final CI and live refresh verification remain pending for this branch. | Second-machine setup remains unverified. |
 | 10 — Ingestion | Retained source extends through October 8, 2026, 22:56:10 UTC. | Refresh and check source freshness before daily decisions. |
 | 20 — Cleaning | 24,458 games, 10,203 accepted series, 1,770 quarantined groups. | Review new source and quarantine changes. |
 | 30 — Features | Neutral causal rating priors, signed input tables, paired serving snapshot; October 10 rebuild inputs are byte-identical to the preceding numerical generation. | Validate lineage after each changed source/code generation. |
@@ -19,11 +20,13 @@ The [locked protocol](lol-paper-protocol.md) explains the comparison and selecti
 | 50 — Search | Five fresh 100-trial Optuna studies completed. | Do not repeat selection against the exposed holdout. |
 | 60 — Full refit | All five targets completed in `20261009T231405_688954Z`. Paper packaging preserves every trained artifact checksum. | Repackaging is not another training run or production parameter approval. |
 | 70 — Replay and selection | 581 matches, zero mismatches; 59 sampled rows unavailable. Structural winner and market validation pass. Normal registry promotion selected the paper package against the causal baseline. | Calibration-intercept and conservative-bound coverage warnings keep every strategy exploratory/display-only. |
-| 80 — Prospective population | Model and October 11–November 30 window are locked. | Owner declares meaningful leagues, eligible fixtures, and markets before forecasts/prices. |
+| 80 — Prospective population | Model/window locked; 25 selected competitions and 336-hour horizon implemented; enrollment precedes daily forecasts. | Collect complete prospective coverage; missing stages remain in the denominator. |
 | 90 — Paper cycle | Evidence integrity/schema checks pass; Discord gateway is running. No paper tickets, settlements, or complete prospective cycle yet. | Owner-confirm exact executable quotes, capped stakes, closes, and sourced settlements. |
 | 100 — Decision evidence | No representative settled paper sample or verified earnings. | Evaluate the locked population and policy after the window; insufficient evidence is inconclusive. |
 
-Follow the [remaining owner checklist](paper-owner-checklist.md). Model weights,
+Use the [daily operating guide](daily-operation.md), then resume the
+[owner checklist](paper-owner-checklist.md) at point 4. The €500 capital declaration
+is implemented; Polymarket conversion evidence remains owner-supplied before entry. Model weights,
 parameters, calibration, and uncertainty are frozen for fixtures scheduled
 October 11 through November 30, Europe/Rome. Daily features can advance using
 completed games available before the decision. Recommendation and real-stake

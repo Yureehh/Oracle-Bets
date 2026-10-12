@@ -9,6 +9,9 @@ execution: code
 deepened: 2026-09-06
 ---
 
+> Deferred design, reviewed October 12, 2026. This document describes future tennis work; it is not an implemented operating guide. Current LoL operation is documented in `docs/daily-operation.md`.
+
+
 # Tennis Betting Module - Plan
 
 ## Goal Capsule

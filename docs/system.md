@@ -1,217 +1,141 @@
-# System design and operating decisions
+# System and long-term operation
 
-Oracle Bets is a local-first League of Legends betting-research system. Its
-probabilities are independent of Polymarket. Market data identifies contracts,
-quotes executable prices, and measures later CLV; it never enters a model.
-There is no betting, signing, wallet, private-key, order, or fund-movement code.
+Oracle Bets turns historical LoL results and future fixtures into independent
+forecasts and auditable paper research. Market prices never enter the models.
+The owner confirms any later entry and sources its close/result. There is no
+wallet, signing, order submission, fund movement, or automatic wagering path.
+Start with [daily operation](daily-operation.md); use [commands](commands.md)
+for the complete CLI reference and [status](pipeline-status.md) for current metrics.
 
-## End-to-end flow
+## Pipeline from input to evaluation
 
-```text
-Oracle's Elixir 2024–2026
-  -> source validation and history reconciliation
-  -> chronological ratings/features
-  -> complete historical series
-  -> fixed-parameter training or explicit Optuna research
-  -> calibrated, symmetric model bundle
-  -> immutable candidate review and champion promotion
+| Stage | What it does | Where to read |
+| --- | --- | --- |
+| Source | Validates public Oracle’s Elixir exports; publishes versioned cache/history and quarantine. | `lol_bets/data_generation/ingestion/` |
+| Features | Computes chronological team/player strength, form, inactivity, roster and opponent state before results update it. | `lol_bets/data_generation/feature_engineering/` |
+| Targets | Builds map inputs and inferred historical BO1/BO3/BO5 series with explicit rejected groups. | `lol_bets/data_generation/series.py` |
+| Research | Fits preprocessing inside temporal folds; runs separate Optuna studies and sealed diagnostics. | `lol_bets/training.py`, `prediction_models/` |
+| Registry | Freezes artifacts and hashes, reviews candidates, retains promotion/quarantine history. | `lol_bets/operations/models.py` |
+| Serving | Pins one immutable model and paired feature generation; uses state available before the decision. | `lol_bets/inference/` |
+| Daily | Refreshes, enrolls the 25-competition/14-day population, forecasts, discovers listings and reports gaps. | `lol_bets/daily.py` |
+| Market review | Validates exact event/period/selection/line/rules and executable quote evidence. | `lol_bets/operations/manual_market.py`, `market_actions.py` |
+| Capital/ledger | Checks declared native equity and capped Kelly; appends owner decisions, closes, results and corrections. | `oracle_bets_core/operations/`, `evidence/` |
+| Discord | Presents owner-only paginated controls and reports; it does not invent decisions. | `oracle_bets_discord/ui/` |
 
-PandaScore schedule
-  -> owner chooses 1–2 Polymarket/Thunderpick links for one fixture
-  -> exact event/team/start/BO/roster resolution
-  -> independent series, map, and prop forecasts
-  -> compact contract inventory
-  -> one current public CLOB book per supported Polymarket outcome
-  -> manual Thunderpick lines
-  -> exact-semantic provider comparison, warnings, and best odds
-  -> one JSON/Markdown report pair
-  -> owner-only Discord review and confirmed paper/real ledger entry
-  -> manual settlement and separated performance evidence
-```
+## Packages and configuration ownership
 
-Daily ingestion, health, optional fixed-parameter retraining, schedule, and
-reporting remain available. Daily runs do not discover Polymarket events or
-create market reviews or bets. Exact owner-supplied links are the only market
-review source.
+`oracle_bets_core` owns CLI, configuration, evidence storage, pricing primitives,
+capital, portfolio research, backup and health. `lol_bets` owns sport-specific
+identity, data, features, models and market interpretation. `oracle_bets_discord`
+owns the Gateway and interaction controls. These boundaries have real callers;
+reducing them to one module would not make the system simpler to operate.
 
-## Package and state ownership
+Product configuration schema 5 sets the 336-hour horizon and `paper_selected`
+profile. `config/lol/data_ingestion/` owns league profiles/taxonomy and team
+aliases; training still uses `research_all_supported`. Feature materialization
+and reviewed parameter JSONs have live consumers and are retained. The paper
+protocol freezes the experiment; the capital declaration freezes allocation,
+conversion and costs before entries. No old parameter file is assumed to be
+active merely because it remains in Git.
 
-- `oracle_bets_core`: CLI, product configuration, evidence, registry, public
-  market reads, unified bet ledger, health, backup, and performance.
-- `lol_bets`: ingestion, identity, ratings, features, series construction,
-  training, calibration, inference, exact-link interpretation, reports.
-- `oracle_bets_discord`: Gateway lifecycle, `/oracle` owner console, manual
-  review/bet/settlement controls, and in-memory charts.
+## What the model predicts
 
-Generated state is intentionally separate:
+The active bundle `lol-20261010-paper-v1` contains the fresh October refit’s
+five target artifacts. Series winner is a direct symmetric, calibrated model.
+Map winner is prematch; it is not draft-aware or an in-play next-map signal.
+Duration, kills and towers are regression targets whose calibrated distributions
+can price supported lines. A mean alone is not an Over/Under probability.
 
-- `data/lol/`: replaceable source/interim/processed datasets;
-- `models/lol/`: replaceable training workspace;
-- `data/state/oracle_bets.db`: canonical append-only operational evidence;
-- `data/state/model-registry/lol/`: immutable reviewed serving bundles;
-- `reports/lol/`: generated review/training/health reports;
-- `logs/lol/pipeline.log`: ingestion, feature, rating, and training operations;
-- `logs/lol/schedule.log`: PandaScore schedule/lineup operations;
-- `logs/lol/discord.log`: Gateway interaction and rendering failures.
+Series totals/handicaps enumerate legal map paths and are explicitly derived.
+Paths stop at the required wins. Total-map conservative bounds inspect the
+interior 50/50 extremum as well as interval endpoints. Derived assumptions and
+disagreement with the direct series model remain visible.
 
-Each persistent log rotates at 5 MiB with three backups by default, so normal
-operation cannot grow without bound. `ORACLE_BETS_LOG_MAX_BYTES` and
-`ORACLE_BETS_LOG_BACKUPS` override those limits. General interactive messages
-remain console-only. Logs are disposable diagnostics, not evidence.
+Prop pricing loads the calibrator belonging to the forecast’s immutable model
+ID. It cannot reuse an earlier champion’s calibrator after promotion. Missing
+identity fails closed. Unsupported player props, first blood, Baron/dragon,
+multikills and other specials have no implied model support.
 
-The registry is not a duplicate of `models/lol`: the workspace can be rebuilt,
-while the registry preserves the exact checksummed bundle that was reviewed.
-`models/lol/.staging` is intentionally used for crash-safe candidate assembly
-and should be empty when training is not running. `site/` is only generated
-MkDocs output. `.hypothesis/` is only a property-test cache. `ops/launchd/`
-contains the optional macOS service template for the always-on Discord bot.
+The August recipe’s look-ahead defect invalidates it as a clean benchmark;
+conventional overfitting and the size of score inflation were not proved.
+The replacement passed first-model noninferiority against its causal rating
+baseline, but calibration and conservative-bound coverage warnings remain.
+Every strategy is exploratory or display-only; recommendations are disabled.
 
-`data/state/` must survive normal cleanup. It owns the append-only SQLite paper
-ledger, consistent backups/exports, Discord publication state, and immutable
-model registry. By contrast, `data/lol/` is a large replaceable data build tree;
-it is not expected to be empty after ingestion.
+## Temporal and structural safeguards
 
-## Data and model contract
+Training transformations fit only eligible development rows. Calibration,
+uncertainty and evaluation partitions are separated by timestamp. Prior holdout
+exposure is recorded; a reused historical test cannot become untouched evidence.
+Winner inputs exclude prices, draft and post-start observations. Team swapping
+complements winner probabilities and preserves invariant context.
 
-Training uses `research_all_supported`. Owner-facing systematic review uses
-`tier1_plus_erls` minus LCP and CBLOL. Those two leagues remain training-only.
+Serving snapshots retain after-game histories, completion lower bounds and
+actual publication time. Later reconstruction is not prospective availability.
+The paired generation pins both teams. Source/config/code fingerprints and
+output hashes bind the build. Reuse retains the original publication timestamp;
+it does not backdate or freshly relabel the snapshot.
 
-Source refresh validates filenames, content, schema, size, stability, and
-freshness before replacing the local cache. Accepted maps require two team
-rows, ten player rows, five roles per side, one winner, and stable identity.
-Invalid maps enter an explicit quarantine.
+Historical series format is inferred from observed scores where authoritative
+format/completion metadata is absent. An unfinished BO5 source tail at 2–0 can
+be indistinguishable from a completed BO3. This remains a research limitation:
+obtain trusted format/completion evidence before future retraining or claiming
+those inferred labels are authoritative. Frozen weights are preserved here.
 
-Features are emitted before the current result updates state. Eligible families
-include direct Elo/Glicko/Plackett-Luce/TrueSkill strength and uncertainty,
-recent and long form, inactivity, roster continuity, player-role form, patch,
-season, and league context. Winner inference rebuilds current-opponent deltas;
-historical opponent deltas cannot survive serving assembly.
+## Discovery, executable prices and portfolio sizing
 
-Winner inputs forbid side, first pick, draft, current-series results, post-start
-statistics, odds, prices, and every market-derived field. Team swap negates
-numeric matchup deltas and leaves invariant context unchanged. Inference
-canonicalizes once and complements the result, so order is exactly symmetric.
+Public listing discovery returns candidates, not approved exact contracts or
+executable quotes. Public Polymarket metadata and fresh books serve different
+purposes. Thunderpick lines are entered manually with source, period, selection,
+line, rules and timestamp. Naive timestamps and malformed inputs fail visibly.
+Unmatched/unsupported contracts and provider failures remain in coverage.
 
-## Forecasts and probability sources
+An entry later requires a fresh stake-sized quote including costs. Polymarket
+checks book depth; the owner attests net costs and available terms. Quotes expire
+under the existing 120-second rule. No historical price or minimum-order display
+can stand in for the confirmed stake’s executable price.
 
-- Series winner: direct calibrated Winner V2 model (`series_direct_v2`).
-- Game N winner: prematch map model (`map_prematch_v1`). The same pre-draft
-  probability is used for each map; this is experimental, not in-play advice.
-- Series totals: legal BO3/BO5 map paths (`series_totals_map_path_v1`).
-- Series/map handicap: final map-differential distribution from the same legal
-  paths (`series_handicap_map_path_v1`).
-- Length, kills, towers: calibrated regression artifacts, display/record only.
-- Baron, dragon, inhibitor, first blood, multikill, odd/even, or unknown:
-  inventoried without book fan-out and marked `no_model_target`.
+Quarter Kelly is provisional. Ticket, fixture and total exposure caps reserve
+unresolved positions and prevent counting correlated markets as independent
+capital. Each venue has a separate declared native bankroll derived from initial
+capital plus corrected settled PnL; inputs cannot inflate it. Native currencies
+are not summed. A combined EUR report needs explicit valuation/conversion evidence.
 
-Legal paths stop as soon as either team reaches two BO3 wins or three BO5 wins.
-Exact score, total maps, and final map differential sum to one. Swapping teams
-complements winner/handicap probabilities; totals and scalar props are invariant.
-Derived probabilities are labeled and their disagreement with the direct series
-model is recorded.
+Portfolio research compares capped eighth, quarter and half Kelly against the
+locked balanced target. It uses fixture-aware temporal splits and settlement
+order; joint optimization requires supported joint scenarios, otherwise explicit
+caps apply. The existing evaluator’s 50-fixture/8-block support defaults are
+research minimums, not evidence that any policy is optimal. No policy wins by
+being selected and evaluated on the same outcomes.
 
-## Roster evidence
+## Evidence and maintenance
 
-Resolution order is:
+SQLite is append-only. Corrections supersede facts and must not form cycles or
+move a settlement to another bet. Results/settlements cannot precede entry or be
+future-dated. Equal-time settlements are netted before realized drawdown updates.
+Partial fixture settlement leaves unresolved ticket components open.
 
-1. complete PandaScore role-mapped lineup;
-2. most frequent player per role in the last ten historical maps strictly before
-   fixture start, with ties broken by latest appearance;
-3. existing missing-value inference with `unknown` roster evidence.
+Keep `data/state/oracle_bets.db` and immutable model-registry bundles. Backups use
+consistent SQLite snapshots and restore verification. Generated data/models,
+reports and logs are ignored by Git; logs rotate. `site/`, pytest/Ruff/Hypothesis
+caches are disposable, while research receipts are useful evidence. Use guarded
+reset commands only when a reset is actually intended—not as routine cleanup.
 
-Historical evidence stores map IDs/dates, appearance shares, alternates,
-substitutions, confidence (`high|medium|low|unknown`), and a hash. Roster
-confidence is visible evidence and a warning, not a proposal hard gate.
+The local data tree is large because it retains reproducible generations and
+paired historical serving states. Do not delete old evidence just to make GitHub
+look smaller: it is already outside the tracked repository.
 
-## Exact-link review and quotes
+## Longer-term decisions
 
-`lol market-review` and Discord **Review Markets** accept one or two comma-,
-whitespace-, or newline-separated Polymarket/Thunderpick URLs, deduplicate in
-order, require one fixture, and isolate failures per provider. There is no fuzzy
-Polymarket event fallback and no Thunderpick HTTP client.
+Keep October 11–November 30 weights, calibration and uncertainty fixed. Daily
+feature state may advance with completed games available before decisions.
+Evaluate probability quality, coverage, CLV, return, exposure and drawdown by
+league and target after the window. Insufficient support is inconclusive.
+Calibration/coverage improvements belong on development data and a separately
+registered candidate/window, not repeated selection on this exposed holdout.
 
-Every returned contract is recorded. Supported meaning is parsed from
-`sportsMarketType`, question/group title, game number, line, outcomes, teams,
-start/BO, token orientation, and resolution rules. Ambiguity stays visible and
-cannot become systematic evidence.
-
-Review fetches one public CLOB book per compatible Polymarket outcome, with
-bounded concurrency and request timeouts. It walks asks at the provider's
-minimum order size and converts average share cost to decimal odds. Missing or
-old timestamps are warnings; malformed, empty, crossed, or insufficient books
-remain outcome-local failures. Unsupported specials do not trigger book reads.
-
-Thunderpick is deliberately manual. Its link identifies the provider/fixture;
-the owner enters the visible target, selection, line, and decimal odds. Provider
-rows are compared only when target, period, selection, line, and settlement
-meaning match exactly. Prices never enter inference.
-
-## Strategy decisions, sizing, and manual control
-
-Every exact semantic comparison is classified by one versioned deterministic
-policy as `recommended`, `exploration`, or `not_comparable`; an LLM never makes
-this decision. The active `lol-20261010-paper-v1` protocol has zero
-`recommendation_active` targets. Direct series remains exploratory until its
-readiness warnings are resolved in a separately registered experiment. Map 1,
-map-path totals and handicaps, duration, kills, and towers remain
-`exploration_only`; score-aware next map remains `display_only`. Unsupported or
-structurally unready targets are `display_only` and cannot create a ticket.
-
-A recommendation requires healthy fixture/model evidence and positive
-conservative net EV after the configured friction allowance. Exploration keeps
-research coverage separate: at most one comparable outcome per target/period is
-sampled when no recommendation exists. Non-positive-EV exploration remains
-an observation without a paper stake. All reason codes, warnings,
-rejected alternatives, and the owner decision are preserved.
-
-One unit is 1% of the pre-bet bankroll. A single immutable ticket freezes the
-accepted quote, probability used for sizing, flat 1u, full Kelly, half Kelly,
-and quarter Kelly. Positive-EV paper entries use capped fractional Kelly as the
-primary path,
-with provisional quarter-Kelly, 2% ticket, 5% sporting-fixture, and 20% total
-open-exposure limits. Acceptance recalculates those limits against unresolved
-positions. Non-positive-edge cases have no paper stake. Flat and alternative
-Kelly paths are counterfactual diagnostics, not real-money authorization or an
-empirically optimized policy.
-
-The append-only schema uses `bets` for immutable entry terms and `bet_events`
-for result, settlement, and correction facts. Settlement is manual
-`win|loss|push|void` with a source reference; identical repeats are idempotent
-and conflicting facts fail visibly. Paper and real evidence, currencies,
-recommendation and exploration, direct and derived targets, and prematch and
-reactive lanes never aggregate silently.
-
-Activation evidence is intention-to-treat and fixture-clustered. League-week
-cohorts are preregistered before prices/results, require at least 90% scheduled
-fixture review coverage and 100% result capture for recommendation
-opportunities, and report calibration, Brier score, log loss, CLV, drawdown,
-ticket ROI, and equal-fixture ROI. Owner acceptance is reported separately so
-selection cannot make a weak strategy look profitable.
-
-## Model lifecycle
-
-Routine retraining refits weights/calibrators with reviewed fixed parameters. It
-does not run Optuna. Retuning is an explicit research search, never changes the
-champion automatically, and requires owner review before parameter/model
-promotion. Structural safety—clean provenance, checksums, train/serve parity,
-symmetry, forbidden fields, and leakage—never relaxes for recency.
-
-Maps/totals/handicaps stay experimental during paper testing. The validation
-command checks sealed Map-1/later/actionable/probability-band evidence,
-forbidden features, symmetry/path algebra, reconstructed BO history, and
-held-out totals/handicap scores derived only from each series' Map-1 price. It
-does not claim market-profit evidence.
-
-## Discord and future draft model
-
-`/oracle` is an owner-only hub. Its first row is Review Markets, Record Bet,
-Open Bets, and Closed Bets; its second row is Schedule, Performance, and Health.
-Review work defers immediately and edits that same private interaction when
-complete—there is no publisher queue or polling delay. Bet recording has an
-explicit confirmation screen, real mode states that it records an already
-manually placed bet, and settlements remain owner-only. Charts are rendered in
-memory. Ingestion, training, retuning, and promotion remain CLI-only.
-
-Future draft integration requires timestamped champions/bans/sides/patch/player
-identities and a source reference. It will be a separate symmetric draft-aware
-map model and a separate `draft_assisted` evidence lane.
+Before moving to tennis, demonstrate the shared quote-to-close-to-settlement
+workflow and review the available evidence; profitable returns are not a
+prerequisite for that engineering assessment. The [tennis proposal](plans/2026-09-06-0050-feat-tennis-betting-module-plan.md)
+is future design, not an implemented module. Hosting and automated scheduling
+can come later; they do not imply automatic wager approval.
