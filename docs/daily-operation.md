@@ -115,3 +115,7 @@ On Thursday, review health and provider failures. Back up/export monthly and
 run `audit monthly --period YYYY-MM`; activity counts are monthly, while
 explicitly labeled lifetime summaries remain lifetime. Do not confuse them.
 The [system guide](system.md) explains the code, model lifecycle and evaluation.
+
+The JSON daily report contains the numeric forecasts and discovery records. The
+Markdown report summarizes operational status; use the JSON when reviewing
+individual probabilities.

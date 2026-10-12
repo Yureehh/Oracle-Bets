@@ -196,7 +196,7 @@ These are CLI-only operations:
 | `lol train` | Retrain with reviewed fixed parameters. Never runs Optuna. |
 | `lol retune` | Explicit isolated Optuna research. Never auto-promotes. |
 | `lol refit-research` | Refit research-only models from one completed independent study per target; never promotes weights or parameters. |
-| `lol replay-features` | Compare sealed candidate features with the historical serving path; retrospective parity does not establish prior source availability. |
+| `lol replay-features` | Compare sealed candidate features with the historical serving path using the candidate-matched data generation; daily-advanced inputs are rejected. Retrospective parity does not establish prior source availability. |
 | `lol research` | Run separate target studies; add `--include-next-map` only after OOF close-series labels exist. |
 | `lol review-tuning` | Review one tuning run on sealed evidence. |
 | `lol promote-tuning` | Promote reviewed parameter files, not model weights. |

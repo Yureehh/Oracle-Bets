@@ -31,11 +31,12 @@ retained. Their full historical contents were not manually read row by row.
 - Paginate Discord choices, allow recording a closing quote for an open ticket,
   correct the managed-worker path, and expose paper scope/readiness warnings.
 - Remove the unused row-wise head-to-head matchup computation. A prior measured
-  comparison on 48,916 team rows produced identical frames and took 0.402 vs
-  0.175 seconds; this is a local step measurement, not total pipeline speed.
+  comparison on 49,088 team rows produced identical frames and took 0.438 vs
+  0.191 seconds; this is a local step measurement, not total pipeline speed.
 - Reuse a feature generation only with identical source identity, code/config,
   manifests, paired snapshot and complete output hashes. Missing or changed
-  artifacts take the full rebuild.
+  artifacts take the full rebuild. The real unchanged repeat verified reuse and
+  reduced preparation including ingestion from 2,068.8 to 148.4 seconds.
 - Add prospective daily forecasts and bounded public listing observations;
   preserve observation time and distinguish absence from provider failure.
 - Consolidate operation into the daily and system guides; remove the superseded
@@ -44,22 +45,28 @@ retained. Their full historical contents were not manually read row by row.
 
 ## Verification and remaining limits
 
-The integrated suite passed 825 tests, one skipped after the final regressions.
+The integrated suite passed 839 tests, one skipped after the final regressions.
 Live-run results are recorded in the pipeline status when available. Lint and
 package type checking pass. Notebooks and test monkeypatches are outside the
 configured CI type-check scope; a wider exploratory type check reports issues
 there and is not represented as a passing check.
 
-The dedicated final code-review attempt failed before starting because the
-selected model was at capacity. Code review: skipped (ce-code-review unavailable).
-The host performs a manual diff scan; this is not independent reviewer approval.
-Simplification used the loaded reuse, quality and efficiency rubrics locally
-because review-agent dispatch was unavailable. The pass retained the shared total-map
-probability-bound helper and existing lineage/file-hash utilities, removed duplicate
-daily message-summary updates, and kept all validation guards. No speculative
-architecture or extra dependency was introduced. The manual diff scan caught and
-fixed unreported predictor-initialization failures; a regression verifies that the
-daily report retains suppression and the failure instead of raising out of the run.
+The final full code review completed across correctness, tests, maintainability,
+security, performance, reliability and adversarial checks, with no remaining
+actionable findings. It identified two defects that were fixed and independently
+verified: pinned-model initialization errors must fail both daily modes, and both
+rating lookup outputs must participate in feature reuse receipts. A related source
+readiness regression now also fails the dry-run health step rather than reporting
+success with suppressed forecasts. The actual workflow composition regression
+verifies enrollment before predictions and persistence without invented quotes or
+paper entries. The review receipt is local under
+`/tmp/compound-engineering-501/ce-code-review/20261012-final-review/review.json`;
+this records its result without distributing temporary reviewer artifacts.
+
+Simplification retained shared probability-bound and lineage/file-hash helpers,
+removed duplicate daily message updates, and kept validation guards. No speculative
+architecture or extra dependency was introduced. Cross-model review was not run;
+all seven local review lenses completed using the selected model.
 
 Historical series reconstruction still infers BO3 from observed 2–0/2–1 games
 without authoritative format/completeness metadata. A partially ingested BO5

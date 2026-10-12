@@ -1,6 +1,6 @@
 # Roadmap and status
 
-Reviewed October 11, 2026. Current behavior and metrics live in the
+Reviewed October 12, 2026. Current behavior and metrics live in the
 [system guide](system.md) and [pipeline status](pipeline-status.md).
 
 ## Current phase: paper preparation
