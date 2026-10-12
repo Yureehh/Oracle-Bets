@@ -265,6 +265,14 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     import lol_bets.daily as daily_module
 
     monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        daily_module,
+        "_daily_source_readiness",
+        lambda: SimpleNamespace(to_dict=lambda: {"ready": True}),
+    )
+    monkeypatch.setattr(
+        daily_module, "_build_prediction_snapshots", lambda *_args, **_kwargs: []
+    )
     called = {"ingest": False}
 
     def schedule_fetcher(**kwargs):
@@ -281,6 +289,7 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
         DailyWorkflowConfig(dry_run=True, delivery_mode="off"),
         schedule_fetcher=schedule_fetcher,
         data_generator_factory=data_generator_factory,
+        predictor_factory=_FakePredictor,
         module_factory=lambda: SimpleNamespace(
             artifact_health=lambda: ArtifactHealth("lol"),
             training_artifact_health=lambda: ArtifactHealth("lol"),
@@ -317,8 +326,8 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     assert list((tmp_path / "daily").glob("*.md")) == [markdown_path]
 
 
-@pytest.mark.parametrize("missing_health", ["inference", "training"])
-def test_daily_dry_run_missing_artifacts_suppresses_forecasts(
+@pytest.mark.parametrize("missing_health", ["source", "inference", "training"])
+def test_daily_dry_run_unready_inputs_suppresses_forecasts(
     tmp_path, monkeypatch, missing_health
 ):
     import lol_bets.daily as daily_module
@@ -330,7 +339,7 @@ def test_daily_dry_run_missing_artifacts_suppresses_forecasts(
     monkeypatch.setattr(
         daily_module,
         "_daily_source_readiness",
-        lambda: SimpleNamespace(to_dict=lambda: {"ready": True}),
+        lambda: SimpleNamespace(to_dict=lambda: {"ready": missing_health != "source"}),
     )
 
     def forecast_must_not_run(*_args, **_kwargs):
@@ -641,17 +650,20 @@ def test_repeated_daily_maintenance_does_not_reuse_unverified_artifacts(tmp_path
     assert calls == ["source", "source"]
 
 
-def test_daily_forecast_initialization_failure_is_reported(monkeypatch):
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_daily_forecast_initialization_failure_is_reported(monkeypatch, dry_run):
     from lol_bets.daily import _forecast_daily_schedule
 
     def unavailable(*_args, **_kwargs):
         raise RuntimeError("pinned model unavailable")
 
-    monkeypatch.setattr("lol_bets.daily._build_prediction_snapshots", unavailable)
+    monkeypatch.setattr(
+        "lol_bets.inference.match_predictor.MatchPredictor", unavailable
+    )
     steps = []
     details = _forecast_daily_schedule(
         _schedule_frame(),
-        cfg=DailyWorkflowConfig(dry_run=False),
+        cfg=DailyWorkflowConfig(dry_run=dry_run),
         ready=True,
         predictor_factory=None,
         scheduled_for=dt.datetime.now(dt.UTC),

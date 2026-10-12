@@ -365,3 +365,68 @@ def test_market_snapshot_keeps_provider_timestamp(tmp_path):
     )
     snapshot = store.list(EvidenceTable.MARKET_SNAPSHOTS)[0]
     assert json.loads(snapshot["payload_json"])["provider_timestamp"] == provider_time
+
+
+def test_daily_workflow_enrolls_before_forecasting_and_discovers_without_entry(
+    tmp_path, monkeypatch
+):
+    from lol_bets import daily
+
+    monkeypatch.delenv("PANDASCORE_API_KEY", raising=False)
+    now = datetime.now(UTC)
+    start = now + timedelta(days=2)
+    frame = _schedule(start=start)
+    database = tmp_path / "daily.db"
+    monkeypatch.setattr(daily, "EVIDENCE_DB", database)
+    monkeypatch.setattr(daily, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setattr(
+        daily,
+        "_run_mutating_steps",
+        lambda **_: [DailyStepResult("health", True, "controlled healthy inputs")],
+    )
+
+    class ReadySource:
+        def to_dict(self):
+            return {"ready": True}
+
+    monkeypatch.setattr(daily, "_daily_source_readiness", ReadySource)
+
+    def forecast(schedule, *, snapshot_sink, **_kwargs):
+        assert len(schedule) == 1
+        store = EvidenceStore(database)
+        enrollments = [
+            row
+            for row in store.list(EvidenceTable.RUN_EVENTS)
+            if row["event_type"] == "cohort_enrollment"
+        ]
+        assert len(enrollments) == 1
+        row = {**_snapshot(start=start), "run_ts": datetime.now(UTC)}
+        snapshot_sink.append(row)
+        return [
+            {"match_key": "pandascore:1", "status": "predicted", "forecasts": [row]}
+        ]
+
+    monkeypatch.setattr(daily, "_build_prediction_snapshots", forecast)
+    observations = [
+        {
+            "provider": "polymarket",
+            "fixture_key": "pandascore:1",
+            "status": "not_seen",
+            "candidates": [],
+        }
+    ]
+    result = daily.run_daily_lol_workflow(
+        daily.DailyWorkflowConfig(delivery_mode="off"),
+        schedule_fetcher=lambda **_: frame,
+        lineup_refresher_factory=None,
+        market_discoverer=lambda _: observations,
+    )
+    assert result.ok
+    store = EvidenceStore(database)
+    assert store.count(EvidenceTable.PREDICTIONS) == 1
+    assert any(
+        row["event_type"] == "market_discovery"
+        for row in store.list(EvidenceTable.RUN_EVENTS)
+    )
+    assert store.count(EvidenceTable.MARKET_SNAPSHOTS) == 0
+    assert store.count(EvidenceTable.BETS) == 0

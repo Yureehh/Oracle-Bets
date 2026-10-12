@@ -41,6 +41,8 @@ from oracle_bets_core.paths import (
     PROCESSED_PLAYERS,
     PROCESSED_TEAMS,
     QUARANTINED_RAW_DATA,
+    RATING_LEAGUE_ELO,
+    RATING_TEAM_LEAGUES_MAPPING,
     RAW_CURRENT_POINTER,
     RAW_DATA,
     RAW_GENERATIONS_DIR,
@@ -471,6 +473,8 @@ class DataGenerator:
             / "flattened_players.parquet",
             "quality": DATA_QUALITY_REPORT,
             "quarantine": QUARANTINED_RAW_DATA,
+            "rating_league_elo": RATING_LEAGUE_ELO,
+            "rating_team_leagues": RATING_TEAM_LEAGUES_MAPPING,
             "serving_pointer": PROCESSED_DIR / "serving" / "current.json",
             "serving_manifest": snapshot.directory / "manifest.json",
         }

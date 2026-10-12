@@ -1132,7 +1132,6 @@ def _run_mutating_steps(
 def _build_prediction_snapshots(
     schedule: pd.DataFrame,
     *,
-    cfg: DailyWorkflowConfig,
     predictor_factory: Callable[[], Predictor] | None = None,
     snapshot_sink: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1141,19 +1140,12 @@ def _build_prediction_snapshots(
         return []
     predictor = predictor_factory() if predictor_factory is not None else None
     if predictor is None:
-        # Dry run included: exercising the real prediction path is the point of
-        # the smoke test. Fall back to a stub only when artifacts can't load.
-        try:
-            from lol_bets.inference.match_predictor import MatchPredictor
+        from lol_bets.inference.match_predictor import MatchPredictor
 
-            protocol = json.loads(
-                (SUITE_ROOT / "config/research/lol-paper-v1.json").read_text()
-            )
-            predictor = MatchPredictor(model_id=protocol["paper_candidate_id"])
-        except Exception as exc:
-            if cfg.dry_run:
-                return [{"status": "artifacts_unavailable", "reason": str(exc)}]
-            raise
+        protocol = json.loads(
+            (SUITE_ROOT / "config/research/lol-paper-v1.json").read_text()
+        )
+        predictor = MatchPredictor(model_id=protocol["paper_candidate_id"])
 
     details: list[dict[str, Any]] = []
     actionable = set(actionable_leagues())
@@ -1419,7 +1411,6 @@ def _forecast_daily_schedule(
         try:
             prediction_details = _build_prediction_snapshots(
                 schedule,
-                cfg=cfg,
                 predictor_factory=predictor_factory,
                 snapshot_sink=snapshot_rows,
             )
@@ -1505,11 +1496,15 @@ def _discover_daily_markets(
     return discoveries
 
 
-def _read_only_health(module_factory: Callable[[], LoLBetsModule]) -> str:
+def _read_only_health(
+    module_factory: Callable[[], LoLBetsModule], *, source_ready: bool
+) -> str:
+    if not source_ready:
+        raise RuntimeError("Oracle source readiness check failed; see source_freshness")
     module = module_factory()
     module.artifact_health().raise_if_unhealthy()
     module.training_artifact_health().raise_if_unhealthy()
-    return "read-only artifact checks passed"
+    return "read-only source and artifact checks passed"
 
 
 def run_daily_lol_workflow(
@@ -1615,7 +1610,15 @@ def run_daily_lol_workflow(
             steps.append(DailyStepResult("evidence", False, str(exc)))
 
     if cfg.dry_run:
-        steps.append(_step("health", lambda: _read_only_health(module_factory)))
+        steps.append(
+            _step(
+                "health",
+                lambda: _read_only_health(
+                    module_factory,
+                    source_ready=source_readiness.to_dict().get("ready") is True,
+                ),
+            )
+        )
     ready = source_readiness.to_dict().get("ready") is True and all(
         step.ok for step in steps
     )

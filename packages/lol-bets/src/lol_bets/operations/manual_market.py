@@ -33,7 +33,6 @@ from oracle_bets_core.pd import pd
 
 from lol_bets.daily import (
     DailyStepResult,
-    DailyWorkflowConfig,
     Predictor,
     _build_prediction_snapshots,
 )
@@ -288,7 +287,6 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         try:
             prediction_details = _build_prediction_snapshots(
                 schedule,
-                cfg=DailyWorkflowConfig(dry_run=True),
                 predictor_factory=predictor_factory,
                 snapshot_sink=snapshots,
             )

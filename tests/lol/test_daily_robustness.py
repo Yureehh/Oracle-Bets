@@ -73,7 +73,6 @@ def test_insufficient_roster_history_is_reported_separately(monkeypatch):
     )
     details = _build_prediction_snapshots(
         _future_schedule(),
-        cfg=DailyWorkflowConfig(dry_run=True),
         predictor_factory=_FakePredictor,
     )
 
@@ -93,7 +92,6 @@ def test_excluded_league_is_not_predicted_or_reported(monkeypatch):
 
     details = _build_prediction_snapshots(
         schedule,
-        cfg=DailyWorkflowConfig(dry_run=True),
     )
 
     assert details == []
