@@ -12,8 +12,6 @@ if TYPE_CHECKING:
     from lol_bets.operations.models import ModelRegistry
     from oracle_bets_core.evidence import EvidenceStore
 
-_DISCORD_SELECT_LIMIT = 25
-
 
 def schedule_pages(rows: Sequence[dict[str, Any]], *, page_size: int = 8) -> list[str]:
     lines = [
@@ -108,8 +106,6 @@ def market_options(
                 "stake_percent": str(float(fraction) * 100),
             }
         )
-        if len(output) == _DISCORD_SELECT_LIMIT:
-            break
     return output
 
 
@@ -121,6 +117,20 @@ def health_message(store: EvidenceStore, registry: ModelRegistry) -> str:
 
     champion = registry.champion_id()
     actionable = bool(champion and registry.is_actionable(champion))
+    scope = (
+        registry.actionability(champion).get("scope", "unspecified")
+        if champion
+        else "none"
+    )
+    readiness = registry.strategy_readiness() or {}
+    cells = readiness.get("cells") or []
+    states = sorted({str(cell["state"]) for cell in cells})
+    warnings = sorted(
+        {str(reason) for cell in cells for reason in cell.get("reasons", [])}
+    )
+    recommendation_active = any(
+        cell["state"] == "recommendation_active" for cell in cells
+    )
     try:
         data_ok = LoLBetsModule().artifact_health().ok
     except Exception:
@@ -133,7 +143,14 @@ def health_message(store: EvidenceStore, registry: ModelRegistry) -> str:
         market_ok = False
     integrity = store.integrity_check()
     open_bets = count_open_bets(store)
-    overall_ok = actionable and data_ok and integrity == "ok" and market_ok
+    overall_ok = (
+        actionable
+        and data_ok
+        and integrity == "ok"
+        and market_ok
+        and scope != "paper_research_only"
+        and not warnings
+    )
     reviews = [
         row
         for row in store.list(EvidenceTable.RUNS)
@@ -154,6 +171,10 @@ def health_message(store: EvidenceStore, registry: ModelRegistry) -> str:
             "**Serving model**",
             f"> Champion: `{champion or 'none'}`",
             f"> Status: **{'Actionable' if actionable else 'Research only'}**",
+            f"> Scope: `{scope}`",
+            f"> Readiness: {', '.join(states) or 'unavailable'}",
+            f"> Recommendations: {'enabled for approved cells' if recommendation_active else 'disabled'}",
+            *[f"> Warning: `{warning}`" for warning in warnings],
             f"> Artifacts: {'✅ Healthy' if data_ok else '❌ Failed'}",
             "",
             "**Evidence**",

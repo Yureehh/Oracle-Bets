@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from io import BytesIO
 from typing import Any
 
@@ -14,7 +15,9 @@ def performance_png(
     """Render one mode without combining currencies."""
     from oracle_bets_core.operations.bets import summarize_bets
 
-    rows.reverse()
+    rows = sorted(
+        rows, key=lambda row: datetime.fromisoformat(row["settlement"]["event_at"])
+    )
     summary = summarize_bets(rows, mode=mode) | {"settled_bets": len(rows)}
     if not rows:
         return b"", summary

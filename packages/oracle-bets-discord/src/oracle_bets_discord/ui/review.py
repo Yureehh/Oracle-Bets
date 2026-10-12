@@ -20,7 +20,7 @@ from lol_bets.operations.market_capture import (
 )
 
 from oracle_bets_discord.formatting import DELIVERY_TARGET, sanitize_discord_text
-from oracle_bets_discord.ui.common import require_owner
+from oracle_bets_discord.ui.common import paginate_select, require_owner
 from oracle_bets_discord.ui.presentation import market_options
 
 
@@ -158,7 +158,7 @@ def build_review_views(
                             )[:100],
                             default=str(row["match_key"]) == self.fixture_key,
                         )
-                        for row in fixtures[:25]
+                        for row in fixtures
                     ],
                     row=1,
                 )
@@ -169,6 +169,9 @@ def build_review_views(
                         content=self.summary(), view=self
                     )
 
+                paginate_select(
+                    discord, self, select, select.options, label="fixtures", row=2
+                )
                 select.callback = choose_fixture
                 self.add_item(select)
 

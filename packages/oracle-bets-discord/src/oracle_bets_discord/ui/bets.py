@@ -21,7 +21,7 @@ from oracle_bets_core.operations.bets import (
 )
 from oracle_bets_core.operations.quotes import capture_paper_quote
 
-from oracle_bets_discord.ui.common import require_owner
+from oracle_bets_discord.ui.common import paginate_select, require_owner
 from oracle_bets_discord.ui.presentation import bet_pages
 
 
@@ -327,6 +327,14 @@ def build_bet_views(
                 await interaction.response.defer()
 
             market_select.callback = choose_market
+            paginate_select(
+                discord,
+                self,
+                market_select,
+                market_select.options,
+                label="markets",
+                row=4,
+            )
             self.add_item(market_select)
             mode_select = discord.ui.Select(
                 placeholder="Evidence mode",
@@ -395,7 +403,7 @@ def build_bet_views(
                         value=fixture_id,
                         description="Enter winner and/or named map statistics",
                     )
-                    for fixture_id, group in list(fixture_rows.items())[:25]
+                    for fixture_id, group in fixture_rows.items()
                 ],
                 row=1,
             )
@@ -407,7 +415,36 @@ def build_bet_views(
                 )
 
             selection.callback = select_bet
+            paginate_select(
+                discord, self, selection, selection.options, label="fixtures", row=3
+            )
             self.add_item(selection)
+            tickets = discord.ui.Select(
+                placeholder="Choose an open ticket",
+                options=[
+                    discord.SelectOption(
+                        label=f"{row['selection']} · {row['target']}"[:100],
+                        value=str(row["id"]),
+                        description=f"{row['provider']} · {row['id']}"[:100],
+                    )
+                    for row in rows
+                ],
+                row=2,
+            )
+
+            async def choose_ticket(interaction: Any) -> None:
+                bet_id = tickets.values[0]
+                await interaction.response.send_message(
+                    content=f"Open ticket `{bet_id}`: capture its close or record a sourced result.",
+                    view=SettlementView(bet_id),
+                    ephemeral=True,
+                )
+
+            tickets.callback = choose_ticket
+            paginate_select(
+                discord, self, tickets, tickets.options, label="tickets", row=3
+            )
+            self.add_item(tickets)
 
     class FixtureResultConfirmationView(OwnerView):
         def __init__(self, resolved: list[dict[str, Any]], source: str) -> None:
