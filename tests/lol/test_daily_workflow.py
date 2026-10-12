@@ -16,7 +16,7 @@ from lol_bets.daily import (
 )
 from oracle_bets_core.cli import build_parser
 from oracle_bets_core.evidence import EvidenceStore
-from oracle_bets_core.interfaces import ArtifactHealth
+from oracle_bets_core.interfaces import ArtifactCheck, ArtifactHealth
 from oracle_bets_core.operations import StepOutcome, WorkflowOutcome
 from oracle_bets_core.pd import pd
 from oracle_bets_discord.predictions.lol import format_schedule_messages
@@ -281,6 +281,10 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
         DailyWorkflowConfig(dry_run=True, delivery_mode="off"),
         schedule_fetcher=schedule_fetcher,
         data_generator_factory=data_generator_factory,
+        module_factory=lambda: SimpleNamespace(
+            artifact_health=lambda: ArtifactHealth("lol"),
+            training_artifact_health=lambda: ArtifactHealth("lol"),
+        ),
     )
 
     assert result.ok
@@ -311,6 +315,54 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     )
     assert list((tmp_path / "daily").glob("*.json")) == [json_path]
     assert list((tmp_path / "daily").glob("*.md")) == [markdown_path]
+
+
+@pytest.mark.parametrize("missing_health", ["inference", "training"])
+def test_daily_dry_run_missing_artifacts_suppresses_forecasts(
+    tmp_path, monkeypatch, missing_health
+):
+    import lol_bets.daily as daily_module
+
+    missing = ArtifactHealth(
+        "lol", (ArtifactCheck(missing_health, str(tmp_path / "absent"), False),)
+    )
+    healthy = ArtifactHealth("lol")
+    monkeypatch.setattr(
+        daily_module,
+        "_daily_source_readiness",
+        lambda: SimpleNamespace(to_dict=lambda: {"ready": True}),
+    )
+
+    def forecast_must_not_run(*_args, **_kwargs):
+        pytest.fail("unhealthy artifacts must block forecast generation")
+
+    monkeypatch.setattr(
+        daily_module, "_build_prediction_snapshots", forecast_must_not_run
+    )
+    schedule = _schedule_frame().head(1).copy()
+    schedule["start_utc"] = dt.datetime.now(dt.UTC) + dt.timedelta(hours=6)
+    result = run_daily_lol_workflow(
+        DailyWorkflowConfig(dry_run=True, delivery_mode="off"),
+        schedule_fetcher=lambda **_kwargs: schedule,
+        lineup_refresher_factory=lambda: SimpleNamespace(refresh=lambda frame: frame),
+        module_factory=lambda: SimpleNamespace(
+            artifact_health=lambda: (
+                missing if missing_health == "inference" else healthy
+            ),
+            training_artifact_health=lambda: (
+                missing if missing_health == "training" else healthy
+            ),
+        ),
+    )
+
+    assert not result.ok
+    health = next(step for step in result.steps if step.name == "health")
+    assert not health.ok
+    assert missing_health in health.detail
+    assert len(result.predictions) == 1
+    assert result.predictions[0]["status"] == "prediction_suppressed"
+    assert result.report_paths is not None
+    assert not daily_module.EVIDENCE_DB.exists()
 
 
 @pytest.mark.parametrize(
