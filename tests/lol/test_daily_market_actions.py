@@ -224,9 +224,7 @@ def test_scalar_prop_is_priced_and_recorded_but_never_systematic(monkeypatch):
         def price(self, **_kwargs):
             return SimpleNamespace(over_probability=0.6, under_probability=0.4)
 
-    monkeypatch.setattr(
-        market_actions, "_prop_calibrator", lambda _target: Calibrator()
-    )
+    monkeypatch.setattr(market_actions, "_prop_calibrator", lambda *_args: Calibrator())
     adapter = PolymarketGammaAdapter()
     market = _market(
         adapter,
@@ -264,6 +262,7 @@ def test_scalar_prop_is_priced_and_recorded_but_never_systematic(monkeypatch):
 
 def test_prop_calibrator_resolves_the_serving_champion(monkeypatch, tmp_path):
     resolved = tmp_path / "champion-prop.pkl"
+    resolved.write_bytes(b"calibrator")
     loaded = object()
     calls = []
     monkeypatch.setattr(
@@ -276,11 +275,13 @@ def test_prop_calibrator_resolves_the_serving_champion(monkeypatch, tmp_path):
         "load_model",
         lambda path: loaded if path == resolved else None,
     )
-    market_actions._prop_calibrator.cache_clear()
+    market_actions._load_prop_calibrator.cache_clear()
 
-    assert market_actions._prop_calibrator("total_kills_mean") is loaded
+    assert (
+        market_actions._prop_calibrator("total_kills_mean", "pinned-champion") is loaded
+    )
     assert calls == [market_actions.TOTAL_KILLS_PREDICTION_PROP_CALIBRATOR]
-    market_actions._prop_calibrator.cache_clear()
+    market_actions._load_prop_calibrator.cache_clear()
 
 
 def test_handicap_is_derived_while_odd_even_kills_has_no_model_target():
@@ -596,3 +597,93 @@ def test_thunderpick_required_research_markets_keep_unverified_terms(
     )
     assert action["semantic_key"]["terms_verified"] is False
     assert action["observations"][0]["observed_at"] == START.isoformat()
+
+
+def test_series_total_lower_bound_includes_interior_symmetric_probability():
+    values = {"a": (0.4, 0.3, 0.5, False), "b": (0.6, 0.3, 0.5, True)}
+    market = SimpleNamespace(total_line=2.5, outcomes=[SimpleNamespace(name="Under")])
+    provider = market_actions._total_probabilities(market, values, 3)
+    manual = market_actions._manual_probabilities(
+        target="series_total_maps",
+        selection="Under",
+        line=2.5,
+        snapshots={
+            "map_winner": [
+                {"selection": "T1", "model_value": 0.4, "probability_lower": 0.3},
+                {"selection": "Gen.G", "model_value": 0.6, "probability_lower": 0.3},
+            ]
+        },
+        team_a="T1",
+        team_b="Gen.G",
+        best_of=3,
+    )
+    assert provider["under"][1] == pytest.approx(0.5)
+    assert manual[1] == pytest.approx(0.5)
+
+
+def test_prop_calibrator_cache_tracks_pinned_artifact(monkeypatch, tmp_path):
+    paths = {model: tmp_path / f"{model}.pkl" for model in ("A", "B")}
+    for model, path in paths.items():
+        path.write_text(model)
+    monkeypatch.setattr(
+        market_actions,
+        "resolve_serving_artifact",
+        lambda _path, **kw: paths[kw["model_id"]],
+    )
+    monkeypatch.setattr(market_actions, "load_model", lambda path: path.read_text())
+    assert market_actions._prop_calibrator("total_kills_mean", "A") == "A"
+    assert market_actions._prop_calibrator("total_kills_mean", "B") == "B"
+    assert market_actions._prop_calibrator("total_kills_mean", "A") == "A"
+    paths["A"].write_text("updated artifact")
+    assert (
+        market_actions._prop_calibrator("total_kills_mean", "A") == "updated artifact"
+    )
+
+
+@pytest.mark.parametrize("provider", ["manual", "polymarket"])
+def test_prop_mapping_uses_forecast_model_identity(monkeypatch, provider):
+    seen = []
+    calibrator = SimpleNamespace(
+        price=lambda **_kw: SimpleNamespace(over_probability=0.6, under_probability=0.4)
+    )
+    monkeypatch.setattr(
+        market_actions,
+        "_prop_calibrator",
+        lambda target, model_id: seen.append((target, model_id)) or calibrator,
+    )
+    snapshots = {
+        "total_kills_mean": [{"model_value": 25.0, "serving_model_id": "forecast-A"}]
+    }
+    if provider == "manual":
+        market_actions._manual_probabilities(
+            target="total_kills_mean",
+            selection="Over",
+            line=24.5,
+            snapshots=snapshots,
+            team_a="T1",
+            team_b="Gen.G",
+            best_of=3,
+        )
+    else:
+        market_actions._prop_probabilities(
+            SimpleNamespace(
+                total_line=24.5,
+                outcomes=[SimpleNamespace(name="Over"), SimpleNamespace(name="Under")],
+            ),
+            "total_kills_mean",
+            snapshots,
+        )
+    assert seen == [("total_kills_mean", "forecast-A")]
+
+
+def test_prop_mapping_without_model_identity_fails_closed():
+    result = market_actions._manual_probabilities(
+        target="total_kills_mean",
+        selection="Over",
+        line=24.5,
+        snapshots={"total_kills_mean": [{"model_value": 25.0}]},
+        team_a="T1",
+        team_b="Gen.G",
+        best_of=3,
+    )
+    assert result == (None, None, "prop_calibrator_unavailable")

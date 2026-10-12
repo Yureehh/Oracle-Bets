@@ -31,6 +31,7 @@ _PERIOD_TIMESTAMP_COLUMNS: Mapping[EvidenceTable, str] = {
     EvidenceTable.FIXTURES: "start_time",
     EvidenceTable.MODEL_VERSIONS: "created_at",
     EvidenceTable.PREDICTIONS: "created_at",
+    EvidenceTable.FORECASTS: "created_at",
     EvidenceTable.MARKET_CANDIDATES: "discovered_at",
     EvidenceTable.MARKET_SNAPSHOTS: "observed_at",
     EvidenceTable.PROPOSALS: "created_at",
@@ -53,7 +54,7 @@ class MonthlyAuditReport:
     evidence_counts: Mapping[str, int]
     period_activity: Mapping[str, int]
     health: SystemHealthReport
-    prediction_coverage: Mapping[str, int | float | None]
+    prediction_coverage: Mapping[str, int | float | str | None]
     strategy_cohorts: Mapping[str, Any]
     bet_performance: Mapping[str, Any]
     accepted_risks: tuple[str, ...]
@@ -68,6 +69,14 @@ class MonthlyAuditReport:
             "configuration": {
                 "product_config_hash": self.product_config_hash,
                 "changed_since_previous_monthly_audit": self.product_config_changed,
+            },
+            "summary_scopes": {
+                "period_activity": "declared_month",
+                "evidence_counts": "lifetime",
+                "prediction_coverage": "lifetime",
+                "strategy_cohorts": "lifetime",
+                "bet_performance": "lifetime",
+                "health": "current",
             },
             "evidence_counts": dict(self.evidence_counts),
             "period_activity": dict(self.period_activity),
@@ -242,13 +251,13 @@ Status: **{report.status}**. This report is not owner sign-off.
 
 {health_lines}
 
-## Prediction coverage
+## Lifetime prediction coverage
 
 - Tracked predictions: {report.prediction_coverage["tracked_predictions"]}
 - Resolved predictions: {report.prediction_coverage["resolved_predictions"]}
 - Resolution coverage: {report.prediction_coverage["resolution_fraction"]}
 
-## Strategy evidence
+## Lifetime strategy evidence
 
 - Enrolled cohorts: {report.strategy_cohorts["enrolled"]}
 - Cohorts with complete activation evidence: {report.strategy_cohorts["activation_evidence_complete"]}
@@ -297,7 +306,7 @@ def _period_activity(
     return activity
 
 
-def _prediction_coverage(store: EvidenceStore) -> dict[str, int | float | None]:
+def _prediction_coverage(store: EvidenceStore) -> dict[str, int | float | str | None]:
     with store.connection(read_only=True) as connection:
         tracked = int(
             connection.execute(
@@ -337,6 +346,7 @@ def _prediction_coverage(store: EvidenceStore) -> dict[str, int | float | None]:
             ).fetchone()["count"]
         )
     return {
+        "scope": "lifetime",
         "tracked_predictions": tracked,
         "resolved_predictions": resolved,
         "resolution_fraction": resolved / tracked if tracked else None,

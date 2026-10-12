@@ -1,6 +1,7 @@
 # Pipeline status
 
-_Verified October 10, 2026, Europe/Rome. Datasets, model bundles, quote records,
+_Verification updated October 12, 2026, Europe/Rome. Data refreshed October 12;
+historical replay retains its October 10 observation date. Datasets, model bundles, quote records,
 and the evidence database are local state; a GitHub clone does not include them._
 
 The active paper champion is **`lol-20261010-paper-v1`**. The August artifact is
@@ -11,19 +12,21 @@ The [locked protocol](lol-paper-protocol.md) explains the comparison and selecti
 
 | Milestone | Current evidence | Remaining gate |
 | --- | --- | --- |
-| 0 — Setup | Source fixes pass 763 tests, 1 skipped; lint, formatting, types, strict docs, and GitHub checks pass. | Second-machine setup remains unverified. |
-| 10 — Ingestion | Retained source extends through October 8, 2026, 22:56:10 UTC. | Refresh and check source freshness before daily decisions. |
-| 20 — Cleaning | 24,458 games, 10,203 accepted series, 1,770 quarantined groups. | Review new source and quarantine changes. |
-| 30 — Features | Neutral causal rating priors, signed input tables, paired serving snapshot; October 10 rebuild inputs are byte-identical to the preceding numerical generation. | Validate lineage after each changed source/code generation. |
+| 0 — Setup | Current local suite passes 839 tests, 1 skipped; lint, formatting, package types, compilation and strict docs pass. The reviewed code commit passed all four GitHub checks; live refresh and verified feature reuse pass. See [PR #23](https://github.com/Yureehh/Oracle-Bets/pull/23) for final check receipts. | Second-machine setup remains unverified. |
+| 10 — Ingestion | Retained source extends through October 11, 2026, 15:58:23 UTC; October 12 source freshness passes. | Refresh and check source freshness before daily decisions. |
+| 20 — Cleaning | 24,544 games, 10,234 accepted series, 1,770 quarantined groups. | Review new source and quarantine changes. |
+| 30 — Features | Neutral causal rating priors, signed input tables and paired serving snapshot `features-5f5eaf01d697dac50a2fde67` rebuilt October 12; input and artifact health pass. | Validate lineage after each changed source/code generation. |
 | 40 — Splits | Temporal safeguards and exposure guards; winner partitions are 73/2/2.5/2.5/5/15, with series base training through February 1, 2026. | Reused historical evaluation is diagnostic, not untouched prospective evidence. |
 | 50 — Search | Five fresh 100-trial Optuna studies completed. | Do not repeat selection against the exposed holdout. |
 | 60 — Full refit | All five targets completed in `20261009T231405_688954Z`. Paper packaging preserves every trained artifact checksum. | Repackaging is not another training run or production parameter approval. |
 | 70 — Replay and selection | 581 matches, zero mismatches; 59 sampled rows unavailable. Structural winner and market validation pass. Normal registry promotion selected the paper package against the causal baseline. | Calibration-intercept and conservative-bound coverage warnings keep every strategy exploratory/display-only. |
-| 80 — Prospective population | Model and October 11–November 30 window are locked. | Owner declares meaningful leagues, eligible fixtures, and markets before forecasts/prices. |
-| 90 — Paper cycle | Evidence integrity/schema checks pass; Discord gateway is running. No paper tickets, settlements, or complete prospective cycle yet. | Owner-confirm exact executable quotes, capped stakes, closes, and sourced settlements. |
+| 80 — Prospective population | Model/window locked; 25 selected competitions and 336-hour horizon implemented. October 12 run enrolled three provider fixtures before inference; seven forecasts were recorded for one supported fixture, with two unsupported-team gaps retained. | Collect complete prospective coverage; missing stages remain in the denominator. |
+| 90 — Paper cycle | Evidence integrity/schema checks pass; October 12 daily discovery recorded six observations with zero provider failures. Executable quote snapshots remain unchanged; no paper tickets, settlements, or complete prospective cycle yet. | Owner-confirm exact executable quotes, capped stakes, closes, and sourced settlements. |
 | 100 — Decision evidence | No representative settled paper sample or verified earnings. | Evaluate the locked population and policy after the window; insufficient evidence is inconclusive. |
 
-Follow the [remaining owner checklist](paper-owner-checklist.md). Model weights,
+Use the [daily operating guide](daily-operation.md), then resume the
+[owner checklist](paper-owner-checklist.md) at point 4. The €500 capital declaration
+is implemented; Polymarket conversion evidence remains owner-supplied before entry. Model weights,
 parameters, calibration, and uncertainty are frozen for fixtures scheduled
 October 11 through November 30, Europe/Rome. Daily features can advance using
 completed games available before the decision. Recommendation and real-stake
@@ -87,6 +90,19 @@ Receipts are under `reports/lol/training/replay/`:
 
 Registry reviews live under `data/state/model-registry/lol/reviews/`; the
 immutable package contains its protocol/provenance receipt under `_evaluation`.
+The October 12 daily receipt is
+`reports/lol/daily/20261012T182128_260428Z.json`. All twelve steps passed. Its three
+provider fixtures are CBLOL/LCS/LCP promotion events, not evidence that all major
+tournaments have published their fixtures. Empty provider lineups were retained;
+the supported fixture used disclosed historical roster evidence. Public candidates
+require exact owner review. The 90 immutable champion files retain their hashes.
+
+A new sealed replay attempt correctly refused the advanced data generation with
+`Candidate was trained from a different data generation`. Do not bypass that
+guard or count the attempt as parity success. The retained 581/0/59 replay belongs
+to the original generation; current-data serving was exercised by the daily run.
+A future sealed replay requires its candidate-matched input generation.
+
 These generated files are not distributed by a GitHub clone. The evidence
 health check reports integrity `ok` and schema version 7. No new fixtures,
 executable quotes, paper entries, closes, or results were invented during this
@@ -94,10 +110,15 @@ engineering work. The owner selects the population and supplies that evidence.
 
 ## Further engineering work
 
-The October 10 awake rebuild took **1,790.1 seconds**. A previous daily run
-rebuilt features even when history had not changed. Profile that path before
-adding a no-change shortcut guarded by source identity, code/config fingerprint,
-manifest integrity, and output hashes. Changed or damaged inputs still require
+The October 12 awake feature rebuild took **2,068.8 seconds**, including
+**1,853.7 seconds** in enrichment; the October 10 rebuild took 1,790.1 seconds.
+A previous daily run
+rebuilt features even when history had not changed. The implemented no-change
+shortcut is guarded by source identity, code/config fingerprint, manifest integrity,
+and complete output hashes. The unchanged October 12 repeat verified
+zero added/updated rows and all hashes, reducing feature preparation (including
+ingestion) from **2,068.8 to 148.4 seconds**, avoiding about 32 minutes of rebuilding.
+This is a local single-run comparison, not a whole-daily-run benchmark. Changed or damaged inputs still require
 the full rebuild. A ten-team serving construction profile improved from 4.76
 to 3.92 seconds using bounded decoded-snapshot caching; that is not a benchmark
 of the full daily run. Profile CPU and memory before changing the dataframe

@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
 
+from oracle_bets_core.config import FIXTURE_WINDOW_HOURS
 from oracle_bets_core.evidence import EvidenceStore
 from oracle_bets_core.io_utils import atomic_write_text
 from oracle_bets_core.league_selection import actionable_leagues
@@ -29,6 +30,7 @@ from oracle_bets_core.paths import (
     RAW_DATA,
     REPORTS_DIR,
     SCHEDULE,
+    SUITE_ROOT,
 )
 from oracle_bets_core.pd import pd
 from oracle_bets_discord.delivery import (
@@ -70,6 +72,10 @@ from lol_bets.inference.team_resolver import (
 from lol_bets.module import LoLBetsModule
 from lol_bets.operations.evidence import record_daily_evidence
 from lol_bets.operations.identity import sync_history_identity_graph
+from lol_bets.operations.market_discovery import (
+    discover_markets,
+    record_market_observations,
+)
 from lol_bets.pipeline import DataGenerator
 from lol_bets.training import validate_training_tables
 
@@ -117,7 +123,7 @@ class Predictor(Protocol):
 class DailyWorkflowConfig:
     """Runtime options for the daily LoL workflow."""
 
-    horizon_hours: int = 36
+    horizon_hours: int = FIXTURE_WINDOW_HOURS
     leagues: str | None = None
     delivery_mode: str | None = None
     dry_run: bool = False
@@ -179,6 +185,8 @@ class DailyWorkflowResult:
     cadence_reminders: list[dict[str, Any]] = field(default_factory=list)
     open_positions: dict[str, Any] = field(default_factory=dict)
     report_paths: tuple[Path, Path] | None = None
+    predictions: list[dict[str, Any]] = field(default_factory=list)
+    market_discovery: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -303,7 +311,7 @@ def filter_daily_schedule(
     schedule_df: pd.DataFrame,
     *,
     now: dt.datetime | None = None,
-    horizon_hours: int = 36,
+    horizon_hours: int = FIXTURE_WINDOW_HOURS,
 ) -> pd.DataFrame:
     """Keep fixtures in the exact rolling UTC horizon."""
     if horizon_hours <= 0:
@@ -940,8 +948,8 @@ def build_prediction_snapshot_rows(
                         if raw_map is not None
                         else None
                     ),
-                    "probability_lower": float(lower or probability),
-                    "probability_upper": float(upper or probability),
+                    "probability_lower": float(probability if lower is None else lower),
+                    "probability_upper": float(probability if upper is None else upper),
                     "probability_source": "independent_map_winner_model",
                     "uncertainty_method": map_prediction.get("uncertainty_method"),
                     "uncertainty_confidence": map_prediction.get(
@@ -1124,7 +1132,6 @@ def _run_mutating_steps(
 def _build_prediction_snapshots(
     schedule: pd.DataFrame,
     *,
-    cfg: DailyWorkflowConfig,
     predictor_factory: Callable[[], Predictor] | None = None,
     snapshot_sink: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1133,21 +1140,23 @@ def _build_prediction_snapshots(
         return []
     predictor = predictor_factory() if predictor_factory is not None else None
     if predictor is None:
-        # Dry run included: exercising the real prediction path is the point of
-        # the smoke test. Fall back to a stub only when artifacts can't load.
-        try:
-            from lol_bets.inference.match_predictor import MatchPredictor
+        from lol_bets.inference.match_predictor import MatchPredictor
 
-            predictor = MatchPredictor()
-        except Exception as exc:
-            if cfg.dry_run:
-                return [{"status": "artifacts_unavailable", "reason": str(exc)}]
-            raise
+        protocol = json.loads(
+            (SUITE_ROOT / "config/research/lol-paper-v1.json").read_text()
+        )
+        predictor = MatchPredictor(model_id=protocol["paper_candidate_id"])
 
     details: list[dict[str, Any]] = []
     actionable = set(actionable_leagues())
     for _, row in schedule.iterrows():
         try:
+            if pd.Timestamp(row["start_utc"]) <= dt.datetime.now(dt.UTC):
+                details.append(
+                    {"status": "fixture_started", "match_key": row.get("match_key")}
+                )
+                continue
+            first_snapshot = len(snapshot_sink) if snapshot_sink is not None else 0
             resolutions: list[dict[str, str]] = []
             build_match_prediction_snapshot(
                 row,
@@ -1164,6 +1173,9 @@ def _build_prediction_snapshots(
                     "match_key": row.get("match_key"),
                     "match": row.get("discord_label"),
                     "resolved_aliases": resolutions,
+                    "forecasts": list(snapshot_sink[first_snapshot:])
+                    if snapshot_sink is not None
+                    else [],
                 }
             )
         except TeamResolutionError as exc:
@@ -1209,6 +1221,8 @@ def write_daily_report(
     source_freshness: dict[str, Any] | None = None,
     drift_review: dict[str, Any] | None = None,
     report_paths: tuple[Path, Path] | None = None,
+    predictions: Sequence[dict[str, Any]] = (),
+    market_discovery: Sequence[dict[str, Any]] = (),
 ) -> tuple[Path, Path]:
     """Persist machine-readable and human-readable reviews for every daily run."""
     report_dir = REPORTS_DIR / "daily"
@@ -1220,7 +1234,7 @@ def write_daily_report(
     else:
         json_path, markdown_path = report_paths
     payload = {
-        "schema_version": 6,
+        "schema_version": 7,
         "generated_at": dt.datetime.now(dt.UTC).isoformat(),
         "evidence_run_id": _evidence_run_id(steps),
         "config": dict(vars(cfg)),
@@ -1232,6 +1246,9 @@ def write_daily_report(
         "open_positions": open_positions or {"available": False, "count": None},
         "source_freshness": source_freshness,
         "drift_review": drift_review,
+        "predictions": list(predictions),
+        "market_discovery": list(market_discovery),
+        "paper_capital": _paper_capital_review(),
     }
     atomic_write_text(
         json_path,
@@ -1245,8 +1262,31 @@ def write_daily_report(
     markdown = "\n\n".join(messages)
     if excluded_lines:
         markdown += "\n\n## Excluded fixtures\n" + "\n".join(excluded_lines)
+    if predictions:
+        markdown += "\n\n## Forecast review\n" + "\n".join(
+            f"- {row.get('match_key') or row.get('match')}: {row['status']}"
+            + (f" — {row['reason']}" if row.get("reason") else "")
+            for row in predictions
+        )
+    if market_discovery:
+        markdown += (
+            "\n\n## Public listing discovery (not executable quotes)\n"
+            + "\n".join(
+                f"- {row['provider']} / {row['fixture_key']}: {row['status']}"
+                for row in market_discovery
+            )
+        )
     atomic_write_text(markdown_path, markdown + "\n")
     return json_path, markdown_path
+
+
+def _paper_capital_review() -> dict[str, Any]:
+    from oracle_bets_core.operations.capital import paper_capital_status
+
+    try:
+        return paper_capital_status()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {"available": False, "entry_ready": False, "reason": str(exc)}
 
 
 def _evidence_run_id(steps: Sequence[DailyStepResult]) -> str | None:
@@ -1356,6 +1396,117 @@ def _fetch_daily_schedule(
     return filtered.reset_index(drop=True), detail
 
 
+def _forecast_daily_schedule(
+    schedule: pd.DataFrame,
+    *,
+    cfg: DailyWorkflowConfig,
+    ready: bool,
+    predictor_factory: Callable[[], Predictor] | None,
+    scheduled_for: dt.datetime,
+    effective_config: dict[str, Any],
+    steps: list[DailyStepResult],
+) -> list[dict[str, Any]]:
+    snapshot_rows: list[dict[str, Any]] = []
+    if ready:
+        try:
+            prediction_details = _build_prediction_snapshots(
+                schedule,
+                predictor_factory=predictor_factory,
+                snapshot_sink=snapshot_rows,
+            )
+        except Exception as exc:
+            steps.append(DailyStepResult("forecasts", False, str(exc)))
+            return [
+                {
+                    "match_key": row.get("match_key"),
+                    "status": "prediction_suppressed",
+                    "reason": str(exc),
+                }
+                for row in schedule.to_dict("records")
+            ]
+        if not cfg.dry_run and snapshot_rows:
+            try:
+                forecast_at = dt.datetime.now(dt.UTC)
+                record_daily_evidence(
+                    store=EvidenceStore(EVIDENCE_DB),
+                    scheduled_for=scheduled_for,
+                    observed_at=forecast_at,
+                    effective_config=effective_config,
+                    schedule=schedule,
+                    snapshot_rows=snapshot_rows,
+                    steps=steps,
+                    run_type="daily_lol_forecasts",
+                    run_key=daily_run_key(
+                        "lol", scheduled_for=scheduled_for, config=effective_config
+                    )
+                    + f":{forecast_at.isoformat()}:forecasts",
+                )
+                steps.append(
+                    DailyStepResult(
+                        "forecasts", True, f"{len(snapshot_rows)} forecasts recorded"
+                    )
+                )
+            except Exception as exc:
+                steps.append(DailyStepResult("forecasts", False, str(exc)))
+    else:
+        prediction_details = [
+            {
+                "match_key": row.get("match_key"),
+                "status": "prediction_suppressed",
+                "reason": "source, core artifact health or evidence checks failed",
+            }
+            for row in schedule.to_dict("records")
+        ]
+    return prediction_details
+
+
+def _discover_daily_markets(
+    schedule: pd.DataFrame,
+    *,
+    cfg: DailyWorkflowConfig,
+    market_discoverer: Callable[[pd.DataFrame], list[dict[str, Any]]] | None,
+    run_id: str | None,
+    steps: list[DailyStepResult],
+) -> list[dict[str, Any]]:
+    discoveries: list[dict[str, Any]] = []
+    # A dry run does not silently make public-network requests. Inject discovery
+    # to exercise it read-only; explicit owner review has a separate path.
+    if not schedule.empty and (not cfg.dry_run or market_discoverer is not None):
+        try:
+            discoveries = (market_discoverer or discover_markets)(schedule)
+            if not cfg.dry_run and run_id is not None:
+                record_market_observations(
+                    EvidenceStore(EVIDENCE_DB),
+                    run_id=run_id,
+                    observations=discoveries,
+                    observed_at=dt.datetime.now(dt.UTC),
+                )
+            failures = sum(
+                row["status"] == "provider_unavailable" for row in discoveries
+            )
+            steps.append(
+                DailyStepResult(
+                    "market-discovery",
+                    failures == 0,
+                    f"{len(discoveries)} listing observations; {failures} provider failures",
+                )
+            )
+        except Exception as exc:
+            steps.append(DailyStepResult("market-discovery", False, str(exc)))
+    return discoveries
+
+
+def _read_only_health(
+    module_factory: Callable[[], LoLBetsModule], *, source_ready: bool
+) -> str:
+    if not source_ready:
+        raise RuntimeError("Oracle source readiness check failed; see source_freshness")
+    module = module_factory()
+    module.artifact_health().raise_if_unhealthy()
+    module.training_artifact_health().raise_if_unhealthy()
+    return "read-only source and artifact checks passed"
+
+
 def run_daily_lol_workflow(
     config: DailyWorkflowConfig | None = None,
     *,
@@ -1364,6 +1515,8 @@ def run_daily_lol_workflow(
     module_factory: Callable[[], LoLBetsModule] = LoLBetsModule,
     lineup_refresher_factory: (Callable[[], PandaScoreLineupRefresher] | None) = None,
     series_builder_fn: Callable[[], dict[str, Any]] = build_series_artifacts,
+    predictor_factory: Callable[[], Predictor] | None = None,
+    market_discoverer: Callable[[pd.DataFrame], list[dict[str, Any]]] | None = None,
 ) -> DailyWorkflowResult:
     """Refresh data and schedule, check the champion, and report without training."""
     cfg = _resolve_daily_config(config)
@@ -1437,6 +1590,7 @@ def run_daily_lol_workflow(
         *format_schedule_messages(_actionable_schedule(reportable_schedule)),
     ]
 
+    run_id = None
     if not cfg.dry_run and schedule_step.ok:
         try:
             run_id = record_daily_evidence(
@@ -1455,8 +1609,35 @@ def run_daily_lol_workflow(
             logger.exception("Canonical evidence write failed.")
             steps.append(DailyStepResult("evidence", False, str(exc)))
 
-    messages[0] = format_step_summary(steps)
-
+    if cfg.dry_run:
+        steps.append(
+            _step(
+                "health",
+                lambda: _read_only_health(
+                    module_factory,
+                    source_ready=source_readiness.to_dict().get("ready") is True,
+                ),
+            )
+        )
+    ready = source_readiness.to_dict().get("ready") is True and all(
+        step.ok for step in steps
+    )
+    prediction_details = _forecast_daily_schedule(
+        reportable_schedule,
+        cfg=cfg,
+        ready=ready,
+        predictor_factory=predictor_factory,
+        scheduled_for=scheduled_for,
+        effective_config=effective_config,
+        steps=steps,
+    )
+    discoveries = _discover_daily_markets(
+        reportable_schedule,
+        cfg=cfg,
+        market_discoverer=market_discoverer,
+        run_id=run_id,
+        steps=steps,
+    )
     reminders = cadence_reminders(run_now)
     reminder_message = format_cadence_reminders(reminders)
     if reminder_message:
@@ -1473,7 +1654,7 @@ def run_daily_lol_workflow(
                 "Gateway owner console enabled; open `/oracle` for interactive review",
             )
         )
-        messages[0] = format_step_summary(steps)
+    messages[0] = format_step_summary(steps)
     report_paths = write_daily_report(
         cfg=cfg,
         steps=steps,
@@ -1484,6 +1665,8 @@ def run_daily_lol_workflow(
         open_positions=open_positions,
         source_freshness=source_freshness,
         drift_review=drift_review,
+        predictions=prediction_details,
+        market_discovery=discoveries,
     )
     return DailyWorkflowResult(
         schedule=reportable_schedule,
@@ -1493,4 +1676,6 @@ def run_daily_lol_workflow(
         cadence_reminders=reminders,
         open_positions=open_positions,
         report_paths=report_paths,
+        predictions=prediction_details,
+        market_discovery=discoveries,
     )

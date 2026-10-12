@@ -1,7 +1,7 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "timezone": "Europe/Rome",
-  "fixture_window_hours": 36,
+  "fixture_window_hours": 336,
   "market": {
     "read_only": true,
     "quote_ttl_seconds": 120
@@ -16,11 +16,8 @@
   },
   "leagues": {
     "training_profile": "research_all_supported",
-    "prediction_profile": "tier1_plus_erls",
-    "actionable_exclusions": [
-      "CBLOL",
-      "LCP"
-    ]
+    "prediction_profile": "paper_selected",
+    "actionable_exclusions": []
   },
   "training": {
     "new_valid_maps_trigger": 50,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import erf, sqrt
+from math import erf, isfinite, sqrt
 
 PROBABILITY_EPSILON = 1e-6
 
@@ -23,6 +23,8 @@ def probability_over_under(
     *, mean: float, line: float, sigma: float
 ) -> PropLineProbability:
     """Convert a normal residual model into complementary line probabilities."""
+    if not all(isfinite(value) for value in (mean, line, sigma)):
+        raise ValueError("Prop inputs must be finite.")
     if sigma <= 0:
         raise ValueError("Residual sigma must be positive.")
     under = _clip_probability(_normal_cdf((line - mean) / sigma))

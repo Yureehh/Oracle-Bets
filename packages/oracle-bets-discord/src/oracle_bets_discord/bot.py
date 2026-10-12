@@ -114,7 +114,7 @@ def _acquire_instance_lock(path: Path) -> TextIO:
         raise RuntimeError(
             "Discord Gateway bot is already running. Stop its launchd job with "
             "`launchctl bootout gui/$(id -u) "
-            "~/Library/LaunchAgents/com.oracle-bets.discord.plist` "
+            "~/Library/LaunchAgents/com.oracle-bets.discord-bot.plist` "
             "or terminate the existing `oracle-bets discord run` process."
         ) from exc
     handle.seek(0)

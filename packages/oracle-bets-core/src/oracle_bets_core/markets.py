@@ -1318,11 +1318,6 @@ def _required_text(value: Any, field: str) -> str:
     return str(value).strip()
 
 
-def _require_book_timestamp(book: OrderBook) -> None:
-    if book.timestamp is None:
-        raise MarketDataError("CLOB order book timestamp is missing")
-
-
 def _required_decimal(value: Any, *, field: str) -> Decimal:
     parsed = _optional_decimal(value, field=field)
     if parsed is None:

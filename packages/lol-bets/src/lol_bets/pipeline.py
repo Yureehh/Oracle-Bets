@@ -23,7 +23,7 @@ import datetime as dt
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -41,6 +41,8 @@ from oracle_bets_core.paths import (
     PROCESSED_PLAYERS,
     PROCESSED_TEAMS,
     QUARANTINED_RAW_DATA,
+    RATING_LEAGUE_ELO,
+    RATING_TEAM_LEAGUES_MAPPING,
     RAW_CURRENT_POINTER,
     RAW_DATA,
     RAW_GENERATIONS_DIR,
@@ -79,6 +81,7 @@ from lol_bets.data_generation.ingestion.history import (
     merge_history,
     publish_history_snapshot,
     refresh_years,
+    write_history_manifest,
 )
 from lol_bets.data_generation.ingestion.oracles_elixir import (
     OraclesElixir,
@@ -89,7 +92,11 @@ from lol_bets.data_generation.ingestion.quality import (
     write_quality_report,
 )
 from lol_bets.data_generation.ingestion.source import source_snapshot_id
-from lol_bets.inference.snapshots import publish_feature_snapshot
+from lol_bets.inference.snapshots import load_feature_snapshot, publish_feature_snapshot
+from lol_bets.operations.feature_reuse import (
+    feature_build_matches,
+    record_feature_build,
+)
 from lol_bets.operations.training_inputs import (
     MAP_INPUT_MANIFEST,
     code_fingerprint,
@@ -217,6 +224,25 @@ class DataGenerator:
                 f"{len(raw):,} rows: +{manifest.added_rows:,}, "
                 f"updated {manifest.updated_rows:,}."
             )
+            previous = (
+                current_source(RAW_CURRENT_POINTER)
+                if RAW_CURRENT_POINTER.exists()
+                else None
+            )
+            if (
+                previous
+                and raw.equals(existing)
+                and previous["source_snapshot_id"] == manifest.source_snapshot_id
+            ):
+                self.source_manifest = previous
+                write_history_manifest(
+                    replace(manifest, snapshot_id=previous["snapshot_id"]),
+                    HISTORY_REFRESH_MANIFEST,
+                )
+                _dbl(
+                    "History and provider source unchanged; retaining verified generation."
+                )
+                return raw
             history_id = publish_history_snapshot(
                 raw,
                 manifest,
@@ -426,6 +452,56 @@ class DataGenerator:
             root=PROCESSED_DIR / "serving",
         )
 
+    def _feature_files(self) -> dict[str, Path]:
+        snapshot = load_feature_snapshot(PROCESSED_DIR / "serving")
+        if (
+            snapshot.manifest["source_manifest"] != self.source_manifest
+            or snapshot.manifest["code_sha256"] != self.generation_code
+        ):
+            raise ValueError("Serving feature generation changed")
+        files = {
+            "map_manifest": MAP_INPUT_MANIFEST,
+            "interim_teams": INTERIM_TEAM_DATA,
+            "interim_players": INTERIM_PLAYER_DATA,
+            "processed_teams": PROCESSED_TEAMS,
+            "processed_players": PROCESSED_PLAYERS,
+            "training_teams": PROCESSED_DIR / "teams" / "training_teams.parquet",
+            "training_players": PROCESSED_DIR / "players" / "training_players.parquet",
+            "flattened_teams": PROCESSED_DIR / "teams" / "flattened_teams.parquet",
+            "flattened_players": PROCESSED_DIR
+            / "players"
+            / "flattened_players.parquet",
+            "quality": DATA_QUALITY_REPORT,
+            "quarantine": QUARANTINED_RAW_DATA,
+            "rating_league_elo": RATING_LEAGUE_ELO,
+            "rating_team_leagues": RATING_TEAM_LEAGUES_MAPPING,
+            "serving_pointer": PROCESSED_DIR / "serving" / "current.json",
+            "serving_manifest": snapshot.directory / "manifest.json",
+        }
+        files.update(
+            {
+                f"serving_{name}": snapshot.directory / name
+                for name in snapshot.manifest["files"]
+            }
+        )
+        return files
+
+    def _reuse_generation(self) -> bool:
+        try:
+            matched = feature_build_matches(
+                PROCESSED_DIR / "feature_build.json",
+                paths=self._feature_files(),
+                source=self.source_manifest,
+                code=self.generation_code,
+            )
+            return (
+                matched
+                and self.generation_code == code_fingerprint()
+                and self.source_manifest == current_source(RAW_CURRENT_POINTER)
+            )
+        except (OSError, ValueError, KeyError, RuntimeError):
+            return False
+
     # ───────────────────────  driver  ────────────────────────────────────
     def run(self) -> None:
         start = time.perf_counter()
@@ -441,6 +517,11 @@ class DataGenerator:
 
         raw = self.ingest_data()
         _timed("[1/5] Ingestion")
+        if self._reuse_generation():
+            _dbl(
+                f"Feature build reused after all hashes matched: wall={time.perf_counter() - start:.1f}s"
+            )
+            return
 
         self.clean_and_store_data(raw)
         _timed("[2/5] Cleaning")
@@ -454,6 +535,12 @@ class DataGenerator:
 
         self.flatten_both_inference_data()
         _timed("[5/5] Flattening and snapshot publication")
+        record_feature_build(
+            PROCESSED_DIR / "feature_build.json",
+            paths=self._feature_files(),
+            source=self.source_manifest,
+            code=self.generation_code,
+        )
 
         elapsed = time.perf_counter() - start
         _dbl(f"=== Data generation finished in {elapsed:.1f}s ===")

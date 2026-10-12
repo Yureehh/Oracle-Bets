@@ -182,7 +182,7 @@ def _store(tmp_path, *, with_quote=True, source_match_key=None):
     return store
 
 
-def test_unified_bet_record_and_owner_settlement_are_append_only(tmp_path):
+def test_unified_bet_record_and_owner_settlement_are_append_only(tmp_path, clock):
     store = _store(tmp_path)
     bet_id = record_bet(
         store,
@@ -205,6 +205,7 @@ def test_unified_bet_record_and_owner_settlement_are_append_only(tmp_path):
     assert row["payload"]["semantic_fingerprint"] == "semantic-1"
     assert row["payload"]["sizing"]["selected_path"] == "balanced_kelly"
 
+    clock[0] = datetime(2026, 8, 29, tzinfo=UTC)
     event_id = settle_bet(
         store,
         bet_id=bet_id,
@@ -321,13 +322,14 @@ def test_invalid_or_superseded_review_facts_cannot_open_bets(
         )
 
 
-def test_performance_never_combines_modes_or_currencies(tmp_path):
+def test_performance_never_combines_modes_or_currencies(tmp_path, ledger_capital):
     store = _store(tmp_path)
     for mode, currency, percent in (
         ("paper", "EUR", "1"),
         ("paper", "USD", "2"),
         ("real", "USD", "3"),
     ):
+        ledger_capital(currency)
         _quote(store, amount=str(1000 * int(percent) // 100), currency=currency)
         bet_id = record_bet(
             store,
@@ -393,6 +395,7 @@ def test_performance_reports_prediction_quality_clv_drawdown_and_fixture_cluster
             snapshot_id=closing_id,
             source_reference="provider-close-1",
         )
+        clock[0] = datetime(2026, 8, 29, index, tzinfo=UTC)
         settle_bet(
             store,
             bet_id=bet_id,
@@ -487,7 +490,7 @@ def test_separate_same_terms_bets_are_distinct_owner_actions(tmp_path, clock):
     assert store.count(EvidenceTable.BETS) == TWO_BETS
 
 
-def test_distinct_bankroll_evidence_never_collapses_to_one_bet(tmp_path):
+def test_paper_bankroll_cannot_be_changed_by_owner_input(tmp_path):
     store = _store(tmp_path)
     common = {
         "review_id": "review-1",
@@ -497,11 +500,10 @@ def test_distinct_bankroll_evidence_never_collapses_to_one_bet(tmp_path):
         "accepted_odds": "2",
         "reason": "same market, different owner terms",
     }
-    first = record_bet(store, **common, bankroll_before="1000", stake_percent="1")
-    second = record_bet(store, **common, bankroll_before="500", stake_percent="2")
-
-    assert first != second
-    assert store.count(EvidenceTable.BETS) == TWO_BETS
+    record_bet(store, **common, bankroll_before="1000", stake_percent="1")
+    with pytest.raises(BetEvidenceError, match="bankroll-before"):
+        record_bet(store, **common, bankroll_before="500", stake_percent="2")
+    assert store.count(EvidenceTable.BETS) == 1
 
 
 def test_settlement_retry_rejects_changed_audit_fields(tmp_path):
@@ -552,7 +554,7 @@ def test_explicit_stake_amount_must_match_bankroll_percentage(tmp_path):
         )
 
 
-def test_owner_result_fact_is_idempotent_and_conflicts_are_rejected(tmp_path):
+def test_owner_result_fact_is_idempotent_and_conflicts_are_rejected(tmp_path, clock):
     store = _store(tmp_path)
     bet_id = record_bet(
         store,
@@ -566,6 +568,7 @@ def test_owner_result_fact_is_idempotent_and_conflicts_are_rejected(tmp_path):
         reason="owner action",
     )
 
+    clock[0] = datetime(2026, 9, 1, 12, tzinfo=UTC)
     first = record_bet_result(
         store,
         bet_id=bet_id,
@@ -1271,6 +1274,7 @@ def test_kelly_releases_only_settlements_effective_by_confirmation(tmp_path, clo
     _quote(store, amount="20")
     first = _kelly_record(store, key="one")
     _kelly_record(store, key="two")
+    clock[0] = NOW + timedelta(seconds=30)
     settle_bet(
         store,
         bet_id=first,
@@ -1278,19 +1282,29 @@ def test_kelly_releases_only_settlements_effective_by_confirmation(tmp_path, clo
         source_reference="fixture result",
         settled_at=NOW + timedelta(seconds=30),
     )
-    assert _kelly_limit(store)["allowed_stake_amount"] == Decimal(10)
-    clock[0] = NOW + timedelta(seconds=30)
-    assert _kelly_limit(store)["allowed_stake_amount"] == Decimal(20)
+    with pytest.raises(BetEvidenceError, match="bankroll-before"):
+        _kelly_limit(store)
+    limit = paper_stake_limit(
+        store,
+        market_id="market-1",
+        currency="EUR",
+        bankroll_before="1020",
+        accepted_odds="2",
+    )
+    assert limit["allowed_stake_amount"] == Decimal("20.40")
 
 
-def test_kelly_mode_currency_isolation_and_real_noncompliance(tmp_path):
+def test_kelly_mode_currency_isolation_and_real_noncompliance(tmp_path, ledger_capital):
     store = _store(tmp_path)
     real = _kelly_record(store, key="real", mode="real", percent="30")
     real_evidence = json.loads(store.get(EvidenceTable.BETS, real)["payload_json"])
     assert real_evidence["kelly_policy"]["chosen_stake_compliant"] is False
+    ledger_capital("USD")
     _quote(store, amount="20", currency="USD")
     _kelly_record(store, key="dollars", currency="USD")
+    ledger_capital("EUR")
     assert _kelly_limit(store)["open_stakes"] == {}
+    ledger_capital("USD")
     assert _kelly_limit(store, currency="USD")["open_stakes"] == {"fixture-1": 20.0}
 
 
@@ -1377,3 +1391,151 @@ def test_evidence_validation_transaction_rolls_back_nested_append(tmp_path):
     with pytest.raises(RuntimeError, match="abort"):
         aborted_write()
     assert store.count(EvidenceTable.BETS) == 0
+
+
+def test_supersession_rejects_self_cycle(tmp_path):
+    store = _store(tmp_path)
+    with pytest.raises(BetEvidenceError, match="cycle"):
+        supersede_evidence(
+            store,
+            target_table="market_candidates",
+            target_id="market-1",
+            replacement_id="market-1",
+            reason="mistake",
+        )
+
+
+@pytest.mark.parametrize("delta", [-1, 1])
+def test_settlement_timestamp_must_be_between_entry_and_now(tmp_path, delta):
+    store = _store(tmp_path)
+    bet_id = _kelly_record(store, key="timestamp", percent="1")
+    with pytest.raises(BetEvidenceError, match="timestamp"):
+        settle_bet(
+            store,
+            bet_id=bet_id,
+            result="win",
+            source_reference="result",
+            settled_at=NOW + timedelta(seconds=delta),
+        )
+
+
+@pytest.mark.parametrize("delta", [-1, 1])
+def test_result_timestamp_must_be_between_entry_and_now(tmp_path, delta):
+    store = _store(tmp_path)
+    bet_id = _kelly_record(store, key="result-time", percent="1")
+    with pytest.raises(BetEvidenceError, match="timestamp"):
+        record_bet_result(
+            store,
+            bet_id=bet_id,
+            winning_selection="A",
+            source_reference="result",
+            recorded_at=NOW + timedelta(seconds=delta),
+        )
+
+
+def test_correction_rejects_wrong_bet_replacement_and_cycle(tmp_path):
+    store = _store(tmp_path)
+    first = _kelly_record(store, key="first", percent="1")
+    second = _kelly_record(store, key="second", percent="1")
+    first_event = settle_bet(store, bet_id=first, result="win", source_reference="one")
+    second_event = settle_bet(
+        store, bet_id=second, result="loss", source_reference="two"
+    )
+    with pytest.raises(BetEvidenceError, match="same bet"):
+        supersede_evidence(
+            store,
+            target_table="bet_events",
+            target_id=first_event,
+            replacement_id=second_event,
+            reason="wrong",
+        )
+    replacement = replace_bet_settlement(
+        store,
+        bet_id=first,
+        result="loss",
+        source_reference="correct",
+        correction_reason="wrong result",
+    )
+    with pytest.raises(BetEvidenceError, match="cycle"):
+        supersede_evidence(
+            store,
+            target_table="bet_events",
+            target_id=replacement,
+            replacement_id=first_event,
+            reason="cycle",
+        )
+
+
+@pytest.mark.parametrize("delta", [-1, 1])
+def test_settlement_correction_rejects_invalid_timestamp(tmp_path, delta):
+    store = _store(tmp_path)
+    bet_id = _kelly_record(store, key="correction-time", percent="1")
+    settle_bet(store, bet_id=bet_id, result="win", source_reference="original")
+    with pytest.raises(BetEvidenceError, match="timestamp"):
+        replace_bet_settlement(
+            store,
+            bet_id=bet_id,
+            result="loss",
+            source_reference="correct",
+            correction_reason="wrong result",
+            corrected_at=NOW + timedelta(seconds=delta),
+        )
+
+
+def test_same_time_settlements_do_not_invent_drawdown(tmp_path):
+    store = _store(tmp_path)
+    first = _kelly_record(store, key="win", percent="1")
+    second = _kelly_record(store, key="loss", percent="1")
+    settle_bet(
+        store, bet_id=first, result="win", source_reference="one", settled_at=NOW
+    )
+    settle_bet(
+        store, bet_id=second, result="loss", source_reference="two", settled_at=NOW
+    )
+    assert (
+        performance_summary(store, mode="paper")["currencies"]["EUR"][
+            "maximum_drawdown"
+        ]
+        == "0"
+    )
+
+
+def test_kelly_reserves_only_same_venue_capital(tmp_path):
+    store = _store(tmp_path)
+    _kelly_record(store, key="polymarket", percent="1")
+    candidate = dict(store.get(EvidenceTable.MARKET_CANDIDATES, "market-1"))
+    candidate.pop("content_hash")
+    candidate.update(
+        id="thunderpick-market",
+        provider="thunderpick",
+        idempotency_key="thunderpick-market",
+    )
+    store.append(EvidenceTable.MARKET_CANDIDATES, candidate)
+    assert _kelly_limit(store, market_id="thunderpick-market")["open_stakes"] == {}
+    assert _kelly_limit(store)["open_stakes"] == {"fixture-1": 10.0}
+
+
+def test_correction_rejects_future_timestamp_before_writing(tmp_path):
+    store = _store(tmp_path)
+    with pytest.raises(BetEvidenceError, match="timestamp"):
+        supersede_evidence(
+            store,
+            target_table="market_candidates",
+            target_id="market-1",
+            reason="wrong",
+            created_at=NOW + timedelta(seconds=1),
+        )
+    assert store.count(EvidenceTable.CORRECTIONS) == 0
+
+
+def test_correction_cannot_precede_target_fact(tmp_path):
+    store = _store(tmp_path)
+    with pytest.raises(BetEvidenceError, match="timestamp"):
+        supersede_evidence(
+            store,
+            target_table="market_candidates",
+            target_id="market-1",
+            reason="wrong",
+            created_at=NOW - timedelta(days=2),
+        )
+    assert store.count(EvidenceTable.CORRECTIONS) == 0

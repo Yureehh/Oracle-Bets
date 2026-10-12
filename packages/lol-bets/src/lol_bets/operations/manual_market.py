@@ -33,7 +33,6 @@ from oracle_bets_core.pd import pd
 
 from lol_bets.daily import (
     DailyStepResult,
-    DailyWorkflowConfig,
     Predictor,
     _build_prediction_snapshots,
 )
@@ -158,19 +157,21 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         if "thunderpick" in host:
             thunderpick_urls.append(url)
             continue
-        league = _league_from_url(url)
-        if league not in actionable_leagues():
-            label = _LEAGUE_LABELS.get(league.casefold(), league)
-            ignored_links.append(
-                {
-                    "url": url,
-                    "reason": "league_not_supported_or_trained",
-                    "detail": f"{label} is not included in the trained or actionable LoL universe; no prediction was generated.",
-                }
-            )
-            logger.info("Ignored owner market review for unsupported league %s", label)
-            continue
         try:
+            league = _league_from_url(url)
+            if league not in actionable_leagues():
+                label = _LEAGUE_LABELS.get(league.casefold(), league)
+                ignored_links.append(
+                    {
+                        "url": url,
+                        "reason": "league_not_supported_or_trained",
+                        "detail": f"{label} is not included in the trained or actionable LoL universe; no prediction was generated.",
+                    }
+                )
+                logger.info(
+                    "Ignored owner market review for unsupported league %s", label
+                )
+                continue
             event = adapter.event(url)
             events.append(event)
             row = _fixture_row(event, league=league)
@@ -286,7 +287,6 @@ def review_polymarket_events(  # noqa: PLR0912, PLR0915
         try:
             prediction_details = _build_prediction_snapshots(
                 schedule,
-                cfg=DailyWorkflowConfig(dry_run=True),
                 predictor_factory=predictor_factory,
                 snapshot_sink=snapshots,
             )
@@ -1095,11 +1095,15 @@ def parse_manual_lines_text(value: str) -> list[dict[str, Any]]:
         observed_at = optional[2] or None
         if observed_at is not None:
             try:
-                _as_utc(dt.datetime.fromisoformat(observed_at))
+                parsed_observation = dt.datetime.fromisoformat(observed_at)
             except ValueError as exc:
                 raise MarketDataError(
                     f"Thunderpick line {number} observed_at must be ISO-8601 with timezone."
                 ) from exc
+            if parsed_observation.utcoffset() is None:
+                raise MarketDataError(
+                    f"Thunderpick line {number} observed_at must be ISO-8601 with timezone."
+                )
         output.append(
             {
                 "target": target,
@@ -1365,11 +1369,3 @@ def _as_utc(value: dt.datetime) -> dt.datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=dt.UTC)
     return value.astimezone(dt.UTC)
-
-
-def _optional_float(value: Any) -> float | None:
-    return float(value) if value is not None else None
-
-
-def _optional_int(value: Any) -> int | None:
-    return int(value) if value is not None else None

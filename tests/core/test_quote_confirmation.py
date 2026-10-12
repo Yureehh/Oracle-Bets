@@ -264,12 +264,13 @@ def test_discord_paper_capture_refresh_and_confirm(tmp_path, monkeypatch, verifi
             "Closing quote captured"
             in interaction.edit_original_response.await_args.kwargs["content"]
         )
+        current[0] += timedelta(hours=1)
         bets.settle_bet(
             store,
             bet_id=row["id"],
             result="win",
             source_reference="official-result",
-            settled_at=current[0] + timedelta(hours=1),
+            settled_at=current[0],
         )
         summary = bets.performance_summary(store, mode="paper")
         assert summary["currencies"]["EUR"]["pnl"] == "9.0"

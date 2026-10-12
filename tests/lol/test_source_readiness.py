@@ -418,3 +418,23 @@ def test_source_refresh_refuses_to_write_through_symlink(tmp_path):
 
     with pytest.raises(OracleSourceRefreshError, match="Refusing to update"):
         refresh_oracle_source(link, required_years=(2026,), session=_Session({}))
+
+
+def test_interrupted_archive_download_removes_partial_file(tmp_path):
+    from lol_bets.data_generation.ingestion.source import _download_export_archives
+
+    class InterruptedResponse(_Response):
+        def iter_content(self, chunk_size):
+            del chunk_size
+            yield b"partial archive"
+            raise OSError("connection interrupted")
+
+    class InterruptedSession:
+        def get(self, *_args, **_kwargs):
+            return InterruptedResponse()
+
+    with pytest.raises(OSError, match="interrupted"):
+        _download_export_archives(
+            InterruptedSession(), tmp_path, [_Session.archive_url]
+        )
+    assert not list(tmp_path.iterdir())

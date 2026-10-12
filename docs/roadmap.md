@@ -1,70 +1,38 @@
 # Roadmap and status
 
-## Implemented and verified
+Reviewed October 12, 2026. Current behavior and metrics live in the
+[system guide](system.md) and [pipeline status](pipeline-status.md).
 
-- Independent symmetric direct-series champion plus experimental prematch map,
-  legal BO3/BO5 totals, handicaps, and scalar prop forecasts.
-- Owner-selected one/two-link review for Polymarket and Thunderpick.
-- Public read-only Polymarket metadata/books; no unsupported-contract book
-  fan-out; no Thunderpick automation.
-- Exact-semantic provider comparison with model probability, fair odds, implied
-  probability, EV, and best provider.
-- Compact Discord/Markdown output and detailed normalized JSON evidence.
-- One owner-only `/oracle` console: Review Markets, Record Bet, Open Bets,
-  Closed Bets, Schedule, Performance, and Health.
-- Versioned target/cohort readiness, deterministic
-  `recommended|exploration|not_comparable` policy, and frozen flat/full/half/
-  quarter-Kelly paths on one ticket.
-- Unified append-only paper/real ledger with result facts, manual settlement,
-  correction events, cohort coverage, calibration, drawdown, CLV, and
-  fixture-clustered performance.
-- Guarded external archive, restore verification, exclusive reset lock, and
-  short-lived single-use reset confirmation.
-- No automatic acceptance, automatic settlement, betting, wallet,
-  signing, bookmaker login, scraping, or fund movement.
+## Current phase: paper preparation
 
-## Current work: accumulate fresh paper evidence
+The active champion is `lol-20261010-paper-v1`, using the fresh October refit’s
+unchanged weights. The 25-competition population, 14-day discovery horizon,
+€500 allocation and balanced Kelly research target are declared. Daily is manual;
+there is no server or automated wagering. Strategy readiness remains exploratory
+or display-only, and no recommendations or real stakes are activated.
 
-The guarded reset, current 2024–2026 rebuild, isolated research studies,
-fixed-parameter training, registry review, champion promotion, and smoke checks
-are complete. The serving champion is `lol-20260831T085623_622859Z`.
-Structural model and artifact health is green, but every betting target remains
-`exploration_only` or `display_only`; no strategy is currently allowed to
-present itself as a validated recommendation.
+The repository review repairs probability/provenance, ledger, source and Discord
+control defects; removes verified unused work; validates feature reuse; and
+updates the daily and long-term guides. Setup on a second machine and a live
+owner-controlled interaction cycle remain unverified.
 
-The owner should now review every scheduled fixture in each
-preregistered league-week cohort, keep recommendation and exploration evidence
-separate, capture official results, settle manually, and inspect calibration,
-CLV, drawdown, and equal-fixture ROI rather than raw ticket ROI alone.
+## Next owner phase: point 4 onward
 
-Real-money recommendations remain blocked until at least 200 unique fixture
-clusters from consecutively shadowed direct-series recommendation opportunities
-show at least 90% schedule-review coverage, 100% result capture, healthy
-calibration, positive CLV, no material cohort failure, and a positive
-multiplicity-aware lower confidence bound for fixture-clustered ROI at a fixed
-monthly decision date. Owner-accepted tickets are reported separately. Each
-experimental target needs its own independent 200-fixture activation review.
+1. Capture exact executable contracts and prices.
+2. Confirm eligible capped paper entries.
+3. Capture the same contract’s pre-start closing observation.
+4. Record sourced results and settle, retaining unresolved components.
+5. Review the complete enrolled population after the locked window.
 
-## Next
+The [owner checklist](paper-owner-checklist.md) preserves this sequence. Closing
+capture and portfolio research are already implemented; collecting evidence is
+still pending. No profitability or empirically optimal Kelly claim is justified.
 
-1. Accumulate enough settled evidence to compare direct series, prematch map,
-   derived totals/handicaps, and calibrated props separately.
-2. Decompose the large market-review and bet-ledger orchestration modules along
-   their tested pricing, provider, lifecycle, and query boundaries. This is a
-   maintainability task; it must not change decisions or evidence IDs.
-3. Add controlled closing-price capture for CLV only after the manual ledger has
-   enough entries to justify the operational cost.
-4. Improve Discord integration testing at the interaction boundary, including
-   fixture selection, confirmation expiry, pagination, and restart behavior.
-5. Add correlation-aware portfolio research before any real-money exposure
-   recommendation.
+## Later engineering
 
-## Later
-
-- Draft-aware map research with timestamped champions, bans, sides, patch,
-  player identities, source references, exact swap symmetry, and a separate
-  evidence cohort.
-- Reactive next-map research using frozen prematch features plus manually
-  sourced series state; no martingale or loss chasing.
-- Counter-Strike and real-sport adapters only after LoL paper evidence is
-  credible.
+- Source verified historical series format/completion before another retraining.
+- Develop calibration and conservative-bound improvements on development data.
+- Profile per-game rating reset scans before optimizing them; preserve feature values.
+- Verify installation on another machine and actual Discord/provider interaction.
+- Assess tennis after proving the shared operational cycle and reviewing evidence.
+- Add hosting/scheduling only when useful; retain final owner authority.

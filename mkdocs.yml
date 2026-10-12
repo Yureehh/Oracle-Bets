@@ -22,11 +22,13 @@ theme:
 
 nav:
   - Home: index.md
-  - System: system.md
+  - Daily operation: daily-operation.md
+  - System and long-term operation: system.md
   - Commands: commands.md
   - Pipeline status: pipeline-status.md
   - LoL paper protocol: lol-paper-protocol.md
   - Paper owner checklist: paper-owner-checklist.md
+  - Repository review: repository-review.md
   - Roadmap: roadmap.md
 
 markdown_extensions:

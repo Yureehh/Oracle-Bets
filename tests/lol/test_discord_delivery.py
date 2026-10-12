@@ -141,13 +141,21 @@ def test_health_message_is_sectioned_and_human_readable(monkeypatch):
         def is_actionable(_champion):
             return True
 
+        @staticmethod
+        def actionability(_champion):
+            return {"scope": "paper_research_only"}
+
+        @staticmethod
+        def strategy_readiness():
+            return {"cells": [{"state": "exploration_only", "reasons": []}]}
+
     monkeypatch.setattr(
         "oracle_bets_core.operations.bets.count_open_bets", lambda _store: 0
     )
     message = health_message(Store(), Registry())
 
     assert "**Oracle Bets · System Health**" in message
-    assert "🟢 **All systems operational**" in message
+    assert "🟠 **Attention required**" in message
     assert "**Serving model**" in message
     assert "**Evidence**" in message
     assert "Thunderpick: 📝 Manual lines only" in message

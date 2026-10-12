@@ -52,3 +52,30 @@ def build_common_views(discord: Any, owner_id: int) -> tuple[type[Any], type[Any
             await self._show(interaction)
 
     return OwnerView, PageView
+
+
+def paginate_select(
+    discord: Any, view: Any, selection: Any, options: list[Any], *, label: str, row: int
+) -> None:
+    """Keep every option reachable within Discord's 25-option limit."""
+    index = 0
+    pages = [options[start : start + 25] for start in range(0, len(options), 25)]
+    selection.options = pages[0]
+    if len(pages) == 1:
+        return
+    for direction, offset in (("Previous", -1), ("Next", 1)):
+        button = discord.ui.Button(
+            label=f"{direction} {label}", style=discord.ButtonStyle.secondary, row=row
+        )
+
+        def callback(step: int) -> Any:
+            async def change(interaction: Any) -> None:
+                nonlocal index
+                index = (index + step) % len(pages)
+                selection.options = pages[index]
+                await interaction.response.edit_message(view=view)
+
+            return change
+
+        button.callback = callback(offset)
+        view.add_item(button)

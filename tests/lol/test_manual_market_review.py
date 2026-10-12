@@ -686,3 +686,22 @@ def test_provider_comparison_does_not_merge_legacy_unknown_rules():
     comparisons = manual_market.provider_comparisons(rows)
     assert len(comparisons) == EXPECTED_COMPARISONS
     assert all(len(row["providers"]) == 1 for row in comparisons)
+
+
+def test_manual_quote_rejects_naive_observation_timestamp():
+    with pytest.raises(MarketDataError, match="timezone"):
+        manual_market.parse_manual_lines_text(
+            "series_winner | Team WE | 2.0 | | | 2026-10-11T10:00:00 | standard"
+        )
+
+
+def test_malformed_provider_route_is_reported_per_link(tmp_path, monkeypatch):
+    monkeypatch.setattr(manual_market, "SCHEDULE", tmp_path / "absent.parquet")
+    result = manual_market.review_polymarket_events(
+        ["https://polymarket.com/event/league-of-legends"],
+        gamma=_Gamma(),
+        report_dir=tmp_path / "reports",
+        now=NOW,
+    )
+    assert result.fixtures == 0
+    assert len(result.failures) == 1

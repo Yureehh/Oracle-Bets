@@ -354,8 +354,14 @@ def _unified_performance_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     equity = peak = Decimal(0)
     maximum_drawdown = Decimal(0)
+    simultaneous_pnl: dict[Any, Decimal] = {}
     for row in ordered:
-        equity += Decimal(str(row["settlement"].get("pnl_amount") or 0))
+        timestamp = row["settlement"]["event_at"]
+        simultaneous_pnl[timestamp] = simultaneous_pnl.get(
+            timestamp, Decimal(0)
+        ) + Decimal(str(row["settlement"].get("pnl_amount") or 0))
+    for pnl in simultaneous_pnl.values():
+        equity += pnl
         peak = max(peak, equity)
         maximum_drawdown = max(maximum_drawdown, peak - equity)
     interval = fixture_clustered_bootstrap_roi(

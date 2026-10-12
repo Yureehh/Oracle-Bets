@@ -575,10 +575,9 @@ class PandaScoreSchedule:
 
     @staticmethod
     def _append_to_schedule(curr: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
-        validate_duplicate_fixture_agreement(curr)
-        validate_duplicate_fixture_agreement(new)
         combined = pd.concat([curr, new], ignore_index=True)
         combined = normalize_schedule_frame(combined)
+        validate_duplicate_fixture_agreement(combined)
         return combined.drop_duplicates(subset=["match_key"], keep="last")
 
     @staticmethod

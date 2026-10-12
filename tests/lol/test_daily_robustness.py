@@ -73,7 +73,6 @@ def test_insufficient_roster_history_is_reported_separately(monkeypatch):
     )
     details = _build_prediction_snapshots(
         _future_schedule(),
-        cfg=DailyWorkflowConfig(dry_run=True),
         predictor_factory=_FakePredictor,
     )
 
@@ -89,11 +88,10 @@ def test_excluded_league_is_not_predicted_or_reported(monkeypatch):
         lambda *_args, **_kwargs: None,
     )
     schedule = _future_schedule()
-    schedule["league"] = "LCP"
+    schedule["league"] = "LCKC"
 
     details = _build_prediction_snapshots(
         schedule,
-        cfg=DailyWorkflowConfig(dry_run=True),
     )
 
     assert details == []
@@ -223,7 +221,7 @@ def test_snapshot_rows_cover_both_selections_and_props():
         map_prediction={
             "team1_win_probability": 0.55,
             "team2_win_probability": 0.45,
-            "team1_probability_lower": 0.50,
+            "team1_probability_lower": 0.0,
             "team1_probability_upper": 0.60,
             "team2_probability_lower": 0.40,
             "team2_probability_upper": 0.50,
@@ -240,6 +238,9 @@ def test_snapshot_rows_cover_both_selections_and_props():
     assert (
         next(r for r in map_rows if r["selection"] == "T1")["model_value"]
         == EXPECTED_MAP_WIN_PROBABILITY
+    )
+    assert (
+        next(r for r in map_rows if r["selection"] == "T1")["probability_lower"] == 0.0
     )
     prop_rows = [r for r in rows if r["market"] == "total_kills_mean"]
     assert len(prop_rows) == 1

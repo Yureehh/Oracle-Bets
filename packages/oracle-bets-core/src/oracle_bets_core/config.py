@@ -10,13 +10,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from oracle_bets_core.paths import PRODUCT_CONFIG
 
-FIXTURE_WINDOW_HOURS = 36
+FIXTURE_WINDOW_HOURS = 336
 NEW_MAJOR_MAPS_TRIGGER = 20
 NEW_VALID_MAPS_TRIGGER = 50
-ACTIONABLE_LEAGUE_EXCLUSIONS = ("CBLOL", "LCP")
-PREDICTION_LEAGUE_PROFILE = "tier1_plus_erls"
+ACTIONABLE_LEAGUE_EXCLUSIONS: tuple[str, ...] = ()
+PREDICTION_LEAGUE_PROFILE = "paper_selected"
 RESEARCH_LEAGUE_PROFILE = "research_all_supported"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 QUOTE_TTL_SECONDS = 120
 
 
@@ -122,7 +122,7 @@ class LeagueConfig:
             ACTIONABLE_LEAGUE_EXCLUSIONS
         ):
             raise ProductConfigError(
-                "leagues.actionable_exclusions must contain exactly CBLOL and LCP."
+                "leagues.actionable_exclusions must be empty for the selected paper population."
             )
         return cls(
             training_profile=value["training_profile"],
@@ -215,7 +215,7 @@ class ProductConfig:
             value["fixture_window_hours"], "fixture_window_hours"
         )
         if fixture_window != FIXTURE_WINDOW_HOURS:
-            raise ProductConfigError("fixture_window_hours must remain 36.")
+            raise ProductConfigError("fixture_window_hours must remain 336.")
         return cls(
             schema_version=SCHEMA_VERSION,
             timezone=value["timezone"],

@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from oracle_bets_core.betting import (
@@ -626,7 +627,7 @@ def _manual_probabilities(  # noqa: PLR0911, PLR0912
         if len(rows) != 1:
             return None, None, "prop_forecast_unavailable"
         try:
-            signal = _prop_calibrator(target).price(
+            signal = _prop_calibrator(target, rows[0].get("serving_model_id")).price(
                 mean=float(rows[0]["model_value"]),
                 line=line,
                 metadata={
@@ -655,15 +656,10 @@ def _manual_probabilities(  # noqa: PLR0911, PLR0912
         side = selection.casefold()
         if side not in {"over", "under"}:
             return None, None, "total_outcome_orientation_unsupported"
-        probabilities = [
-            _series_total_probability(value, best_of=best_of, line=line, side=side)
-            for value in (
-                map_values["a"][1],
-                map_values["a"][0],
-                1.0 - map_values["b"][1],
-            )
-        ]
-        return probabilities[1], min(probabilities), "derived_map_path_v1"
+        probability, lower = _series_total_bounds(
+            map_values, best_of=best_of, line=line, side=side
+        )
+        return probability, lower, "derived_map_path_v1"
     if target == "series_handicap" and line is not None:
         map_values = _team_snapshot_values(
             snapshots.get("map_winner", []), team_a=team_a, team_b=team_b
@@ -861,7 +857,7 @@ def _prop_probabilities(
         return None, "prop_forecast_unavailable"
     row = rows[0]
     try:
-        signal = _prop_calibrator(target).price(
+        signal = _prop_calibrator(target, row.get("serving_model_id")).price(
             mean=float(row["model_value"]),
             line=float(market.total_line),
             metadata={
@@ -891,15 +887,25 @@ def _prop_probabilities(
     )
 
 
-@lru_cache(maxsize=len(_PROP_CALIBRATORS))
-def _prop_calibrator(target: str) -> Any:
-    return load_model(
-        resolve_serving_artifact(
-            _PROP_CALIBRATORS[target],
-            registry_root=MODEL_REGISTRY_DIR,
-            legacy_root=MODELS_DIR,
-        )
+def _prop_calibrator(target: str, model_id: str | None) -> Any:
+    """Price with the immutable calibrator that produced this forecast."""
+    if not model_id:
+        raise ValueError("prop forecast has no serving model identity")
+    path = resolve_serving_artifact(
+        _PROP_CALIBRATORS[target],
+        registry_root=MODEL_REGISTRY_DIR,
+        legacy_root=MODELS_DIR,
+        model_id=model_id,
     )
+    return _load_prop_calibrator(
+        str(path), hashlib.sha256(path.read_bytes()).hexdigest()
+    )
+
+
+@lru_cache(maxsize=32)
+def _load_prop_calibrator(path: str, _artifact_sha256: str) -> Any:
+    del _artifact_sha256  # Part of the cache key, not a loader argument.
+    return load_model(Path(path))
 
 
 def _team_snapshot_values(
@@ -950,21 +956,41 @@ def _total_probabilities(
 ) -> dict[str, tuple[float, float, float, bool]] | None:
     if market.total_line is None or float(market.total_line).is_integer():
         return None
-    point = map_values["a"][0]
-    lower = map_values["a"][1]
-    upper = 1.0 - map_values["b"][1]
     line = float(market.total_line)
     output: dict[str, tuple[float, float, float, bool]] = {}
     for outcome in market.outcomes:
         side = outcome.name.casefold()
         if side not in {"over", "under"}:
             return None
-        probabilities = [
-            _series_total_probability(value, best_of=best_of, line=line, side=side)
-            for value in (lower, point, upper)
-        ]
-        output[side] = (probabilities[1], min(probabilities), 0.5, True)
+        point, lower = _series_total_bounds(
+            map_values, best_of=best_of, line=line, side=side
+        )
+        output[side] = (point, lower, 0.5, True)
     return output
+
+
+def _series_total_bounds(
+    map_values: dict[str, tuple[float, float, float, bool]],
+    *,
+    best_of: int,
+    line: float,
+    side: str,
+) -> tuple[float, float]:
+    point = map_values["a"][0]
+    lower = map_values["a"][1]
+    upper = 1.0 - map_values["b"][1]
+    candidates = [lower, point, upper]
+    # Total maps is symmetric about equal map strength; its extremum is interior.
+    if lower <= _EVEN_PROBABILITY <= upper:
+        candidates.append(_EVEN_PROBABILITY)
+    probability = _series_total_probability(
+        point, best_of=best_of, line=line, side=side
+    )
+    bound = min(
+        _series_total_probability(value, best_of=best_of, line=line, side=side)
+        for value in candidates
+    )
+    return probability, bound
 
 
 def _series_total_probability(

@@ -5,5 +5,5 @@ useDefault = true
 
 [[allowlists]]
 description = "Documentation uses explicit non-secret placeholders."
-paths = ['''README\.md''', '''docs/getting_started/installation\.md''']
+paths = ['''README\.md''']
 regexes = ['''your-[a-z-]+''']

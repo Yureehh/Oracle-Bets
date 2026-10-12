@@ -16,15 +16,15 @@ from lol_bets.daily import (
 )
 from oracle_bets_core.cli import build_parser
 from oracle_bets_core.evidence import EvidenceStore
-from oracle_bets_core.interfaces import ArtifactHealth
+from oracle_bets_core.interfaces import ArtifactCheck, ArtifactHealth
 from oracle_bets_core.operations import StepOutcome, WorkflowOutcome
 from oracle_bets_core.pd import pd
 from oracle_bets_discord.predictions.lol import format_schedule_messages
 
 MESSAGE_SPLIT_LIMIT = 420
 EXPECTED_MIN_SPLIT_MESSAGES = 2
-EXPECTED_HORIZON_HOURS = 36
-DAILY_REPORT_SCHEMA_VERSION = 6
+EXPECTED_HORIZON_HOURS = 336
+DAILY_REPORT_SCHEMA_VERSION = 7
 EXPECTED_STABLE_SERIES = 3
 
 
@@ -265,6 +265,14 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     import lol_bets.daily as daily_module
 
     monkeypatch.setattr(daily_module, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        daily_module,
+        "_daily_source_readiness",
+        lambda: SimpleNamespace(to_dict=lambda: {"ready": True}),
+    )
+    monkeypatch.setattr(
+        daily_module, "_build_prediction_snapshots", lambda *_args, **_kwargs: []
+    )
     called = {"ingest": False}
 
     def schedule_fetcher(**kwargs):
@@ -281,6 +289,11 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
         DailyWorkflowConfig(dry_run=True, delivery_mode="off"),
         schedule_fetcher=schedule_fetcher,
         data_generator_factory=data_generator_factory,
+        predictor_factory=_FakePredictor,
+        module_factory=lambda: SimpleNamespace(
+            artifact_health=lambda: ArtifactHealth("lol"),
+            training_artifact_health=lambda: ArtifactHealth("lol"),
+        ),
     )
 
     assert result.ok
@@ -297,7 +310,7 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     assert payload["cadence_reminders"] == result.cadence_reminders
     assert payload["open_positions"] == result.open_positions
     assert "source_freshness" in payload
-    assert "predictions" not in payload
+    assert "predictions" in payload
     assert "drift_review" in payload
     daily_module.write_daily_report(
         cfg=DailyWorkflowConfig(dry_run=True),
@@ -311,6 +324,54 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     )
     assert list((tmp_path / "daily").glob("*.json")) == [json_path]
     assert list((tmp_path / "daily").glob("*.md")) == [markdown_path]
+
+
+@pytest.mark.parametrize("missing_health", ["source", "inference", "training"])
+def test_daily_dry_run_unready_inputs_suppresses_forecasts(
+    tmp_path, monkeypatch, missing_health
+):
+    import lol_bets.daily as daily_module
+
+    missing = ArtifactHealth(
+        "lol", (ArtifactCheck(missing_health, str(tmp_path / "absent"), False),)
+    )
+    healthy = ArtifactHealth("lol")
+    monkeypatch.setattr(
+        daily_module,
+        "_daily_source_readiness",
+        lambda: SimpleNamespace(to_dict=lambda: {"ready": missing_health != "source"}),
+    )
+
+    def forecast_must_not_run(*_args, **_kwargs):
+        pytest.fail("unhealthy artifacts must block forecast generation")
+
+    monkeypatch.setattr(
+        daily_module, "_build_prediction_snapshots", forecast_must_not_run
+    )
+    schedule = _schedule_frame().head(1).copy()
+    schedule["start_utc"] = dt.datetime.now(dt.UTC) + dt.timedelta(hours=6)
+    result = run_daily_lol_workflow(
+        DailyWorkflowConfig(dry_run=True, delivery_mode="off"),
+        schedule_fetcher=lambda **_kwargs: schedule,
+        lineup_refresher_factory=lambda: SimpleNamespace(refresh=lambda frame: frame),
+        module_factory=lambda: SimpleNamespace(
+            artifact_health=lambda: (
+                missing if missing_health == "inference" else healthy
+            ),
+            training_artifact_health=lambda: (
+                missing if missing_health == "training" else healthy
+            ),
+        ),
+    )
+
+    assert not result.ok
+    health = next(step for step in result.steps if step.name == "health")
+    assert not health.ok
+    assert missing_health in health.detail
+    assert len(result.predictions) == 1
+    assert result.predictions[0]["status"] == "prediction_suppressed"
+    assert result.report_paths is not None
+    assert not daily_module.EVIDENCE_DB.exists()
 
 
 @pytest.mark.parametrize(
@@ -389,7 +450,7 @@ def test_daily_defaults_to_operational_leagues_and_hides_academy(
     assert {"LCK", "LIT"}.issubset(set(captured["leagues"].split(",")))
     assert "LCKC" not in captured["leagues"].split(",")
     assert "NACL" not in captured["leagues"].split(",")
-    assert result.schedule["league"].tolist() == ["LCK", "LIT"]
+    assert result.schedule["league"].tolist() == ["CBLOL", "LCK", "LCP", "LIT"]
 
 
 def test_daily_explicit_league_filter_overrides_operational_profile(
@@ -587,3 +648,29 @@ def test_repeated_daily_maintenance_does_not_reuse_unverified_artifacts(tmp_path
         )
 
     assert calls == ["source", "source"]
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_daily_forecast_initialization_failure_is_reported(monkeypatch, dry_run):
+    from lol_bets.daily import _forecast_daily_schedule
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("pinned model unavailable")
+
+    monkeypatch.setattr(
+        "lol_bets.inference.match_predictor.MatchPredictor", unavailable
+    )
+    steps = []
+    details = _forecast_daily_schedule(
+        _schedule_frame(),
+        cfg=DailyWorkflowConfig(dry_run=dry_run),
+        ready=True,
+        predictor_factory=None,
+        scheduled_for=dt.datetime.now(dt.UTC),
+        effective_config={},
+        steps=steps,
+    )
+    assert not steps[0].ok
+    assert steps[0].name == "forecasts"
+    assert all(row["status"] == "prediction_suppressed" for row in details)
+    assert all(row["reason"] == "pinned model unavailable" for row in details)

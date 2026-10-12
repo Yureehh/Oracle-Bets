@@ -7,6 +7,7 @@ from oracle_bets_core.league_taxonomy import add_league_taxonomy_columns
 from oracle_bets_core.pd import pd
 
 ROOT = Path(__file__).resolve().parents[2]
+EXPECTED_PAPER_COMPETITIONS = 25
 
 
 def test_active_league_profile_drives_selected_leagues():
@@ -17,8 +18,10 @@ def test_active_league_profile_drives_selected_leagues():
     assert set(config) == {"active_profile", "profiles"}
     assert selected_leagues() == config["profiles"][config["active_profile"]]
     assert {"LCK", "LPL", "LEC", "LCS", "CBLOL", "LCP"} <= set(selected_leagues())
-    assert {"LTA", "LTA N", "LTA S"} <= set(selected_leagues())
-    assert {"LFL", "LES", "PRM", "TCL", "PCS", "VCS", "LJL"} <= set(selected_leagues())
+    assert not {"LTA", "LTA N", "LTA S"} & set(selected_leagues())
+    assert {"LFL", "LES", "PRM", "TCL", "DCup", "FST", "KeSPA"} <= set(
+        selected_leagues()
+    )
     assert "LCKC" not in selected_leagues()
 
 
@@ -29,19 +32,23 @@ def test_product_profiles_separate_research_from_daily_serving():
     )
 
     assert product["leagues"]["training_profile"] == "research_all_supported"
-    assert product["leagues"]["prediction_profile"] == "tier1_plus_erls"
+    assert product["leagues"]["prediction_profile"] == "paper_selected"
     assert product["leagues"]["prediction_profile"] == selection["active_profile"]
-    assert set(product["leagues"]["actionable_exclusions"]) == {"CBLOL", "LCP"}
+    assert set(product["leagues"]["actionable_exclusions"]) == set()
     assert set(selected_leagues(product["leagues"]["prediction_profile"])) < set(
         selected_leagues(product["leagues"]["training_profile"])
     )
 
 
-def test_actionable_leagues_exclude_shadow_only_competitions():
+def test_actionable_leagues_match_the_selected_paper_population():
     from oracle_bets_core.league_selection import actionable_leagues
 
-    assert "LCP" not in actionable_leagues()
-    assert "CBLOL" not in actionable_leagues()
+    assert "LCP" in actionable_leagues()
+    assert "CBLOL" in actionable_leagues()
+    assert len(actionable_leagues()) == EXPECTED_PAPER_COMPETITIONS
+    assert not {"AL", "LCKC", "LDL", "NACL", "LAS", "PCS", "VCS", "LJL"} & set(
+        actionable_leagues()
+    )
     assert {"LCK", "LPL", "LEC", "LCS"} <= set(actionable_leagues())
 
 
