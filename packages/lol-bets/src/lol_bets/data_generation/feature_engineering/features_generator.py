@@ -727,16 +727,6 @@ class FeatureGenerator:
             source_columns=["teamid"],
         ).rename(columns={"opp_teamid": "_opponent_id"})
 
-        # Create matchup key (sorted team pair for consistency)
-        out["_matchup"] = out.apply(
-            lambda r: (
-                tuple(sorted([r["teamid"], r["_opponent_id"]]))
-                if pd.notna(r["_opponent_id"])
-                else None
-            ),
-            axis=1,
-        )
-
         # For each team, compute h2h stats against each opponent using only
         # prior dates. Oracle's Elixir dates do not guarantee exact start order,
         # so same-date maps must not feed each other.
@@ -781,7 +771,7 @@ class FeatureGenerator:
         )
 
         # Clean up temporary columns
-        out = out.drop(columns=["_result_num", "_opponent_id", "_matchup"])
+        out = out.drop(columns=["_result_num", "_opponent_id"])
 
         # Re-sort to original order
         out = out.sort_values(["date", "gameid", "side"], kind="mergesort")

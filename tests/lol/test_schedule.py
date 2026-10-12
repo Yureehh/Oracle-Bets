@@ -271,3 +271,12 @@ def test_lineup_observation_clock_advances_after_each_response(monkeypatch):
     ).refresh(initial)
 
     assert refreshed["lineup_observed_at"].tolist() == arrivals
+
+
+def test_schedule_rejects_conflicting_fixture_across_pages():
+    first = PandaScoreSchedule._parse_matches_response([_pandascore_match()])
+    changed = _pandascore_match()
+    changed["scheduled_at"] = "2026-05-23T16:00:00Z"
+    second = PandaScoreSchedule._parse_matches_response([changed])
+    with pytest.raises(DataValidationError, match="conflicting"):
+        PandaScoreSchedule._append_to_schedule(first, second)

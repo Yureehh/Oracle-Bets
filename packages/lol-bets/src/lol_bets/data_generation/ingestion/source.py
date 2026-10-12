@@ -435,6 +435,7 @@ def _download_export_archives(
                     delete=False,
                 ) as handle:
                     archive = Path(handle.name)
+                    archives.append(archive)
                     for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
                         if chunk:
                             handle.write(chunk)
@@ -443,7 +444,6 @@ def _download_export_archives(
             finally:
                 response.close()
             _require_zip_archive(archive)
-            archives.append(archive)
     except Exception:
         for archive in archives:
             archive.unlink(missing_ok=True)

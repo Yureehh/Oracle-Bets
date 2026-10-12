@@ -24,7 +24,7 @@ from oracle_bets_discord.predictions.lol import format_schedule_messages
 MESSAGE_SPLIT_LIMIT = 420
 EXPECTED_MIN_SPLIT_MESSAGES = 2
 EXPECTED_HORIZON_HOURS = 336
-DAILY_REPORT_SCHEMA_VERSION = 6
+DAILY_REPORT_SCHEMA_VERSION = 7
 EXPECTED_STABLE_SERIES = 3
 
 
@@ -297,7 +297,7 @@ def test_daily_dry_run_builds_output_without_persistent_writes(tmp_path, monkeyp
     assert payload["cadence_reminders"] == result.cadence_reminders
     assert payload["open_positions"] == result.open_positions
     assert "source_freshness" in payload
-    assert "predictions" not in payload
+    assert "predictions" in payload
     assert "drift_review" in payload
     daily_module.write_daily_report(
         cfg=DailyWorkflowConfig(dry_run=True),
@@ -587,3 +587,26 @@ def test_repeated_daily_maintenance_does_not_reuse_unverified_artifacts(tmp_path
         )
 
     assert calls == ["source", "source"]
+
+
+def test_daily_forecast_initialization_failure_is_reported(monkeypatch):
+    from lol_bets.daily import _forecast_daily_schedule
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("pinned model unavailable")
+
+    monkeypatch.setattr("lol_bets.daily._build_prediction_snapshots", unavailable)
+    steps = []
+    details = _forecast_daily_schedule(
+        _schedule_frame(),
+        cfg=DailyWorkflowConfig(dry_run=False),
+        ready=True,
+        predictor_factory=None,
+        scheduled_for=dt.datetime.now(dt.UTC),
+        effective_config={},
+        steps=steps,
+    )
+    assert not steps[0].ok
+    assert steps[0].name == "forecasts"
+    assert all(row["status"] == "prediction_suppressed" for row in details)
+    assert all(row["reason"] == "pinned model unavailable" for row in details)
