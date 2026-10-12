@@ -234,6 +234,10 @@ def _add_research_operation_commands(sub) -> None:  # noqa: PLR0915
                 choices=["json", "csv"],
                 default="json",
             )
+    evidence_sub.add_parser(
+        "paper-capital",
+        help="Show declared virtual capital and missing conversion evidence",
+    )
     restore = evidence_sub.add_parser(
         "restore-verify",
         help="Verify a backup without replacing the active database",
@@ -1150,8 +1154,15 @@ def _parse_metrics(values: list[str]) -> dict[str, float]:
     return metrics
 
 
-def _main_evidence(args: argparse.Namespace) -> int:
+def _main_evidence(args: argparse.Namespace) -> int:  # noqa: PLR0911
+    import json
     from pathlib import Path
+
+    if args.action == "paper-capital":
+        from oracle_bets_core.operations.capital import paper_capital_status
+
+        sys.stdout.write(json.dumps(paper_capital_status(), indent=2) + "\n")
+        return 0
 
     from oracle_bets_core.evidence import EvidenceStore
     from oracle_bets_core.evidence.schema import SCHEMA_VERSION

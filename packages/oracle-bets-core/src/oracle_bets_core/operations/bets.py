@@ -21,6 +21,7 @@ from oracle_bets_core.evidence.settlement import (
     SettlementResult,
     settlement_pnl,
 )
+from oracle_bets_core.operations.capital import load_paper_capital
 
 _RESULTS = frozenset({"win", "loss", "push", "void"})
 _MODES = frozenset({"paper", "real"})
@@ -522,6 +523,7 @@ def prepare_bet(
             else "owner_recorded",
             "model_classification": classification,
             "kelly_policy": policy_evidence,
+            "capital": policy_evidence["capital"],
             "reason": rationale,
             "lane": lane,
             "readiness": payload.get("readiness"),
@@ -601,10 +603,61 @@ def _stake_limit(
     mode: str,
     now: datetime,
 ) -> dict[str, Any]:
+    capital_evidence = None
+    if mode == "paper":
+        try:
+            capital = load_paper_capital()
+            venue = capital.venue(str(candidate["provider"]), currency)
+            initial = venue.initial_bankroll()
+        except ValueError as error:
+            raise BetEvidenceError(str(error)) from error
+        settled_pnl = sum(
+            (
+                Decimal(str(bet["settlement"]["pnl_amount"]))
+                for bet in list_bets(
+                    store,
+                    state="settled",
+                    mode="paper",
+                    provider=str(candidate["provider"]),
+                )
+                if bet["currency"] == currency
+                and _as_utc(_datetime(bet["settlement"]["event_at"])) <= now
+            ),
+            Decimal(0),
+        )
+        current_bankroll = initial + settled_pnl
+        if abs(bankroll - current_bankroll) > Decimal("0.01"):
+            raise BetEvidenceError(
+                f"Paper bankroll-before must equal declared capital plus settled PnL: {current_bankroll} {currency}."
+            )
+        if any(
+            bet["payload"].get("capital", {}).get("config_hash")
+            not in {None, capital.config_hash}
+            for bet in list_bets(store, mode="paper")
+        ):
+            raise BetEvidenceError(
+                "Paper capital configuration is locked by existing tickets; start a new protocol before changing it."
+            )
+        capital_evidence = {
+            "policy_version": capital.policy_version,
+            "config_hash": capital.config_hash,
+            "allocation_eur": str(venue.allocation_eur),
+            "native_units_per_eur": str(venue.native_units_per_eur),
+            "conversion_cost_native": str(venue.conversion_cost_native),
+            "initial_native_bankroll": str(initial),
+            "settled_pnl": str(settled_pnl),
+            "current_native_bankroll": str(current_bankroll),
+            "source_reference": venue.source_reference,
+            "verified_at": venue.verified_at.isoformat() if venue.verified_at else None,
+        }
     group = _fixture_group(fixture, payload)
     exposure: dict[str, float] = {}
     for bet in store.list(EvidenceTable.BETS):
-        if bet["mode"] != mode or bet["currency"] != currency:
+        if (
+            bet["mode"] != mode
+            or bet["currency"] != currency
+            or str(bet["provider"]).casefold() != str(candidate["provider"]).casefold()
+        ):
             continue
         if _is_superseded(store, ("bets", str(bet["id"]))):
             continue
@@ -642,6 +695,7 @@ def _stake_limit(
         )[ticket.ticket_id]
     amount = Decimal(str(allowed)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     return {
+        "capital": capital_evidence,
         "name": policy.name,
         "status": "provisional_unvalidated",
         "fraction": policy.fraction,
@@ -693,7 +747,7 @@ def settle_bet(
             return str(existing["id"])
         raise BetEvidenceError("This bet already has a conflicting settlement.")
 
-    settled = _as_utc(settled_at or datetime.now(UTC))
+    settled = _validated_event_timestamp(bet, settled_at)
     event_id = _id("bet-event", f"{bet_id}|settlement")
     store.append(
         EvidenceTable.BET_EVENTS,
@@ -759,7 +813,9 @@ def replace_bet_settlement(
         "correction",
         f"bet_events|{active['id']}|{replacement_id}|{rationale}|{actor_id}",
     )
-    timestamp = _as_utc(corrected_at or datetime.now(UTC))
+    timestamp = _validated_event_timestamp(
+        bet, corrected_at, earliest=_datetime(active["event_at"])
+    )
     store.append_transaction(
         (
             (
@@ -829,13 +885,14 @@ def record_bet_result(
         ):
             return str(existing["id"])
         raise BetEvidenceError("This bet already has a conflicting result fact.")
+    timestamp = _validated_event_timestamp(bet, recorded_at)
     event_id = _id("bet-event", f"{bet_id}|result")
     store.append(
         EvidenceTable.BET_EVENTS,
         {
             "id": event_id,
             "bet_id": bet_id,
-            "event_at": _as_utc(recorded_at or datetime.now(UTC)),
+            "event_at": timestamp,
             "event_type": "result",
             "actor_id": actor_id,
             "idempotency_key": event_id,
@@ -900,6 +957,42 @@ def record_fixture_results(
     return event_ids
 
 
+def _validate_replacement(
+    store: EvidenceStore,
+    table: EvidenceTable,
+    target: dict[str, Any],
+    replacement_id: str,
+) -> None:
+    replacement = store.get(table, replacement_id)
+    visited = {str(target["id"])}
+    cursor = replacement_id
+    corrections = {
+        str(row["target_id"]): row["replacement_id"]
+        for row in store.list(EvidenceTable.CORRECTIONS)
+        if row["target_table"] == table.value
+    }
+    while cursor is not None:
+        if cursor in visited:
+            raise BetEvidenceError("Supersession would create a correction cycle.")
+        visited.add(cursor)
+        cursor = corrections.get(cursor)
+    if (
+        table is EvidenceTable.BET_EVENTS
+        and replacement
+        and (
+            replacement["bet_id"] != target["bet_id"]
+            or (
+                target["event_type"] in {"settlement", "settlement_correction"}
+                and replacement["event_type"]
+                not in {"settlement", "settlement_correction"}
+            )
+        )
+    ):
+        raise BetEvidenceError(
+            "Replacement event must belong to the same bet and lifecycle."
+        )
+
+
 def supersede_evidence(
     store: EvidenceStore,
     *,
@@ -919,12 +1012,15 @@ def supersede_evidence(
         ) from error
     if table is EvidenceTable.CORRECTIONS:
         raise BetEvidenceError("Corrections cannot supersede other corrections.")
-    if store.get(table, target_id) is None:
+    target = store.get(table, target_id)
+    if target is None:
         raise BetEvidenceError(f"Unknown correction target: {target_table}/{target_id}")
     if replacement_id is not None and store.get(table, replacement_id) is None:
         raise BetEvidenceError(
             f"Unknown correction replacement: {target_table}/{replacement_id}"
         )
+    if replacement_id is not None:
+        _validate_replacement(store, table, target, replacement_id)
     rationale = reason.strip()
     if not rationale:
         raise BetEvidenceError("A supersession reason is required.")
@@ -947,6 +1043,34 @@ def supersede_evidence(
         raise BetEvidenceError(
             "This evidence fact already has a conflicting supersession."
         )
+    timestamp = _as_utc(created_at) if created_at is not None else _utc_now()
+    fact_timestamp = next(
+        (
+            target[field]
+            for field in (
+                "event_at",
+                "opened_at",
+                "created_at",
+                "observed_at",
+                "discovered_at",
+                "started_at",
+            )
+            if target.get(field) is not None
+        ),
+        None,
+    )
+    if timestamp > _utc_now() or (
+        fact_timestamp is not None and timestamp < _as_utc(_datetime(fact_timestamp))
+    ):
+        raise BetEvidenceError(
+            "Correction timestamp cannot precede its fact or be in the future."
+        )
+    if table is EvidenceTable.BET_EVENTS:
+        bet = store.get(EvidenceTable.BETS, str(target["bet_id"]))
+        assert bet is not None
+        _validated_event_timestamp(
+            bet, timestamp, earliest=_datetime(target["event_at"])
+        )
     correction_id = _id(
         "correction",
         f"{table.value}|{target_id}|{replacement_id or ''}|{rationale}|{actor_id}",
@@ -957,7 +1081,7 @@ def supersede_evidence(
             "id": correction_id,
             "target_table": table.value,
             "target_id": target_id,
-            "created_at": _as_utc(created_at or datetime.now(UTC)),
+            "created_at": timestamp,
             "reason": rationale,
             "replacement_id": replacement_id,
             "idempotency_key": correction_id,
@@ -1110,7 +1234,13 @@ def _settlement_event(store: EvidenceStore, bet_id: str) -> dict[str, Any] | Non
     event = store.get(
         EvidenceTable.BET_EVENTS, _id("bet-event", f"{bet_id}|settlement")
     )
+    visited: set[str] = set()
     while event is not None:
+        if str(event["id"]) in visited or event["bet_id"] != bet_id:
+            raise BetEvidenceError(
+                "Invalid settlement correction cycle or bet identity."
+            )
+        visited.add(str(event["id"]))
         key = ("bet_events", str(event["id"]))
         if key not in corrections:
             break
@@ -1336,6 +1466,21 @@ def _horizon_bucket(hours: float | None) -> str | None:
     if hours < 168:  # noqa: PLR2004
         return "3d_7d"
     return "7d_plus"
+
+
+def _validated_event_timestamp(
+    bet: dict[str, Any], value: datetime | None, *, earliest: datetime | None = None
+) -> datetime:
+    timestamp = _as_utc(value) if value is not None else _utc_now()
+    lower = max(
+        _as_utc(_datetime(bet["opened_at"])),
+        _as_utc(earliest) if earliest else _as_utc(_datetime(bet["opened_at"])),
+    )
+    if timestamp < lower or timestamp > _utc_now():
+        raise BetEvidenceError(
+            "Event timestamp must be after entry/previous fact and not in the future."
+        )
+    return timestamp
 
 
 def _utc_now() -> datetime:

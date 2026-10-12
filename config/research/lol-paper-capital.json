@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "policy_version": "lol-paper-capital-v1",
+  "base_currency": "EUR",
+  "total_allocation": "500",
+  "venues": {
+    "thunderpick": {
+      "allocation_eur": "250",
+      "native_currency": "EUR",
+      "native_units_per_eur": "1",
+      "source_reference": "EUR identity; no currency conversion",
+      "verified_at": null,
+      "conversion_cost_native": "0",
+      "costs_verified": true
+    },
+    "polymarket": {
+      "allocation_eur": "250",
+      "native_currency": "PUSD",
+      "native_units_per_eur": null,
+      "source_reference": null,
+      "verified_at": null,
+      "conversion_cost_native": null,
+      "costs_verified": false
+    }
+  }
+}

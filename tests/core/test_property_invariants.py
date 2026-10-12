@@ -151,3 +151,13 @@ def test_half_line_semantic_normalization_is_idempotent(whole, target):
     )
 
     assert string_roundtrip == decimal_key
+
+
+@pytest.mark.parametrize("field", ["mean", "line", "sigma"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_prop_probabilities_reject_nonfinite_inputs(field, value):
+    from oracle_bets_core.probabilities import probability_over_under
+
+    inputs = {"mean": 20.0, "line": 19.5, "sigma": 2.0, field: value}
+    with pytest.raises(ValueError, match="finite"):
+        probability_over_under(**inputs)
